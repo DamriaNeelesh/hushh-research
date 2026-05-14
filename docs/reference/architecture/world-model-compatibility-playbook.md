@@ -2,6 +2,10 @@
 
 Operational rules for evolving dynamic world-model domains safely without breaking Kai features.
 
+## Visual Context
+
+Canonical visual owner: [Architecture Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
 ## Canonical Domain Summary Contract
 
 Every domain summary must follow canonical count compatibility:
