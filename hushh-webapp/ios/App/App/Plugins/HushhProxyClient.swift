@@ -29,7 +29,7 @@ final class HushhProxyClient {
         "HushhRuntime",
         "HushhVault",
         "HushhConsent",
-        "WorldModel",
+        "PersonalKnowledgeModel",
         "Kai",
         "HushhNotifications",
         "HushhAccount",
@@ -75,9 +75,22 @@ final class HushhProxyClient {
         return ""
     }
 
-    private static func normalizeBackendUrl(_ raw: String) -> String {
+    static func normalizeBackendUrl(_ raw: String) -> String {
         var url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while url.hasSuffix("/") { url.removeLast() }
+        guard var components = URLComponents(string: url) else {
+            return url
+        }
+
+        // iOS Simulator may resolve localhost to ::1 first while local backend listens on 127.0.0.1.
+        // Rewrite localhost to IPv4 loopback for stable simulator connectivity.
+        if components.host?.lowercased() == "localhost" {
+            components.host = "127.0.0.1"
+            if let rewritten = components.string {
+                return rewritten
+            }
+        }
+
         return url
     }
 

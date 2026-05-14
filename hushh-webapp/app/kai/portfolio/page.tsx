@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { AppPageContentRegion, AppPageShell } from "@/components/app-ui/app-page-shell";
 import { KaiFlow, type FlowState } from "@/components/kai/kai-flow";
 import { useAuth } from "@/lib/firebase/auth-context";
 import { useStepProgress } from "@/lib/progress/step-progress-context";
@@ -39,15 +40,25 @@ export default function KaiPortfolioPage() {
   }
 
   return (
-    <div className="relative w-full overflow-x-hidden">
-      <div className="w-full pb-32">
+    <AppPageShell
+      as="div"
+      width="expanded"
+      className="relative pb-32"
+      nativeTest={{
+        routeId: "/kai/portfolio",
+        marker: "native-route-kai-portfolio",
+        authState: "authenticated",
+        dataState: flowState === "checking" ? "loading" : "loaded",
+      }}
+    >
+      <AppPageContentRegion>
         <KaiFlow
           userId={user.uid}
           mode="dashboard"
           vaultOwnerToken={vaultOwnerToken ?? ""}
           onStateChange={setFlowState}
         />
-      </div>
-    </div>
+      </AppPageContentRegion>
+    </AppPageShell>
   );
 }

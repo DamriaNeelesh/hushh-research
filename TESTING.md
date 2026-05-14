@@ -1,5 +1,10 @@
 # Testing
 
+
+## Visual Context
+
+Canonical visual owner: [Quality and Design System Index](docs/reference/quality/README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
 This file is a repo-root testing entrypoint. The maintained CI and verification reference lives at [`docs/reference/operations/ci.md`](./docs/reference/operations/ci.md).
 
 ## Testing Principles
@@ -26,10 +31,9 @@ High-signal rules that should remain true regardless of test inventory changes:
 ## Common Local Commands
 
 ```bash
-./scripts/test-ci-local.sh
-make test
-make verify-docs
-cd hushh-webapp && npm run verify:routes
+./bin/hushh ci
+./bin/hushh test
+./bin/hushh docs verify
 cd hushh-webapp && npm run typecheck
 cd consent-protocol && pytest tests/ -v
 ```
@@ -41,6 +45,6 @@ Package-specific test setup lives with the package documentation:
 
 ## Practical Guidance
 
-- Use `./scripts/test-ci-local.sh` before opening a PR when a change spans multiple surfaces.
-- If you touch API routes or plugin contracts, run `cd hushh-webapp && npm run verify:routes`.
-- If you touch encryption, consent, or world-model behavior, prefer adding or updating backend tests under `consent-protocol/tests/` and relevant frontend service tests under `hushh-webapp/__tests__/services/`.
+- Use `./bin/hushh ci` before opening a PR when a change spans multiple surfaces.
+- If you touch API routes or plugin contracts, run `cd hushh-webapp && npm run typecheck` and a targeted runtime smoke through the affected flow.
+- If you touch encryption, consent, or PKM behavior, prefer adding or updating backend tests under `consent-protocol/tests/` and relevant frontend service tests under `hushh-webapp/__tests__/services/`.

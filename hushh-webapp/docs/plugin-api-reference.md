@@ -3,6 +3,13 @@
 > **IMPORTANT**: All implementations (TypeScript, Android, iOS) MUST use identical parameter names.  
 > This document is the **single source of truth** for native plugin APIs.
 
+
+## Visual Context
+
+Canonical visual owner: [Hussh Webapp Docs](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
+Founder-language note: these plugins are the native half of the platform's `Separation of Duties`. This file stays implementation-primary because method names and parameter names must remain exact across TypeScript, iOS, and Android.
+
 When modifying any native plugin:
 1. Update this document FIRST
 2. Implement in Android (`*.kt`)
@@ -57,6 +64,8 @@ No parameters required.
 ## HushhVault
 
 Encryption and vault storage plugin.
+
+This plugin owns mobile-facing `Cryptographic Primitives` such as key derivation, encryption, decryption, vault wrappers, and secure unlock helpers.
 
 ### deriveKey
 | Parameter | Type | Required | Description |
@@ -138,6 +147,66 @@ Encryption and vault storage plugin.
 | recoveryIv | string | Yes | Recovery IV |
 | authToken | string | No | Firebase ID token |
 
+### isPasskeyAvailable
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| rpId | string | No | Passkey relying-party ID |
+
+**Returns:**
+| Field | Type | Description |
+|-------|------|-------------|
+| available | boolean | Whether native passkey PRF can be attempted on this device |
+| reason | string | Optional machine-readable reason when unavailable |
+
+### registerPasskeyPrf
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| userId | string | Yes | User ID |
+| displayName | string | Yes | User display name |
+| rpId | string | Yes | Passkey relying-party ID |
+
+**Returns:**
+| Field | Type | Description |
+|-------|------|-------------|
+| credentialId | string | Base64 credential ID |
+| prfSalt | string | Base64 HKDF salt |
+| vaultKeyHex | string | Hex-encoded PRF-derived vault key |
+
+### authenticatePasskeyPrf
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| userId | string | Yes | User ID |
+| rpId | string | Yes | Passkey relying-party ID |
+| credentialId | string | No | Base64 credential ID hint |
+| prfSalt | string | Yes | Base64 HKDF salt saved at registration time |
+
+**Returns:**
+| Field | Type | Description |
+|-------|------|-------------|
+| credentialId | string | Base64 credential ID used to authenticate |
+| vaultKeyHex | string | Hex-encoded PRF-derived vault key |
+
+### storePreferencesToCloud
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| userId | string | Yes | User ID |
+| domain | string | Yes | Preference domain |
+| fieldName | string | Yes | Encrypted field name within the domain |
+| ciphertext | string | Yes | Base64 ciphertext |
+| iv | string | Yes | Base64 IV |
+| tag | string | Yes | Base64 auth tag |
+| consentToken | string | Yes | VAULT_OWNER or approved consent token |
+| authToken | string | No | Firebase ID token |
+
+**Returns:**
+| Field | Type | Description |
+|-------|------|-------------|
+| success | boolean | Whether the encrypted preference field was stored |
+
+### storePreference / getPreferences / deletePreferences
+
+Legacy compatibility-only local preference surfaces. Route-facing product flows must use `storePreferencesToCloud()` and other cloud-backed preference paths instead of depending on local-only CRUD parity.
+
 ---
 
 ## HushhConsent
@@ -209,7 +278,7 @@ Agent Kai stock analysis plugin.
 **Returns:** Full analysis response object.
 
 Kai no longer exposes plugin methods for `/api/kai/preferences/*`.
-Optional onboarding profile data is stored in encrypted world-model path `financial.profile`.
+Optional onboarding profile data is stored in encrypted PKM path `financial.profile`.
 
 ---
 

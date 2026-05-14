@@ -13,6 +13,10 @@ import { ROUTES } from "@/lib/navigation/routes";
 import { cn } from "@/lib/utils";
 import { scrollAppToTop } from "@/lib/navigation/use-scroll-reset";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
+import {
+  APP_SHELL_FRAME_CLASSNAME,
+  APP_SHELL_FRAME_STYLE,
+} from "@/components/app-ui/app-page-shell";
 
 const SWIPE_AXIS_LOCK_THRESHOLD_PX = 6;
 const SWIPE_VERTICAL_LIMIT_PX = 64;
@@ -94,13 +98,6 @@ export function DashboardRouteTabs({ embedded = false }: DashboardRouteTabsProps
     setMounted(true);
     return () => setMounted(false);
   }, []);
-
-  useEffect(() => {
-    if (!mounted) return;
-    for (const tab of KAI_ROUTE_TABS) {
-      router.prefetch(tab.prefetchHref);
-    }
-  }, [mounted, router]);
 
   const handleTabChange = useCallback(
     (nextTab: string) => {
@@ -423,10 +420,12 @@ export function DashboardRouteTabs({ embedded = false }: DashboardRouteTabsProps
   return (
     <div
       className={cn(
-        "relative mx-auto flex w-full max-w-6xl justify-center px-4 sm:px-6 transform-gpu will-change-transform",
+        APP_SHELL_FRAME_CLASSNAME,
+        "relative flex w-full justify-center transform-gpu will-change-transform",
         hideRouteTabs ? "pointer-events-none opacity-0" : "pointer-events-auto opacity-100"
       )}
       style={{
+        ...APP_SHELL_FRAME_STYLE,
         transform: `translate3d(0, calc(${-100 * hideRouteTabsProgress}% - ${6 * hideRouteTabsProgress}px), 0)`,
         opacity: Math.max(0, 1 - hideRouteTabsProgress),
       }}

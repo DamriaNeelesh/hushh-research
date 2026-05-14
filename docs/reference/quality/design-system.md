@@ -1,31 +1,49 @@
-# Hushh Frontend Design System
+# Hussh Frontend Design System
+
+
+## Visual Context
+
+Canonical visual owner: [Quality and Design System Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
 
 ## Purpose
-This contract makes shadcn primitives the canonical base and keeps Morphy as a compositional extension layer.
+This contract keeps shadcn as the vendor primitive layer, makes Morphy UX the standalone design-system root, and makes app-ui the semantic composition layer above it.
 
 ## Component Layering Contract
 | Layer | Location | Ownership | Rules |
 |---|---|---|---|
 | Stock primitives | `hushh-webapp/components/ui/*` | shadcn registry | Registry-backed only. Treat as vendor code. |
-| Morphy extensions | `hushh-webapp/lib/morphy-ux/*` and `hushh-webapp/lib/morphy-ux/ui/*` | Hushh | Must compose stock primitives; do not fork primitive internals. |
-| App reusable components | `hushh-webapp/components/app-ui/*` and feature folders | Hushh | App-specific behavior belongs here, never in `components/ui`. |
+| Morphy UX | `hushh-webapp/lib/morphy-ux/*` and `hushh-webapp/lib/morphy-ux/ui/*` | Hussh | Own reusable design-system primitives, motion, tokens, and surface shells. Must compose stock primitives; do not fork primitive internals. |
+| App reusable components | `hushh-webapp/components/app-ui/*` | Hussh | App-specific semantic composition belongs here, never in `components/ui`. |
+| Feature composition | `hushh-webapp/components/<feature>/*`, `hushh-webapp/app/**` | Hussh | Compose Morphy and app-ui layers; do not create parallel primitives. |
 
 ## Canonical Policies
 1. Default to stock shadcn imports for baseline controls.
-2. Use Morphy extensions only when explicit upgrade value exists.
+2. Use Morphy when the change belongs to the reusable design-system layer.
 3. Keep `components/ui` overwrite-safe with `npx shadcn@latest add ... --overwrite`.
 4. Do not place app-specific components inside `components/ui`.
-5. Keep tabs stock-first: `@/components/ui/tabs` is the canonical primitive base.
-6. Morphy tabs, button, and card must compose stock primitives.
+5. Shared segmented tabs live in `@/lib/morphy-ux/ui/segmented-tabs` and are re-exported through `SettingsSegmentedTabs` for app-level composition.
+6. Morphy button, card, and surface primitives must compose stock primitives.
+7. The liquid-glass lab is experimental and not part of the Kai production design contract.
+8. `AppPageShell` and `FullscreenFlowShell` own the route container contract; feature files must not replace that contract with route-local `max-w-* mx-auto px-*` wrappers.
+9. The canonical width model is semantic, not Tailwind-sized:
+   - `reading`
+   - `standard`
+   - `expanded`
+10. The canonical header accent model is semantic, not raw color-family naming:
+   - `neutral`
+   - `kai`
+   - `ria`
+   - `consent`
+   - `marketplace`
+   - `developers`
 
 ## Morphy Extension Allowlist
 1. CTA-level behavior on top of stock button semantics.
-2. Premium surface treatment on top of stock card structure.
-3. Tabs interaction upgrades as a wrapper over stock tabs.
-4. Ripple, motion hooks, icon wrappers, and toast helpers.
+2. Shared card and surface treatment on top of stock card structure.
+3. Ripple, motion hooks, icon wrappers, and toast helpers.
 
 ## Import Rules
-Use stock shadcn by default:
+Use stock shadcn by default for baseline primitives:
 
 ```tsx
 import {
@@ -34,16 +52,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 ```
 
-Use Morphy only for explicit extension cases:
+Use Morphy for reusable shared UI behavior and app-wide segmented controls:
 
 ```tsx
 import { Button as MorphyButton } from "@/lib/morphy-ux/button";
 import { Card as MorphyCard } from "@/lib/morphy-ux/card";
-import { Tabs as MorphyTabs } from "@/lib/morphy-ux/ui/tabs";
+import { SegmentedTabs } from "@/lib/morphy-ux/ui";
 ```
 
 Forbidden:
@@ -61,6 +78,14 @@ Forbidden:
 1. Keep color, typography, radius, and motion centralized through existing tokens and CSS variables.
 2. Avoid legacy references and hardcoded old theme narratives in feature code.
 3. Keep backgrounds and surfaces aligned with the current neutral app direction.
+4. Shared shell and surface layout tokens live in `hushh-webapp/app/globals.css`.
+5. Use the container tokens below instead of ad hoc `max-w-*` route wrappers:
+   - `--app-shell-reading`
+   - `--app-shell-standard`
+   - `--app-shell-expanded`
+6. Use shared gutter tokens instead of route-local page padding:
+   - `--page-inline-gutter-standard`
+   - `--page-surface-overscan`
 
 ## Guardrails
 Use these commands from `hushh-webapp`:
@@ -89,12 +114,24 @@ After regeneration:
 2. Keep Morphy wrappers compositional and API-stable.
 3. Update docs only when rules actually change.
 
+## Repo-Owned Skills
+
+Project-local UI skills live in `.codex/skills/`:
+
+1. `frontend`
+2. `frontend-design-system`
+3. `frontend-architecture`
+4. `frontend-surface-placement`
+5. `frontend-native-surface-mapper`
+
+These skills must stay aligned with this document, `frontend-ui-architecture-map.md`, and the runtime verification commands.
+
 ## Settings Surfaces
 The Profile page is the canonical settings implementation for the app.
 
 Reference:
 
-1. `hushh-webapp/components/profile/settings-ui.tsx`
+1. `hushh-webapp/components/app-ui/settings-ui.tsx`
 2. `hushh-webapp/app/profile/page.tsx`
 3. [Profile Settings Design System](./profile-settings-design-system.md)
 4. [App Surface Design System](./app-surface-design-system.md)

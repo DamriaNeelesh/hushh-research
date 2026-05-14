@@ -1,6 +1,41 @@
-# IAM Reference
+# Hussh IAM Reference
+
+
+## Visual Map
+
+```mermaid
+flowchart TD
+  root["IAM Reference"]
+  n1["Architecture"]
+  root --> n1
+  n2["Consent Scope Catalog"]
+  root --> n2
+  n3["External Dependencies"]
+  root --> n3
+  n4["Marketplace Contract"]
+  root --> n4
+  n5["Ria Verification Policy"]
+  root --> n5
+  n6["Rollout And Environments"]
+  root --> n6
+  n7["Runtime Surface"]
+  root --> n7
+  n8["Validation Checklist"]
+  root --> n8
+```
 
 This directory is the **source of truth** for Investor + RIA identity, consent IAM policy, and marketplace access contracts.
+
+Within the seven-layer architecture, IAM is the canonical Layer 3 surface: **Trust, Identity, and Governance**.
+
+These docs use founder language first when they describe architecture:
+
+- `Capability Tokens` map to `VAULT_OWNER`, consent tokens, scoped tokens, and developer tokens.
+- `PCHP` maps to the current approval and encrypted scoped export flow.
+- `TrustLink / A2A delegation` maps to the current delegated-access implementation surface.
+
+Canonical mapping: [../architecture/founder-language-matrix.md](../architecture/founder-language-matrix.md)
+Brand and compatibility rule: [../operations/brand-and-compatibility-contract.md](../operations/brand-and-compatibility-contract.md)
 
 ## Scope
 

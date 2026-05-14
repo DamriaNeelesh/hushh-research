@@ -4,6 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
+import {
+  SurfaceCard,
+  SurfaceCardContent,
+  SurfaceInset,
+} from "@/components/app-ui/surfaces";
 import { useAuth } from "@/hooks/use-auth";
 import { ROUTES } from "@/lib/navigation/routes";
 import { RiaService, type RiaInviteResolution } from "@/lib/services/ria-service";
@@ -97,16 +102,19 @@ export function KaiInviteHandshake({ inviteToken }: { inviteToken: string }) {
   if (!invite) {
     return (
       <div className="mx-auto flex min-h-[70vh] w-full max-w-md items-center px-5">
-        <div className="w-full rounded-[28px] border border-border bg-card/80 p-6 text-center">
+        <SurfaceCard className="w-full">
+          <SurfaceCardContent className="p-6 text-center">
           <p className="text-sm text-muted-foreground">{error || "Invite not found."}</p>
-        </div>
+          </SurfaceCardContent>
+        </SurfaceCard>
       </div>
     );
   }
 
   return (
     <div className="mx-auto w-full max-w-2xl px-4 pb-24 pt-4">
-      <div className="rounded-[32px] border border-amber-500/20 bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.14),_transparent_38%),linear-gradient(180deg,rgba(13,14,18,0.98),rgba(10,10,12,0.98))] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
+      <SurfaceCard tone="feature">
+        <SurfaceCardContent className="space-y-8 p-6">
         <div className="flex flex-wrap gap-2">
           {STEPS.map((label, index) => (
             <div
@@ -127,13 +135,13 @@ export function KaiInviteHandshake({ inviteToken }: { inviteToken: string }) {
         <div className="mt-8">
           {step === 0 ? (
             <>
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-200/80">
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-700/90 dark:text-amber-300/90">
                 Invited by {title}
               </p>
-              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-50">
+              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-foreground">
                 Your finances, quietly understood
               </h1>
-              <p className="mt-3 text-sm leading-7 text-zinc-300">
+              <p className="mt-3 text-sm leading-7 text-muted-foreground">
                 Kai works in the background to connect you and your advisor without exposing more
                 than you approve.
               </p>
@@ -142,17 +150,17 @@ export function KaiInviteHandshake({ inviteToken }: { inviteToken: string }) {
 
           {step === 1 ? (
             <div className="space-y-4">
-              <h2 className="text-2xl font-semibold text-zinc-50">Confirm your advisor</h2>
-              <div className="rounded-[28px] border border-amber-500/30 bg-amber-500/8 p-5">
-                <p className="text-lg font-semibold text-zinc-50">{invite.ria.display_name}</p>
-                <p className="mt-1 text-sm text-zinc-300">
+              <h2 className="text-2xl font-semibold text-foreground">Confirm your advisor</h2>
+              <SurfaceInset className="p-5">
+                <p className="text-lg font-semibold text-foreground">{invite.ria.display_name}</p>
+                <p className="mt-1 text-sm text-muted-foreground">
                   {invite.ria.headline || invite.ria.strategy_summary || "Verified public profile"}
                 </p>
-                <p className="mt-3 text-xs uppercase tracking-[0.18em] text-amber-100">
+                <p className="mt-3 text-xs uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">
                   {invite.ria.verification_status}
                 </p>
-              </div>
-              <p className="text-sm leading-7 text-zinc-300">
+              </SurfaceInset>
+              <p className="text-sm leading-7 text-muted-foreground">
                 Your advisor only sees data you explicitly approve. Everything else stays private to
                 you and Kai.
               </p>
@@ -161,7 +169,7 @@ export function KaiInviteHandshake({ inviteToken }: { inviteToken: string }) {
 
           {step === 2 ? (
             <div className="space-y-4">
-              <h2 className="text-2xl font-semibold text-zinc-50">A little about you</h2>
+              <h2 className="text-2xl font-semibold text-foreground">A little about you</h2>
               <input
                 value={name}
                 onChange={(event) => setName(event.target.value)}
@@ -179,8 +187,8 @@ export function KaiInviteHandshake({ inviteToken }: { inviteToken: string }) {
 
           {step === 3 ? (
             <div className="space-y-4">
-              <h2 className="text-2xl font-semibold text-zinc-50">Advisor permissions</h2>
-              <p className="text-sm leading-7 text-zinc-300">
+              <h2 className="text-2xl font-semibold text-foreground">Advisor permissions</h2>
+              <p className="text-sm leading-7 text-muted-foreground">
                 The current flow requests one consent template under the hood. These switches make
                 the trust model explicit before you continue into Kai.
               </p>
@@ -210,10 +218,10 @@ export function KaiInviteHandshake({ inviteToken }: { inviteToken: string }) {
 
           {step === 4 ? (
             <div className="space-y-4 text-center">
-              <h2 className="text-3xl font-semibold tracking-tight text-zinc-50">
+              <h2 className="text-3xl font-semibold tracking-tight text-foreground">
                 Invite accepted
               </h2>
-              <p className="text-sm leading-7 text-zinc-300">
+              <p className="text-sm leading-7 text-muted-foreground">
                 Your advisor request is now staged. Review and approve the access request from
                 Consents after your Kai setup is complete.
               </p>
@@ -221,7 +229,7 @@ export function KaiInviteHandshake({ inviteToken }: { inviteToken: string }) {
           ) : null}
         </div>
 
-        {error ? <p className="mt-6 text-sm text-red-400">{error}</p> : null}
+        {error ? <p className="mt-6 text-sm text-red-500">{error}</p> : null}
 
         <div className="mt-8 flex flex-wrap justify-between gap-3">
           <button
@@ -264,7 +272,8 @@ export function KaiInviteHandshake({ inviteToken }: { inviteToken: string }) {
             </button>
           ) : null}
         </div>
-      </div>
+        </SurfaceCardContent>
+      </SurfaceCard>
     </div>
   );
 }

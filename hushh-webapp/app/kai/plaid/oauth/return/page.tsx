@@ -3,6 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import {
+  AppPageContentRegion,
+  AppPageShell,
+} from "@/components/app-ui/app-page-shell";
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
 import { Button } from "@/lib/morphy-ux/button";
 import { useAuth } from "@/lib/firebase/auth-context";
@@ -45,6 +49,7 @@ export default function KaiPlaidOauthReturnPage() {
     }
 
     setReturnPath(session.returnPath || ROUTES.KAI_DASHBOARD);
+    const flowKind = session.flowKind === "funding" ? "funding" : "investments";
 
     if (!user?.uid) {
       const redirectTarget =
@@ -76,7 +81,8 @@ export default function KaiPlaidOauthReturnPage() {
           resumeSessionId: session.resumeSessionId,
           vaultOwnerToken: issued.token,
         });
-        if (!resume.configured || !resume.link_token) {
+        const linkTokenValue = resume.link_token;
+        if (!resume.configured || !linkTokenValue) {
           throw new Error("Plaid is not configured for this environment.");
         }
 
@@ -92,16 +98,27 @@ export default function KaiPlaidOauthReturnPage() {
           };
 
           const handler = Plaid.create({
-            token: resume.link_token,
+            token: linkTokenValue,
             receivedRedirectUri: window.location.href,
             onSuccess: (publicToken: string, metadata: Record<string, unknown>) => {
-              void PlaidPortfolioService.exchangePublicToken({
-                userId: user.uid,
-                publicToken,
-                vaultOwnerToken: issued.token,
-                metadata,
-                resumeSessionId: session.resumeSessionId,
-              })
+              void (
+                flowKind === "funding"
+                  ? PlaidPortfolioService.exchangeFundingPublicToken({
+                      userId: user.uid,
+                      publicToken,
+                      vaultOwnerToken: issued.token,
+                      metadata,
+                      resumeSessionId: session.resumeSessionId,
+                      consentTimestamp: new Date().toISOString(),
+                    })
+                  : PlaidPortfolioService.exchangePublicToken({
+                      userId: user.uid,
+                      publicToken,
+                      vaultOwnerToken: issued.token,
+                      metadata,
+                      resumeSessionId: session.resumeSessionId,
+                    })
+              )
                 .then(() => {
                   clearPlaidOAuthResumeSession();
                   finish(resolve);
@@ -149,40 +166,68 @@ export default function KaiPlaidOauthReturnPage() {
 
   if (stage !== "error") {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center px-4">
-        <HushhLoader
-          label={
-            stage === "redirecting"
-              ? "Returning to Kai..."
-              : "Resuming your Plaid brokerage connection..."
-          }
-        />
-      </div>
+      <AppPageShell
+        as="div"
+        width="reading"
+        className="flex min-h-[60vh] items-center justify-center"
+        nativeTest={{
+          routeId: "/kai/plaid/oauth/return",
+          marker: "native-route-kai-plaid-return",
+          authState: user?.uid ? "authenticated" : "pending",
+          dataState: stage === "redirecting" ? "redirect-valid" : "unavailable-valid",
+          errorCode: error ? "plaid_resume" : null,
+          errorMessage: error,
+        }}
+      >
+        <AppPageContentRegion className="flex min-h-[60vh] items-center justify-center">
+          <HushhLoader
+            label={
+              stage === "redirecting"
+                ? "Returning to Kai..."
+                : "Resuming your Plaid connection..."
+            }
+          />
+        </AppPageContentRegion>
+      </AppPageShell>
     );
   }
 
   return (
-    <div className="flex min-h-[60vh] items-center justify-center px-4">
-      <div className="w-full max-w-md rounded-2xl border border-border/60 bg-card/80 p-5 text-center shadow-sm">
-        <h1 className="text-lg font-semibold text-foreground">Plaid connection needs attention</h1>
-        <p className="mt-2 text-sm text-muted-foreground">{error}</p>
-        <div className="mt-4 flex flex-col gap-2">
-          <Button onClick={() => router.replace(returnPath)} className="w-full">
-            Back to Kai
-          </Button>
-          <Button
-            variant="none"
-            effect="fade"
-            onClick={() => {
-              clearPlaidOAuthResumeSession();
-              router.replace(ROUTES.KAI_DASHBOARD);
-            }}
-            className="w-full"
-          >
-            Reset Plaid Resume
-          </Button>
+    <AppPageShell
+      as="div"
+      width="reading"
+      className="flex min-h-[60vh] items-center justify-center"
+      nativeTest={{
+        routeId: "/kai/plaid/oauth/return",
+        marker: "native-route-kai-plaid-return",
+        authState: user?.uid ? "authenticated" : "pending",
+        dataState: "unavailable-valid",
+        errorCode: "plaid_resume",
+        errorMessage: error,
+      }}
+    >
+      <AppPageContentRegion className="flex min-h-[60vh] items-center justify-center">
+        <div className="w-full max-w-md rounded-2xl border border-border/60 bg-card/80 p-5 text-center shadow-sm">
+          <h1 className="text-lg font-semibold text-foreground">Plaid connection needs attention</h1>
+          <p className="mt-2 text-sm text-muted-foreground">{error}</p>
+          <div className="mt-4 flex flex-col gap-2">
+            <Button onClick={() => router.replace(returnPath)} className="w-full">
+              Back to Kai
+            </Button>
+            <Button
+              variant="none"
+              effect="fade"
+              onClick={() => {
+                clearPlaidOAuthResumeSession();
+                router.replace(ROUTES.KAI_DASHBOARD);
+              }}
+              className="w-full"
+            >
+              Reset Plaid Resume
+            </Button>
+          </div>
         </div>
-      </div>
-    </div>
+      </AppPageContentRegion>
+    </AppPageShell>
   );
 }

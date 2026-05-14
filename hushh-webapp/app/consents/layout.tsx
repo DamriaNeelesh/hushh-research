@@ -1,7 +1,12 @@
-export default function ConsentsLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  return children;
+import type { ReactNode } from "react";
+
+import { PhoneMandateGuard } from "@/components/auth/phone-mandate-guard";
+import { VaultLockGuard } from "@/components/vault/vault-lock-guard";
+
+export default function ConsentsLayout({ children }: { children: ReactNode }) {
+  return (
+    <VaultLockGuard>
+      <PhoneMandateGuard>{children}</PhoneMandateGuard>
+    </VaultLockGuard>
+  );
 }

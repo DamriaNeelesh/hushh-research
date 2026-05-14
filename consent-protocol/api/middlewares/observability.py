@@ -24,7 +24,7 @@ _SAFE_REQUEST_ID_REGEX = re.compile(r"^[a-zA-Z0-9_.:-]{8,128}$")
 _EXPECTED_STATUS_BY_ROUTE: dict[tuple[str, str], set[int]] = {
     ("GET", "/api/kai/analyze/run/active"): {404},
     ("POST", "/api/kai/analyze/run/start"): {409},
-    ("GET", "/api/world-model/metadata/{user_id}"): {401, 404},
+    ("GET", "/api/pkm/metadata/{user_id}"): {401, 404},
     ("GET", "/api/kai/market/insights/{user_id}"): {401},
     ("POST", "/db/vault/get"): {404},
     ("POST", "/db/vault/bootstrap-state"): {404},
@@ -97,9 +97,35 @@ def get_request_id() -> str:
     return _request_id_ctx.get("")
 
 
+def _extract_bearer_user_id(request: Request) -> str | None:
+    """
+    Decode the Bearer token once per request and return the user_id string.
+
+    Result is cached on ``request.state.rate_limit_user_id`` so the rate-limit
+    key function can read it without performing a second JWT decode.
+    Returns ``None`` when no valid authenticated token is present.
+    """
+    authorization = request.headers.get("Authorization") or request.headers.get("authorization")
+    if not (authorization and authorization.startswith("Bearer ")):
+        return None
+    consent_token = authorization.removeprefix("Bearer ").strip()
+    if not consent_token:
+        return None
+    # Import here to avoid a circular import between middlewares and consent layer.
+    from hushh_mcp.consent.token import validate_token
+
+    valid, _reason, payload = validate_token(consent_token)
+    if valid and payload and payload.user_id:
+        return str(payload.user_id)
+    return None
+
+
 async def observability_middleware(request: Request, call_next):
     request_id = _resolve_request_id(request)
     request.state.request_id = request_id
+    # Decode the JWT once here; rate_limit.py reads this cached value instead
+    # of calling validate_token a second time on every request.
+    request.state.rate_limit_user_id = _extract_bearer_user_id(request)
     token = _request_id_ctx.set(request_id)
 
     method = request.method.upper()

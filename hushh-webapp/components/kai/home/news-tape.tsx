@@ -5,6 +5,7 @@ import { ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { SettingsGroup, SettingsRow } from "@/components/profile/settings-ui";
 import type { KaiHomeNewsItem } from "@/lib/services/api-service";
+import { openExternalUrl } from "@/lib/utils/browser-navigation";
 
 interface NewsTapeProps {
   rows: KaiHomeNewsItem[];
@@ -22,11 +23,6 @@ function formatPublished(value: string): string {
 }
 
 export function NewsTape({ rows }: NewsTapeProps) {
-  const openHeadline = (url: string) => {
-    if (typeof window === "undefined") return;
-    window.open(url, "_blank", "noopener,noreferrer");
-  };
-
   if (!rows.length) {
     return (
       <SettingsGroup>
@@ -56,7 +52,7 @@ export function NewsTape({ rows }: NewsTapeProps) {
           }
           trailing={<ExternalLink className="h-4 w-4 text-muted-foreground" />}
           chevron
-          onClick={() => openHeadline(row.url)}
+          onClick={() => openExternalUrl(row.url)}
         />
       ))}
     </SettingsGroup>

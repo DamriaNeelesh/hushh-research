@@ -3,16 +3,16 @@
 import { ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+import { SurfaceCard, SurfaceCardContent } from "@/components/app-ui/surfaces";
 import { Button } from "@/lib/morphy-ux/button";
-import { Card, CardContent } from "@/lib/morphy-ux/card";
 import { Icon } from "@/lib/morphy-ux/ui";
 
 export function ConnectPortfolioCta() {
   const router = useRouter();
 
   return (
-    <Card variant="muted" effect="fill" className="rounded-2xl p-0">
-      <CardContent className="space-y-4 p-6 text-center">
+    <SurfaceCard accent="emerald">
+      <SurfaceCardContent className="space-y-4 p-6 text-center">
         <div className="space-y-2">
           <h3 className="text-lg font-black tracking-tight">
             See insights tailored to your portfolio
@@ -42,7 +42,7 @@ export function ConnectPortfolioCta() {
         >
           Or continue exploring
         </Button>
-      </CardContent>
-    </Card>
+      </SurfaceCardContent>
+    </SurfaceCard>
   );
 }

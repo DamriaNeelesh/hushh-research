@@ -1,6 +1,13 @@
 # Kai Accuracy Contract (v6.0)
 
+
+## Visual Context
+
+Canonical visual owner: [Kai Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
 This document defines production behavior for Kai analysis/import surfaces.
+
+Founder-language note: this contract is part of the platform's `Tamper-Evident History` and `Separation of Duties` story. It defines what the runtime must prove before Kai is allowed to speak decisively, and it should not be used to imply controls that are not actually implemented.
 
 ## Non-Negotiables
 - Real data only for portfolio decisions and recommendations.

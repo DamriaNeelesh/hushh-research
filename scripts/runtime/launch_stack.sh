@@ -8,12 +8,12 @@ source "$REPO_ROOT/scripts/env/runtime_profile_lib.sh"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/runtime/launch_stack.sh <local-uatdb|uat-remote|prod-remote> [-- <next-dev args>]
+  scripts/runtime/launch_stack.sh <local|uat|prod> [-- <next-dev args>]
 
 Launches the canonical local runtime stack:
-- local-uatdb: activates profile, starts local backend, then starts frontend
-- uat-remote : activates profile, starts frontend only
-- prod-remote: activates profile, starts frontend only
+- local: activates mode, starts local backend, then starts frontend
+- uat  : activates mode, starts frontend only
+- prod : activates mode, starts frontend only
 USAGE
 }
 
@@ -40,11 +40,53 @@ bash "$REPO_ROOT/scripts/env/use_profile.sh" "$PROFILE"
 BACKEND_PID=""
 cleanup() {
   if [ -n "$BACKEND_PID" ] && kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
-    kill "$BACKEND_PID" >/dev/null 2>&1 || true
+    local backend_pgid
+    backend_pgid="$(ps -o pgid= -p "$BACKEND_PID" 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$backend_pgid" ]; then
+      kill -TERM -- "-$backend_pgid" >/dev/null 2>&1 || true
+    else
+      kill "$BACKEND_PID" >/dev/null 2>&1 || true
+    fi
     wait "$BACKEND_PID" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT INT TERM
+
+listener_pids() {
+  local port="$1"
+  lsof -t -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk '!seen[$0]++'
+}
+
+stop_existing_repo_frontend() {
+  local pids
+  pids="$(listener_pids 3000 || true)"
+  if [ -z "$pids" ]; then
+    return 0
+  fi
+
+  local pid
+  local cmd
+  local safe_to_kill=true
+  for pid in $pids; do
+    cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+    if [[ "$cmd" == *"next dev"* ]] && [[ "$cmd" == *"hushh-research/hushh-webapp"* ]]; then
+      continue
+    fi
+    safe_to_kill=false
+    break
+  done
+
+  if [ "$safe_to_kill" != "true" ]; then
+    echo "Frontend port 3000 is already in use by a non-managed process." >&2
+    echo "Stop the existing process before starting the canonical Hushh frontend." >&2
+    exit 1
+  fi
+
+  echo "Stopping existing managed frontend on :3000..."
+  for pid in $pids; do
+    kill "$pid" >/dev/null 2>&1 || true
+  done
+}
 
 if [ "$(runtime_profile_backend_mode "$PROFILE")" = "local" ]; then
   bash "$REPO_ROOT/scripts/runtime/run_backend_local.sh" "$PROFILE" --skip-activate --preflight-only
@@ -59,10 +101,13 @@ if [ "$(runtime_profile_backend_mode "$PROFILE")" = "local" ]; then
   done
 fi
 
-echo "Starting frontend on :3000 for runtime profile ${PROFILE}..."
+echo "Starting frontend on :3000 for runtime mode ${PROFILE}..."
 cd "$REPO_ROOT/hushh-webapp"
+stop_existing_repo_frontend
+echo "Cleaning stale .next build artifacts before starting the frontend..."
+rm -rf .next
 if [ "${#NEXT_ARGS[@]}" -gt 0 ]; then
-  npm run dev:next -- "${NEXT_ARGS[@]}"
+  npm run dev -- "${NEXT_ARGS[@]}"
 else
-  npm run dev:next
+  npm run dev
 fi

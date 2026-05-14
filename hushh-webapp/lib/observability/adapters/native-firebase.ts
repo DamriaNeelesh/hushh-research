@@ -1,38 +1,34 @@
 import { Capacitor } from "@capacitor/core";
 
 import type {
+  PrimitiveEventValue,
   ObservabilityAdapter,
   ObservabilityEventName,
-  PrimitiveEventValue,
 } from "@/lib/observability/events";
 
-type FirebaseAnalyticsModule = {
-  logEvent: (options: {
-    name: string;
-    params?: Record<string, PrimitiveEventValue>;
-  }) => Promise<void>;
-};
+let firebaseAnalyticsModulePromise:
+  | Promise<typeof import("@capacitor-firebase/analytics")>
+  | null = null;
 
-let firebaseAnalyticsPromise: Promise<FirebaseAnalyticsModule | null> | null = null;
+function getFirebaseAnalyticsModule() {
+  firebaseAnalyticsModulePromise =
+    firebaseAnalyticsModulePromise || import("@capacitor-firebase/analytics");
+  return firebaseAnalyticsModulePromise;
+}
 
-async function getFirebaseAnalyticsModule(): Promise<FirebaseAnalyticsModule | null> {
-  if (firebaseAnalyticsPromise) return firebaseAnalyticsPromise;
+function toFirebaseParams(payload: Record<string, PrimitiveEventValue>) {
+  const params: Record<string, string | number> = {};
 
-  firebaseAnalyticsPromise = (async () => {
-    try {
-      const mod = await import("@capacitor-firebase/analytics");
-      const candidate = mod.FirebaseAnalytics;
-
-      if (candidate && typeof candidate.logEvent === "function") {
-        return candidate;
-      }
-      return null;
-    } catch {
-      return null;
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === null || value === undefined) continue;
+    if (typeof value === "boolean") {
+      params[key] = value ? "true" : "false";
+      continue;
     }
-  })();
+    params[key] = value;
+  }
 
-  return firebaseAnalyticsPromise;
+  return params;
 }
 
 export const nativeFirebaseAdapter: ObservabilityAdapter = {
@@ -46,14 +42,11 @@ export const nativeFirebaseAdapter: ObservabilityAdapter = {
     eventName: ObservabilityEventName,
     payload: Record<string, PrimitiveEventValue>
   ): Promise<void> {
-    if (!Capacitor.isNativePlatform()) return;
-
-    const analytics = await getFirebaseAnalyticsModule();
-    if (!analytics) return;
-
-    await analytics.logEvent({
+    if (!this.isAvailable()) return;
+    const { FirebaseAnalytics } = await getFirebaseAnalyticsModule();
+    await FirebaseAnalytics.logEvent({
       name: eventName,
-      params: payload,
+      params: toFirebaseParams(payload),
     });
   },
 };

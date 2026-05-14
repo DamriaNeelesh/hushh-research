@@ -1,72 +1,130 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   AlertTriangle,
-  BriefcaseBusiness,
+  ArrowUpRight,
   ChartColumnIncreasing,
   Cpu,
+  ExternalLink,
   LineChart,
   Loader2,
-  Newspaper,
   Percent,
   RefreshCw,
-  Target,
   TrendingDown,
   TrendingUp,
   type LucideIcon,
   Zap,
 } from "lucide-react";
 
-import { PageHeader, SectionHeader } from "@/components/app-ui/page-sections";
-import { NewsTape } from "@/components/kai/home/news-tape";
+import { PageHeader } from "@/components/app-ui/page-sections";
+import { AppPageContentRegion, AppPageHeaderRegion, AppPageShell } from "@/components/app-ui/app-page-shell";
+import { KaiControlSurface } from "@/components/app-ui/kai-control-surface";
+import {
+  SurfaceCard,
+  SurfaceCardContent,
+  SurfaceCardDescription,
+  SurfaceCardHeader,
+  SurfaceInset,
+  SurfaceStack,
+  SurfaceCardTitle,
+  surfaceInteractiveShellClassName,
+} from "@/components/app-ui/surfaces";
 import { ConnectPortfolioCta } from "@/components/kai/cards/connect-portfolio-cta";
-import { MarketOverviewGrid, type MarketOverviewMetric } from "@/components/kai/cards/market-overview-grid";
+import { PermissionGate } from "@/components/privacy/permission-gate/permission-gate";
+import {
+  MarketOverviewGrid,
+  type MarketOverviewDetailPanel,
+  type MarketOverviewMetric,
+} from "@/components/kai/cards/market-overview-grid";
 import { RiaPicksList } from "@/components/kai/cards/renaissance-market-list";
-import { SpotlightCard } from "@/components/kai/cards/spotlight-card";
+import { SymbolAvatar } from "@/components/kai/shared/symbol-avatar";
+import {
+  marketAmbientBackgroundClassName,
+  marketAmbientGlowClassName,
+  marketCardClassName,
+  marketInsetClassName,
+} from "@/components/kai/shared/market-surface-theme";
 import { ThemeFocusList, type ThemeFocusItem } from "@/components/kai/cards/theme-focus-list";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/lib/morphy-ux/button";
-import { Card, CardContent } from "@/lib/morphy-ux/card";
-import { CacheService, CACHE_KEYS } from "@/lib/services/cache-service";
+import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
+import { useStaleResource } from "@/lib/cache/use-stale-resource";
+import {
+  KaiFinancialResourceService,
+  useKaiFinancialResource,
+} from "@/lib/kai/kai-financial-resource";
+import { KaiMarketHomeResourceService } from "@/lib/kai/kai-market-home-resource";
+import { CACHE_KEYS } from "@/lib/services/cache-service";
 import { ensureKaiVaultOwnerToken } from "@/lib/services/kai-token-guard";
 import {
-  ApiService,
   type KaiHomeInsightsV2,
+  type KaiHomeNewsItem,
   type KaiHomePickSource,
+  type KaiHomeSignal,
+  type KaiHomeRenaissanceItem,
+  type KaiHomeWatchlistItem,
 } from "@/lib/services/api-service";
-import { setKaiActivePickSource } from "@/lib/kai/pick-source-selection";
-import { UnlockWarmOrchestrator } from "@/lib/services/unlock-warm-orchestrator";
-import { getSessionItem, isNativePlatform, setSessionItem } from "@/lib/utils/session-storage";
+import {
+  getKaiActivePickSource,
+  setKaiActivePickSource,
+} from "@/lib/kai/pick-source-selection";
+import { assignWindowLocation, openExternalUrl } from "@/lib/utils/browser-navigation";
 import { cn } from "@/lib/utils";
 import { useVault } from "@/lib/vault/vault-context";
+import {
+  usePublishVoiceSurfaceMetadata,
+  useVoiceSurfaceControlTracking,
+} from "@/lib/voice/voice-surface-metadata";
 
-const POLL_INTERVAL_MS = 600_000;
-const MIN_REQUEST_GAP_MS = 2_500;
-const MARKET_HOME_CACHE_TTL_MS = 600_000;
-const SESSION_KAI_HOME_TTL_MS = 600_000;
-const LAST_KNOWN_MARKET_HOME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const TICKER_CANDIDATE_RE = /^[A-Z][A-Z0-9.-]{0,5}$/;
-const EXCLUDED_SYMBOLS = new Set([
-  "CASH",
-  "MMF",
-  "SWEEP",
-  "QACDS",
-  "BUY",
-  "SELL",
-  "REINVEST",
-  "DIVIDEND",
-  "INTEREST",
-  "TRANSFER",
-  "WITHDRAWAL",
-  "DEPOSIT",
-]);
+function useRetainedSurfaceSelection<T>(selection: T | null, delayMs = 180): T | null {
+  const [retained, setRetained] = useState<T | null>(selection);
+
+  useEffect(() => {
+    if (selection) {
+      setRetained(selection);
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setRetained(null);
+    }, delayMs);
+
+    return () => window.clearTimeout(timeout);
+  }, [delayMs, selection]);
+
+  return retained;
+}
 
 function toSymbolsKey(symbols: string[]): string {
   if (!Array.isArray(symbols) || symbols.length === 0) return "default";
   return [...symbols].sort((a, b) => a.localeCompare(b)).join("-");
+}
+
+const MARKET_SIGNAL_CARD_CLASSNAME = cn(
+  marketCardClassName,
+  "shadow-[var(--app-card-shadow-standard)]"
+);
+
+const MARKET_SIGNAL_INSET_CLASSNAME = marketInsetClassName;
+
+function normalizeTrackedSymbols(symbols: string[] | null | undefined): string[] {
+  if (!Array.isArray(symbols)) return [];
+  return symbols
+    .map((symbol) => String(symbol || "").trim().toUpperCase())
+    .filter(Boolean)
+    .filter((symbol, index, arr) => arr.indexOf(symbol) === index)
+    .slice(0, 8);
+}
+
+function normalizeAllSymbols(symbols: string[] | null | undefined): string[] {
+  if (!Array.isArray(symbols)) return [];
+  return symbols
+    .map((symbol) => String(symbol || "").trim().toUpperCase())
+    .filter(Boolean)
+    .filter((symbol, index, arr) => arr.indexOf(symbol) === index);
 }
 
 const THEME_ICON_MAP: Array<{ test: RegExp; icon: LucideIcon }> = [
@@ -146,6 +204,390 @@ function spotlightConfidenceLabel(
   return `${pct}% confidence`;
 }
 
+function signalConfidenceLabel(signal: {
+  confidence?: number | null;
+}): string {
+  const value = signal.confidence;
+  if (typeof value !== "number" || !Number.isFinite(value)) return "Signal";
+  const pct = Math.max(0, Math.min(100, Math.round(value * 100)));
+  return `${pct}% confidence`;
+}
+
+function signalConfidenceTone(signal: {
+  confidence?: number | null;
+  degraded?: boolean;
+}): string {
+  if (signal.degraded) {
+    return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
+  const value =
+    typeof signal.confidence === "number" && Number.isFinite(signal.confidence)
+      ? signal.confidence
+      : 0;
+  if (value >= 0.72) {
+    return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  }
+  return "bg-[var(--app-card-surface-compact)] text-muted-foreground";
+}
+
+function visibleSignalSourceTags(signal: KaiHomeSignal | undefined): string[] {
+  if (!Array.isArray(signal?.source_tags)) return [];
+  return signal.source_tags
+    .map((tag) => String(tag || "").trim())
+    .filter(Boolean)
+    .filter((tag) => !/fallback|unavailable|cache|derived/i.test(tag));
+}
+
+function deriveSignalSupportingItems(
+  signal:
+    | (KaiHomeSignal & {
+        supporting_items?: Array<{ symbol?: string; company_name?: string }>;
+      })
+    | undefined,
+  pickRows: Array<KaiHomeWatchlistItem | KaiHomeRenaissanceItem>
+): Array<{ symbol: string; company_name?: string }> {
+  const directItems = Array.isArray(signal?.supporting_items)
+    ? signal.supporting_items
+        .map((item) => ({
+          symbol: String(item?.symbol || "").trim().toUpperCase(),
+          company_name: String(item?.company_name || "").trim() || undefined,
+        }))
+        .filter((item) => item.symbol)
+    : [];
+  if (directItems.length > 0) return directItems.slice(0, 4);
+
+  const signalId = String(signal?.id || "").trim().toLowerCase();
+  const title = String(signal?.title || "").trim().toUpperCase();
+  if (signalId !== "recommendation-consensus" && !title.endsWith("TILT")) return [];
+
+  const dominantRecommendation = title.replace(/\s+TILT$/, "").trim();
+  if (!dominantRecommendation) return [];
+
+  const normalizeRecommendationFamily = (value: string): string => {
+    const normalized = value.trim().toUpperCase();
+    if (
+      normalized === "BUY" ||
+      normalized === "STRONG_BUY" ||
+      normalized === "BULLISH" ||
+      normalized === "HOLD_TO_BUY"
+    ) {
+      return "BUY";
+    }
+    if (
+      normalized === "REDUCE" ||
+      normalized === "SELL" ||
+      normalized === "BEARISH"
+    ) {
+      return "REDUCE";
+    }
+    if (normalized === "HOLD" || normalized === "NEUTRAL" || normalized === "WATCH") {
+      return "HOLD";
+    }
+    return normalized;
+  };
+
+  const rowRecommendation = (row: KaiHomeWatchlistItem | KaiHomeRenaissanceItem): string => {
+    if ("recommendation" in row && typeof row.recommendation === "string") {
+      return normalizeRecommendationFamily(row.recommendation);
+    }
+    if ("recommendation_bias" in row && typeof row.recommendation_bias === "string") {
+      return normalizeRecommendationFamily(row.recommendation_bias);
+    }
+    return "";
+  };
+
+  return pickRows
+    .filter((row) => rowRecommendation(row) === normalizeRecommendationFamily(dominantRecommendation))
+    .sort((left, right) => {
+      const leftDegraded = Boolean(left.degraded) ? 1 : 0;
+      const rightDegraded = Boolean(right.degraded) ? 1 : 0;
+      if (leftDegraded !== rightDegraded) return leftDegraded - rightDegraded;
+      const leftChange = Math.abs(Number(left.change_pct || 0));
+      const rightChange = Math.abs(Number(right.change_pct || 0));
+      return rightChange - leftChange;
+    })
+    .slice(0, 4)
+    .map((row) => ({
+      symbol: String(row.symbol || "").trim().toUpperCase(),
+      company_name: String(row.company_name || row.symbol || "").trim() || undefined,
+    }))
+    .filter((item) => item.symbol);
+}
+
+function signalDetailGroups(
+  signal: KaiHomeSignal | undefined,
+  payload: KaiHomeInsightsV2 | null,
+  pickRows: Array<KaiHomeWatchlistItem | KaiHomeRenaissanceItem>
+): Array<{ label: string; items: Array<{ symbol: string; company_name?: string }> }> {
+  if (!signal) return [];
+  const signalId = String(signal.id || "").trim().toLowerCase();
+  const pickRowMap = new Map(
+    pickRows
+      .map((row) => {
+        const symbol = String(row.symbol || "").trim().toUpperCase();
+        if (!symbol) return null;
+        return [
+          symbol,
+          {
+            symbol,
+            company_name: String(row.company_name || row.symbol || "").trim() || undefined,
+          },
+        ] as const;
+      })
+      .filter(Boolean) as Array<readonly [string, { symbol: string; company_name?: string }]>
+  );
+  const toItems = (symbols: string[]) =>
+    symbols.map((symbol) => pickRowMap.get(symbol) || { symbol, company_name: undefined });
+
+  if (signalId === "breadth") {
+    const higher = pickRows
+      .filter((row) => typeof row.change_pct === "number" && row.change_pct > 0)
+      .sort((left, right) => Math.abs(Number(right.change_pct || 0)) - Math.abs(Number(left.change_pct || 0)))
+      .map((row) => String(row.symbol || "").trim().toUpperCase())
+      .filter(Boolean);
+    const lower = pickRows
+      .filter((row) => typeof row.change_pct === "number" && row.change_pct < 0)
+      .sort((left, right) => Math.abs(Number(right.change_pct || 0)) - Math.abs(Number(left.change_pct || 0)))
+      .map((row) => String(row.symbol || "").trim().toUpperCase())
+      .filter(Boolean);
+    return [
+      higher.length ? { label: "Higher today", items: toItems(higher) } : null,
+      lower.length ? { label: "Lower today", items: toItems(lower) } : null,
+    ].filter(
+      (group): group is { label: string; items: Array<{ symbol: string; company_name?: string }> } =>
+        Boolean(group)
+    );
+  }
+
+  if (signalId === "recommendation-consensus") {
+    const title = String(signal.title || "").trim().toUpperCase();
+    const dominantRecommendation = title.replace(/\s+TILT$/, "").trim();
+    const supporting = pickRows
+      .filter((row) => {
+        const recommendation =
+          "recommendation" in row && typeof row.recommendation === "string"
+            ? row.recommendation
+            : "recommendation_bias" in row && typeof row.recommendation_bias === "string"
+              ? row.recommendation_bias
+              : "";
+        const normalized = recommendation.trim().toUpperCase();
+        if (
+          dominantRecommendation === "BUY" &&
+          ["BUY", "STRONG_BUY", "BULLISH", "HOLD_TO_BUY"].includes(normalized)
+        ) {
+          return true;
+        }
+        if (
+          dominantRecommendation === "REDUCE" &&
+          ["REDUCE", "SELL", "BEARISH"].includes(normalized)
+        ) {
+          return true;
+        }
+        if (
+          dominantRecommendation === "HOLD" &&
+          ["HOLD", "NEUTRAL", "WATCH"].includes(normalized)
+        ) {
+          return true;
+        }
+        return normalized === dominantRecommendation;
+      })
+      .sort((left, right) => Math.abs(Number(right.change_pct || 0)) - Math.abs(Number(left.change_pct || 0)))
+      .map((row) => String(row.symbol || "").trim().toUpperCase())
+      .filter(Boolean);
+    return supporting.length ? [{ label: "Buy leaders", items: toItems(supporting) }] : [];
+  }
+
+  return [];
+}
+
+function signalEvidenceLines(
+  signal: KaiHomeSignal | undefined,
+  payload: KaiHomeInsightsV2 | null,
+  _pickRows: Array<KaiHomeWatchlistItem | KaiHomeRenaissanceItem>
+): string[] {
+  if (!signal) return [];
+  const signalId = String(signal.id || "").trim().toLowerCase();
+
+  if (signalId === "breadth") {
+    return [];
+  }
+
+  if (signalId === "volatility-regime") {
+    const volatilityRow = Array.isArray(payload?.market_overview)
+      ? payload.market_overview.find((row) =>
+          String(row?.label || "").toLowerCase().includes("volatility")
+        )
+      : null;
+    const volatilityValue =
+      volatilityRow && (typeof volatilityRow.value === "number" || typeof volatilityRow.value === "string")
+        ? String(volatilityRow.value).trim()
+        : "";
+    return volatilityValue ? [`VIX spot: ${volatilityValue}`] : [];
+  }
+
+  if (signalId === "recommendation-consensus") {
+    return [];
+  }
+
+  return [];
+}
+
+function signalHeadlineLabel(signal: KaiHomeSignal | undefined): string {
+  const signalId = String(signal?.id || "").trim().toLowerCase();
+  if (signalId === "breadth") return "Tape read";
+  if (signalId === "volatility-regime") return "Risk condition";
+  if (signalId === "recommendation-consensus") return "Watchlist leaning";
+  return "Signal";
+}
+
+type SignalGroupDetailPanel = {
+  eyebrow: string;
+  title: string;
+  summary: string;
+  sections: MarketOverviewDetailPanel["sections"];
+};
+
+function signalGroupSummary(scopeLabel: string, label: string, count: number): string {
+  if (label.toLowerCase().includes("buy")) {
+    return `${count} names are currently supporting the ${scopeLabel.toLowerCase()} read on the buy side.`;
+  }
+  if (label.toLowerCase().includes("sell") || label.toLowerCase().includes("reduce")) {
+    return `${count} names are currently leaning defensive inside the ${scopeLabel.toLowerCase()} read.`;
+  }
+  return `${count} names are contributing to the ${scopeLabel.toLowerCase()} grouping right now.`;
+}
+
+function buildSignalGroupDetailPanel(params: {
+  scopeLabel: string;
+  label: string;
+  symbols: string[];
+  supportingLines?: string[];
+}): SignalGroupDetailPanel {
+  return {
+    eyebrow: "Signal detail",
+    title: `${params.label} · ${params.symbols.length} names`,
+    summary: signalGroupSummary(params.scopeLabel, params.label, params.symbols.length),
+    sections: [
+      {
+        title: "Names",
+        lines: params.symbols.length
+          ? [`${params.symbols.length} names are driving this read right now.`]
+          : ["No names are available yet."],
+        items: params.symbols,
+      },
+      ...(params.supportingLines?.length
+        ? [
+            {
+              title: "Context",
+              lines: params.supportingLines,
+            },
+          ]
+        : []),
+    ],
+  };
+}
+
+function SignalGroupBlock({
+  scopeLabel,
+  label,
+  items,
+  onOpen,
+}: {
+  scopeLabel: string;
+  label: string;
+  items: Array<{ symbol: string; company_name?: string }>;
+  onOpen?: () => void;
+}) {
+  const top = items.slice(0, 4);
+  const actionable = Boolean(onOpen);
+  const symbols = items.map((item) => item.symbol);
+
+  const content = (
+    <SurfaceCard accent="none" className={cn("h-full", MARKET_SIGNAL_CARD_CLASSNAME)}>
+      <SurfaceCardContent className="flex h-full flex-col gap-4 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              {scopeLabel}
+            </p>
+            <p className="text-[15px] font-semibold tracking-tight text-foreground">{label}</p>
+          </div>
+          {actionable ? (
+            <span className="shrink-0 rounded-full border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-compact)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-foreground/72">
+              Open
+            </span>
+          ) : null}
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-xl font-semibold tracking-tight text-foreground">{symbols.length} names</p>
+          {top.length ? (
+            <div className="flex flex-wrap gap-2">
+              {top.map((item) => (
+                <Badge
+                  key={`${label}:${item.symbol}`}
+                  variant="outline"
+                  title={item.company_name || item.symbol}
+                  className="border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-compact)] text-[11px] font-medium text-foreground/78"
+                >
+                  {item.symbol}
+                </Badge>
+              ))}
+              {symbols.length > top.length ? (
+                <Badge
+                  variant="outline"
+                  className="border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-compact)] text-[11px] font-medium text-muted-foreground"
+                >
+                  +{symbols.length - top.length}
+                </Badge>
+              ) : null}
+            </div>
+          ) : (
+            <p className="text-xs leading-5 text-foreground/72 dark:text-muted-foreground">
+              Names are still loading.
+            </p>
+          )}
+        </div>
+      </SurfaceCardContent>
+    </SurfaceCard>
+  );
+
+  if (!actionable) return content;
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group relative isolate w-full rounded-[var(--app-card-radius-compact)] text-left outline-none focus-visible:ring-2 focus-visible:ring-foreground/15 focus-visible:ring-offset-2"
+    >
+      {content}
+      <MaterialRipple variant="none" effect="fade" className="z-10" />
+    </button>
+  );
+}
+
+function MarketSectionLead({
+  title,
+  description,
+  aside,
+}: {
+  title: string;
+  description?: string;
+  aside?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0 space-y-1">
+        <h2 className="text-base font-semibold tracking-tight text-foreground">{title}</h2>
+        {description ? (
+          <p className="max-w-xl text-sm leading-6 text-muted-foreground">{description}</p>
+        ) : null}
+      </div>
+      {aside ? <div className="flex shrink-0 items-center gap-2">{aside}</div> : null}
+    </div>
+  );
+}
+
 function formatSpotlightPrice(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "Price unavailable";
   return new Intl.NumberFormat("en-US", {
@@ -153,6 +595,150 @@ function formatSpotlightPrice(value: number | null | undefined): string {
     currency: "USD",
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatHeadlinePublished(value: string | null | undefined): string {
+  const text = String(value || "").trim();
+  if (!text) return "Recent";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return "Recent";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function SpotlightFeatureTile({
+  row,
+}: {
+  row: NonNullable<KaiHomeInsightsV2["spotlights"]>[number];
+}) {
+  const decision = toSpotlightDecision(row.recommendation);
+  const primaryHref = toSafeHttpUrl(row.headline_url) || `/kai/analysis?symbol=${encodeURIComponent(row.symbol)}`;
+  const _confidenceLabel = spotlightConfidenceLabel(row);
+  const summary = summarizeSpotlight(row);
+  const context = spotlightContextLabel(row);
+  const companyName = String(row.company_name || row.symbol || "Unknown").trim();
+  const price = formatSpotlightPrice(row.price);
+  const decisionTone =
+    decision === "BUY"
+      ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300"
+      : decision === "REDUCE"
+        ? "bg-amber-500/12 text-amber-700 dark:text-amber-300"
+        : "bg-[color:var(--app-card-surface-compact)] text-muted-foreground";
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (/^https?:\/\//i.test(primaryHref)) {
+          openExternalUrl(primaryHref);
+          return;
+        }
+        assignWindowLocation(primaryHref);
+      }}
+      className={cn(
+        surfaceInteractiveShellClassName,
+        "group relative flex h-full min-h-[200px] flex-col justify-between overflow-hidden rounded-[var(--app-card-radius-feature)] bg-[color:var(--app-card-surface-default-solid)] p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/10 focus-visible:ring-offset-2 sm:p-5"
+      )}
+    >
+      <div className="space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <SymbolAvatar symbol={row.symbol} name={row.company_name} size="md" />
+            <div className="min-w-0 space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">{row.symbol} · {context}</p>
+              <h3 className="line-clamp-2 text-lg font-bold tracking-tight leading-tight text-foreground sm:text-xl">
+                {companyName}
+              </h3>
+            </div>
+          </div>
+          <span
+            className={cn(
+              "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold tracking-wide",
+              decisionTone
+            )}
+          >
+            {decision}
+          </span>
+        </div>
+
+        <p className="text-2xl font-semibold tracking-tight text-foreground">{price}</p>
+        <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{summary}</p>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-[color:var(--app-card-border-standard)] pt-3">
+        <p className="line-clamp-1 min-w-0 text-xs text-muted-foreground">
+          {String(row.headline || summary).trim()}
+        </p>
+        <ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+      </div>
+    </button>
+  );
+}
+
+function MarketHeadlinesRail({ rows }: { rows: KaiHomeNewsItem[] }) {
+  if (!rows.length) {
+    return (
+      <SurfaceCard className={cn("h-full", marketCardClassName)}>
+        <SurfaceCardContent className="flex h-full min-h-[240px] items-center justify-center p-5 text-sm text-muted-foreground">
+          No recent market headlines are available right now.
+        </SurfaceCardContent>
+      </SurfaceCard>
+    );
+  }
+
+  return (
+    <SurfaceCard className={cn("h-full overflow-hidden", marketCardClassName)}>
+      <SurfaceCardContent className="flex h-full min-h-[240px] flex-col p-0">
+        <SurfaceCardHeader className="gap-1 border-b border-[color:var(--app-card-border-standard)] [--surface-card-header-px:1rem] [--surface-card-header-pt:0.75rem] [--surface-card-header-pb:0.75rem]">
+          <SurfaceCardDescription className="text-[10px] font-semibold uppercase tracking-[0.2em]">
+            Latest coverage
+          </SurfaceCardDescription>
+          <SurfaceCardTitle className="text-[15px] font-semibold tracking-tight">
+            Fast reads from the tape
+          </SurfaceCardTitle>
+        </SurfaceCardHeader>
+        <div className="max-h-[520px] overflow-y-auto">
+          <div className="divide-y divide-border/40">
+            {rows.slice(0, 8).map((row, index) => (
+              <button
+                key={`${row.symbol}-${index}-${row.url}`}
+                type="button"
+                onClick={() => openExternalUrl(row.url)}
+                className="group flex w-full items-start justify-between gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-foreground/[0.03]"
+              >
+                <div className="min-w-0 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className="border-[color:var(--app-card-border-standard)] bg-[var(--app-card-surface-compact)] px-2 py-0 text-[10px] font-semibold tracking-[0.18em] text-muted-foreground"
+                    >
+                      {row.symbol}
+                    </Badge>
+                    <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                      {row.source_name}
+                    </span>
+                  </div>
+                  <p className="line-clamp-2 text-[14px] font-medium leading-5 text-foreground">
+                    {row.title}
+                  </p>
+                  <p className="text-[12px] text-muted-foreground">
+                    {formatHeadlinePublished(row.published_at)}
+                  </p>
+                </div>
+                <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent text-muted-foreground transition-colors duration-150 group-hover:border-[color:var(--app-card-border-standard)] group-hover:bg-[var(--app-card-surface-compact)] group-hover:text-foreground">
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </SurfaceCardContent>
+    </SurfaceCard>
+  );
 }
 
 function isUnavailableText(value: string): boolean {
@@ -175,6 +761,19 @@ function normalizeOverviewSource(source: string | null | undefined): string | nu
   const text = source.trim();
   if (!text || isUnavailableText(text)) return null;
   return text;
+}
+
+function formatOverviewAsOf(value: string | null | undefined): string {
+  const text = String(value || "").trim();
+  if (!text) return "Timestamp unavailable";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return "Timestamp unavailable";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function formatOverviewValue(
@@ -266,6 +865,45 @@ function findOverviewRow(
   );
 }
 
+function buildIndexDetailPanel(
+  row: NonNullable<KaiHomeInsightsV2["market_overview"]>[number] | null,
+  label: string,
+  value: string,
+  delta: string,
+  tone: MarketOverviewMetric["tone"]
+): MarketOverviewDetailPanel {
+  const sourceLabel = normalizeOverviewSource(row?.source) || "Live benchmark feed";
+  const degraded = !row || Boolean(row.degraded);
+
+  return {
+    eyebrow: "Overview",
+    title: label,
+    summary: `${label} is one of the benchmark signals Kai uses to frame the current tape before you move into deeper analysis.`,
+    value,
+    delta,
+    statusLabel: degraded ? "Delayed snapshot" : "Live benchmark read",
+    statusTone: degraded ? "warning" : tone,
+    sections: [
+      {
+        title: "Snapshot context",
+        lines: [
+          degraded
+            ? "This tile is using delayed or incomplete benchmark context."
+            : "This benchmark is part of the live market overview feed.",
+          `Source: ${sourceLabel}`,
+          `As of ${formatOverviewAsOf(row?.as_of)}`,
+        ],
+      },
+      {
+        title: "Why it matters",
+        lines: [
+          "Use this benchmark to anchor the broad tape before moving into advisor ideas or deeper name-level work.",
+        ],
+      },
+    ],
+  };
+}
+
 function toIndexOverviewMetric(
   row: NonNullable<KaiHomeInsightsV2["market_overview"]>[number] | null,
   fallbackLabel: string
@@ -273,46 +911,127 @@ function toIndexOverviewMetric(
   const degraded = !row || Boolean(row.degraded);
   const label = String(row?.label || fallbackLabel);
   const tone = toOverviewTone(row?.delta_pct, degraded);
+  const value = formatOverviewValue(row?.value, { label, degraded });
+  const delta = formatOverviewDelta(row?.delta_pct, {
+    label,
+    source: row?.source,
+    degraded,
+  });
   return {
     id: label.toLowerCase().replace(/\s+/g, "-"),
     label,
-    value: formatOverviewValue(row?.value, { label, degraded }),
-    delta: formatOverviewDelta(row?.delta_pct, {
-      label,
-      source: row?.source,
-      degraded,
-    }),
+    value,
+    delta,
     tone,
     icon: iconForOverview(label, tone),
+    detailPanel: buildIndexDetailPanel(row, label, value, delta, tone),
   };
 }
 
-function toBreadthMetric(payload: KaiHomeInsightsV2 | null): MarketOverviewMetric {
+function toBreadthMetric(
+  payload: KaiHomeInsightsV2 | null,
+  pickRows: Array<KaiHomeWatchlistItem | KaiHomeRenaissanceItem>
+): MarketOverviewMetric {
   const movers = payload?.movers;
   const gainers = Array.isArray(movers?.gainers) ? movers.gainers.length : 0;
   const losers = Array.isArray(movers?.losers) ? movers.losers.length : 0;
   const degraded = Boolean(movers?.degraded) || gainers + losers === 0;
   const spread = gainers - losers;
+  const trackedCount = gainers + losers;
   const tone: MarketOverviewMetric["tone"] =
     spread > 0 ? "positive" : spread < 0 ? "negative" : degraded ? "warning" : "neutral";
 
-  let value = "Balanced";
-  if (spread > 0) value = "Positive";
-  if (spread < 0) value = "Defensive";
-  if (degraded && gainers + losers === 0) value = "Updating";
+  let value = "Mixed tape";
+  if (spread >= 4) value = "Broad participation";
+  if (spread <= -4) value = "Narrow leadership";
+  if (degraded && trackedCount === 0) value = "Updating";
+
+  const higherToday = normalizeAllSymbols(
+    pickRows
+      .filter((row) => typeof row.change_pct === "number" && row.change_pct > 0)
+      .sort((left, right) => Math.abs(Number(right.change_pct || 0)) - Math.abs(Number(left.change_pct || 0)))
+      .map((row) => String(row.symbol || "").trim().toUpperCase())
+  );
+  const lowerToday = normalizeAllSymbols(
+    pickRows
+      .filter((row) => typeof row.change_pct === "number" && row.change_pct < 0)
+      .sort((left, right) => Math.abs(Number(right.change_pct || 0)) - Math.abs(Number(left.change_pct || 0)))
+      .map((row) => String(row.symbol || "").trim().toUpperCase())
+  );
+  const _topHigher = Array.isArray(movers?.gainers)
+    ? movers.gainers
+        .map((row) => String(row?.symbol || "").trim().toUpperCase())
+        .filter(Boolean)
+        .slice(0, 3)
+    : [];
+  const _topLower = Array.isArray(movers?.losers)
+    ? movers.losers
+        .map((row) => String(row?.symbol || "").trim().toUpperCase())
+        .filter(Boolean)
+        .slice(0, 3)
+    : [];
 
   return {
     id: "breadth",
-    label: "Breadth",
+    label: "Advancers vs decliners",
     value,
     delta:
-      gainers + losers > 0
-        ? `${gainers} gainers • ${losers} losers`
+      trackedCount > 0
+        ? `${gainers} higher · ${losers} lower`
         : degraded
-          ? "Breadth delayed"
-          : "Awaiting breadth",
+          ? "Breadth snapshot delayed"
+          : "Awaiting breadth snapshot",
     tone,
     icon: tone === "negative" ? TrendingDown : TrendingUp,
+    detailPanel: {
+      eyebrow: "Overview",
+      title: "Advancers vs decliners",
+      summary: "Breadth shows whether participation is broad or concentrated across the names Kai is tracking right now.",
+      value,
+      delta:
+        trackedCount > 0
+          ? `${gainers} higher · ${losers} lower`
+          : degraded
+            ? "Breadth delayed"
+            : "Awaiting breadth snapshot",
+      statusLabel: degraded ? "Breadth snapshot delayed" : "Breadth live",
+      statusTone: tone,
+      sections: [
+        {
+          title: "Participation",
+          lines: [
+            trackedCount > 0
+              ? `${gainers} of ${trackedCount} tracked names are higher today.`
+              : "Kai does not have a fresh breadth snapshot yet.",
+            trackedCount > 0
+              ? `${losers} tracked names are lower today.`
+              : "The breadth feed is still warming.",
+          ],
+        },
+        {
+          title: "Higher today",
+          lines: [
+            higherToday.length
+              ? `${higherToday.length} names are higher across the active watchlist.`
+              : _topHigher.length
+                ? `Leaders: ${_topHigher.join(", ")}`
+                : "Higher-today names are still populating.",
+          ],
+          items: higherToday,
+        },
+        {
+          title: "Lower today",
+          lines: [
+            lowerToday.length
+              ? `${lowerToday.length} names are lower across the active watchlist.`
+              : _topLower.length
+                ? `Leaders: ${_topLower.join(", ")}`
+                : "Lower-today names are still populating.",
+          ],
+          items: lowerToday,
+        },
+      ],
+    },
   };
 }
 
@@ -328,6 +1047,13 @@ function toSectorLeadershipMetric(payload: KaiHomeInsightsV2 | null): MarketOver
   )[0];
   const degraded = !leader || Boolean(leader.degraded);
   const tone = toOverviewTone(leader?.change_pct, degraded);
+  const sortedSectors = [...sectorRows]
+    .sort((left, right) => Number(right.change_pct || 0) - Number(left.change_pct || 0))
+    .slice(0, 3)
+    .map((row) => {
+      const changePct = Number(row.change_pct || 0);
+      return `${row.sector}: ${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%`;
+    });
 
   return {
     id: "sector-leadership",
@@ -341,10 +1067,44 @@ function toSectorLeadershipMetric(payload: KaiHomeInsightsV2 | null): MarketOver
           : "No clear leader",
     tone,
     icon: ChartColumnIncreasing,
+    detailPanel: {
+      eyebrow: "Overview",
+      title: "Sector leader",
+      summary: "Sector rotation highlights where leadership is concentrating in the current tape.",
+      value: leader?.sector || (degraded ? "Updating" : "Unavailable"),
+      delta:
+        typeof leader?.change_pct === "number" && Number.isFinite(leader.change_pct)
+          ? `${leader.change_pct >= 0 ? "+" : ""}${leader.change_pct.toFixed(2)}%`
+          : degraded
+            ? "Rotation delayed"
+            : "No clear leader",
+      statusLabel: degraded ? "Rotation delayed" : "Rotation live",
+      statusTone: tone,
+      sections: [
+        {
+          title: "Leader context",
+          lines: [
+            leader?.sector
+              ? `${leader.sector} is leading the current sector board.`
+              : "Kai has not resolved a clean sector leader yet.",
+            typeof leader?.change_pct === "number" && Number.isFinite(leader.change_pct)
+              ? `Move: ${leader.change_pct >= 0 ? "+" : ""}${leader.change_pct.toFixed(2)}%`
+              : "Rotation percentage is not available yet.",
+          ],
+        },
+        {
+          title: "Top rotation board",
+          lines: sortedSectors.length ? sortedSectors : ["Sector rankings are still populating."],
+        },
+      ],
+    },
   };
 }
 
-function toOverviewMetrics(payload: KaiHomeInsightsV2 | null): MarketOverviewMetric[] {
+function toOverviewMetrics(
+  payload: KaiHomeInsightsV2 | null,
+  pickRows: Array<KaiHomeWatchlistItem | KaiHomeRenaissanceItem>
+): MarketOverviewMetric[] {
   return [
     toIndexOverviewMetric(
       findOverviewRow(payload, (row) => String(row.label || "").toLowerCase().includes("s&p")),
@@ -354,43 +1114,9 @@ function toOverviewMetrics(payload: KaiHomeInsightsV2 | null): MarketOverviewMet
       findOverviewRow(payload, (row) => String(row.label || "").toLowerCase().includes("nasdaq")),
       "NASDAQ 100"
     ),
-    toBreadthMetric(payload),
+    toBreadthMetric(payload, pickRows),
     toSectorLeadershipMetric(payload),
   ];
-}
-
-function hasUsefulOverviewValue(value: string | number | null | undefined): boolean {
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value === "string") {
-    const text = value.trim();
-    return Boolean(text) && !isUnavailableText(text);
-  }
-  return false;
-}
-
-function countUsableOverviewRows(payload: KaiHomeInsightsV2 | null | undefined): number {
-  const rows = payload?.market_overview;
-  if (!Array.isArray(rows)) return 0;
-  return rows.reduce((count, row) => {
-    if (!row) return count;
-    if (hasUsefulOverviewValue(row.value)) return count + 1;
-    return count;
-  }, 0);
-}
-
-function withStableOverviewFromCache(
-  nextPayload: KaiHomeInsightsV2,
-  cachedPayload: KaiHomeInsightsV2 | null
-): KaiHomeInsightsV2 {
-  const nextUsableCount = countUsableOverviewRows(nextPayload);
-  const cachedUsableCount = countUsableOverviewRows(cachedPayload);
-  if (nextUsableCount > 0 || cachedUsableCount === 0) {
-    return nextPayload;
-  }
-  return {
-    ...nextPayload,
-    market_overview: cachedPayload?.market_overview ?? nextPayload.market_overview,
-  };
 }
 
 function toThemeIcon(title: string): LucideIcon {
@@ -463,55 +1189,55 @@ function marketStatusBadge(payload: KaiHomeInsightsV2 | null): {
   };
 }
 
-function readAnyKaiHomeCache(
-  cache: CacheService,
-  userId: string,
-  daysBack = 7,
-  pickSource = "default"
-): KaiHomeInsightsV2 | null {
-  const prefix = `kai_market_home_${userId}_`;
-  const preferredSuffix = `_${daysBack}_${pickSource}`;
-  const daySuffix = `_${daysBack}_`;
-  const keys = cache
-    .getStats()
-    .keys.filter(
-      (key) =>
-        key.startsWith(prefix) &&
-        (key.endsWith(preferredSuffix) || key.includes(daySuffix))
-    )
-    .sort((left, right) => {
-      const leftPreferred = left.endsWith(preferredSuffix) ? 0 : 1;
-      const rightPreferred = right.endsWith(preferredSuffix) ? 0 : 1;
-      return leftPreferred - rightPreferred;
-    });
-
-  for (const key of keys) {
-    const value = cache.get<KaiHomeInsightsV2>(key);
-    if (value) return value;
-  }
-  return null;
+function formatCacheAgeLabel(seconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  if (safeSeconds < 10) return "Updated just now";
+  if (safeSeconds < 60) return `Updated ${safeSeconds}s ago`;
+  const minutes = Math.floor(safeSeconds / 60);
+  if (minutes < 60) return `Updated ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Updated ${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `Updated ${days}d ago`;
 }
 
-function readCachedPortfolioHoldings(
-  cache: CacheService,
-  userId: string
-): Array<Record<string, unknown>> {
-  const cachedPortfolio = cache.get<Record<string, unknown>>(CACHE_KEYS.PORTFOLIO_DATA(userId));
-  const nestedPortfolio =
-    cachedPortfolio?.portfolio &&
-    typeof cachedPortfolio.portfolio === "object" &&
-    !Array.isArray(cachedPortfolio.portfolio)
-      ? (cachedPortfolio.portfolio as Record<string, unknown>)
-      : null;
-  return (
-    (Array.isArray(cachedPortfolio?.holdings) && cachedPortfolio.holdings) ||
-    (Array.isArray(nestedPortfolio?.holdings) && nestedPortfolio.holdings) ||
-    []
-  ) as Array<Record<string, unknown>>;
+function formatLocalTimestamp(value: string | null | undefined): string | null {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
-export function KaiMarketPreviewView() {
-  const { user, loading } = useAuth();
+function marketCacheTimerMeta(payload: KaiHomeInsightsV2 | null): {
+  initialAgeSeconds: number;
+  cacheTier: string | null;
+  warmSource: string | null;
+  stale: boolean;
+} | null {
+  const meta = payload?.meta;
+  if (!meta) return null;
+  const cacheAgeSeconds = Number(meta.cache_age_seconds ?? payload?.cache_age_seconds ?? 0);
+  const initialAgeSeconds = Number.isFinite(cacheAgeSeconds) ? Math.max(0, cacheAgeSeconds) : 0;
+  return {
+    initialAgeSeconds,
+    cacheTier: typeof meta.cache_tier === "string" ? meta.cache_tier : null,
+    warmSource: typeof meta.warm_source === "string" ? meta.warm_source : null,
+    stale: Boolean(meta.stale ?? payload?.stale),
+  };
+}
+
+type KaiMarketLoadOptions = {
+  forceTokenRefresh?: boolean;
+  manual?: boolean;
+  staleOnly?: boolean;
+};
+
+function useKaiMarketHomeController() {
+  const { user } = useAuth();
   const {
     vaultKey,
     tokenExpiresAt,
@@ -520,470 +1246,709 @@ export function KaiMarketPreviewView() {
     vaultOwnerToken,
   } = useVault();
 
-  const [payload, setPayload] = useState<KaiHomeInsightsV2 | null>(null);
-  const [loadingInitial, setLoadingInitial] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [activePickSource, setActivePickSource] = useState("default");
-
-  const abortRef = useRef<AbortController | null>(null);
-  const hasPayloadRef = useRef(false);
-  const inFlightRef = useRef<Promise<void> | null>(null);
-  const lastStartedAtRef = useRef(0);
+  const [pickSourceReady, setPickSourceReady] = useState(false);
+  const [financialResourceEnabled, setFinancialResourceEnabled] = useState(false);
+  const [trackedSymbolsSeed, setTrackedSymbolsSeed] = useState<string[]>([]);
+  const serverSeededPickSourceUsersRef = useRef(new Set<string>());
+  const backgroundRefreshKeyRef = useRef<string | null>(null);
+  const {
+    data: financialResource,
+  } = useKaiFinancialResource({
+    userId: user?.uid ?? "",
+    vaultOwnerToken,
+    vaultKey,
+    enabled: Boolean(user?.uid && vaultKey && vaultOwnerToken && financialResourceEnabled),
+    backgroundRefresh: false,
+  });
 
   useEffect(() => {
-    const nextSource = String(payload?.active_pick_source || "").trim();
-    if (!nextSource || nextSource === activePickSource) return;
-    setActivePickSource(nextSource);
-  }, [activePickSource, payload?.active_pick_source]);
+    if (!user?.uid) {
+      setActivePickSource("default");
+      setPickSourceReady(false);
+      setFinancialResourceEnabled(false);
+      setTrackedSymbolsSeed([]);
+      return;
+    }
+    serverSeededPickSourceUsersRef.current.delete(user.uid);
+    setActivePickSource(getKaiActivePickSource(user.uid));
+    setPickSourceReady(true);
+    setFinancialResourceEnabled(false);
+    const seededFinancial = normalizeTrackedSymbols(
+      KaiFinancialResourceService.peek(user.uid)?.data?.holdings
+    );
+    setTrackedSymbolsSeed(
+      seededFinancial.length > 0
+        ? seededFinancial
+        : normalizeTrackedSymbols(
+            KaiMarketHomeResourceService.resolveTrackedSymbols(user.uid)
+          )
+    );
+  }, [user?.uid]);
+
+  const trackedSymbols = useMemo(() => {
+    if (!user?.uid) {
+      return [];
+    }
+    return trackedSymbolsSeed;
+  }, [trackedSymbolsSeed, user?.uid]);
 
   useEffect(() => {
-    setKaiActivePickSource(user?.uid, activePickSource);
-  }, [activePickSource, user?.uid]);
+    if (!user?.uid || trackedSymbolsSeed.length > 0) {
+      return;
+    }
+
+    const resourceHoldings = normalizeTrackedSymbols(financialResource?.holdings);
+    if (resourceHoldings.length > 0) {
+      setTrackedSymbolsSeed(resourceHoldings);
+      return;
+    }
+
+    const cacheDerived = normalizeTrackedSymbols(
+      KaiMarketHomeResourceService.resolveTrackedSymbols(user.uid)
+    );
+    if (cacheDerived.length > 0) {
+      setTrackedSymbolsSeed(cacheDerived);
+    }
+  }, [financialResource?.holdings, trackedSymbolsSeed.length, user?.uid]);
 
   const resolveToken = useCallback(
     async (forceRefresh = false): Promise<string> => {
       if (!user?.uid) {
         throw new Error("Missing authenticated user");
       }
-      return ensureKaiVaultOwnerToken({
+      return await ensureKaiVaultOwnerToken({
         userId: user.uid,
-        currentToken: getVaultOwnerToken() ?? vaultOwnerToken,
+        currentToken: getVaultOwnerToken?.() ?? vaultOwnerToken,
         currentExpiresAt: tokenExpiresAt,
         forceRefresh,
         onIssued: (issuedToken, expiresAt) => {
-          if (vaultKey) {
+          if (vaultKey && (issuedToken !== vaultOwnerToken || expiresAt !== tokenExpiresAt)) {
             unlockVault(vaultKey, issuedToken, expiresAt);
           }
         },
       });
     },
-    [getVaultOwnerToken, tokenExpiresAt, unlockVault, user?.uid, vaultKey, vaultOwnerToken]
-  );
-
-  const resolveTrackedSymbols = useCallback(() => {
-    if (!user?.uid) return [];
-    const cache = CacheService.getInstance();
-    const sourceHoldings = readCachedPortfolioHoldings(cache, user.uid);
-
-    return sourceHoldings
-      .filter((holding) => {
-        const assetType = String(holding.asset_type || "").trim().toLowerCase();
-        const name = String(holding.name || "").trim().toLowerCase();
-        if (assetType.includes("cash") || assetType.includes("sweep")) return false;
-        if (name.includes("cash") || name.includes("sweep")) return false;
-        return true;
-      })
-      .map((holding) => String(holding.symbol || "").trim().toUpperCase())
-      .filter(
-        (symbol, index, arr) =>
-          Boolean(symbol) &&
-          !EXCLUDED_SYMBOLS.has(symbol) &&
-          !symbol.startsWith("HOLDING_") &&
-          TICKER_CANDIDATE_RE.test(symbol) &&
-          arr.indexOf(symbol) === index
-      )
-      .sort((a, b) => a.localeCompare(b))
-      .slice(0, 8);
-  }, [user?.uid]);
-
-  const sessionCacheKey = useMemo(() => {
-    if (!user?.uid) return null;
-    return `kai_market_home_session_${user.uid}_${activePickSource}`;
-  }, [activePickSource, user?.uid]);
-
-  const persistentCacheKey = useMemo(() => {
-    if (!user?.uid) return null;
-    return `kai_market_home_last_known_${user.uid}_${activePickSource}`;
-  }, [activePickSource, user?.uid]);
-
-  const loadInsights = useCallback(
-    async ({ forceTokenRefresh = false, manual = false }: { forceTokenRefresh?: boolean; manual?: boolean } = {}) => {
-      if (loading || !user?.uid) {
-        return;
-      }
-
-      const cache = CacheService.getInstance();
-      let trackedSymbols = resolveTrackedSymbols();
-      let symbolsKey = toSymbolsKey(trackedSymbols);
-      let marketCacheKey = CACHE_KEYS.KAI_MARKET_HOME(user.uid, symbolsKey, 7, activePickSource);
-      let seededFromLocalCache = false;
-      if (!forceTokenRefresh && marketCacheKey) {
-        const cachedPayload = cache.get<KaiHomeInsightsV2>(marketCacheKey);
-        if (cachedPayload) {
-          setPayload(cachedPayload);
-          hasPayloadRef.current = true;
-          setLoadingInitial(false);
-          seededFromLocalCache = true;
-        }
-      }
-
-      if (!forceTokenRefresh && !seededFromLocalCache) {
-        const anyCachedPayload = readAnyKaiHomeCache(cache, user.uid, 7, activePickSource);
-        if (anyCachedPayload) {
-          setPayload(anyCachedPayload);
-          hasPayloadRef.current = true;
-          setLoadingInitial(false);
-          seededFromLocalCache = true;
-        }
-      }
-
-      if (
-        !forceTokenRefresh &&
-        !seededFromLocalCache &&
-        sessionCacheKey &&
-        typeof window !== "undefined"
-      ) {
-        try {
-          const raw = getSessionItem(sessionCacheKey);
-          if (raw) {
-            const parsed = JSON.parse(raw) as {
-              payload?: KaiHomeInsightsV2;
-              savedAt?: number;
-            };
-            const savedAt = Number(parsed?.savedAt || 0);
-            const age = Date.now() - savedAt;
-            const canUseSession =
-              age >= 0 && age <= SESSION_KAI_HOME_TTL_MS && Boolean(parsed?.payload);
-            if (canUseSession) {
-              setPayload(parsed.payload as KaiHomeInsightsV2);
-              hasPayloadRef.current = true;
-              setLoadingInitial(false);
-              seededFromLocalCache = true;
-            }
-          }
-        } catch {
-          // Ignore malformed session cache.
-        }
-      }
-
-      if (
-        !forceTokenRefresh &&
-        !seededFromLocalCache &&
-        isNativePlatform &&
-        persistentCacheKey &&
-        typeof window !== "undefined"
-      ) {
-        try {
-          const raw = getSessionItem(persistentCacheKey);
-          if (raw) {
-            const parsed = JSON.parse(raw) as {
-              payload?: KaiHomeInsightsV2;
-              savedAt?: number;
-            };
-            const savedAt = Number(parsed?.savedAt || 0);
-            const age = Date.now() - savedAt;
-            const canUsePersistent =
-              age >= 0 &&
-              age <= LAST_KNOWN_MARKET_HOME_TTL_MS &&
-              Boolean(parsed?.payload);
-            if (canUsePersistent) {
-              setPayload(parsed.payload as KaiHomeInsightsV2);
-              hasPayloadRef.current = true;
-              setLoadingInitial(false);
-              seededFromLocalCache = true;
-            }
-          }
-        } catch {
-          // Ignore malformed persistent cache.
-        }
-      }
-
-      if (!forceTokenRefresh && !hasPayloadRef.current) {
-        await UnlockWarmOrchestrator.awaitInFlightForUser(user.uid, 1_800);
-        trackedSymbols = resolveTrackedSymbols();
-        symbolsKey = toSymbolsKey(trackedSymbols);
-        marketCacheKey = CACHE_KEYS.KAI_MARKET_HOME(user.uid, symbolsKey, 7, activePickSource);
-        const warmedPayload =
-          cache.get<KaiHomeInsightsV2>(marketCacheKey) ??
-          readAnyKaiHomeCache(cache, user.uid, 7, activePickSource);
-        if (warmedPayload) {
-          setPayload(warmedPayload);
-          hasPayloadRef.current = true;
-          setLoadingInitial(false);
-          seededFromLocalCache = true;
-        }
-      }
-
-      if (seededFromLocalCache && !manual && !forceTokenRefresh) {
-        return;
-      }
-
-      if (inFlightRef.current) {
-        return inFlightRef.current;
-      }
-      const now = Date.now();
-      if (!forceTokenRefresh && now - lastStartedAtRef.current < MIN_REQUEST_GAP_MS) {
-        return;
-      }
-      lastStartedAtRef.current = now;
-
-      const run = (async () => {
-        abortRef.current?.abort();
-        const controller = new AbortController();
-        abortRef.current = controller;
-
-        if (!hasPayloadRef.current) {
-          setLoadingInitial(true);
-        }
-      if (manual) {
-        setRefreshing(true);
-      }
-        setError(null);
-
-        try {
-          let token = await resolveToken(forceTokenRefresh);
-          const fetchInsightsWithRetry = async (
-            symbolsOverride?: string[]
-          ): Promise<KaiHomeInsightsV2> => {
-            try {
-              return await ApiService.getKaiMarketInsights({
-                userId: user.uid,
-                vaultOwnerToken: token,
-                symbols: symbolsOverride && symbolsOverride.length > 0 ? symbolsOverride : undefined,
-                daysBack: 7,
-                pickSource: activePickSource,
-                signal: controller.signal,
-              });
-            } catch (firstError) {
-              if (controller.signal.aborted) throw firstError;
-              token = await resolveToken(true);
-              const retried = await ApiService.getKaiMarketInsights({
-                userId: user.uid,
-                vaultOwnerToken: token,
-                symbols: symbolsOverride && symbolsOverride.length > 0 ? symbolsOverride : undefined,
-                daysBack: 7,
-                pickSource: activePickSource,
-                signal: controller.signal,
-              });
-              if (firstError instanceof Error) {
-                console.warn(
-                  "[KaiMarketPreviewView] Retried insights fetch after token refresh",
-                  firstError.message
-                );
-              }
-              return retried;
-            }
-          };
-
-          let fallbackPayload: KaiHomeInsightsV2 | null = null;
-          const hasTrackedSymbols = trackedSymbols.length > 0;
-          let nextPayload: KaiHomeInsightsV2;
-          try {
-            nextPayload = await fetchInsightsWithRetry(hasTrackedSymbols ? trackedSymbols : undefined);
-          } catch (targetedFetchError) {
-            if (!hasPayloadRef.current && !manual && hasTrackedSymbols) {
-              try {
-                fallbackPayload = await fetchInsightsWithRetry(undefined);
-                if (!controller.signal.aborted && fallbackPayload) {
-                  setPayload(fallbackPayload);
-                  hasPayloadRef.current = true;
-                  cache.set(
-                    CACHE_KEYS.KAI_MARKET_HOME(user.uid, "default", 7, activePickSource),
-                    fallbackPayload,
-                    MARKET_HOME_CACHE_TTL_MS
-                  );
-                  if (sessionCacheKey && typeof window !== "undefined") {
-                    setSessionItem(
-                      sessionCacheKey,
-                      JSON.stringify({ payload: fallbackPayload, savedAt: Date.now() })
-                    );
-                  }
-                  if (persistentCacheKey && typeof window !== "undefined") {
-                    setSessionItem(
-                      persistentCacheKey,
-                      JSON.stringify({ payload: fallbackPayload, savedAt: Date.now() })
-                    );
-                  }
-                  setLoadingInitial(false);
-                }
-              } catch (defaultFetchError) {
-                if (defaultFetchError instanceof Error) {
-                  console.warn(
-                    "[KaiMarketPreviewView] Fallback default market fetch failed:",
-                    defaultFetchError.message
-                  );
-                }
-              }
-            }
-            if (!fallbackPayload) {
-              throw targetedFetchError;
-            }
-            nextPayload = fallbackPayload;
-          }
-
-          if (controller.signal.aborted) return;
-          const cachedBaselinePayload =
-            cache.get<KaiHomeInsightsV2>(marketCacheKey) ??
-            readAnyKaiHomeCache(cache, user.uid, 7, activePickSource);
-          const stabilizedPayload = withStableOverviewFromCache(
-            nextPayload,
-            seededFromLocalCache ? cachedBaselinePayload : null
-          );
-          setPayload(stabilizedPayload);
-          hasPayloadRef.current = true;
-          cache.set(marketCacheKey, stabilizedPayload, MARKET_HOME_CACHE_TTL_MS);
-          if (trackedSymbols.length === 0) {
-            cache.set(
-              CACHE_KEYS.KAI_MARKET_HOME(user.uid, "default", 7, activePickSource),
-              stabilizedPayload,
-              MARKET_HOME_CACHE_TTL_MS
-            );
-          }
-          if (sessionCacheKey && typeof window !== "undefined") {
-            setSessionItem(
-              sessionCacheKey,
-              JSON.stringify({ payload: stabilizedPayload, savedAt: Date.now() })
-            );
-          }
-          if (persistentCacheKey && typeof window !== "undefined") {
-            setSessionItem(
-              persistentCacheKey,
-              JSON.stringify({ payload: stabilizedPayload, savedAt: Date.now() })
-            );
-          }
-        } catch (loadError) {
-          if (controller.signal.aborted) return;
-          const message = loadError instanceof Error ? loadError.message : "Failed to load live market insights";
-          setError(message);
-        } finally {
-          if (!controller.signal.aborted) {
-            setLoadingInitial(false);
-            setRefreshing(false);
-          }
-        }
-      })();
-
-      inFlightRef.current = run;
-      try {
-        await run;
-      } finally {
-        if (inFlightRef.current === run) {
-          inFlightRef.current = null;
-        }
-      }
-    },
     [
-      activePickSource,
-      loading,
-      persistentCacheKey,
-      resolveToken,
-      resolveTrackedSymbols,
-      sessionCacheKey,
+      getVaultOwnerToken,
+      tokenExpiresAt,
+      unlockVault,
       user?.uid,
+      vaultKey,
+      vaultOwnerToken,
     ]
   );
 
+  const personalizedCacheKey = useMemo(
+    () =>
+      user?.uid && pickSourceReady
+        ? CACHE_KEYS.KAI_MARKET_HOME(user.uid, toSymbolsKey(trackedSymbols), 7, activePickSource)
+        : "kai_market_home_guest",
+    [activePickSource, pickSourceReady, trackedSymbols, user?.uid]
+  );
+  const marketResourceReady = Boolean(user?.uid && pickSourceReady);
+
+  const baselineResource = useStaleResource<KaiHomeInsightsV2 | null>({
+    cacheKey: user?.uid ? CACHE_KEYS.KAI_MARKET_HOME_BASELINE(user.uid, 7) : "kai_market_home_baseline_guest",
+    enabled: Boolean(user?.uid),
+    resourceLabel: "kai_market_home_baseline",
+    load: async (options) => {
+      if (!user?.uid) {
+        return null;
+      }
+      return await KaiMarketHomeResourceService.getBaselineStaleFirst({
+        userId: user.uid,
+        daysBack: 7,
+        forceRefresh: Boolean(options?.force),
+        backgroundRefresh: !options?.force,
+      });
+    },
+  });
+
+  const personalizedResource = useStaleResource<KaiHomeInsightsV2 | null>({
+    cacheKey: personalizedCacheKey,
+    enabled: marketResourceReady,
+    resourceLabel: "kai_market_home",
+    load: async (options) => {
+      if (!user?.uid) {
+        return null;
+      }
+      const currentToken = getVaultOwnerToken?.() ?? vaultOwnerToken ?? null;
+      if (options?.force) {
+        if (!currentToken && !vaultKey) {
+          return null;
+        }
+        const forcedToken =
+          currentToken && !vaultKey ? currentToken : await resolveToken(true);
+        return await KaiMarketHomeResourceService.getPersonalizedStaleFirst({
+          userId: user.uid,
+          vaultOwnerToken: forcedToken,
+          pickSource: activePickSource,
+          symbols: trackedSymbols,
+          daysBack: 7,
+          forceRefresh: true,
+          backgroundRefresh: false,
+        });
+      }
+
+      const cachedOrDevice = await KaiMarketHomeResourceService.getPersonalizedStaleFirst({
+        userId: user.uid,
+        vaultOwnerToken: currentToken,
+        pickSource: activePickSource,
+        symbols: trackedSymbols,
+        daysBack: 7,
+        forceRefresh: false,
+        backgroundRefresh: false,
+      });
+      if (cachedOrDevice) {
+        return cachedOrDevice;
+      }
+      if (currentToken) {
+        return await KaiMarketHomeResourceService.getPersonalizedStaleFirst({
+          userId: user.uid,
+          vaultOwnerToken: currentToken,
+          pickSource: activePickSource,
+          symbols: trackedSymbols,
+          daysBack: 7,
+          forceRefresh: false,
+          backgroundRefresh: true,
+        });
+      }
+
+      if (!vaultKey) {
+        return null;
+      }
+      const token = await resolveToken(false);
+      return await KaiMarketHomeResourceService.getPersonalizedStaleFirst({
+        userId: user.uid,
+        vaultOwnerToken: token,
+        pickSource: activePickSource,
+        symbols: trackedSymbols,
+        daysBack: 7,
+        forceRefresh: false,
+        backgroundRefresh: true,
+      });
+    },
+  });
+  const baselinePayload = baselineResource.data;
+  const personalizedPayload = personalizedResource.data;
+  const payload = personalizedPayload ?? baselinePayload;
+
   useEffect(() => {
-    if (loading || !user?.uid) return;
+    if (!user?.uid || !vaultKey || !vaultOwnerToken) {
+      setFinancialResourceEnabled(false);
+      backgroundRefreshKeyRef.current = null;
+      return;
+    }
 
-    void loadInsights();
+    let cancelled = false;
+    const hasCachedMarketPayload = Boolean(
+      baselineResource.snapshot?.data ||
+        baselineResource.data ||
+        personalizedResource.snapshot?.data ||
+        personalizedResource.data
+    );
 
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") {
-        void loadInsights();
+    const enable = () => {
+      if (!cancelled) {
+        setFinancialResourceEnabled(true);
       }
     };
 
-    const id = window.setInterval(() => {
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      const requestIdle = window.requestIdleCallback as (
+        callback: IdleRequestCallback,
+        options?: IdleRequestOptions
+      ) => number;
+      const cancelIdle = window.cancelIdleCallback as (handle: number) => void;
+      const handle = requestIdle(() => enable(), {
+        timeout: hasCachedMarketPayload ? 2200 : 1200,
+      });
+      return () => {
+        cancelled = true;
+        cancelIdle(handle);
+      };
+    }
+
+    const timeoutId = globalThis.setTimeout(enable, hasCachedMarketPayload ? 1400 : 250);
+    return () => {
+      cancelled = true;
+      globalThis.clearTimeout(timeoutId);
+    };
+  }, [
+    baselineResource.data,
+    baselineResource.snapshot?.data,
+    personalizedResource.data,
+    personalizedResource.snapshot?.data,
+    user?.uid,
+    vaultKey,
+    vaultOwnerToken,
+  ]);
+
+  useEffect(() => {
+    if (!user?.uid || !vaultOwnerToken || !personalizedPayload) {
+      return;
+    }
+
+    const refreshKey = [
+      user.uid,
+      activePickSource,
+      toSymbolsKey(trackedSymbols),
+    ].join(":");
+
+    if (backgroundRefreshKeyRef.current === refreshKey) {
+      return;
+    }
+    backgroundRefreshKeyRef.current = refreshKey;
+
+    const timeoutId = globalThis.setTimeout(() => {
+      void KaiMarketHomeResourceService.refreshPersonalized({
+        userId: user.uid,
+        vaultOwnerToken,
+        pickSource: activePickSource,
+        symbols: trackedSymbols,
+        daysBack: 7,
+      }).catch(() => undefined);
+    }, 1800);
+
+    return () => {
+      globalThis.clearTimeout(timeoutId);
+    };
+  }, [activePickSource, personalizedPayload, trackedSymbols, user?.uid, vaultOwnerToken]);
+
+  useEffect(() => {
+    const nextSource = String(personalizedPayload?.active_pick_source || "").trim();
+    const userId = user?.uid;
+    if (!userId || !nextSource || serverSeededPickSourceUsersRef.current.has(userId)) return;
+    const storedSource = getKaiActivePickSource(userId);
+    if (storedSource !== "default") {
+      serverSeededPickSourceUsersRef.current.add(userId);
+      return;
+    }
+    if (nextSource === activePickSource) {
+      serverSeededPickSourceUsersRef.current.add(userId);
+      return;
+    }
+    serverSeededPickSourceUsersRef.current.add(userId);
+    setActivePickSource(nextSource);
+  }, [activePickSource, personalizedPayload?.active_pick_source, user?.uid]);
+
+  useEffect(() => {
+    setKaiActivePickSource(user?.uid, activePickSource);
+  }, [activePickSource, user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    const onVisibility = () => {
       if (document.visibilityState === "visible") {
-        void loadInsights();
+        void baselineResource.refresh();
+        if (marketResourceReady) {
+          void personalizedResource.refresh();
+        }
       }
-    }, POLL_INTERVAL_MS);
+    };
 
     document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisibility);
-      abortRef.current?.abort();
     };
-  }, [loadInsights, loading, user?.uid]);
+  }, [baselineResource, marketResourceReady, personalizedResource, user?.uid]);
 
-  const hasPayload = Boolean(payload);
-  const overviewMetrics = useMemo(() => toOverviewMetrics(payload), [payload]);
-  const marketStatus = useMemo(() => marketStatusBadge(payload), [payload]);
-  const themeItems = useMemo(() => toThemeItems(payload), [payload]);
-  const pickSources = useMemo<KaiHomePickSource[]>(
-    () =>
-      Array.isArray(payload?.pick_sources)
-        ? payload.pick_sources.filter((source) => Boolean(source?.id))
-        : [],
-    [payload?.pick_sources]
+  const loadInsights = useCallback(
+    async ({
+      forceTokenRefresh = false,
+      manual = false,
+    }: KaiMarketLoadOptions = {}) => {
+      if (!user?.uid) {
+        return;
+      }
+      const shouldForce = Boolean(forceTokenRefresh || manual);
+      await baselineResource.refresh({ force: shouldForce });
+      if (marketResourceReady && (vaultOwnerToken || vaultKey)) {
+        await personalizedResource.refresh({ force: shouldForce });
+      }
+    },
+    [baselineResource, marketResourceReady, personalizedResource, user?.uid, vaultKey, vaultOwnerToken]
   );
+
+  const handlePickSourceChange = useCallback(
+    (nextSource: string) => {
+      if (!nextSource || nextSource === activePickSource) return;
+      setActivePickSource(nextSource);
+    },
+    [activePickSource]
+  );
+
+  return {
+    payload,
+    loading: !payload && baselineResource.loading,
+    refreshing: baselineResource.refreshing || personalizedResource.refreshing,
+    error: payload
+      ? personalizedResource.error || baselineResource.error
+      : baselineResource.error || personalizedResource.error,
+    activePickSource,
+    loadInsights,
+    handlePickSourceChange,
+  };
+}
+
+export function KaiMarketPreviewView() {
+  const {
+    payload,
+    loading,
+    refreshing,
+    error,
+    activePickSource,
+    loadInsights,
+    handlePickSourceChange,
+  } = useKaiMarketHomeController();
+  const [retainedPayload, setRetainedPayload] = useState<KaiHomeInsightsV2 | null>(payload);
+  const [selectedOverviewMetricId, setSelectedOverviewMetricId] = useState<string | null>(null);
+  const [selectedSignalGroup, setSelectedSignalGroup] = useState<SignalGroupDetailPanel | null>(null);
+  const [cacheTimerSeconds, setCacheTimerSeconds] = useState(0);
+  const {
+    activeControlId: activeVoiceControlId,
+    lastInteractedControlId: lastVoiceControlId,
+  } = useVoiceSurfaceControlTracking();
+
+  useEffect(() => {
+    if (payload) {
+      setRetainedPayload(payload);
+    }
+  }, [payload]);
+
+  const effectivePayload = payload ?? retainedPayload;
+  const hasPayload = Boolean(effectivePayload);
   const pickRows = useMemo(
     () =>
-      Array.isArray(payload?.pick_rows)
-        ? payload.pick_rows.filter((row) => Boolean(row?.symbol))
-        : Array.isArray(payload?.renaissance_list)
-          ? payload.renaissance_list.filter((row) => Boolean(row?.symbol))
+      Array.isArray(effectivePayload?.pick_rows)
+        ? effectivePayload.pick_rows.filter((row) => Boolean(row?.symbol))
+        : Array.isArray(effectivePayload?.renaissance_list)
+          ? effectivePayload.renaissance_list.filter((row) => Boolean(row?.symbol))
+          : [],
+    [effectivePayload]
+  );
+  const overviewMetrics = useMemo(
+    () => toOverviewMetrics(effectivePayload, pickRows),
+    [effectivePayload, pickRows]
+  );
+  const selectedOverviewMetric = useMemo(
+    () =>
+      selectedOverviewMetricId
+        ? overviewMetrics.find(
+            (metric) => (metric.id || metric.label) === selectedOverviewMetricId
+          ) || null
+        : null,
+    [overviewMetrics, selectedOverviewMetricId]
+  );
+  const retainedOverviewMetric = useRetainedSurfaceSelection(selectedOverviewMetric);
+  const retainedSignalGroup = useRetainedSurfaceSelection(selectedSignalGroup);
+  const cacheTimerMeta = useMemo(() => marketCacheTimerMeta(effectivePayload), [effectivePayload]);
+  const marketStatus = useMemo(() => marketStatusBadge(effectivePayload), [effectivePayload]);
+  const themeItems = useMemo(() => toThemeItems(effectivePayload), [effectivePayload]);
+  const pickSources = useMemo<KaiHomePickSource[]>(
+    () =>
+      Array.isArray(effectivePayload?.pick_sources)
+        ? effectivePayload.pick_sources.filter((source) => Boolean(source?.id))
         : [],
-    [payload?.pick_rows, payload?.renaissance_list]
+    [effectivePayload]
   );
   const spotlightRows = useMemo(
     () =>
-      Array.isArray(payload?.spotlights)
-        ? payload.spotlights.filter((row) => Boolean(row?.symbol)).slice(0, 2)
+      Array.isArray(effectivePayload?.spotlights)
+        ? effectivePayload.spotlights.filter((row) => Boolean(row?.symbol)).slice(0, 2)
         : [],
-    [payload?.spotlights]
+    [effectivePayload]
   );
   const scenarioSignal = useMemo(
-    () => (Array.isArray(payload?.signals) ? payload.signals[0] : undefined),
-    [payload?.signals]
+    () => (Array.isArray(effectivePayload?.signals) ? effectivePayload.signals[0] : undefined),
+    [effectivePayload]
+  );
+  const scenarioSignals = useMemo(
+    () =>
+      Array.isArray(effectivePayload?.signals)
+        ? effectivePayload.signals.filter((signal) => Boolean(signal?.id)).slice(0, 3)
+        : [],
+    [effectivePayload]
+  );
+  const _scenarioSignalSupportingItems = useMemo(
+    () => deriveSignalSupportingItems(scenarioSignal, pickRows),
+    [pickRows, scenarioSignal]
+  );
+  const primarySignalEvidence = useMemo(
+    () => signalEvidenceLines(scenarioSignal, effectivePayload, pickRows),
+    [effectivePayload, pickRows, scenarioSignal]
+  );
+  const primarySignalGroups = useMemo(
+    () => signalDetailGroups(scenarioSignal, effectivePayload, pickRows),
+    [effectivePayload, pickRows, scenarioSignal]
   );
   const showConnectPortfolio = useMemo(() => {
     if (!hasPayload) return false;
-    const count = Number(payload?.hero?.holdings_count ?? 0);
+    if (effectivePayload?.meta?.market_mode !== "personalized") return false;
+    const count = Number(effectivePayload?.hero?.holdings_count ?? 0);
     return !Number.isFinite(count) || count <= 0;
-  }, [hasPayload, payload?.hero?.holdings_count]);
-  const handlePickSourceChange = useCallback((nextSource: string) => {
-    if (!nextSource || nextSource === activePickSource) return;
-    setActivePickSource(nextSource);
-  }, [activePickSource]);
+  }, [effectivePayload, hasPayload]);
+  const marketVoiceSurfaceMetadata = useMemo(() => {
+    const sections = [
+      {
+        id: "market_overview",
+        title: "Market overview",
+        purpose: "Summarizes the live market tape, breadth, and sector leadership.",
+      },
+      {
+        id: "ria_picks",
+        title: "RIA's picks",
+        purpose: "Lets you review and switch the active advisor signal source.",
+      },
+      {
+        id: "signals",
+        title: "Signals worth noting",
+        purpose: "Highlights the strongest current market read before deeper analysis.",
+      },
+      {
+        id: "themes",
+        title: "Themes in focus",
+        purpose: "Shows compact narratives shaping the next debate or trade setup.",
+      },
+      {
+        id: "what_matters_now",
+        title: "What matters now",
+        purpose: "Groups spotlight names and market news into one discovery surface.",
+      },
+      ...(showConnectPortfolio
+        ? [
+            {
+              id: "portfolio_context",
+              title: "Bring your own positions",
+              purpose: "Explains how connecting a portfolio personalizes the market surface.",
+            },
+          ]
+        : []),
+    ];
+    const actions = [
+      {
+        id: "kai.market.refresh",
+        label: "Refresh market home",
+        purpose: "Refreshes the current market overview, signals, and discovery modules.",
+        voiceAliases: ["refresh market", "refresh market home"],
+      },
+      {
+        id: "kai.market.switch_pick_source",
+        label: "Switch advisor pick source",
+        purpose: "Changes which advisor source powers the current picks surface.",
+        voiceAliases: ["switch advisor source", "change pick source"],
+      },
+      ...(showConnectPortfolio
+        ? [
+            {
+              id: "route.kai_dashboard",
+              label: "Connect portfolio",
+              purpose: "Opens portfolio setup so Kai can personalize this market surface.",
+              voiceAliases: ["connect portfolio", "open portfolio"],
+            },
+          ]
+        : []),
+    ];
+    const controls = [
+      {
+        id: "refresh_market_home",
+        label: "Refresh",
+        purpose: "Refreshes the current market home surface.",
+        actionId: "kai.market.refresh",
+        role: "button",
+        voiceAliases: ["refresh market", "refresh"],
+      },
+      {
+        id: "pick_source_selector",
+        label: "Advisor pick source",
+        purpose: "Switches the active advisor signal source for RIA picks.",
+        actionId: "kai.market.switch_pick_source",
+        role: "selector",
+        voiceAliases: ["pick source", "advisor source"],
+      },
+      ...(showConnectPortfolio
+        ? [
+            {
+              id: "connect_portfolio",
+              label: "Connect portfolio",
+              purpose: "Opens portfolio connection so this surface can use your positions.",
+              actionId: "route.kai_dashboard",
+              role: "button",
+              voiceAliases: ["connect portfolio"],
+            },
+          ]
+        : []),
+    ];
+    const visibleModules = sections.map((section) => section.title);
+    const marketMode = String(effectivePayload?.meta?.market_mode || "baseline").trim() || "baseline";
+
+    return {
+      screenId: "kai_market",
+      title: "Market",
+      purpose:
+        "This screen is the market overview workspace for live tape, advisor signals, and discovery.",
+      primaryEntity: effectivePayload?.active_pick_source || null,
+      sections,
+      actions,
+      controls,
+      concepts: [
+        {
+          id: "market",
+          label: "Market",
+          explanation: "Market is the live overview workspace for current tape, signals, and discovery.",
+          aliases: ["market", "market home", "kai home"],
+        },
+      ],
+      activeSection:
+        refreshing || loading
+          ? "Market overview"
+          : showConnectPortfolio
+            ? "Bring your own positions"
+            : "What matters now",
+      visibleModules,
+      focusedWidget:
+        refreshing || loading
+          ? "Market overview"
+          : activePickSource !== "default"
+            ? "RIA's picks"
+            : "What matters now",
+      availableActions: actions.map((action) => action.label),
+      activeControlId: activeVoiceControlId,
+      lastInteractedControlId: lastVoiceControlId,
+      busyOperations: [
+        ...(loading ? ["market_initial_load"] : []),
+        ...(refreshing ? ["market_refresh"] : []),
+      ],
+      screenMetadata: {
+        market_mode: marketMode,
+        market_status_label: marketStatus?.label || null,
+        has_payload: hasPayload,
+        has_error: Boolean(error),
+        active_pick_source: activePickSource,
+        pick_source_count: pickSources.length,
+        pick_row_count: pickRows.length,
+        spotlight_count: spotlightRows.length,
+        signal_count: scenarioSignals.length,
+        theme_count: themeItems.length,
+        news_count: Array.isArray(effectivePayload?.news_tape) ? effectivePayload.news_tape.length : 0,
+        connect_portfolio_visible: showConnectPortfolio,
+        holdings_count: Number(effectivePayload?.hero?.holdings_count ?? 0) || 0,
+      },
+    };
+  }, [
+    activePickSource,
+    activeVoiceControlId,
+    effectivePayload,
+    error,
+    hasPayload,
+    lastVoiceControlId,
+    loading,
+    marketStatus?.label,
+    pickRows.length,
+    pickSources.length,
+    refreshing,
+    scenarioSignals.length,
+    showConnectPortfolio,
+    spotlightRows.length,
+    themeItems.length,
+  ]);
+  usePublishVoiceSurfaceMetadata(marketVoiceSurfaceMetadata);
+
+  useEffect(() => {
+    setCacheTimerSeconds(cacheTimerMeta?.initialAgeSeconds ?? 0);
+    if (!cacheTimerMeta) return;
+    const timer = window.setInterval(() => {
+      setCacheTimerSeconds((current) => current + 1);
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [cacheTimerMeta]);
+
+  const marketFreshnessLabel = useMemo(() => {
+    if (!cacheTimerMeta) return null;
+    const localTimestamp = formatLocalTimestamp(effectivePayload?.generated_at);
+    return {
+      localTimestamp,
+      freshness: formatCacheAgeLabel(cacheTimerSeconds),
+    };
+  }, [cacheTimerMeta, cacheTimerSeconds, effectivePayload?.generated_at]);
+
+  const marketRefreshLabel = useMemo(() => {
+    const statusShort =
+      marketStatus?.label.toLowerCase().includes("open") ? "On" : marketStatus ? "Off" : null;
+    const timeShort = marketFreshnessLabel?.localTimestamp || marketFreshnessLabel?.freshness || null;
+    return [statusShort, timeShort].filter(Boolean).join(" · ");
+  }, [marketFreshnessLabel, marketStatus]);
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-8 overflow-x-hidden px-4 pb-8 pt-[var(--kai-view-top-gap,16px)] sm:px-6 lg:px-8">
-      <PageHeader
-        eyebrow="Market"
-        title="Explore the market with Kai"
-        description="Structured market context, advisor-style picks, and compact headlines in one calm surface before you even connect a portfolio."
-        icon={LineChart}
-        accent="sky"
-        actions={
-          <Button
-            variant="none"
-            effect="fade"
-            disabled={refreshing}
-            size="sm"
-            onClick={() => void loadInsights({ manual: true })}
-          >
-            {refreshing ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="mr-2 h-4 w-4" />
-            )}
-            Refresh
-          </Button>
-        }
+    <AppPageShell
+      as="div"
+      width="expanded"
+      className="relative isolate pb-8"
+    >
+      <div
+        aria-hidden
+        className={cn("pointer-events-none fixed inset-0 -z-20", marketAmbientBackgroundClassName)}
       />
-
-      {loadingInitial && !hasPayload ? (
-        <Card variant="muted" effect="fill" className="rounded-[24px] p-0">
-          <CardContent className="space-y-3 p-5 text-left">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <p className="text-sm font-semibold">Loading market snapshot...</p>
-            </div>
-            <p className="text-xs leading-5 text-muted-foreground">
-              Restoring the latest available market cache while live data catches up.
-            </p>
-          </CardContent>
-        </Card>
+      <div
+        aria-hidden
+        className={cn("pointer-events-none fixed inset-x-0 top-0 -z-10 h-[58vh]", marketAmbientGlowClassName)}
+      />
+      <AppPageHeaderRegion className="pt-2 sm:pt-3">
+        <PageHeader
+          eyebrow="Kai"
+          title="Market"
+          icon={ChartColumnIncreasing}
+          description={"Track the market, advisor ideas, and your portfolio context in one place."}
+          accent="marketplace"
+          actions={
+            <Button
+              variant="none"
+              effect="fade"
+              disabled={refreshing}
+              size="sm"
+              className="h-9 rounded-full px-3"
+              onClick={() => void loadInsights({ manual: true })}
+            >
+              <span className="flex items-center gap-2">
+                {refreshing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                {marketRefreshLabel ? (
+                  <span className="text-[11px] font-semibold tracking-tight text-foreground/85">
+                    {marketRefreshLabel}
+                  </span>
+                ) : null}
+              </span>
+            </Button>
+          }
+        />
+      </AppPageHeaderRegion>
+      <AppPageContentRegion>
+        <div className="relative isolate">
+        <SurfaceStack>
+      {loading && !hasPayload ? (
+        <SurfaceCard
+          tone="default"
+          data-testid="page-primary-module"
+          className={marketCardClassName}
+        >
+          <SurfaceCardContent className="flex min-h-32 flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <p className="max-w-sm text-balance">Loading your market view.</p>
+          </SurfaceCardContent>
+        </SurfaceCard>
       ) : null}
 
       {error ? (
-        <Card variant="muted" effect="fill" className="rounded-[24px] p-0">
-          <CardContent className="space-y-3 p-5 text-left">
+        <SurfaceCard tone="critical" className={marketCardClassName}>
+          <SurfaceCardContent className="space-y-3 text-left">
             <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
               <AlertTriangle className="h-4 w-4" />
               <p className="text-sm font-semibold">
@@ -999,145 +1964,396 @@ export function KaiMarketPreviewView() {
             >
               Retry
             </Button>
-          </CardContent>
-        </Card>
+          </SurfaceCardContent>
+        </SurfaceCard>
       ) : null}
 
-      <section className="space-y-4">
-        <SectionHeader
-          eyebrow="Spotlight"
-          title="Today’s spotlight"
-          description="High-value names that deserve a quick read before you scan the rest of the tape."
-          icon={Target}
-          accent="amber"
-        />
-        {spotlightRows.length > 0 ? (
-          <div className="grid gap-3 lg:grid-cols-2">
-            {spotlightRows.map((row) => (
-              <SpotlightCard
-                key={row.symbol}
-                title={String(row.company_name || row.symbol || "Unknown")}
-                price={formatSpotlightPrice(row.price)}
-                decision={toSpotlightDecision(row.recommendation)}
-                confidenceLabel={spotlightConfidenceLabel(row)}
-                summary={summarizeSpotlight(row)}
-                context={spotlightContextLabel(row)}
-                contextHref={toSafeHttpUrl(row.headline_url)}
+      {hasPayload ? (
+        <div className="flex flex-col gap-12">
+          <section className="space-y-4">
+            <MarketSectionLead title="Overview" />
+            <MarketOverviewGrid
+              metrics={overviewMetrics}
+              onMetricSelect={(metric) => setSelectedOverviewMetricId(metric.id || metric.label)}
+            />
+          </section>
+
+          <section className="space-y-4">
+            <MarketSectionLead
+              title="Advisor ideas"
+              description="Choose Kai or a connected advisor source. The active source carries forward into market and comparison surfaces."
+            />
+            <RiaPicksList
+              rows={pickRows}
+              sources={pickSources}
+              activeSourceId={activePickSource}
+              onSourceChange={handlePickSourceChange}
+              controlMode="adaptive-surface"
+            />
+          </section>
+
+          <section className="space-y-4">
+            <MarketSectionLead
+              title="Signals in play"
+              description="Open a read to inspect the names behind it."
+            />
+            {scenarioSignal ? (
+              <div className="space-y-4">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                        {signalHeadlineLabel(scenarioSignal)}
+                      </p>
+                      <h3 className="text-base font-semibold tracking-tight text-foreground sm:text-lg">
+                        {scenarioSignal.title}
+                      </h3>
+                      {scenarioSignal.summary ? (
+                        <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                          {scenarioSignal.summary}
+                        </p>
+                      ) : null}
+                    </div>
+                    <span
+                      className={cn(
+                        "shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                        signalConfidenceTone(scenarioSignal)
+                      )}
+                    >
+                      {signalConfidenceLabel(scenarioSignal)}
+                    </span>
+                  </div>
+
+                  {primarySignalEvidence.length ? (
+                    <div className="grid gap-2">
+                      {primarySignalEvidence.map((line) => (
+                        <p
+                          key={line}
+                          className={cn(
+                            "rounded-[calc(var(--app-card-radius-compact)-4px)] border px-3 py-2.5 text-sm leading-6 text-foreground/88",
+                            MARKET_SIGNAL_INSET_CLASSNAME
+                          )}
+                        >
+                          {line}
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {visibleSignalSourceTags(scenarioSignal).length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {visibleSignalSourceTags(scenarioSignal).slice(0, 3).map((tag) => (
+                        <Badge
+                          key={tag}
+                          variant="outline"
+                          className="border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-compact)] text-[10px] font-medium text-foreground/72"
+                        >
+                          {tag}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
+                {primarySignalGroups.length ? (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {primarySignalGroups.map((group) => (
+                      <SignalGroupBlock
+                        key={`${scenarioSignal.id}:${group.label}`}
+                        scopeLabel={signalHeadlineLabel(scenarioSignal)}
+                        label={group.label}
+                        items={group.items}
+                        onOpen={() =>
+                          setSelectedSignalGroup(
+                            buildSignalGroupDetailPanel({
+                              scopeLabel: signalHeadlineLabel(scenarioSignal),
+                              label: group.label,
+                              symbols: group.items.map((item) => item.symbol),
+                              supportingLines: primarySignalEvidence,
+                            })
+                          )
+                        }
+                      />
+                    ))}
+                  </div>
+                ) : null}
+
+                {scenarioSignals.length > 1 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm font-semibold tracking-tight text-foreground">
+                      Secondary reads
+                    </p>
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      {scenarioSignals.slice(1).map((signal) => {
+                        const evidence = signalEvidenceLines(signal, effectivePayload, pickRows);
+                        const groups = signalDetailGroups(signal, effectivePayload, pickRows);
+
+                        return (
+                          <SurfaceCard
+                            key={signal.id}
+                            accent="none"
+                            className={cn("h-full", MARKET_SIGNAL_CARD_CLASSNAME)}
+                          >
+                            <SurfaceCardContent className="flex h-full flex-col gap-4 p-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="space-y-1">
+                                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                                    {signalHeadlineLabel(signal)}
+                                  </p>
+                                  <p className="text-[15px] font-semibold tracking-tight text-foreground sm:text-base">
+                                    {signal.title}
+                                  </p>
+                                </div>
+                                <span
+                                  className={cn(
+                                    "shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                                    signalConfidenceTone(signal)
+                                  )}
+                                >
+                                  {signalConfidenceLabel(signal)}
+                                </span>
+                              </div>
+                              {signal.summary ? (
+                                <p className="text-xs leading-5 text-muted-foreground">{signal.summary}</p>
+                              ) : null}
+                              {evidence.length ? (
+                                <div className="grid gap-2">
+                                  {evidence.slice(0, 1).map((line) => (
+                                    <p
+                                      key={line}
+                                      className={cn(
+                                        "rounded-[calc(var(--app-card-radius-compact)-4px)] border px-3 py-2.5 text-xs leading-5 text-foreground/88",
+                                        MARKET_SIGNAL_INSET_CLASSNAME
+                                      )}
+                                    >
+                                      {line}
+                                    </p>
+                                  ))}
+                                </div>
+                              ) : null}
+                              {groups.length ? (
+                                <div className="grid gap-3">
+                                  {groups.map((group) => (
+                                    <SignalGroupBlock
+                                      key={`${signal.id}:${group.label}`}
+                                      scopeLabel={signalHeadlineLabel(signal)}
+                                      label={group.label}
+                                      items={group.items}
+                                      onOpen={() =>
+                                        setSelectedSignalGroup(
+                                          buildSignalGroupDetailPanel({
+                                            scopeLabel: signalHeadlineLabel(signal),
+                                            label: group.label,
+                                            symbols: group.items.map((item) => item.symbol),
+                                            supportingLines: evidence,
+                                          })
+                                        )
+                                      }
+                                    />
+                                  ))}
+                                </div>
+                              ) : null}
+                            </SurfaceCardContent>
+                          </SurfaceCard>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+                <SurfaceCard tone="warning" className={marketCardClassName}>
+                  <SurfaceCardContent className="text-sm text-muted-foreground">
+                  Scenario insight is unavailable at the moment.
+                </SurfaceCardContent>
+              </SurfaceCard>
+            )}
+          </section>
+
+          {themeItems.length > 0 ? (
+            <section className="space-y-4">
+              <MarketSectionLead
+                title="Themes in focus"
+                description="Themes shaping the next market read."
               />
+              <ThemeFocusList themes={themeItems} />
+            </section>
+          ) : null}
+
+          <section className="space-y-4">
+            <MarketSectionLead title="What matters now" />
+            <div className="space-y-4">
+              {spotlightRows.length > 0 ? (
+                <div className="space-y-3">
+                  <div className="flex justify-end">
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {spotlightRows.length} live
+                    </span>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {spotlightRows.map((row) => (
+                      <SpotlightFeatureTile key={row.symbol} row={row} />
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex min-h-[120px] items-center justify-center rounded-[var(--app-card-radius-feature)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-5 text-sm text-muted-foreground shadow-[var(--app-card-shadow-standard)]">
+                  Spotlight names are loading right now.
+                </div>
+              )}
+              <MarketHeadlinesRail rows={effectivePayload?.news_tape || []} />
+            </div>
+          </section>
+
+          {showConnectPortfolio ? (
+            <section className="space-y-4">
+              <MarketSectionLead
+                title="Bring your own positions"
+                description="Connecting a portfolio makes the market page and downstream debate surfaces more personal."
+              />
+              <PermissionGate permission="portfolio_valuation">
+                <ConnectPortfolioCta />
+              </PermissionGate>
+            </section>
+          ) : null}
+        </div>
+      ) : null}
+        </SurfaceStack>
+        </div>
+      </AppPageContentRegion>
+
+      <KaiControlSurface
+        open={Boolean(selectedOverviewMetric?.detailPanel)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedOverviewMetricId(null);
+        }}
+        eyebrow={retainedOverviewMetric?.detailPanel?.eyebrow}
+        title={retainedOverviewMetric?.detailPanel?.title || "Overview detail"}
+        description={retainedOverviewMetric?.detailPanel?.summary}
+        contentClassName="sm:max-w-[min(36rem,calc(100vw-5rem))] lg:max-w-[min(38rem,calc(100vw-8rem))]"
+        bodyClassName="px-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] pt-4 sm:px-6 sm:pt-5 lg:px-7"
+      >
+        {retainedOverviewMetric?.detailPanel ? (
+          <div className="space-y-4">
+            <SurfaceInset className="space-y-3 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-2xl font-semibold tracking-tight text-foreground">
+                    {retainedOverviewMetric.detailPanel.value || retainedOverviewMetric.value}
+                  </p>
+                  <p
+                    className={cn(
+                      "text-sm font-medium",
+                      retainedOverviewMetric.detailPanel.statusTone === "positive" &&
+                        "text-emerald-600 dark:text-emerald-400",
+                      retainedOverviewMetric.detailPanel.statusTone === "negative" &&
+                        "text-rose-600 dark:text-rose-400",
+                      retainedOverviewMetric.detailPanel.statusTone === "warning" &&
+                        "text-amber-700 dark:text-amber-300",
+                      (!retainedOverviewMetric.detailPanel.statusTone ||
+                        retainedOverviewMetric.detailPanel.statusTone === "neutral") &&
+                        "text-muted-foreground"
+                    )}
+                  >
+                    {retainedOverviewMetric.detailPanel.delta || retainedOverviewMetric.delta}
+                  </p>
+                </div>
+                {retainedOverviewMetric.detailPanel.statusLabel ? (
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[10px] font-semibold uppercase tracking-[0.16em]",
+                      retainedOverviewMetric.detailPanel.statusTone === "positive" &&
+                        "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                      retainedOverviewMetric.detailPanel.statusTone === "negative" &&
+                        "border-rose-500/20 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+                      retainedOverviewMetric.detailPanel.statusTone === "warning" &&
+                        "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+                      (!retainedOverviewMetric.detailPanel.statusTone ||
+                        retainedOverviewMetric.detailPanel.statusTone === "neutral") &&
+                        "border-[color:var(--app-card-border-standard)] bg-[var(--app-card-surface-compact)] text-muted-foreground"
+                    )}
+                  >
+                    {retainedOverviewMetric.detailPanel.statusLabel}
+                  </Badge>
+                ) : null}
+              </div>
+            </SurfaceInset>
+
+            {retainedOverviewMetric.detailPanel.sections?.map((section) => (
+              <SurfaceInset key={section.title} className="space-y-2 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  {section.title}
+                </p>
+                <div className="space-y-2">
+                  {section.lines.map((line) => (
+                    <p key={line} className="text-sm leading-6 text-foreground/90">
+                      {line}
+                    </p>
+                  ))}
+                  {section.items?.length ? (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {section.items.map((item) => (
+                        <Badge
+                          key={`${section.title}:${item}`}
+                          variant="outline"
+                          className="max-w-full whitespace-normal rounded-full border-[color:var(--app-card-border-standard)] bg-[var(--app-card-surface-compact)] px-3 py-1.5 text-xs leading-5 text-foreground/80"
+                        >
+                          {item}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </SurfaceInset>
             ))}
           </div>
-        ) : (
-          <Card variant="muted" effect="fill" className="rounded-[24px] p-0">
-            <CardContent className="p-5 text-sm text-muted-foreground">
-              No spotlight insights are available right now.
-            </CardContent>
-          </Card>
-        )}
-      </section>
+        ) : null}
+      </KaiControlSurface>
 
-      <section className="space-y-4">
-        <SectionHeader
-          eyebrow="Pulse"
-          title="Market overview"
-          description="A denser read of the current tape with stronger status cues and less filler."
-          icon={ChartColumnIncreasing}
-          accent="sky"
-          actions={
-            marketStatus ? (
-              <Badge variant="outline" className={cn("font-medium", marketStatus.className)}>
-                {marketStatus.label}
-              </Badge>
-            ) : null
-          }
-        />
-        <MarketOverviewGrid metrics={overviewMetrics} />
-      </section>
-
-      <section className="space-y-4">
-        <SectionHeader
-          eyebrow="Advisor signals"
-          title="RIA’s picks"
-          description="Today this defaults to Kai’s house Renaissance-backed list. The same surface will support linked advisor sources later."
-          icon={BriefcaseBusiness}
-          accent="emerald"
-        />
-        <RiaPicksList
-          rows={pickRows}
-          sources={pickSources}
-          activeSourceId={activePickSource}
-          onSourceChange={handlePickSourceChange}
-        />
-      </section>
-
-      <section className="space-y-4">
-        <SectionHeader
-          eyebrow="Signal"
-          title="Scenario simulation"
-          description="One compact scenario worth keeping in mind while the market context is still warm."
-          icon={Activity}
-          accent="violet"
-        />
-        {scenarioSignal ? (
-          <Card variant="none" effect="glass" className="rounded-[24px] p-0">
-            <CardContent className="space-y-3 p-5">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <p className="text-sm font-semibold tracking-tight text-foreground">
-                  {scenarioSignal.title}
+      <KaiControlSurface
+        open={Boolean(selectedSignalGroup)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedSignalGroup(null);
+        }}
+        eyebrow={retainedSignalGroup?.eyebrow}
+        title={retainedSignalGroup?.title || "Signal detail"}
+        description={retainedSignalGroup?.summary}
+        contentClassName="sm:max-w-[min(36rem,calc(100vw-5rem))] lg:max-w-[min(38rem,calc(100vw-8rem))]"
+        bodyClassName="px-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] pt-4 sm:px-6 sm:pt-5 lg:px-7"
+      >
+        {retainedSignalGroup ? (
+          <div className="space-y-4">
+            {retainedSignalGroup.sections?.map((section) => (
+              <SurfaceInset key={section.title} className="space-y-2 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  {section.title}
                 </p>
-                <span className="rounded-full bg-violet-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
-                  {Number.isFinite(scenarioSignal.confidence)
-                    ? `${(scenarioSignal.confidence * 100).toFixed(0)}% confidence`
-                    : "Signal"}
-                </span>
-              </div>
-              <p className="text-sm leading-6 text-muted-foreground">{scenarioSignal.summary}</p>
-            </CardContent>
-          </Card>
-        ) : (
-          <Card variant="muted" effect="fill" className="rounded-[24px] p-0">
-            <CardContent className="p-5 text-sm text-muted-foreground">
-              Scenario insight is unavailable at the moment.
-            </CardContent>
-          </Card>
-        )}
-      </section>
-
-      {themeItems.length > 0 ? (
-        <section className="space-y-4">
-          <SectionHeader
-            eyebrow="Narratives"
-            title="Themes in focus"
-            description="Compact narratives that can shape how the next debate or trade idea gets framed."
-            icon={Cpu}
-            accent="violet"
-          />
-          <ThemeFocusList themes={themeItems} />
-        </section>
-      ) : null}
-
-      <section className="space-y-4">
-        <SectionHeader
-          eyebrow="Headlines"
-          title="News"
-          description="A vertical news read that stays mobile-friendly without sideways scrolling."
-          icon={Newspaper}
-          accent="rose"
-        />
-        <NewsTape rows={payload?.news_tape || []} />
-      </section>
-
-      {showConnectPortfolio ? (
-        <section className="space-y-4">
-          <SectionHeader
-            eyebrow="Portfolio context"
-            title="Bring your own positions"
-            description="Connecting a portfolio makes the market page and downstream debate surfaces meaningfully more personal."
-            icon={BriefcaseBusiness}
-            accent="emerald"
-          />
-          <ConnectPortfolioCta />
-        </section>
-      ) : null}
-    </div>
+                <div className="space-y-2">
+                  {section.lines.map((line) => (
+                    <p key={line} className="text-sm leading-6 text-foreground/90">
+                      {line}
+                    </p>
+                  ))}
+                  {section.items?.length ? (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {section.items.map((item) => (
+                        <Badge
+                          key={`${section.title}:${item}`}
+                          variant="outline"
+                          className="max-w-full whitespace-normal rounded-full border-[color:var(--app-card-border-standard)] bg-[var(--app-card-surface-compact)] px-3 py-1.5 text-xs leading-5 text-foreground/80"
+                        >
+                          {item}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </SurfaceInset>
+            ))}
+          </div>
+        ) : null}
+      </KaiControlSurface>
+    </AppPageShell>
   );
 }

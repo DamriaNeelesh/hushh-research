@@ -4,17 +4,29 @@
 > **Last Updated**: February 2026  
 > **Principle**: Consent-First, BYOK, Zero-Knowledge
 
+
+## Visual Context
+
+Canonical visual owner: [consent-protocol](../README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
 ---
 
 ## Overview
 
-The Hushh platform enforces a **consent-first architecture** where all data access is gated by consent tokens. This document is the authoritative reference for the consent protocol implementation.
+The Hussh platform enforces a **consent-first architecture** where all data access is gated by consent tokens. This document is the authoritative reference for the consent protocol implementation.
 
-**Core Principle**: All data access requires a consent token. Vault owners are NOT special - they use VAULT_OWNER tokens.
+Founder-language mapping:
+
+- `Capability Tokens` are implemented here as `VAULT_OWNER`, agent scoped tokens, and developer-token-backed grants
+- `PCHP` is implemented today through the consent request, approval, status, and encrypted scoped export flow
+- `Cryptographic Primitives` are implemented through BYOK, local unlock, ciphertext storage, and wrapped export keys
+- `Tamper-Evident History` is implemented through audit tables and export revisions, not a Merkle-sealed ledger
+
+**Core Principle**: All data access requires a consent token. In founder language this is the current Capability Token model. Vault owners are NOT special - they use `VAULT_OWNER` tokens.
 
 ```
 Traditional     ❌  if (userOwnsVault) { allow(); }
-Hushh Approach  ✅  if (validateToken(VAULT_OWNER)) { allow(); }
+Hussh Approach  ✅  if (validateToken(VAULT_OWNER)) { allow(); }
 ```
 
 ---
@@ -89,7 +101,7 @@ Hushh Approach  ✅  if (validateToken(VAULT_OWNER)) { allow(); }
 
 - Automated test suites must use fixture-issued tokens from `consent-protocol/tests/conftest.py`.
 - `consent-protocol/tests/dev_test_token.py` is for manual/debug workflows only.
-- CI must not depend on `.env` token helpers or `MCP_DEVELOPER_TOKEN` for consent-route coverage.
+- CI must not depend on `.env` token helpers or `HUSHH_DEVELOPER_TOKEN` for consent-route coverage.
 
 ### Streaming Contract Policy
 
@@ -142,7 +154,7 @@ GET  /kai/chat/conversations/{user_id}
 GET  /kai/chat/initial-state/{user_id}
 POST /kai/chat/analyze-loser
 
-# Kai Portfolio & World Model Data Retrieval
+# Kai Portfolio & PKM Data Retrieval
 POST /kai/portfolio/import
 GET  /kai/portfolio/summary/{user_id}
 GET  /api/consent/data                  # MCP: Get encrypted export
@@ -152,7 +164,7 @@ GET  /api/consent/pending               # Dashboard: View pending
 POST /api/consent/pending/approve      # Dashboard: Approve request
 
 # Kai personalization storage
-# Optional intro data is stored in encrypted world-model path `financial.profile`.
+# Optional intro data is stored in encrypted PKM path `financial.profile`.
 # No `/api/kai/preferences/*` endpoints exist.
 
 # MCP Server Data Access
@@ -326,9 +338,9 @@ fun chat(call: PluginCall) {
 | | `chat.history.write` | Write/create chat messages |
 | **Embeddings** | `embedding.profile.read` | Read computed embedding profiles |
 | | `embedding.profile.compute` | Compute new embedding profiles |
-| **World Model** | `world_model.read` | Read world model attributes |
-| | `world_model.write` | Write world model attributes |
-| | `world_model.metadata` | Access world model metadata |
+| **PKM** | `pkm.read` | Read PKM attributes |
+| | `pkm.write` | Write PKM attributes |
+| | `pkm.metadata` | Access PKM metadata |
 | **Agent Kai** | `agent.kai.analyze` | Run Kai analysis pipelines |
 | | `agent.kai.debate` | Run Kai debate/reasoning |
 | | `agent.kai.infer` | Run Kai inference |
@@ -353,8 +365,8 @@ Examples:
 - `attr.{domain}.*`
 - `attr.financial.profile.*`
 
-Dynamic scopes are discovered at runtime from world model metadata and `domain_registry`.
-Use `GET /api/world-model/scopes/{user_id}` (or MCP `discover_user_domains`) instead of hardcoding domains.
+Dynamic scopes are discovered at runtime from PKM metadata and `domain_registry`.
+Use `GET /api/pkm/scopes/{user_id}` (or MCP `discover_user_domains`) instead of hardcoding domains.
 
 ### Scope Hierarchy
 
@@ -363,11 +375,11 @@ vault.owner (Master - satisfies ALL scopes)
     ├── portfolio.*
     ├── chat.history.*
     ├── embedding.profile.*
-    ├── world_model.*
+    ├── pkm.*
     ├── agent.kai.*
     ├── external.*
     └── Dynamic attribute scopes:
-        world_model.read
+        pkm.read
             └── attr.{domain}.*
                 └── attr.{domain}.{key}
 ```
@@ -445,6 +457,7 @@ CREATE INDEX idx_consent_audit_pending ON consent_audit(user_id) WHERE action = 
 - No data access without valid VAULT_OWNER token
 - Token proves user has unlocked their vault (consented)
 - All routes enforce token validation at middleware level
+- Async MCP tool auth paths and async ADK tools use DB-backed validation (`validate_token_with_db`) to reject revoked tokens consistently across Cloud Run instances. Sync-decorated tools remain memory-only until they migrate to async execution.
 
 ### 2. BYOK (Bring Your Own Key)
 
@@ -540,7 +553,7 @@ CREATE INDEX idx_consent_audit_pending ON consent_audit(user_id) WHERE action = 
 
 ## See Also
 
-- [World Model](./world-model.md) -- Database architecture
+- [Personal Knowledge Model](./personal-knowledge-model.md) -- Database architecture
 - [Agent Development](./agent-development.md) -- Building new agents and operons
 - [Kai Agents](./kai-agents.md) -- Multi-agent financial analysis system
 - [Environment Variables](./env-vars.md) -- Backend configuration reference

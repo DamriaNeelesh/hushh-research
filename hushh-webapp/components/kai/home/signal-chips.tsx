@@ -10,7 +10,7 @@ interface SignalChipsProps {
 export function SignalChips({ signals }: SignalChipsProps) {
   if (!signals.length) {
     return (
-      <Card variant="muted" effect="fill" className="rounded-xl p-0">
+      <Card variant="muted" effect="fill" preset="compact">
         <CardContent className="p-4 text-sm text-muted-foreground">
           Signals are unavailable right now.
         </CardContent>
@@ -21,7 +21,7 @@ export function SignalChips({ signals }: SignalChipsProps) {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       {signals.map((signal) => (
-        <Card key={signal.id} variant="none" effect="glass" className="rounded-xl p-0">
+        <Card key={signal.id} variant="none" effect="glass" preset="compact">
           <CardContent className="space-y-2 p-3">
             <div className="flex items-start justify-between gap-2">
               <p className="text-sm font-black tracking-tight">{signal.title}</p>

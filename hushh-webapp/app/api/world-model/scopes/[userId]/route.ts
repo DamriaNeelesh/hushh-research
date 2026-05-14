@@ -12,16 +12,18 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:800
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { userId: string } }
+  { params }: { params: Promise<{ userId: string }> }
 ) {
   try {
-    const userId = params.userId;
+    const { userId } = await params;
+    const authHeader = request.headers.get("Authorization") || "";
 
     const response = await fetch(
       `${BACKEND_URL}/api/world-model/scopes/${userId}`,
       {
         headers: {
           "Content-Type": "application/json",
+          ...(authHeader ? { Authorization: authHeader } : {}),
         },
       }
     );

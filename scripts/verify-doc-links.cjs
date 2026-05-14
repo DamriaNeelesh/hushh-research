@@ -5,7 +5,7 @@ const path = require("node:path");
 
 const repoRoot = path.resolve(__dirname, "..");
 const docTargets = [
-  "readme.md",
+  "README.md",
   "getting_started.md",
   "TESTING.md",
   "contributing.md",
@@ -13,7 +13,17 @@ const docTargets = [
   "consent-protocol/docs",
   "hushh-webapp/docs",
 ];
-const pathPrefixes = ["docs/", "consent-protocol/", "hushh-webapp/", "scripts/", "deploy/", "data/"];
+const ignoredDirs = new Set([
+  "node_modules",
+  ".next",
+  "DerivedData",
+  ".pytest_cache",
+  ".git",
+  ".venv",
+  "dist",
+  "build",
+]);
+const pathPrefixes = ["bin/", "docs/", "consent-protocol/", "hushh-webapp/", "scripts/", "deploy/", "data/"];
 const fileLikeExt = /\.(md|ts|tsx|js|cjs|py|sh|yml|yaml|json|txt)$/i;
 
 function normalize(p) {
@@ -35,6 +45,7 @@ function walkMarkdown(relTarget) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        if (ignoredDirs.has(entry.name)) continue;
         walk(full);
         continue;
       }
@@ -66,6 +77,10 @@ function resolveCandidate(baseFile, token) {
   const cleaned = token.split("#")[0].trim();
   const baseDir = path.dirname(path.join(repoRoot, baseFile));
 
+  if (cleaned === "./bin/hushh") {
+    return path.join(repoRoot, "bin/hushh");
+  }
+
   if (cleaned.startsWith("./") || cleaned.startsWith("../")) {
     return path.resolve(baseDir, cleaned);
   }
@@ -85,6 +100,7 @@ function shouldValidateCodePath(token) {
 
   const cleaned = token.replace(/[),.;:]+$/g, "");
   if (/^\.env(\.[A-Za-z0-9_-]+)?$/.test(path.basename(cleaned))) return false;
+  if (cleaned.includes(".env.local.d/")) return false;
 
   if (cleaned.startsWith("./") || cleaned.startsWith("../")) return true;
   return pathPrefixes.some((prefix) => cleaned.startsWith(prefix));
@@ -93,6 +109,10 @@ function shouldValidateCodePath(token) {
 function resolveCodePath(baseFile, token) {
   const cleaned = token.replace(/[),.;:]+$/g, "");
   const baseDir = path.dirname(path.join(repoRoot, baseFile));
+
+  if (cleaned === "./bin/hushh") {
+    return [path.join(repoRoot, "bin/hushh")];
+  }
 
   if (cleaned.startsWith("./") || cleaned.startsWith("../")) {
     return [path.resolve(baseDir, cleaned)];

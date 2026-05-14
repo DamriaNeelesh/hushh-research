@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { useTheme } from "next-themes";
 import {
   Card as MorphyCard,
   CardContent as MorphyCardContent,
@@ -83,16 +84,25 @@ export interface DecisionResult {
       bull_case?: string;
       bear_case?: string;
     };
-    quant_metrics?: Record<string, any>;
+    quant_metrics?: Record<string, unknown>;
     key_metrics?: {
-      fundamental?: Record<string, any>;
+      fundamental?: Record<string, unknown>;
       sentiment?: {
         sentiment_score?: number;
         catalyst_count?: number;
       };
-      valuation?: Record<string, any>;
+      valuation?: Record<string, unknown>;
     };
     all_sources?: string[];
+    pick_source?: string;
+    pick_source_label?: string;
+    pick_source_kind?: string;
+    structured_sources?: Array<{
+      label?: string;
+      url?: string | null;
+      kind?: string;
+      paper_title?: string;
+    }>;
     risk_persona_alignment?: string;
     debate_digest?: string;
     consensus_reached?: boolean;
@@ -108,7 +118,7 @@ export interface DecisionResult {
       score?: number;
       source?: string;
     }>;
-    world_model_context?: {
+    pkm_context?: {
       risk_profile?: string;
       preferences?: Record<string, unknown>;
       holdings_count?: number;
@@ -131,6 +141,8 @@ export interface DecisionResult {
     };
     alphaagents_trace?: {
       paper?: string;
+      paper_title?: string;
+      paper_url?: string;
       protocol?: string;
       rounds_executed?: number;
       turns_per_agent?: number;
@@ -160,11 +172,12 @@ export interface DecisionResult {
     };
     market_snapshot?: {
       last_price?: number | null;
+      change_pct?: number | null;
       observed_at?: string | null;
       source?: string;
     };
     context_integrity?: {
-      world_model_context_present?: boolean;
+      pkm_context_present?: boolean;
       renaissance_context_present?: boolean;
       missing_requirements?: string[];
     };
@@ -186,52 +199,124 @@ export interface DecisionResult {
 // Source URL Helpers
 // ============================================================================
 
-const KNOWN_SOURCE_URLS: Record<string, string> = {
-  "yahoo finance": "https://finance.yahoo.com",
-  "sec edgar": "https://www.sec.gov/cgi-bin/browse-edgar",
-  "google finance": "https://www.google.com/finance",
-  "bloomberg": "https://www.bloomberg.com",
-  "reuters": "https://www.reuters.com",
-  "finnhub": "https://finnhub.io",
-  "pmp/fmp": "https://site.financialmodelingprep.com/developer/docs",
-  "financial modeling prep": "https://site.financialmodelingprep.com/developer/docs",
-  "marketwatch": "https://www.marketwatch.com",
-  "seeking alpha": "https://seekingalpha.com",
+type StructuredSource = {
+  label: string;
+  url: string | null;
+  kind: string;
+  paperTitle?: string;
 };
 
 function parseSourceUrl(source: string): { text: string; url: string | null } {
+  const normalized = source.trim();
+  const lower = normalized.toLowerCase();
   const urlMatch = source.match(/https?:\/\/[^\s)]+/);
   if (urlMatch) {
     return { text: source.replace(urlMatch[0], "").trim() || urlMatch[0], url: urlMatch[0] };
   }
-  const lower = source.toLowerCase();
-  for (const [key, url] of Object.entries(KNOWN_SOURCE_URLS)) {
-    if (lower.includes(key)) {
-      return { text: source, url };
-    }
+  if (
+    lower.includes("alphaagents") ||
+    lower.includes("arxiv:2508.11152") ||
+    lower.includes("2508.11152")
+  ) {
+    return {
+      text: "AlphaAgents paper",
+      url: "https://arxiv.org/pdf/2508.11152",
+    };
   }
   return { text: source, url: null };
 }
 
-function SourceLink({ source }: { source: string }) {
-  const { text, url } = parseSourceUrl(source);
-  if (url) {
-    return (
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-[10px] text-primary/80 hover:text-primary truncate pl-2 border-l-2 border-primary/20 flex items-center gap-1 transition-colors"
-      >
-        <Icon icon={Link2} size={10} className="shrink-0" />
-        <span className="truncate">{text || url}</span>
-      </a>
-    );
+function normalizeSource(source: string | StructuredSource): StructuredSource {
+  if (typeof source !== "string") {
+    const label = String(source.label || "").trim();
+    if (label) {
+      return {
+        label,
+        url: typeof source.url === "string" && source.url.trim() ? source.url.trim() : null,
+        kind: String(source.kind || "reference").trim() || "reference",
+        paperTitle: source.paperTitle,
+      };
+    }
   }
+  const raw = typeof source === "string" ? source : "";
+  const { text, url } = parseSourceUrl(raw);
+  return {
+    label: text || raw,
+    url,
+    kind: "reference",
+  };
+}
+
+function resolvePickSourceLabel(rawCard: DecisionResult["raw_card"]): string | null {
+  if (!rawCard || typeof rawCard !== "object") return null;
+  const explicit =
+    typeof rawCard.pick_source_label === "string" ? rawCard.pick_source_label.trim() : "";
+  if (explicit) return explicit;
+  const sourceId = typeof rawCard.pick_source === "string" ? rawCard.pick_source.trim() : "";
+  const kind = typeof rawCard.pick_source_kind === "string" ? rawCard.pick_source_kind.trim() : "";
+  if (sourceId === "default" || kind === "default") {
+    return "Default list";
+  }
+  if (sourceId.startsWith("ria:") || kind === "ria") {
+    return "Connected advisor list";
+  }
+  return sourceId || null;
+}
+
+function SourceLink({ source }: { source: StructuredSource }) {
+  const normalized = normalizeSource(source);
+  const text = normalized.paperTitle
+    ? `${normalized.label}`
+    : normalized.label;
+  const url = normalized.url;
   return (
-    <p className="text-[10px] text-muted-foreground truncate pl-2 border-l-2 border-primary/20">
-      {text}
-    </p>
+    <a
+      href={url!}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex items-center gap-1 truncate border-l-2 border-primary/20 pl-2 text-[10px] text-primary/80 transition-colors hover:text-primary"
+    >
+      <Icon icon={Link2} size={10} className="shrink-0" />
+      <span className="truncate">{text || url}</span>
+    </a>
+  );
+}
+
+function renderCompactTooltip(label: string, value: string, context?: string) {
+  return (
+    <div className="flex min-w-[9rem] flex-col gap-1">
+      <span className="text-[11px] font-semibold text-foreground">{label}</span>
+      <span className="text-sm font-semibold tracking-tight text-foreground">{value}</span>
+      {context ? (
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          {context}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function ChartPanel({
+  title,
+  icon,
+  accentClassName,
+  children,
+}: {
+  title: string;
+  icon: typeof TrendingUp;
+  accentClassName?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-[1.35rem] border border-border/60 bg-[color:var(--app-card-surface-default-solid)] p-4 text-foreground md:p-5">
+      <div className="mb-4 flex items-center gap-2">
+        <Icon icon={icon} size="xs" className={cn("text-sky-700 dark:text-sky-300", accentClassName)} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-foreground/80 dark:text-foreground/78">
+          {title}
+        </span>
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -267,12 +352,21 @@ function normalizeSentimentPercent(raw: unknown): number | null {
 // ============================================================================
 
 const RESULT_CHART_COLORS = {
-  primary: "var(--chart-1)",
-  positive: "var(--chart-2)",
-  neutral: "var(--chart-4)",
-  accent: "var(--chart-3)",
-  negative: "var(--chart-5)",
+  primary: "rgb(14 165 233)",
+  positive: "rgb(16 185 129)",
+  neutral: "rgb(245 158 11)",
+  accent: "rgb(56 189 248)",
+  negative: "rgb(239 68 68)",
 } as const;
+
+const DETAIL_PANEL_CLASSNAME =
+  "rounded-2xl border border-border/60 bg-[color:var(--app-card-surface-default-solid)] p-4";
+const DETAIL_PANEL_COMPACT_CLASSNAME =
+  "rounded-xl border border-border/50 bg-[color:var(--app-card-surface-default-solid)] p-3";
+const DETAIL_PANEL_EMPHASIS_CLASSNAME =
+  "rounded-2xl border border-border/60 bg-[color:var(--app-card-surface-compact)] p-5";
+const DETAIL_LABEL_CLASSNAME =
+  "text-[10px] font-semibold uppercase tracking-widest text-foreground/72 dark:text-foreground/76";
 
 const voteChartConfig = {
   bullish: {
@@ -311,17 +405,35 @@ function AgentVoteBar({ result }: { result: DecisionResult }) {
     };
   });
 
+  const renderVoteTooltip = ({
+    active,
+    payload,
+  }: {
+    active?: boolean;
+    payload?: Array<{ payload?: { agent?: string; vote?: string; bullish?: number; neutral?: number; bearish?: number } }>;
+  }) => {
+    if (!active || !payload?.length) return null;
+    const activeItem =
+      payload.find((entry) => {
+        const row = entry?.payload;
+        return Boolean(row && ((row.bullish || 0) > 0 || (row.neutral || 0) > 0 || (row.bearish || 0) > 0));
+      })?.payload || payload[0]?.payload;
+    if (!activeItem) return null;
+    return (
+      <div className="rounded-lg border border-border/60 bg-background/95 px-3 py-2 shadow-xl backdrop-blur-sm">
+        {renderCompactTooltip(activeItem.agent || "Agent", activeItem.vote || "View", "Vote")}
+      </div>
+    );
+  };
+
   return (
-    <div className="space-y-2">
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-        Agent Votes
-      </p>
-      <ChartContainer config={voteChartConfig} className="h-[210px] w-full">
+    <ChartPanel title="Agent votes" icon={Scale} accentClassName="text-sky-700 dark:text-sky-300">
+      <ChartContainer config={voteChartConfig} className="h-[240px] w-full">
         <BarChart
           accessibilityLayer
           data={data}
           layout="vertical"
-          margin={{ top: 4, right: 10, left: 6, bottom: 6 }}
+          margin={{ top: 8, right: 16, left: 10, bottom: 8 }}
         >
           <CartesianGrid horizontal={false} strokeDasharray="3 3" strokeOpacity={0.55} />
           <XAxis
@@ -339,33 +451,14 @@ function AgentVoteBar({ result }: { result: DecisionResult }) {
             tickLine={false}
             tick={{ fontSize: 11, fill: "hsl(var(--foreground))" }}
           />
-          <ChartTooltip
-            cursor={false}
-            content={
-              <ChartTooltipContent
-                hideLabel
-                formatter={(value, _name, item) => {
-                  const payload = item?.payload as { agent?: string; vote?: string } | undefined;
-                  return (
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Agent Votes
-                      </span>
-                      <span className="text-xs text-muted-foreground">{payload?.agent || "Agent"}</span>
-                      <span className="text-sm font-semibold">{payload?.vote || String(value)}</span>
-                    </div>
-                  );
-                }}
-              />
-            }
-          />
-          <ChartLegend content={<ChartLegendContent />} />
+          <ChartTooltip cursor={false} content={renderVoteTooltip} />
+          <ChartLegend content={<ChartLegendContent className="text-[11px] font-medium text-foreground/80 dark:text-foreground/80" />} />
           <Bar dataKey="bullish" stackId="vote" fill="var(--color-bullish)" radius={[4, 0, 0, 4]} barSize={14} />
           <Bar dataKey="neutral" stackId="vote" fill="var(--color-neutral)" barSize={14} />
           <Bar dataKey="bearish" stackId="vote" fill="var(--color-bearish)" radius={[0, 4, 4, 0]} barSize={14} />
         </BarChart>
       </ChartContainer>
-    </div>
+    </ChartPanel>
   );
 }
 
@@ -392,34 +485,53 @@ function ConsensusDonut({ result }: { result: DecisionResult }) {
     { name: "Agree", value: agreeCount, fill: consensusChartConfig.agree.color },
     { name: "Dissent", value: dissentCount, fill: consensusChartConfig.dissent.color },
   ].filter((d) => d.value > 0);
+  const totalVotes = Math.max(1, votes.length);
+  const agreePct = Math.round((agreeCount / totalVotes) * 100);
 
   return (
-    <div className="space-y-1.5">
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center">
-        Consensus
-      </p>
-      <ChartContainer config={consensusChartConfig} className="h-[120px] w-full">
-        <PieChart accessibilityLayer>
-          <ChartTooltip content={<ChartTooltipContent nameKey="name" hideLabel />} />
-          <Pie data={data} cx="50%" cy="50%" innerRadius={30} outerRadius={48} dataKey="value" strokeWidth={0}>
-            {data.map((entry) => (
-              <Cell key={entry.name} fill={entry.fill} />
-            ))}
-          </Pie>
-        </PieChart>
-      </ChartContainer>
-      <div className="flex justify-center gap-3">
-        {data.map((d) => (
-          <div key={d.name} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            <span
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: d.name === "Agree" ? consensusChartConfig.agree.color : consensusChartConfig.dissent.color }}
-            />
-            {d.name} ({d.value})
+    <ChartPanel title="Consensus" icon={Target} accentClassName="text-amber-700 dark:text-amber-300">
+      <div className="space-y-3">
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <p className="text-2xl font-black tracking-tight text-foreground">{agreePct}%</p>
+            <p className="text-xs text-muted-foreground">Agents align with the final call</p>
           </div>
-        ))}
+          <div className="rounded-xl border border-amber-500/15 bg-amber-500/[0.08] px-3 py-2 text-right">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">
+              Split
+            </p>
+            <p className="text-sm font-semibold text-foreground">
+              {agreeCount} agree / {dissentCount} dissent
+            </p>
+          </div>
+        </div>
+        <div className="overflow-hidden rounded-full border border-border/50 bg-muted/40">
+          <div className="flex h-3 w-full">
+            <div
+              className="h-full bg-emerald-500/85"
+              style={{ width: `${(agreeCount / totalVotes) * 100}%` }}
+            />
+            <div
+              className="h-full bg-rose-500/75"
+              style={{ width: `${(dissentCount / totalVotes) * 100}%` }}
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground">
+          {data.map((d) => (
+            <div key={d.name} className="flex items-center gap-1.5">
+              <span
+                className="h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: d.name === "Agree" ? consensusChartConfig.agree.color : consensusChartConfig.dissent.color }}
+              />
+              <span>
+                {d.name} ({d.value})
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+    </ChartPanel>
   );
 }
 
@@ -438,43 +550,45 @@ const barChartConfig = {
   },
 } satisfies ChartConfig;
 
-function QuantMetricsBarChart({ metrics }: { metrics: Record<string, any> }) {
+type QuantMetricChartEntry = {
+  name: string;
+  value: number;
+  isNegative: boolean;
+  fill: string;
+};
+
+function buildQuantMetricChartData(metrics: Record<string, unknown>): QuantMetricChartEntry[] {
+  return Object.entries(metrics)
+    .filter((entry): entry is [string, number] => {
+      const value = entry[1];
+      return typeof value === "number" && value !== 0 && Number.isFinite(value);
+    })
+    .slice(0, 6)
+    .map(([key, value]) => ({
+      name: key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase()),
+      value: Math.abs(value) >= 1e9 ? value / 1e9 : Math.abs(value) >= 1e6 ? value / 1e6 : value,
+      isNegative: value < 0,
+      fill: value < 0 ? "var(--color-negative)" : "var(--color-value)",
+    }));
+}
+
+function QuantMetricsBarChart({ data }: { data: QuantMetricChartEntry[] }) {
   const compactMetricLabel = (value: string) => {
     const text = String(value || "");
     if (text.length <= 20) return text;
     return `${text.slice(0, 19)}…`;
   };
 
-  const data = useMemo(() => {
-    return Object.entries(metrics)
-      .filter(([, v]) => typeof v === "number" && v !== 0 && !Number.isNaN(v))
-      .slice(0, 6)
-      .map(([key, value]) => ({
-        name: key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase()),
-        value: Math.abs(value as number) >= 1e9
-          ? (value as number) / 1e9
-          : Math.abs(value as number) >= 1e6
-          ? (value as number) / 1e6
-          : (value as number),
-        isNegative: (value as number) < 0,
-        fill: (value as number) < 0 ? "var(--color-negative)" : "var(--color-value)",
-      }));
-  }, [metrics]);
-
   if (data.length === 0) return null;
 
   return (
-    <div className="space-y-3">
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-        <Icon icon={BarChart3} size="xs" />
-        Valuation & Fundamentals
-      </p>
-      <ChartContainer config={barChartConfig} className="w-full h-[160px]">
+    <ChartPanel title="Valuation & fundamentals" icon={BarChart3}>
+      <ChartContainer config={barChartConfig} className="h-[210px] w-full">
         <BarChart
           accessibilityLayer
           data={data}
           layout="vertical"
-          margin={{ left: 8, right: 32, top: 0, bottom: 0 }}
+          margin={{ left: 12, right: 36, top: 8, bottom: 8 }}
         >
           <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.45} />
           <XAxis type="number" hide />
@@ -494,14 +608,10 @@ function QuantMetricsBarChart({ metrics }: { metrics: Record<string, any> }) {
                 hideLabel
                 formatter={(value, _name, item) => {
                   const payload = item?.payload as { name?: string } | undefined;
-                  return (
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Valuation & Fundamentals
-                      </span>
-                      <span className="text-xs text-muted-foreground">{payload?.name || "Metric"}</span>
-                      <span className="text-sm font-semibold">{Number(value).toLocaleString()}</span>
-                    </div>
+                  return renderCompactTooltip(
+                    payload?.name || "Metric",
+                    Number(value).toLocaleString(),
+                    "Metric"
                   );
                 }}
               />
@@ -520,11 +630,12 @@ function QuantMetricsBarChart({ metrics }: { metrics: Record<string, any> }) {
           </Bar>
         </BarChart>
       </ChartContainer>
-    </div>
+    </ChartPanel>
   );
 }
 
 function PriceTargetsChart({ targets }: { targets: Record<string, number> }) {
+  const { resolvedTheme } = useTheme();
   const data = Object.entries(targets)
     .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
     .slice(0, 4)
@@ -535,24 +646,25 @@ function PriceTargetsChart({ targets }: { targets: Record<string, number> }) {
 
   if (data.length < 2) return null;
 
+  const chartTextColor =
+    resolvedTheme === "dark" ? "rgb(244 244 245)" : "rgb(15 23 42)";
+  const chartAxisColor =
+    resolvedTheme === "dark" ? "rgb(161 161 170)" : "rgb(71 85 105)";
+
   return (
-    <div className="space-y-3">
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-        <Icon icon={TrendingUp} size="xs" />
-        Price Scenarios
-      </p>
-      <ChartContainer config={barChartConfig} className="w-full h-[190px]">
-        <BarChart accessibilityLayer data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+    <ChartPanel title="Price scenarios" icon={TrendingUp} accentClassName="text-emerald-700 dark:text-emerald-300">
+      <ChartContainer config={barChartConfig} className="h-[225px] w-full">
+        <BarChart accessibilityLayer data={data} margin={{ top: 12, right: 12, left: 10, bottom: 12 }}>
           <CartesianGrid vertical={false} strokeDasharray="3 3" strokeOpacity={0.55} />
           <XAxis
             dataKey="scenario"
-            tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+            tick={{ fontSize: 10, fill: chartAxisColor }}
             axisLine={false}
             tickLine={false}
             tickMargin={8}
           />
           <YAxis
-            tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+            tick={{ fontSize: 10, fill: chartAxisColor }}
             axisLine={false}
             tickLine={false}
             tickFormatter={(value) => `$${Number(value).toFixed(0)}`}
@@ -565,14 +677,10 @@ function PriceTargetsChart({ targets }: { targets: Record<string, number> }) {
                 hideLabel
                 formatter={(value, _name, item) => {
                   const payload = item?.payload as { scenario?: string } | undefined;
-                  return (
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Price Scenarios
-                      </span>
-                      <span className="text-xs text-muted-foreground">{payload?.scenario || "Scenario"}</span>
-                      <span className="text-sm font-semibold">${Number(value).toFixed(2)}</span>
-                    </div>
+                  return renderCompactTooltip(
+                    payload?.scenario || "Scenario",
+                    `$${Number(value).toFixed(2)}`,
+                    "Target"
                   );
                 }}
               />
@@ -583,13 +691,13 @@ function PriceTargetsChart({ targets }: { targets: Record<string, number> }) {
               dataKey="value"
               position="top"
               fontSize={10}
-              fill="hsl(var(--foreground))"
+              fill={chartTextColor}
               formatter={(value: number) => `$${value.toFixed(2)}`}
             />
           </Bar>
         </BarChart>
       </ChartContainer>
-    </div>
+    </ChartPanel>
   );
 }
 
@@ -725,36 +833,50 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
   const isReduce = decisionPresentation.tone === "negative";
 
   const rawCard = result.raw_card;
+  const pickSourceDisplayLabel = resolvePickSourceLabel(rawCard);
   const sources = useMemo(() => {
-    const sourceList: string[] = [];
+    const sourceList: StructuredSource[] = [];
+    for (const source of rawCard?.structured_sources || []) {
+      if (!source || typeof source !== "object") continue;
+      const label = String(source.label || "").trim();
+      if (!label) continue;
+      sourceList.push({
+        label,
+        url: typeof source.url === "string" && source.url.trim() ? source.url.trim() : null,
+        kind: String(source.kind || "reference").trim() || "reference",
+        paperTitle:
+          typeof source.paper_title === "string" && source.paper_title.trim()
+            ? source.paper_title.trim()
+            : undefined,
+      });
+    }
     for (const source of rawCard?.all_sources || []) {
       if (typeof source === "string" && source.trim()) {
-        sourceList.push(source.trim());
+        sourceList.push(normalizeSource(source.trim()));
       }
     }
     for (const highlight of rawCard?.debate_highlights || []) {
       if (typeof highlight?.source === "string" && highlight.source.trim()) {
-        sourceList.push(highlight.source.trim());
+        sourceList.push(normalizeSource(highlight.source.trim()));
       }
     }
-    const alphaAgentsPaper = rawCard?.alphaagents_trace?.paper;
-    if (typeof alphaAgentsPaper === "string" && alphaAgentsPaper.trim()) {
-      sourceList.push(`AlphaAgents Reference: ${alphaAgentsPaper.trim()}`);
-    }
 
-    const deduped: string[] = [];
+    const deduped: StructuredSource[] = [];
     const seen = new Set<string>();
     for (const value of sourceList) {
-      const key = value.toLowerCase();
+      if (!value.url) continue;
+      const key = `${value.label.toLowerCase()}::${(value.url || "").toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
       deduped.push(value);
     }
     return deduped;
-  }, [rawCard?.all_sources, rawCard?.alphaagents_trace?.paper, rawCard?.debate_highlights]);
-  const hasQuantMetrics = rawCard?.quant_metrics && Object.keys(rawCard.quant_metrics).filter(
-    (k) => rawCard.quant_metrics![k] !== null && rawCard.quant_metrics![k] !== undefined && typeof rawCard.quant_metrics![k] !== "object"
-  ).length > 0;
+  }, [rawCard]);
+  const quantMetricChartData = useMemo(
+    () => (rawCard?.quant_metrics ? buildQuantMetricChartData(rawCard.quant_metrics) : []),
+    [rawCard]
+  );
+  const hasRenderableQuantMetrics = quantMetricChartData.length > 0;
 
   // Fallback for empty/missing decision to prevent layout shift
   const safeDecision = decisionPresentation.label || "REVIEW";
@@ -818,13 +940,22 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
 
         <Separator className="bg-primary/10" />
 
+        {pickSourceDisplayLabel ? (
+          <div className="flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-border/60 bg-[color:var(--app-card-surface-default-solid)] px-4 py-3">
+            <Badge variant="outline" className="border-sky-500/25 bg-transparent text-sky-700 dark:text-sky-300">
+              Debate source
+            </Badge>
+            <p className="text-sm font-medium text-foreground">{pickSourceDisplayLabel}</p>
+          </div>
+        ) : null}
+
         {/* DATA VISUALIZATION GRID */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-6">
           <AgentVoteBar result={result} />
           {rawCard?.price_targets && Object.keys(rawCard.price_targets).length > 1 ? (
                <PriceTargetsChart targets={rawCard.price_targets} />
-          ) : hasQuantMetrics && rawCard?.quant_metrics ? (
-               <QuantMetricsBarChart metrics={rawCard.quant_metrics} />
+          ) : hasRenderableQuantMetrics ? (
+               <QuantMetricsBarChart data={quantMetricChartData} />
           ) : (
                <ConsensusDonut result={result} />
           )}
@@ -834,10 +965,10 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
         <div className="space-y-3">
             {/* Risk Persona Alignment */}
             {rawCard?.risk_persona_alignment && (
-            <div className="p-4 bg-background/50 border border-primary/10 rounded-2xl backdrop-blur-sm">
+            <div className={DETAIL_PANEL_CLASSNAME}>
                 <div className="flex items-center gap-2 mb-2">
                 <Icon icon={Shield} size="sm" className="text-primary" />
-                <span className="text-xs font-bold text-primary uppercase tracking-wide">Risk Alignment</span>
+                <span className={DETAIL_LABEL_CLASSNAME}>Risk Alignment</span>
                 </div>
                 <p className="text-sm text-muted-foreground leading-relaxed">{rawCard.risk_persona_alignment}</p>
             </div>
@@ -845,14 +976,14 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
 
             {/* Key Takeaway - Highlight the most important insight */}
             {rawCard?.fundamental_insight?.summary && (
-            <div className="p-5 bg-linear-to-br from-primary/10 via-primary/5 to-transparent border border-primary/20 rounded-2xl shadow-sm relative overflow-hidden group">
-                <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
+            <div className={cn(DETAIL_PANEL_EMPHASIS_CLASSNAME, "relative overflow-hidden")}>
+                <div className="absolute top-0 right-0 p-4 opacity-[0.035]">
                     <Icon icon={Zap} size={96} className="rotate-12" />
                 </div>
                 <div className="relative z-10">
                     <div className="flex items-center gap-2 mb-2">
                     <Icon icon={Zap} size="sm" className="text-primary" />
-                    <span className="text-xs font-black uppercase tracking-widest text-primary">Key Takeaway</span>
+                    <span className={DETAIL_LABEL_CLASSNAME}>Key Takeaway</span>
                     </div>
                     <p className="text-sm font-semibold leading-relaxed text-foreground/90">{rawCard.fundamental_insight.summary}</p>
                 </div>
@@ -864,10 +995,10 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {/* Business Moat */}
             {rawCard?.fundamental_insight?.business_moat && (
-            <div className="p-4 bg-blue-500/5 border border-blue-500/10 rounded-2xl">
+            <div className={DETAIL_PANEL_CLASSNAME}>
                 <div className="flex items-center gap-2 mb-2">
-                <Icon icon={Shield} size="xs" className="text-blue-500" />
-                <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest">Moat</span>
+                <Icon icon={Shield} size="xs" className="text-sky-700 dark:text-sky-300" />
+                <span className={DETAIL_LABEL_CLASSNAME}>Moat</span>
                 </div>
                 <p className="text-xs text-muted-foreground">{rawCard.fundamental_insight.business_moat}</p>
             </div>
@@ -875,7 +1006,7 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
             
             {/* Sentiment Gauge Card */}
             {rawCard?.key_metrics?.sentiment?.sentiment_score !== undefined && (
-            <div className="p-4 bg-card/40 border border-border/50 rounded-2xl flex flex-col justify-center">
+            <div className={DETAIL_PANEL_CLASSNAME}>
                 {(() => {
                   const sentimentPct = normalizeSentimentPercent(
                     rawCard.key_metrics?.sentiment?.sentiment_score
@@ -886,10 +1017,10 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
                     <>
                 <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
-                        <Icon icon={BarChart3} size="xs" style={{ color: RESULT_CHART_COLORS.accent }} />
-                        <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: RESULT_CHART_COLORS.accent }}>Sentiment</span>
+                        <Icon icon={BarChart3} size="xs" className="text-sky-600 dark:text-sky-300" />
+                        <span className="text-[10px] font-semibold uppercase tracking-widest text-foreground/80 dark:text-foreground/80">Sentiment</span>
                     </div>
-                    <Badge variant="outline" className="text-[10px] font-mono bg-muted/30 border-border/40">
+                    <Badge variant="outline" className="border-border/40 bg-muted/30 text-[10px] font-mono text-foreground/85 dark:text-foreground/85">
                         {sentimentPct >= 0 ? "+" : ""}
                         {sentimentPct.toFixed(0)}%
                     </Badge>
@@ -909,19 +1040,19 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
         {(rawCard?.fundamental_insight?.bull_case || rawCard?.fundamental_insight?.bear_case) && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {rawCard.fundamental_insight.bull_case && (
-                <div className="p-4 bg-emerald-500/5 border border-emerald-500/10 rounded-2xl">
+                <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4">
                 <div className="flex items-center gap-2 mb-2">
-                    <Icon icon={TrendingUp} size="xs" className="text-emerald-500" />
-                    <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Bull Case</span>
+                    <Icon icon={TrendingUp} size="xs" className="text-emerald-600 dark:text-emerald-400" />
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-300">Bull Case</span>
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">{rawCard.fundamental_insight.bull_case}</p>
                 </div>
             )}
             {rawCard.fundamental_insight.bear_case && (
-                <div className="p-4 bg-red-500/5 border border-red-500/10 rounded-2xl">
+                <div className="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4">
                 <div className="flex items-center gap-2 mb-2">
-                    <Icon icon={TrendingDown} size="xs" className="text-red-500" />
-                    <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Bear Case</span>
+                    <Icon icon={TrendingDown} size="xs" className="text-rose-600 dark:text-rose-400" />
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-rose-700 dark:text-rose-300">Bear Case</span>
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">{rawCard.fundamental_insight.bear_case}</p>
                 </div>
@@ -933,14 +1064,14 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
         {(rawCard?.fundamental_insight?.financial_resilience || rawCard?.fundamental_insight?.growth_efficiency) && (
           <div className="grid grid-cols-2 gap-3">
             {rawCard.fundamental_insight.financial_resilience && (
-              <div className="p-3 bg-card/40 rounded-xl border border-border/40">
-                <p className="text-[9px] text-muted-foreground uppercase tracking-widest mb-1 font-bold">Resilience</p>
+              <div className={DETAIL_PANEL_COMPACT_CLASSNAME}>
+                <p className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-foreground/68 dark:text-foreground/72">Resilience</p>
                 <p className="text-xs font-medium">{rawCard.fundamental_insight.financial_resilience}</p>
               </div>
             )}
             {rawCard.fundamental_insight.growth_efficiency && (
-              <div className="p-3 bg-card/40 rounded-xl border border-border/40">
-                <p className="text-[9px] text-muted-foreground uppercase tracking-widest mb-1 font-bold">Growth Eff.</p>
+              <div className={DETAIL_PANEL_COMPACT_CLASSNAME}>
+                <p className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-foreground/68 dark:text-foreground/72">Growth Eff.</p>
                 <p className="text-xs font-medium">{rawCard.fundamental_insight.growth_efficiency}</p>
               </div>
             )}
@@ -948,20 +1079,20 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
         )}
 
         {/* FINAL STATEMENT */}
-        <div className="p-5 bg-card/60 rounded-2xl border border-border/60">
+        <div className={DETAIL_PANEL_EMPHASIS_CLASSNAME}>
             <div className="flex items-center gap-2 mb-2 opacity-50">
                 <Icon icon={FileText} size="xs" />
-                <span className="text-[10px] font-bold uppercase tracking-widest">Verdict Rationale</span>
+                <span className={DETAIL_LABEL_CLASSNAME}>Verdict Rationale</span>
             </div>
             <p className="text-sm font-medium leading-relaxed">{rawCard?.debate_digest || result.final_statement}</p>
         </div>
 
         {/* LLM SYNTHESIS */}
         {(llmSynthesis?.thesis || llmSynthesis?.horizon_fit || llmSynthesis?.error) && (
-          <div className="p-5 bg-primary/5 border border-primary/20 rounded-2xl space-y-3">
+          <div className={cn(DETAIL_PANEL_EMPHASIS_CLASSNAME, "space-y-3")}>
             <div className="flex items-center justify-between gap-2">
-              <p className="text-[10px] font-black uppercase tracking-widest text-primary flex items-center gap-1.5">
-                <Icon icon={Target} size="xs" />
+              <p className={cn(DETAIL_LABEL_CLASSNAME, "flex items-center gap-1.5")}>
+                <Icon icon={Target} size="xs" className="text-primary" />
                 Chief Strategist Synthesis
               </p>
               {llmSynthesis?.fallback && (
@@ -974,8 +1105,8 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
               <p className="text-sm leading-relaxed text-foreground/90">{llmSynthesis.thesis}</p>
             )}
             {llmSynthesis?.horizon_fit && (
-              <div className="p-3 rounded-xl border border-primary/20 bg-background/50">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1">
+              <div className="rounded-xl border border-border/50 bg-background/60 p-3">
+                <p className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-foreground/68 dark:text-foreground/72">
                   Horizon Fit
                 </p>
                 <p className="text-xs text-foreground/80">{llmSynthesis.horizon_fit}</p>
@@ -993,9 +1124,9 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
         {(synthesisDrivers.length > 0 || synthesisRisks.length > 0) && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {synthesisDrivers.length > 0 && (
-              <div className="p-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/5">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mb-2 flex items-center gap-1.5">
-                  <Icon icon={TrendingUp} size="xs" />
+              <div className={DETAIL_PANEL_CLASSNAME}>
+                <p className={cn(DETAIL_LABEL_CLASSNAME, "mb-2 flex items-center gap-1.5")}>
+                  <Icon icon={TrendingUp} size="xs" className="text-emerald-600 dark:text-emerald-400" />
                   Key Drivers
                 </p>
                 <ul className="space-y-2">
@@ -1011,9 +1142,9 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
               </div>
             )}
             {synthesisRisks.length > 0 && (
-              <div className="p-4 rounded-2xl border border-red-500/20 bg-red-500/5">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-red-600 dark:text-red-400 mb-2 flex items-center gap-1.5">
-                  <Icon icon={Shield} size="xs" />
+              <div className={DETAIL_PANEL_CLASSNAME}>
+                <p className={cn(DETAIL_LABEL_CLASSNAME, "mb-2 flex items-center gap-1.5")}>
+                  <Icon icon={Shield} size="xs" className="text-rose-600 dark:text-rose-400" />
                   Key Risks
                 </p>
                 <ul className="space-y-2">
@@ -1035,9 +1166,9 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
         {(synthesisActionPlan.length > 0 || synthesisTriggers.length > 0) && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {synthesisActionPlan.length > 0 && (
-              <div className="p-4 rounded-2xl border border-blue-500/20 bg-blue-500/5">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-blue-600 dark:text-blue-400 mb-2 flex items-center gap-1.5">
-                  <Icon icon={Target} size="xs" />
+              <div className={DETAIL_PANEL_CLASSNAME}>
+                <p className={cn(DETAIL_LABEL_CLASSNAME, "mb-2 flex items-center gap-1.5")}>
+                  <Icon icon={Target} size="xs" className="text-sky-700 dark:text-sky-300" />
                   Action Plan
                 </p>
                 <ul className="space-y-2">
@@ -1053,9 +1184,9 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
               </div>
             )}
             {synthesisTriggers.length > 0 && (
-              <div className="p-4 rounded-2xl border border-amber-500/20 bg-amber-500/5">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-600 dark:text-amber-400 mb-2 flex items-center gap-1.5">
-                  <Icon icon={Zap} size="xs" />
+              <div className={DETAIL_PANEL_CLASSNAME}>
+                <p className={cn(DETAIL_LABEL_CLASSNAME, "mb-2 flex items-center gap-1.5")}>
+                  <Icon icon={Zap} size="xs" className="text-amber-600 dark:text-amber-400" />
                   Watchlist Triggers
                 </p>
                 <ul className="space-y-2">
@@ -1075,8 +1206,8 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
 
         {/* DEBATE HIGHLIGHTS */}
         {debateHighlights.length > 0 && (
-          <div className="p-4 bg-card/40 rounded-2xl border border-border/40 space-y-3">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+          <div className={cn(DETAIL_PANEL_CLASSNAME, "space-y-3")}>
+            <p className={DETAIL_LABEL_CLASSNAME}>
               Debate Highlights
             </p>
             <div className="max-h-56 overflow-y-auto pr-1 space-y-2">
@@ -1102,7 +1233,7 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
         {/* Deep Analysis section intentionally removed: debate rounds already surface the agent detail. */}
         
         {/* Consensus Donut - Only show here if QuantMetrics took the main spot */}
-        {hasQuantMetrics && rawCard?.quant_metrics && (
+        {hasRenderableQuantMetrics && (
              <div className="pt-2">
                 <Separator className="bg-primary/5 mb-4" />
                 <ConsensusDonut result={result} />
@@ -1111,9 +1242,9 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
 
         {/* DISSENT */}
         {result.dissenting_opinions && result.dissenting_opinions.length > 0 && (
-          <div className="p-4 bg-amber-500/5 border border-amber-500/20 rounded-2xl">
-            <p className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 mb-2 flex items-center gap-1.5">
-              <Icon icon={Scale} size="xs" />
+          <div className={DETAIL_PANEL_CLASSNAME}>
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-foreground/74 dark:text-foreground/76">
+              <Icon icon={Scale} size="xs" className="text-amber-600 dark:text-amber-400" />
               Dissenting Opinions
             </p>
             <ul className="space-y-2">
@@ -1137,7 +1268,7 @@ export function DecisionCard({ result }: { result: DecisionResult }) {
               </p>
               <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {sources.map((src, i) => (
-                  <SourceLink key={`${src}-${i}`} source={src} />
+                  <SourceLink key={`${src.label}-${src.url || "nolink"}-${i}`} source={src} />
                 ))}
               </div>
             </div>

@@ -6,6 +6,9 @@ body {
   height: 100%;
   overflow-x: hidden;
   overscroll-behavior: none;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
 }
 
 html body[data-scroll-locked] {
@@ -92,6 +95,26 @@ html body[data-scroll-locked] {
   --color-voteBearish: hsl(var(--chart-5));
 
   --radius: 1.25rem;
+
+  /* ── Design token scale ─────────────────────────────────────────── */
+  /* Border radius: 3-tier scale. Use these instead of arbitrary px. */
+  --radius-sm: 16px;
+  --radius-md: 20px;
+  --radius-lg: 28px;
+
+  /* Shadow elevation scale — Apple iCloud single-shadow model */
+  --theme-color-fillSecondary: rgba(120, 120, 128, 0.36);
+  --shadow-xs: 0 4px 12px 0 rgba(120, 120, 128, 0.08);
+  --shadow-sm: 0 8px 24px 0 rgba(120, 120, 128, 0.12);
+  --shadow-md: 0 11px 34px 0 var(--theme-color-fillSecondary);
+  --shadow-lg: 0 11px 34px 0 rgba(120, 120, 128, 0.22);
+  --shadow-xl: 0 16px 48px 0 rgba(120, 120, 128, 0.28);
+
+  /* Glass blur scale */
+  --blur-light: 4px;
+  --blur-standard: 8px;
+  --blur-heavy: 16px;
+
   /* Lucide defaults (see docs/reference/quality/design-system.md): change once to update all icons. */
   --lucide-stroke-width: 1;
   /* Safe area and fixed-bottom UI spacing tokens (single source of truth). */
@@ -104,6 +127,7 @@ html body[data-scroll-locked] {
   /* Runtime-measured bottom fixed UI (Navbar / floating theme pill). Overridden by navbar at runtime. */
   --app-bottom-fixed-ui: var(--bottom-nav-offset);
   --app-bottom-chrome-lift: 0px;
+  --bottom-chrome-fade-overscan: 18px;
   --app-bottom-inset: calc(
     var(--app-bottom-fixed-ui) + var(--app-safe-area-bottom-effective) + var(--app-bottom-chrome-lift)
   );
@@ -113,38 +137,88 @@ html body[data-scroll-locked] {
   --app-top-safe-offset: 0px;
   --app-safe-area-top-probe: 0px;
   --app-safe-area-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
-  --app-safe-area-top-effective: var(--app-safe-area-top);
+  --app-safe-area-top-effective: max(
+    var(--app-safe-area-top),
+    env(safe-area-max-inset-top, 0px),
+    var(--app-safe-area-top-probe)
+  );
   --app-top-bar-height: 72px;
   --kai-route-tabs-height: 32px;
   --kai-route-tabs-content-gap: 8px;
   /* Global top-shell geometry contract (consumed by providers + top-app-bar).
    * Keep these tokens defined at root so web and native share deterministic spacing. */
-  --top-inset: var(--app-safe-area-top-effective);
+  --top-shell-safe-area: var(--app-safe-area-top-effective);
+  --top-inset: var(--top-shell-safe-area);
   --top-bar-h: 44px;
+  --top-bar-side-w: 98px;
   --top-tabs-h: var(--kai-route-tabs-height);
   --top-tabs-gap: var(--kai-route-tabs-content-gap);
   --top-tabs-total: 0px;
+  --top-subnav-h: 30px;
+  --top-subnav-gap: 12px;
   --top-fade-active: 14px;
+  --top-content-safe-gap: 14px;
+  --page-top-body-gap: 18px;
+  /* Single visual clearance between the fixed top shell and the first page block.
+   * `--page-top-start` is the body-start gap token designers inspect/tune directly.
+   * The actual structural spacer adds reserved shell height on top of this value. */
+  --page-top-start: 32px;
+  --app-top-body-start-gap: var(--page-top-start);
+  --page-top-local-offset: 0px;
+  --app-shell-reading: 54rem;
+  --app-shell-standard: 90rem;
+  --app-shell-expanded: 96rem;
   --top-systembar-row-gap: 4px;
+  --top-shell-row-gap: var(--top-systembar-row-gap);
   --top-shell-reserved-height: calc(
     var(--top-inset) + var(--top-systembar-row-gap) + var(--top-bar-h) + var(--top-tabs-total)
   );
   --top-shell-visual-height: calc(var(--top-shell-reserved-height) + var(--top-fade-active));
   --top-shell-h: var(--top-shell-reserved-height);
   --top-glass-h: var(--top-shell-visual-height);
-  --top-content-pad: var(--top-shell-reserved-height);
-  --bottom-chrome-stack-height: calc(var(--app-bottom-inset) + var(--kai-command-fixed-ui));
-  --bottom-chrome-fade-overscan: 24px;
-  --bottom-chrome-full-height: calc(
-    var(--bottom-chrome-stack-height) + var(--bottom-chrome-fade-overscan)
+  --app-top-mask-tail-clearance: calc(
+    var(--page-top-start) + var(--page-top-local-offset)
   );
-  --bottom-chrome-search-height: calc(
-    var(--app-safe-area-bottom-effective) +
-      var(--app-bottom-chrome-lift) +
-      var(--kai-command-fixed-ui) +
-      var(--bottom-chrome-fade-overscan)
+  --app-top-content-offset: calc(
+    var(--top-shell-reserved-height) + var(--app-top-mask-tail-clearance)
   );
-  --bottom-chrome-visual-height: var(--bottom-chrome-full-height);
+  --app-fullscreen-flow-content-offset: calc(
+    var(--top-shell-reserved-height) + var(--app-top-mask-tail-clearance)
+  );
+  --top-content-pad: calc(
+    var(--top-shell-visual-height) + var(--top-subnav-total, 0px) + var(--top-content-safe-gap)
+  );
+  --page-inline-gutter-standard: 12px;
+  --page-surface-overscan: 0px;
+  --page-surface-gap-standard: 16px;
+  --page-surface-gap-compact: 12px;
+  --page-header-stack-gap: 10px;
+  --page-header-row-gap: 10px;
+  --page-header-copy-gap: 4px;
+  --page-header-actions-gap: 10px;
+  --page-header-section-gap: 14px;
+  --section-header-stack-gap: 8px;
+  --section-header-row-gap: 10px;
+  --section-header-copy-gap: 6px;
+  --section-header-actions-gap: 10px;
+  --surface-shadow-overscan: 14px;
+  --surface-stack-gap-standard: 18px;
+  --surface-stack-gap-compact: 14px;
+  --surface-card-header-px: 14px;
+  --surface-card-header-pt: 16px;
+  --surface-card-header-pb: 8px;
+  --surface-card-content-px: 14px;
+  --surface-card-content-pb: 16px;
+  --surface-inset-p: 14px;
+  --settings-group-stack-gap: 6px;
+  --settings-heading-stack-gap: 4px;
+  --settings-row-px: 12px;
+  --settings-row-py: 14px;
+  --settings-row-gap: 12px;
+  --settings-row-stack-gap: 10px;
+  --data-table-controls-gap: 16px;
+  --data-table-cell-px: 12px;
+  --data-table-cell-py: 10px;
 
   /* Motion tokens (GSAP + CSS). Change once to retune the whole app. */
   --motion-duration-xs: 120ms;
@@ -165,11 +239,12 @@ html body[data-scroll-locked] {
   --motion-deck-scale-active: 1.14;
   --motion-deck-scale-adjacent: 0.9;
   --motion-deck-scale-other: 0.84;
-  --background: oklch(1 0 0);
+  /* Apple HIG: light bg is off-white #f5f5f7, shared surfaces sit on a softer table-like card */
+  --background: oklch(0.968 0.002 264);
   --foreground: oklch(0 0 0);
-  --card: oklch(0.98 0.002 264);
+  --card: #f7f7fa;
   --card-foreground: oklch(0 0 0);
-  --popover: oklch(1 0 0);
+  --popover: #f7f7fa;
   --popover-foreground: oklch(0 0 0);
   --primary: oklch(0.55 0.18 250);
   --primary-foreground: oklch(1 0 0);
@@ -233,10 +308,10 @@ html body[data-scroll-locked] {
   --crystal-glass-border: rgba(0, 113, 227, 0.2);
   --crystal-glass-blur: 20px;
 
-  /* App Background - Clean White/Blue Gradient */
-  --app-bg-start: #ffffff;
-  --app-bg-mid: #f9fafb;
-  --app-bg-end: #f3f4f6;
+  /* App Background - Apple iCloud light: uniform off-white */
+  --app-bg-start: #f5f5f7;
+  --app-bg-mid: #f5f5f7;
+  --app-bg-end: #f5f5f7;
 
   --glass1: #ffffff60 !important;
   --glass2: #6464643b !important;
@@ -246,7 +321,7 @@ html body[data-scroll-locked] {
   --activeShadowColor: var(--shadow1);
   --fadeGrey: #e5e7eb80;
 
-  /* Hushh Brand Color Tokens - Apple Blue */
+  /* Hussh Brand Color Tokens - Apple Blue */
   --morphy-primary-start: #0071e3;
   --morphy-primary-mid: #2d86ff;
   --morphy-primary-end: #3b82f6;
@@ -285,10 +360,293 @@ html body[data-scroll-locked] {
   --md-ripple-pressed-color: var(--morphy-primary-start);
   --md-ripple-hover-opacity: 0.08;
   --md-ripple-pressed-opacity: 0.12;
+
+  /* ── Apple iCloud card contract ───────────────────────────────── */
+  /* Shared app card contract */
+  --theme-color-boxShadow: rgba(120, 120, 128, 0.16);
+  --app-card-radius-compact: 20px;
+  --app-card-radius-standard: 22px;
+  --app-card-radius-feature: 24px;
+  --app-card-surface-data: #f7f7fa;
+  --app-card-surface-compact: #fcfcfd;
+  --app-card-surface-default: #ffffff;
+  --app-card-surface-default-solid: #ffffff;
+  --app-card-surface-surface: #fbfbfd;
+  --app-card-surface-hero: #ffffff;
+  --app-card-surface-sticky-header: #f6f7fb;
+  --app-card-surface-sticky-header-solid: #f6f7fb;
+  --app-card-border-standard: rgba(60, 60, 67, 0.09);
+  --app-card-border-strong: rgba(60, 60, 67, 0.18);
+  --app-card-shadow-standard:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 14px 32px -18px rgba(15, 23, 42, 0.18),
+    0 10px 18px -14px rgba(120, 120, 128, 0.16);
+  --app-card-shadow-feature:
+    0 2px 4px rgba(15, 23, 42, 0.06),
+    0 22px 48px -24px rgba(15, 23, 42, 0.22),
+    0 14px 24px -18px rgba(120, 120, 128, 0.18);
+  --app-list-row-surface: color-mix(in srgb, var(--app-card-surface-default-solid) 90%, transparent);
+  --app-segmented-active-surface: #ffffff;
+  --app-segmented-active-foreground: #000000;
+  --app-segmented-active-border: #000000;
+  --app-shell-surface-bg: rgba(255, 255, 255, 0.9);
+  --app-shell-surface-bg-hover: rgba(255, 255, 255, 0.98);
+  --app-shell-surface-border: rgba(255, 255, 255, 0.68);
+  --app-shell-surface-foreground: #111827;
+  --app-shell-surface-fill: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0.88) 100%);
+  --app-shell-surface-shadow: 0 18px 36px -18px rgba(120, 120, 128, 0.28), 0 10px 18px -12px rgba(120, 120, 128, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.98), inset 0 -0.5px 0 rgba(120, 120, 128, 0.09);
+  --app-shell-surface-blur: 20px;
+}
+
+/* Mobile: reduce card shadow spread — device edge is the frame */
+@media (max-width: 639px) {
+  :root {
+    --app-card-shadow-standard: 0 1px 3px 0 rgba(120, 120, 128, 0.1);
+    --app-card-shadow-feature: 0 10px 28px 0 rgba(120, 120, 128, 0.16);
+    --shadow-md: 0 4px 16px 0 rgba(120, 120, 128, 0.12);
+  }
+  .dark {
+    --app-card-shadow-standard: 0 1px 3px 0 rgba(0, 0, 0, 0.35);
+    --app-card-shadow-feature: 0 6px 18px 0 rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 16px 0 rgba(0, 0, 0, 0.45);
+  }
+}
+
+@media (min-width: 640px) {
+  :root {
+    --top-bar-side-w: 106px;
+    --top-content-safe-gap: 16px;
+    --page-top-body-gap: 22px;
+    --app-top-body-start-gap: 32px;
+    --bottom-chrome-fade-overscan: 22px;
+    --top-subnav-gap: 14px;
+    --page-inline-gutter-standard: 20px;
+    --page-surface-overscan: 8px;
+    --page-surface-gap-standard: 22px;
+    --page-surface-gap-compact: 18px;
+    --page-header-stack-gap: 12px;
+    --page-header-row-gap: 12px;
+    --page-header-copy-gap: 6px;
+    --page-header-actions-gap: 12px;
+    --page-header-section-gap: 16px;
+    --section-header-stack-gap: 10px;
+    --section-header-row-gap: 12px;
+    --section-header-copy-gap: 8px;
+    --section-header-actions-gap: 12px;
+    --surface-shadow-overscan: 18px;
+    --surface-stack-gap-standard: 24px;
+    --surface-stack-gap-compact: 20px;
+    --surface-card-header-px: 20px;
+    --surface-card-header-pt: 20px;
+    --surface-card-header-pb: 10px;
+    --surface-card-content-px: 20px;
+    --surface-card-content-pb: 20px;
+    --surface-inset-p: 16px;
+    --settings-group-stack-gap: 10px;
+    --settings-heading-stack-gap: 4px;
+    --settings-row-px: 16px;
+    --settings-row-py: 16px;
+    --settings-row-gap: 12px;
+    --settings-row-stack-gap: 12px;
+    --data-table-controls-gap: 18px;
+    --data-table-cell-px: 14px;
+    --data-table-cell-py: 11px;
+  }
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --page-inline-gutter-standard: 24px;
+    --page-surface-overscan: 12px;
+  }
+}
+
+@media (min-width: 1280px) {
+  :root {
+    --page-inline-gutter-standard: 28px;
+    --page-surface-overscan: 16px;
+  }
 }
 
 .native-ios {
   --app-top-safe-offset: 2px;
+}
+
+.app-page-shell {
+  width: 100%;
+  padding-left: var(--page-inline-gutter-standard);
+  padding-right: var(--page-inline-gutter-standard);
+}
+
+.app-page-shell--reading {
+  max-width: 54rem;
+}
+
+.app-page-shell--standard {
+  max-width: 90rem;
+}
+
+.app-page-shell--expanded {
+  max-width: 96rem;
+}
+
+.app-shell-frame {
+  width: 100%;
+  max-width: 90rem;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: var(--page-inline-gutter-standard);
+  padding-right: var(--page-inline-gutter-standard);
+}
+
+.app-reading-measure {
+  width: 100%;
+  max-width: 54rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.app-standard-measure {
+  width: 100%;
+  max-width: 90rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.app-expanded-measure {
+  width: 100%;
+  max-width: 96rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.app-page-shell[data-app-density="compact"] {
+  --page-surface-gap-standard: 16px;
+  --page-surface-gap-compact: 12px;
+  --page-header-stack-gap: 8px;
+  --page-header-row-gap: 8px;
+  --page-header-copy-gap: 4px;
+  --page-header-actions-gap: 6px;
+  --page-header-section-gap: 10px;
+  --section-header-stack-gap: 4px;
+  --section-header-row-gap: 6px;
+  --section-header-copy-gap: 3px;
+  --section-header-actions-gap: 6px;
+  --surface-stack-gap-standard: 24px;
+  --surface-stack-gap-compact: 18px;
+  --surface-card-header-px: 14px;
+  --surface-card-header-pt: 14px;
+  --surface-card-header-pb: 8px;
+  --surface-card-content-px: 14px;
+  --surface-card-content-pb: 14px;
+  --surface-inset-p: 12px;
+  --settings-group-stack-gap: 6px;
+  --settings-row-px: 12px;
+  --settings-row-py: 12px;
+  --settings-row-gap: 10px;
+  --settings-row-stack-gap: 10px;
+  --data-table-controls-gap: 12px;
+  --data-table-cell-px: 10px;
+  --data-table-cell-py: 9px;
+}
+
+@media (min-width: 640px) {
+  .app-page-shell[data-app-density="compact"] {
+    --page-header-stack-gap: 10px;
+    --page-header-row-gap: 10px;
+    --page-header-copy-gap: 5px;
+    --page-header-actions-gap: 10px;
+    --page-header-section-gap: 14px;
+    --section-header-stack-gap: 8px;
+    --section-header-row-gap: 10px;
+    --section-header-copy-gap: 6px;
+    --section-header-actions-gap: 10px;
+    --surface-stack-gap-standard: 20px;
+    --surface-stack-gap-compact: 16px;
+    --surface-card-header-px: 16px;
+    --surface-card-header-pt: 16px;
+    --surface-card-header-pb: 8px;
+    --surface-card-content-px: 16px;
+    --surface-card-content-pb: 16px;
+    --surface-inset-p: 14px;
+    --settings-group-stack-gap: 8px;
+    --settings-row-px: 14px;
+    --settings-row-py: 14px;
+    --settings-row-gap: 12px;
+    --settings-row-stack-gap: 12px;
+    --data-table-controls-gap: 14px;
+    --data-table-cell-px: 12px;
+    --data-table-cell-py: 10px;
+  }
+}
+
+[data-app-shell-top-spacer="true"] {
+  height: var(--app-top-content-offset);
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.fullscreen-flow-shell {
+  min-height: calc(100dvh - var(--app-fullscreen-flow-content-offset, 0px));
+  width: 100%;
+  padding-top: var(--app-fullscreen-flow-content-offset);
+  padding-bottom: var(--app-screen-footer-pad);
+  padding-left: var(--page-inline-gutter-standard);
+  padding-right: var(--page-inline-gutter-standard);
+}
+
+.fullscreen-flow-shell--reading {
+  max-width: 54rem;
+}
+
+.fullscreen-flow-shell--standard {
+  max-width: 90rem;
+}
+
+.fullscreen-flow-shell--expanded {
+  max-width: 96rem;
+}
+
+.app-page-header-region {
+  width: 100%;
+  min-width: 0;
+}
+
+.app-page-content-region {
+  width: 100%;
+  min-width: 0;
+}
+
+.app-page-shell[data-app-shell-width="reading"] {
+  max-width: var(--app-shell-reading);
+}
+
+.app-page-shell[data-app-shell-width="standard"] {
+  max-width: var(--app-shell-standard);
+}
+
+.app-page-shell[data-app-shell-width="expanded"] {
+  max-width: var(--app-shell-expanded);
+}
+
+.app-page-header-region + .app-page-content-region,
+.app-page-header-region + .surface-stack,
+.app-page-shell > .surface-stack:first-of-type {
+  margin-top: var(--page-header-section-gap);
+}
+
+.surface-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--surface-stack-gap-standard);
+  margin-left: calc(var(--page-surface-overscan) * -1);
+  margin-right: calc(var(--page-surface-overscan) * -1);
+  padding-left: var(--page-surface-overscan);
+  padding-right: var(--page-surface-overscan);
+}
+
+.surface-stack-compact {
+  gap: var(--surface-stack-gap-compact);
 }
 
 /* Capacitor iOS uses `ios.contentInset = "never"` with CSS-owned insets; don't double-count shell spacing. */
@@ -297,12 +655,6 @@ html.native-ios {
   --app-bottom-chrome-lift: 10px;
   /* Keep a small effective inset because WKWebView already applies content inset on iOS. */
   --app-safe-area-bottom-effective: 10px;
-  /* On native iOS, keep the stronger recovery logic because WKWebView can report 0 on first paint. */
-  --app-safe-area-top-effective: max(
-    var(--app-safe-area-top),
-    env(safe-area-max-inset-top, 0px),
-    var(--app-safe-area-top-probe)
-  );
   /* On iOS onboarding screens, keep CTA comfortably above the bottom theme/nav pill. */
   --app-screen-footer-pad: calc(56px + var(--app-bottom-inset));
 }
@@ -329,7 +681,7 @@ html.native-ios {
   );
 }
 
-/* Hushh Brand Text */
+/* Hussh Brand Text */
 .text-hushh-brand {
   background: linear-gradient(135deg, #0071e3 0%, #3b82f6 100%);
   -webkit-background-clip: text;
@@ -338,17 +690,18 @@ html.native-ios {
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
+  /* Apple dark bg #1c1c1e, elevated card #2c2c2e */
+  --background: rgb(28 28 30);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.002 264);
+  --card: #2c2c2e;
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.002 264);
+  --popover: #2c2c2e;
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.7 0.18 250);
   --primary-foreground: oklch(0.15 0 0);
-  --secondary: oklch(0.27 0.003 264);
+  --secondary: oklch(0.25 0.003 264);
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.27 0.003 264);
+  --muted: oklch(0.25 0.003 264);
   --muted-foreground: oklch(0.71 0.005 264);
   --accent: oklch(0.7 0.2 260);
   --accent-foreground: oklch(0.985 0 0);
@@ -368,11 +721,11 @@ html.native-ios {
   --chart-3: oklch(0.72 0.19 155);
   --chart-4: oklch(0.78 0.15 80);
   --chart-5: oklch(0.7 0.19 22);
-  --sidebar: oklch(0.17 0 0);
+  --sidebar: oklch(0.14 0.002 264);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.7 0.18 250);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.27 0.003 264);
+  --sidebar-accent: oklch(0.25 0.003 264);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.7 0.18 250);
@@ -381,10 +734,10 @@ html.native-ios {
   --crystal-glass-bg: rgba(0, 113, 227, 0.06);
   --crystal-glass-border: rgba(0, 113, 227, 0.15);
 
-  /* App Background - Dark Gradient */
-  --app-bg-start: #0a0a0c;
-  --app-bg-mid: #0f0f14;
-  --app-bg-end: #141418;
+  /* App Background - Dark: seamless system dark surface */
+  --app-bg-start: rgb(28 28 30);
+  --app-bg-mid: rgb(28 28 30);
+  --app-bg-end: rgb(28 28 30);
 
   --glass1: #ffffff40 !important;
   --glass2: #6464643b !important;
@@ -429,6 +782,48 @@ html.native-ios {
   --md-ripple-pressed-color: #3b82f6;
   --md-ripple-hover-opacity: 0.08;
   --md-ripple-pressed-opacity: 0.12;
+
+  /* Dark: shared app card contract */
+  --theme-color-boxShadow: rgba(0, 0, 0, 0.65);
+  --app-card-radius-compact: 20px;
+  --app-card-radius-standard: 22px;
+  --app-card-radius-feature: 24px;
+  --app-card-surface-data: #2c2c2e;
+  --app-card-surface-compact: #2c2c2e;
+  --app-card-surface-default: #2c2c2e;
+  --app-card-surface-default-solid: #2c2c2e;
+  --app-card-surface-surface: #2c2c2e;
+  --app-card-surface-hero: #3a3a3c;
+  --app-card-surface-sticky-header: #2f2f31;
+  --app-card-surface-sticky-header-solid: #2f2f31;
+  --app-card-border-standard: transparent;
+  --app-card-border-strong: rgba(255, 255, 255, 0.18);
+  --app-card-shadow-standard: 0 11px 34px 0 rgba(0, 0, 0, 0.65);
+  --app-card-shadow-feature: 0 11px 34px 0 rgba(0, 0, 0, 0.75);
+  --app-segmented-active-surface: #2c2c2e;
+  --app-segmented-active-foreground: #ffffff;
+  --app-segmented-active-border: #ffffff;
+  --app-shell-surface-bg: rgba(38, 38, 41, 0.9);
+  --app-shell-surface-bg-hover: rgba(48, 48, 52, 0.96);
+  --app-shell-surface-border: rgba(255, 255, 255, 0.08);
+  --app-shell-surface-foreground: #ffffff;
+  --app-shell-surface-fill: linear-gradient(180deg, rgba(72, 72, 74, 0.5) 0%, rgba(38, 38, 41, 0) 100%);
+  --app-shell-surface-shadow: 0 20px 42px -24px rgba(0, 0, 0, 0.96), 0 12px 22px -16px rgba(0, 0, 0, 0.82), inset 0 1px 0 rgba(255, 255, 255, 0.05), inset 0 -0.5px 0 rgba(0, 0, 0, 0.38);
+  --app-shell-surface-blur: 20px;
+}
+
+@media (max-width: 639px) {
+  html.light,
+  .light {
+    --app-card-shadow-standard: 0 10px 28px 0 rgba(120, 120, 128, 0.14);
+    --shadow-md: 0 8px 22px 0 rgba(120, 120, 128, 0.16);
+  }
+
+  html.dark,
+  .dark {
+    --app-card-shadow-standard: 0 11px 34px 0 rgba(0, 0, 0, 0.65);
+    --shadow-md: 0 11px 34px 0 rgba(0, 0, 0, 0.65);
+  }
 }
 
 /* Hero card specific glass effect - automatically switches between light/dark modes */
@@ -616,6 +1011,10 @@ html.native-ios {
       color 200ms ease-in-out,
       border-color 200ms ease-in-out;
   }
+  html.dark body,
+  .dark body {
+    background-color: rgb(28, 28, 30) !important;
+  }
   html.native-ios body {
     padding-top: 0;
     padding-left: env(safe-area-inset-left);
@@ -659,14 +1058,26 @@ md-ripple.morphy-md-ripple {
   border-radius: inherit;
 }
 
+.morphy-ripple-host {
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: inherit;
+  contain: paint;
+}
+
 /* Shared masked glass for top/bottom app chrome. */
 .bar-glass {
-  --app-bar-glass-bg-light: rgba(255, 255, 255, 0.46);
-  --app-bar-glass-bg-dark: rgba(10, 12, 16, 0.66);
-  --app-bar-glass-blur: 7px;
+  /* Apple iCloud: match bg colors with transparency for glass blend */
+  --app-bar-glass-bg-light: rgba(245, 245, 247, 0.72);
+  --app-bar-glass-bg-dark: rgba(28, 28, 30, 0.72);
+  --app-bar-glass-blur: 2px;
   --app-bar-border-top: 0;
   --app-bar-shadow: none;
-  --app-bar-mask-overscan: 44px;
+  --app-bar-mask-overscan: 14px;
+  --app-bar-fade-top-strong: color-mix(in oklab, var(--background) 17%, transparent);
+  --app-bar-fade-top-medium: color-mix(in oklab, var(--background) 13%, transparent);
+  --app-bar-fade-top-soft: color-mix(in oklab, var(--background) 7%, transparent);
+  --app-bar-fade-top-trace: color-mix(in oklab, var(--background) 2.5%, transparent);
   position: relative;
   transform: translate3d(0, 0, 0);
   will-change: transform;
@@ -681,8 +1092,8 @@ md-ripple.morphy-md-ripple {
   inset: 0;
   pointer-events: none;
   background-color: var(--app-bar-glass-bg-light);
-  -webkit-backdrop-filter: blur(var(--app-bar-glass-blur)) saturate(135%);
-  backdrop-filter: blur(var(--app-bar-glass-blur)) saturate(135%);
+  -webkit-backdrop-filter: blur(var(--app-bar-glass-blur)) saturate(128%);
+  backdrop-filter: blur(var(--app-bar-glass-blur)) saturate(128%);
   border-top: var(--app-bar-border-top);
   box-shadow: var(--app-bar-shadow);
   transform: translate3d(0, 0, 0);
@@ -706,36 +1117,26 @@ md-ripple.morphy-md-ripple {
   background-color: var(--app-bar-glass-bg-dark);
 }
 
-.bar-glass-top {
-}
-
-.bar-glass-bottom {
-}
-
 .bar-glass-top::before {
   inset: 0 0 calc(-1 * var(--app-bar-mask-overscan)) 0;
   mask-image: linear-gradient(
     to bottom,
     black 0%,
-    black 40%,
-    rgba(0, 0, 0, 0.995) 54%,
-    rgba(0, 0, 0, 0.965) 66%,
-    rgba(0, 0, 0, 0.88) 78%,
-    rgba(0, 0, 0, 0.68) 88%,
-    rgba(0, 0, 0, 0.38) 95%,
-    rgba(0, 0, 0, 0.14) 98%,
+    rgba(0, 0, 0, 0.985) 38%,
+    rgba(0, 0, 0, 0.94) 54%,
+    rgba(0, 0, 0, 0.82) 70%,
+    rgba(0, 0, 0, 0.56) 84%,
+    rgba(0, 0, 0, 0.22) 94%,
     transparent 100%
   );
   -webkit-mask-image: linear-gradient(
     to bottom,
     black 0%,
-    black 40%,
-    rgba(0, 0, 0, 0.995) 54%,
-    rgba(0, 0, 0, 0.965) 66%,
-    rgba(0, 0, 0, 0.88) 78%,
-    rgba(0, 0, 0, 0.68) 88%,
-    rgba(0, 0, 0, 0.38) 95%,
-    rgba(0, 0, 0, 0.14) 98%,
+    rgba(0, 0, 0, 0.985) 38%,
+    rgba(0, 0, 0, 0.94) 54%,
+    rgba(0, 0, 0, 0.82) 70%,
+    rgba(0, 0, 0, 0.56) 84%,
+    rgba(0, 0, 0, 0.22) 94%,
     transparent 100%
   );
 }
@@ -745,10 +1146,10 @@ md-ripple.morphy-md-ripple {
   opacity: 1;
   background: linear-gradient(
     to bottom,
-    rgba(255, 255, 255, 0.18) 0%,
-    rgba(255, 255, 255, 0.12) 56%,
-    rgba(255, 255, 255, 0.06) 76%,
-    rgba(255, 255, 255, 0.02) 90%,
+    var(--app-bar-fade-top-strong) 0%,
+    var(--app-bar-fade-top-medium) 46%,
+    var(--app-bar-fade-top-soft) 72%,
+    var(--app-bar-fade-top-trace) 90%,
     transparent 100%
   );
 }
@@ -756,10 +1157,10 @@ md-ripple.morphy-md-ripple {
 .dark .bar-glass-top::after {
   background: linear-gradient(
     to bottom,
-    rgba(255, 255, 255, 0.06) 0%,
-    rgba(255, 255, 255, 0.045) 56%,
-    rgba(255, 255, 255, 0.022) 76%,
-    rgba(255, 255, 255, 0.008) 90%,
+    rgba(28, 28, 30, 0.18) 0%,
+    rgba(28, 28, 30, 0.14) 46%,
+    rgba(28, 28, 30, 0.08) 72%,
+    rgba(28, 28, 30, 0.03) 90%,
     transparent 100%
   );
 }
@@ -769,25 +1170,21 @@ md-ripple.morphy-md-ripple {
   mask-image: linear-gradient(
     to top,
     black 0%,
-    black 40%,
-    rgba(0, 0, 0, 0.995) 54%,
-    rgba(0, 0, 0, 0.965) 66%,
-    rgba(0, 0, 0, 0.88) 78%,
-    rgba(0, 0, 0, 0.68) 88%,
-    rgba(0, 0, 0, 0.38) 95%,
-    rgba(0, 0, 0, 0.14) 98%,
+    rgba(0, 0, 0, 0.985) 38%,
+    rgba(0, 0, 0, 0.94) 54%,
+    rgba(0, 0, 0, 0.82) 70%,
+    rgba(0, 0, 0, 0.56) 84%,
+    rgba(0, 0, 0, 0.22) 94%,
     transparent 100%
   );
   -webkit-mask-image: linear-gradient(
     to top,
     black 0%,
-    black 40%,
-    rgba(0, 0, 0, 0.995) 54%,
-    rgba(0, 0, 0, 0.965) 66%,
-    rgba(0, 0, 0, 0.88) 78%,
-    rgba(0, 0, 0, 0.68) 88%,
-    rgba(0, 0, 0, 0.38) 95%,
-    rgba(0, 0, 0, 0.14) 98%,
+    rgba(0, 0, 0, 0.985) 38%,
+    rgba(0, 0, 0, 0.94) 54%,
+    rgba(0, 0, 0, 0.82) 70%,
+    rgba(0, 0, 0, 0.56) 84%,
+    rgba(0, 0, 0, 0.22) 94%,
     transparent 100%
   );
 }
@@ -797,10 +1194,10 @@ md-ripple.morphy-md-ripple {
   opacity: 1;
   background: linear-gradient(
     to top,
-    rgba(255, 255, 255, 0.18) 0%,
-    rgba(255, 255, 255, 0.12) 56%,
-    rgba(255, 255, 255, 0.06) 76%,
-    rgba(255, 255, 255, 0.02) 90%,
+    rgba(245, 245, 247, 0.17) 0%,
+    rgba(245, 245, 247, 0.13) 42%,
+    rgba(245, 245, 247, 0.07) 70%,
+    rgba(245, 245, 247, 0.024) 90%,
     transparent 100%
   );
 }
@@ -808,53 +1205,29 @@ md-ripple.morphy-md-ripple {
 .dark .bar-glass-bottom::after {
   background: linear-gradient(
     to top,
-    rgba(255, 255, 255, 0.06) 0%,
-    rgba(255, 255, 255, 0.045) 56%,
-    rgba(255, 255, 255, 0.022) 76%,
-    rgba(255, 255, 255, 0.008) 90%,
+    rgba(28, 28, 30, 0.18) 0%,
+    rgba(28, 28, 30, 0.14) 42%,
+    rgba(28, 28, 30, 0.08) 70%,
+    rgba(28, 28, 30, 0.03) 90%,
     transparent 100%
   );
 }
 
 /* Shared frosted surface for persistent chrome (tabs / bottom nav / command bar). */
 .chrome-glass-surface {
-  background-color: color-mix(in oklch, lab(100 0 0 / 0.68) 24%, transparent);
-  border: 1px solid color-mix(in oklch, white 48%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklch, white 42%, transparent),
-    0 14px 32px color-mix(in oklch, black 22%, transparent);
-  -webkit-backdrop-filter: blur(12px) saturate(165%) contrast(105%);
-  backdrop-filter: blur(12px) saturate(165%) contrast(105%);
+  background-color: rgba(245, 245, 247, 0.8);
+  border: none;
+  box-shadow: 0 11px 34px 0 var(--theme-color-boxShadow);
+  -webkit-backdrop-filter: blur(var(--blur-standard)) saturate(150%);
+  backdrop-filter: blur(var(--blur-standard)) saturate(150%);
   transform: translate3d(0, 0, 0);
   will-change: transform;
 }
 
 .dark .chrome-glass-surface {
-  background-color: color-mix(in oklch, lab(0 0 0 / 0.7) 44%, transparent);
-  border-color: color-mix(in oklch, white 16%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklch, white 14%, transparent),
-    0 16px 34px color-mix(in oklch, black 54%, transparent);
-}
-
-.chrome-bottom-foreground {
-  background-color: color-mix(in oklch, lab(100 0 0 / 0.62) 16%, transparent);
-  border: 1px solid color-mix(in oklch, white 34%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklch, white 30%, transparent),
-    0 10px 22px color-mix(in oklch, black 14%, transparent);
-  -webkit-backdrop-filter: blur(10px) saturate(145%) contrast(102%);
-  backdrop-filter: blur(10px) saturate(145%) contrast(102%);
-  transform: translate3d(0, 0, 0);
-  will-change: transform;
-}
-
-.dark .chrome-bottom-foreground {
-  background-color: color-mix(in oklch, lab(0 0 0 / 0.68) 30%, transparent);
-  border-color: color-mix(in oklch, white 12%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklch, white 10%, transparent),
-    0 12px 26px color-mix(in oklch, black 42%, transparent);
+  background-color: rgba(28, 28, 30, 0.8);
+  border: none;
+  box-shadow: 0 11px 34px 0 var(--theme-color-boxShadow);
 }
 
 /* Carousel edge glass (left/right): use to hint adjacent slides while keeping center crisp. */
@@ -931,20 +1304,8 @@ md-ripple.morphy-md-ripple {
     color 200ms ease-in-out;
 }
 
-/* Root-controlled theme transition layer (single source of truth). */
-.theme-switching *,
-.theme-switching *::before,
-.theme-switching *::after {
-  transition:
-    color var(--motion-duration-md) var(--motion-ease-standard) 0ms,
-    background-color var(--motion-duration-md) var(--motion-ease-standard) 0ms,
-    border-color var(--motion-duration-md) var(--motion-ease-standard) 0ms,
-    fill var(--motion-duration-md) var(--motion-ease-standard) 0ms,
-    stroke var(--motion-duration-md) var(--motion-ease-standard) 0ms;
-  transition-delay: 0ms !important;
-}
-
-/* Preserve ThemeToggle pill motion while theme colors transition app-wide. */
+/* Theme toggle motion stays local to the control instead of forcing
+ * whole-document transitions, which caused noticeable lag on signed-in pages. */
 .theme-switching [data-theme-control],
 .theme-switching [data-theme-control] *,
 .theme-switching [data-theme-control] *::before,
@@ -953,16 +1314,15 @@ md-ripple.morphy-md-ripple {
     color,
     background-color,
     border-color,
-    box-shadow,
     transform,
     opacity !important;
-  transition-duration: var(--motion-duration-lg) !important;
+  transition-duration: 180ms !important;
   transition-timing-function: var(--motion-ease-standard) !important;
 }
 
 .theme-switching [data-theme-control] [data-segment-indicator] {
-  transition-property: transform, background-color, box-shadow, border-color !important;
-  transition-duration: var(--motion-duration-xl) !important;
+  transition-property: transform, background-color, border-color !important;
+  transition-duration: 200ms !important;
   transition-timing-function: var(--motion-ease-emphasized) !important;
 }
 
@@ -1048,11 +1408,13 @@ md-ripple.morphy-md-ripple {
 
 /* Root app background: neutral surfaces only (no blue gradient cast). */
 .morphy-app-bg {
-  background: #ffffff;
+  background-color: var(--background) !important;
+  background-image: none !important;
 }
 
 .dark .morphy-app-bg {
-  background: #000000;
+  background-color: rgb(28, 28, 30) !important;
+  background-image: none !important;
 }
 
 /* Keep class defined for compatibility; root overlay is intentionally disabled. */
@@ -1101,7 +1463,7 @@ md-ripple.morphy-md-ripple {
   }
 
   .pt-safe {
-    padding-top: var(--app-safe-area-top-effective);
+    padding-top: env(safe-area-inset-top);
   }
   .safe-area-pb {
     padding-bottom: var(--app-safe-area-bottom-effective);
@@ -1420,4 +1782,26 @@ md-ripple.morphy-md-ripple {
     background-color: rgba(56, 189, 248, 0.14);
     filter: none;
   }
+}
+
+@media (max-width: 600px) {
+  .toaster[data-x-position="center"] {
+    left: 1rem !important;
+    right: 1rem !important;
+    width: auto !important;
+    transform: none !important;
+  }
+
+  .toaster[data-x-position="center"] [data-sonner-toast] {
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+  }
+}
+
+html.dark,
+html.dark body,
+html.dark .morphy-app-bg {
+  background-color: #1c1c1e !important;
+  background-image: none !important;
 }

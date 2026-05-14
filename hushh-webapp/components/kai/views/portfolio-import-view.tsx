@@ -12,7 +12,6 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Card, CardContent } from "@/lib/morphy-ux/card";
 import { Button as MorphyButton } from "@/lib/morphy-ux/button";
 
 import {
@@ -24,8 +23,10 @@ import {
   Database,
   Loader2,
 } from "lucide-react";
+import { APP_MEASURE_STYLES } from "@/components/app-ui/app-page-shell";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { SurfaceCard, SurfaceCardContent } from "@/components/app-ui/surfaces";
 import { Icon } from "@/lib/morphy-ux/ui";
 import { scrollAppToTop } from "@/lib/navigation/use-scroll-reset";
 
@@ -151,9 +152,9 @@ export function PortfolioImportView({
   ]);
 
   return (
-    <div className="w-full max-w-md mx-auto space-y-3.5 px-4 pt-3 pb-6 md:max-w-2xl md:px-6 lg:max-w-3xl">
+    <div className="mx-auto w-full space-y-3.5 pt-3 pb-6" style={APP_MEASURE_STYLES.reading}>
       {/* Header */}
-      <div className="text-center space-y-2 px-2">
+      <div className="space-y-2 text-center">
         <h1 className="text-[34px] font-bold tracking-tight leading-[1.08]">
           Your money
           <br />
@@ -164,15 +165,15 @@ export function PortfolioImportView({
         </p>
       </div>
 
-      <div className="px-2 text-center">
+      <div className="text-center">
         <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
           Choose import method
         </p>
       </div>
 
       {/* Plaid integration */}
-      <Card variant="none" effect="glass" showRipple={false}>
-        <CardContent className="p-4 space-y-3 md:p-5">
+      <SurfaceCard accent="sky">
+        <SurfaceCardContent className="space-y-3 p-4 md:p-5">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-12 h-12 rounded-full bg-primary/10 border border-primary/15 flex items-center justify-center shrink-0">
@@ -226,10 +227,10 @@ export function PortfolioImportView({
           <p className="text-[11px] text-muted-foreground">
             Plaid data stays read-only in Kai. Statements remain your editable source.
           </p>
-        </CardContent>
-      </Card>
+        </SurfaceCardContent>
+      </SurfaceCard>
 
-      <div className="flex items-center gap-3 px-2">
+      <div className="flex items-center gap-3">
         <div className="h-px flex-1 bg-border/60" />
         <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
           or
@@ -238,8 +239,8 @@ export function PortfolioImportView({
       </div>
 
       {/* Statement upload */}
-      <Card variant="none" effect="glass" showRipple={false}>
-        <CardContent className="p-4 space-y-4 md:p-5">
+      <SurfaceCard>
+        <SurfaceCardContent className="space-y-4 p-4 md:p-5">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-full bg-primary/10 border border-primary/15 flex items-center justify-center shrink-0">
               <Icon icon={Upload} size="md" className="text-primary" />
@@ -317,8 +318,8 @@ export function PortfolioImportView({
           >
             {isUploading ? "Parsing..." : "Continue"}
           </MorphyButton>
-        </CardContent>
-      </Card>
+        </SurfaceCardContent>
+      </SurfaceCard>
 
       {selectionError && (
         <p className="text-xs text-destructive px-2">{selectionError}</p>

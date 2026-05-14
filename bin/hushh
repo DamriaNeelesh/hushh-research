@@ -1,0 +1,889 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+main_usage() {
+  cat <<'EOF'
+Usage:
+  ./bin/hushh <command> [subcommand] [options]
+
+Core commands:
+  bootstrap [--mode <local|uat|prod>]
+  doctor --mode <local|uat|prod> [--json]
+  stack --mode <local|uat|prod> [-- <next-dev args>]
+  terminal <stack|web|backend> [...]
+  web [--mode <local|uat|prod>] [-- <next-dev args>]
+  backend [--mode local] [--reload|--no-reload]
+  compose <init|up|down|nuke|logs|ps|config|health>
+  native <ios|android> [--mode <local|uat|prod>] [--fresh]
+  native mac <build|run|test>
+  lint
+  test
+  ci [--include-advisory]
+  codex <subcommand>
+
+Operational commands:
+  docs verify
+  env bootstrap
+  env use --mode <local|uat|prod> [--dry-run]
+  db init-iam
+  db verify-iam-schema
+  db verify-release-contract
+  db verify-uat-schema
+  db report-prod-posture [--json]
+  compose <subcommand>
+  protocol <subcommand>
+  sync <main|check-main>
+
+Run:
+  ./bin/hushh compose --help
+  ./bin/hushh protocol --help
+  ./bin/hushh sync --help
+  ./bin/hushh codex --help
+EOF
+}
+
+protocol_usage() {
+  cat <<'EOF'
+Usage:
+  ./bin/hushh protocol <subcommand>
+
+Monorepo subtree commands:
+  sync
+  check-sync
+  push
+  push-force
+  verify-upstream-ci
+  verify-ci-parity
+  setup
+  verify-setup
+
+Consent Protocol package commands:
+  dev
+  lint
+  format
+  format-check
+  fix
+  typecheck
+  test
+  test-ci
+  security
+  accuracy
+  ci
+  clean
+EOF
+}
+
+sync_usage() {
+  cat <<'EOF'
+Usage:
+  ./bin/hushh sync main
+  ./bin/hushh sync check-main
+EOF
+}
+
+compose_usage() {
+  cat <<'EOF'
+Usage:
+  ./bin/hushh compose init
+  ./bin/hushh compose up [backend|cache|mail|db|dev]
+  ./bin/hushh compose down
+  ./bin/hushh compose nuke
+  ./bin/hushh compose logs [service]
+  ./bin/hushh compose ps
+  ./bin/hushh compose config
+  ./bin/hushh compose health
+EOF
+}
+
+codex_usage() {
+  cat <<'EOF'
+Usage:
+  ./bin/hushh codex onboard [--json|--text]
+  ./bin/hushh codex scan summary [--json|--text]
+  ./bin/hushh codex scan section <docs|frontend|backend|skills|commands> [--json|--text] [--verbose]
+  ./bin/hushh codex route-task <workflow-id> [--json|--text] [--verbose]
+  ./bin/hushh codex impact <workflow-id> [--path <repo-path>]... [--json|--text] [--verbose]
+  ./bin/hushh codex list-workflows [--json|--text] [--verbose]
+  ./bin/hushh codex pre-pr [--include-advisory] [--report-path <path>] [--json|--text]
+  ./bin/hushh codex ci-status [--pr <number>|--branch <name>] [--watch] [--interval <seconds>] [--timeout <seconds>] [--json|--text]
+  ./bin/hushh codex data-model-audit [--database-url <postgres-url>] [--json|--text]
+  ./bin/hushh codex audit [--json|--text]
+  ./bin/hushh codex rca --surface <uat|runtime|ci> [--project <gcp-project>] [--region <region>] [--backend-service <name>] [--frontend-service <name>] [--backend-url <url>] [--frontend-url <url>] [--report-path <path>] [--json|--text]
+EOF
+}
+
+run_web() {
+  local mode="local"
+  local next_args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "${1:-}" in
+      --mode)
+        mode="${2:-}"
+        shift 2
+        ;;
+      --)
+        shift
+        next_args=("$@")
+        break
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage:
+  ./bin/hushh web [--mode <local|uat|prod>] [-- <next-dev args>]
+
+Defaults to: --mode local
+EOF
+        exit 0
+        ;;
+      *)
+        die "Unknown option for web: $1"
+        ;;
+    esac
+  done
+
+  bash "$REPO_ROOT/scripts/env/use_profile.sh" "$mode"
+  cd "$REPO_ROOT/hushh-webapp"
+  if [ "${#next_args[@]}" -gt 0 ]; then
+    exec npm run dev -- "${next_args[@]}"
+  fi
+  exec npm run dev
+}
+
+run_terminal() {
+  [ "$#" -ge 1 ] || die "terminal requires <stack|web|backend>"
+
+  local target="${1:-}"
+  shift || true
+  local title=""
+  local command_args=()
+
+  case "$target" in
+    stack)
+      local mode=""
+      local next_args=()
+      while [ "$#" -gt 0 ]; do
+        case "${1:-}" in
+          --mode)
+            mode="${2:-}"
+            shift 2
+            ;;
+          --)
+            shift
+            next_args=("$@")
+            break
+            ;;
+          -h|--help)
+            cat <<'EOF'
+Usage:
+  ./bin/hushh terminal stack --mode <local|uat|prod> [-- <next-dev args>]
+EOF
+            exit 0
+            ;;
+          *)
+            die "Unknown option for terminal stack: $1"
+            ;;
+        esac
+      done
+      [ -n "$mode" ] || die "terminal stack requires --mode"
+      title="Hushh stack (${mode})"
+      command_args=(./bin/hushh stack --mode "$mode")
+      if [ "${#next_args[@]}" -gt 0 ]; then
+        command_args+=(-- "${next_args[@]}")
+      fi
+      ;;
+    web)
+      local mode="local"
+      local next_args=()
+      while [ "$#" -gt 0 ]; do
+        case "${1:-}" in
+          --mode)
+            mode="${2:-}"
+            shift 2
+            ;;
+          --)
+            shift
+            next_args=("$@")
+            break
+            ;;
+          -h|--help)
+            cat <<'EOF'
+Usage:
+  ./bin/hushh terminal web [--mode <local|uat|prod>] [-- <next-dev args>]
+
+Defaults to: --mode local
+EOF
+            exit 0
+            ;;
+          *)
+            die "Unknown option for terminal web: $1"
+            ;;
+        esac
+      done
+      title="Hushh web (${mode})"
+      command_args=(./bin/hushh web --mode "$mode")
+      if [ "${#next_args[@]}" -gt 0 ]; then
+        command_args+=(-- "${next_args[@]}")
+      fi
+      ;;
+    backend)
+      local mode="local"
+      local extra=()
+      while [ "$#" -gt 0 ]; do
+        case "${1:-}" in
+          --mode)
+            mode="${2:-}"
+            shift 2
+            ;;
+          --reload|--no-reload|--skip-activate|--preflight-only|--skip-preflight)
+            extra+=("$1")
+            shift
+            ;;
+          -h|--help)
+            cat <<'EOF'
+Usage:
+  ./bin/hushh terminal backend [--mode local] [--reload|--no-reload]
+EOF
+            exit 0
+            ;;
+          *)
+            die "Unknown option for terminal backend: $1"
+            ;;
+        esac
+      done
+      title="Hushh backend (${mode})"
+      command_args=(./bin/hushh backend --mode "$mode")
+      if [ "${#extra[@]}" -gt 0 ]; then
+        command_args+=("${extra[@]}")
+      fi
+      ;;
+    -h|--help|help)
+      cat <<'EOF'
+Usage:
+  ./bin/hushh terminal stack --mode <local|uat|prod> [-- <next-dev args>]
+  ./bin/hushh terminal web [--mode <local|uat|prod>] [-- <next-dev args>]
+  ./bin/hushh terminal backend [--mode local] [--reload|--no-reload]
+
+Opens a visible OS terminal window and runs the canonical Hushh command there.
+EOF
+      exit 0
+      ;;
+    *)
+      die "Unknown terminal target: $target"
+      ;;
+  esac
+
+  exec bash "$REPO_ROOT/scripts/runtime/open_visible_terminal.sh" \
+    --cwd "$REPO_ROOT" \
+    --title "$title" \
+    -- "${command_args[@]}"
+}
+
+run_native_mac() {
+  local action="${1:-build}"
+  shift || true
+
+  case "$action" in
+    -h|--help)
+      cat <<'EOF'
+Usage:
+  ./bin/hushh native mac <build|run|test>
+
+Subcommands:
+  build   swift build inside apps/one-mac/ (default)
+  run     swift run OneMac inside apps/one-mac/
+  test    swift test inside apps/one-mac/
+EOF
+      exit 0
+      ;;
+    build|run|test) ;;
+    *)
+      die "native mac subcommand must be build, run, or test"
+      ;;
+  esac
+
+  cd "$REPO_ROOT/apps/one-mac"
+  case "$action" in
+    build) exec swift build ;;
+    run)   exec swift run OneMac ;;
+    test)  exec swift test ;;
+  esac
+}
+
+run_native() {
+  [ "$#" -ge 1 ] || die "native requires <ios|android|mac>"
+  local platform="$1"
+  shift
+  if [ "$platform" = "mac" ]; then
+    run_native_mac "$@"
+    return
+  fi
+  local mode="uat"
+  local fresh="false"
+
+  while [ "$#" -gt 0 ]; do
+    case "${1:-}" in
+      --mode)
+        mode="${2:-}"
+        shift 2
+        ;;
+      --fresh)
+        fresh="true"
+        shift
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage:
+  ./bin/hushh native <ios|android> [--mode <local|uat|prod>] [--fresh]
+  ./bin/hushh native mac <build|run|test>
+EOF
+        exit 0
+        ;;
+      *)
+        die "Unknown option for native: $1"
+        ;;
+    esac
+  done
+
+  case "$platform" in
+    ios|android) ;;
+    *)
+      die "native platform must be ios, android, or mac"
+      ;;
+  esac
+
+  bash "$REPO_ROOT/scripts/env/use_profile.sh" "$mode"
+  cd "$REPO_ROOT/hushh-webapp"
+
+  if [ "$fresh" = "true" ]; then
+    rm -rf .next
+    rm -rf ios/App/App/public android/app/src/main/assets/public
+  fi
+
+  case "$platform" in
+    ios)
+      exec npm run ios:run
+      ;;
+    android)
+      exec npm run android:run
+      ;;
+  esac
+}
+
+run_lint() {
+  (
+    cd "$REPO_ROOT/consent-protocol"
+    ./bin/consent-protocol lint
+  )
+  (
+    cd "$REPO_ROOT/hushh-webapp"
+    npm run lint
+  )
+}
+
+run_test() {
+  (
+    cd "$REPO_ROOT/consent-protocol"
+    ./bin/consent-protocol test
+  )
+  (
+    cd "$REPO_ROOT/hushh-webapp"
+    npm test
+  )
+}
+
+run_ci() {
+  local include_advisory="0"
+  while [ "$#" -gt 0 ]; do
+    case "${1:-}" in
+      --include-advisory)
+        include_advisory="1"
+        shift
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage:
+  ./bin/hushh ci [--include-advisory]
+EOF
+        exit 0
+        ;;
+      *)
+        die "Unknown option for ci: $1"
+        ;;
+    esac
+  done
+
+  INCLUDE_ADVISORY_CHECKS="$include_advisory" exec bash "$REPO_ROOT/scripts/ci/orchestrate.sh" all
+}
+
+run_sync() {
+  [ "$#" -ge 1 ] || {
+    sync_usage
+    exit 1
+  }
+
+  case "${1:-}" in
+    main)
+      shift
+      exec bash "$REPO_ROOT/scripts/git/sync-main.sh" "$@"
+      ;;
+    check-main)
+      shift
+      exec sh "$REPO_ROOT/scripts/git/check-main-sync.sh" "$@"
+      ;;
+    -h|--help)
+      sync_usage
+      exit 0
+      ;;
+    *)
+      sync_usage
+      exit 1
+      ;;
+  esac
+}
+
+run_docs() {
+  [ "$#" -ge 1 ] || die "docs requires a subcommand"
+  case "${1:-}" in
+    verify)
+      shift
+      [ "$#" -eq 0 ] || die "docs verify does not accept extra arguments"
+      exec bash "$REPO_ROOT/scripts/ci/docs-parity-check.sh"
+      ;;
+    *)
+      die "Unknown docs subcommand: $1"
+      ;;
+  esac
+}
+
+run_compose() {
+  [ "$#" -ge 1 ] || {
+    compose_usage
+    exit 1
+  }
+  exec bash "$REPO_ROOT/scripts/runtime/compose_stack.sh" "$@"
+}
+
+run_codex() {
+  [ "$#" -ge 1 ] || {
+    codex_usage
+    exit 1
+  }
+
+  local subcommand="${1:-}"
+  shift || true
+  local format_flag=""
+  local args=()
+  local saw_format="0"
+
+  while [ "$#" -gt 0 ]; do
+    case "${1:-}" in
+      --json|--text)
+        format_flag="$1"
+        saw_format="1"
+        shift
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [ "$saw_format" = "0" ]; then
+    format_flag="--text"
+  fi
+
+  case "$subcommand" in
+    scan)
+      [ "${#args[@]}" -ge 1 ] || die "codex scan requires a subcommand"
+      case "${args[0]}" in
+        summary)
+          exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" summary "$format_flag"
+          ;;
+        section)
+          [ "${#args[@]}" -ge 2 ] || die "codex scan section requires <docs|frontend|backend|skills|commands>"
+          exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" section "${args[@]:1}" "$format_flag"
+          ;;
+        validate)
+          exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" validate "$format_flag"
+          ;;
+        *)
+          die "Unknown codex scan subcommand: ${args[0]}"
+          ;;
+      esac
+      ;;
+    onboard)
+      if [ "${#args[@]}" -gt 0 ]; then
+        exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" onboard "$format_flag" "${args[@]}"
+      fi
+      exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" onboard "$format_flag"
+      ;;
+    list-workflows)
+      if [ "${#args[@]}" -gt 0 ]; then
+        exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" list-workflows "$format_flag" "${args[@]}"
+      fi
+      exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" list-workflows "$format_flag"
+      ;;
+    route-task)
+      [ "${#args[@]}" -ge 1 ] || die "codex route-task requires <workflow-id>"
+      exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" route-task "${args[@]}" "$format_flag"
+      ;;
+    impact)
+      [ "${#args[@]}" -ge 1 ] || die "codex impact requires <workflow-id>"
+      exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" impact "${args[@]}" "$format_flag"
+      ;;
+    pre-pr)
+      if [ "${#args[@]}" -gt 0 ]; then
+        exec python3 "$REPO_ROOT/.codex/skills/repo-operations/scripts/pre_pr_readiness.py" "${args[@]}" "$format_flag"
+      fi
+      exec python3 "$REPO_ROOT/.codex/skills/repo-operations/scripts/pre_pr_readiness.py" "$format_flag"
+      ;;
+    ci-status)
+      if [ "${#args[@]}" -gt 0 ]; then
+        exec python3 "$REPO_ROOT/.codex/skills/repo-operations/scripts/ci_monitor.py" "${args[@]}" "$format_flag"
+      fi
+      exec python3 "$REPO_ROOT/.codex/skills/repo-operations/scripts/ci_monitor.py" "$format_flag"
+      ;;
+    data-model-audit)
+      if [ "${#args[@]}" -gt 0 ]; then
+        exec python3 "$REPO_ROOT/scripts/ops/data_model_audit.py" "${args[@]}" "$format_flag"
+      fi
+      exec python3 "$REPO_ROOT/scripts/ops/data_model_audit.py" "$format_flag"
+      ;;
+    audit)
+      if [ "${#args[@]}" -gt 0 ]; then
+        exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" audit "$format_flag" "${args[@]}"
+      fi
+      exec python3 "$REPO_ROOT/.codex/skills/repo-context/scripts/repo_scan.py" audit "$format_flag"
+      ;;
+    rca)
+      if [ "${#args[@]}" -gt 0 ]; then
+        exec python3 "$REPO_ROOT/.codex/skills/autonomous-rca-governance/scripts/rca_runner.py" "${args[@]}" "$format_flag"
+      fi
+      die "codex rca requires --surface <uat|runtime|ci>"
+      ;;
+    -h|--help|help)
+      codex_usage
+      exit 0
+      ;;
+    *)
+      die "Unknown codex subcommand: $subcommand"
+      ;;
+  esac
+}
+
+run_env() {
+  [ "$#" -ge 1 ] || die "env requires a subcommand"
+  case "${1:-}" in
+    bootstrap)
+      shift
+      exec bash "$REPO_ROOT/scripts/env/bootstrap_profiles.sh" "$@"
+      ;;
+    use)
+      shift
+      local mode=""
+      local extra=()
+      while [ "$#" -gt 0 ]; do
+        case "${1:-}" in
+          --mode)
+            mode="${2:-}"
+            shift 2
+            ;;
+          --dry-run)
+            extra+=("$1")
+            shift
+            ;;
+          -h|--help)
+            cat <<'EOF'
+Usage:
+  ./bin/hushh env use --mode <local|uat|prod> [--dry-run]
+EOF
+            exit 0
+            ;;
+          *)
+            die "Unknown option for env use: $1"
+            ;;
+        esac
+      done
+      [ -n "$mode" ] || die "env use requires --mode"
+      if [ "${#extra[@]}" -gt 0 ]; then
+        exec bash "$REPO_ROOT/scripts/env/use_profile.sh" "$mode" "${extra[@]}"
+      fi
+      exec bash "$REPO_ROOT/scripts/env/use_profile.sh" "$mode"
+      ;;
+    *)
+      die "Unknown env subcommand: $1"
+      ;;
+  esac
+}
+
+run_db() {
+  [ "$#" -ge 1 ] || die "db requires a subcommand"
+  case "${1:-}" in
+    init-iam)
+      shift
+      [ "$#" -eq 0 ] || die "db init-iam does not accept extra arguments"
+      cd "$REPO_ROOT/consent-protocol"
+      exec env PYTHONPATH=. .venv/bin/python db/migrate.py --iam
+      ;;
+    verify-iam-schema)
+      shift
+      [ "$#" -eq 0 ] || die "db verify-iam-schema does not accept extra arguments"
+      cd "$REPO_ROOT/consent-protocol"
+      exec env PYTHONPATH=. .venv/bin/python db/verify/verify_iam_schema.py
+      ;;
+    verify-release-contract)
+      shift
+      [ "$#" -eq 0 ] || die "db verify-release-contract does not accept extra arguments"
+      exec python3 "$REPO_ROOT/scripts/ops/verify_release_migration_contract.py"
+      ;;
+    verify-uat-schema)
+      shift
+      report_path=""
+      while [ "$#" -gt 0 ]; do
+        case "${1:-}" in
+          --report-path)
+            report_path="${2:-}"
+            shift 2
+            ;;
+          -h|--help)
+            cat <<'EOF'
+Usage:
+  ./bin/hushh db verify-uat-schema [--report-path <path>]
+EOF
+            exit 0
+            ;;
+          *)
+            die "Unknown option for db verify-uat-schema: $1"
+            ;;
+        esac
+      done
+      cmd=(bash "$REPO_ROOT/scripts/ops/verify_runtime_db_contract.sh" \
+        --project hushh-pda-uat \
+        --region us-central1 \
+        --service consent-protocol \
+        --contract-file "$REPO_ROOT/consent-protocol/db/contracts/uat_integrated_schema.json")
+      if [ -n "$report_path" ]; then
+        cmd+=(--report-path "$report_path")
+      fi
+      exec "${cmd[@]}"
+      ;;
+    report-prod-posture)
+      shift
+      json_flag=""
+      while [ "$#" -gt 0 ]; do
+        case "${1:-}" in
+          --json)
+            json_flag="--json"
+            shift
+            ;;
+          -h|--help)
+            cat <<'EOF'
+Usage:
+  ./bin/hushh db report-prod-posture [--json]
+EOF
+            exit 0
+            ;;
+          *)
+            die "Unknown option for db report-prod-posture: $1"
+            ;;
+        esac
+      done
+      exec python3 "$REPO_ROOT/scripts/ops/report_prod_frozen_posture.py" ${json_flag:+"$json_flag"}
+      ;;
+    *)
+      die "Unknown db subcommand: $1"
+      ;;
+  esac
+}
+
+run_protocol() {
+  [ "$#" -ge 1 ] || {
+    protocol_usage
+    exit 1
+  }
+
+  local subcommand="${1:-}"
+  shift || true
+
+  case "$subcommand" in
+    sync|check-sync|push|push-force|verify-upstream-ci|verify-ci-parity|setup|verify-setup)
+      exec bash "$REPO_ROOT/scripts/protocol/subtree.sh" "$subcommand" "$@"
+      ;;
+    dev|lint|format|format-check|fix|typecheck|test|test-ci|security|accuracy|ci|clean)
+      cd "$REPO_ROOT/consent-protocol"
+      exec ./bin/consent-protocol "$subcommand" "$@"
+      ;;
+    -h|--help|help)
+      protocol_usage
+      exit 0
+      ;;
+    *)
+      protocol_usage
+      exit 1
+      ;;
+  esac
+}
+
+COMMAND="${1:-}"
+if [ -z "$COMMAND" ]; then
+  main_usage
+  exit 1
+fi
+shift || true
+
+case "$COMMAND" in
+  -h|--help|help)
+    main_usage
+    ;;
+  bootstrap)
+    exec bash "$REPO_ROOT/scripts/env/bootstrap.sh" "$@"
+    ;;
+  doctor)
+    mode=""
+    extra=()
+    while [ "$#" -gt 0 ]; do
+      case "${1:-}" in
+        --mode)
+          mode="${2:-}"
+          shift 2
+          ;;
+        --json)
+          extra+=("$1")
+          shift
+          ;;
+        -h|--help)
+          cat <<'EOF'
+Usage:
+  ./bin/hushh doctor --mode <local|uat|prod> [--json]
+EOF
+          exit 0
+          ;;
+        *)
+          die "Unknown option for doctor: $1"
+          ;;
+      esac
+    done
+    [ -n "$mode" ] || die "doctor requires --mode"
+    if [ "${#extra[@]}" -gt 0 ]; then
+      exec bash "$REPO_ROOT/scripts/env/doctor.sh" "$mode" "${extra[@]}"
+    fi
+    exec bash "$REPO_ROOT/scripts/env/doctor.sh" "$mode"
+    ;;
+  stack)
+    mode=""
+    next_args=()
+    while [ "$#" -gt 0 ]; do
+      case "${1:-}" in
+        --mode)
+          mode="${2:-}"
+          shift 2
+          ;;
+        --)
+          shift
+          next_args=("$@")
+          break
+          ;;
+        -h|--help)
+          cat <<'EOF'
+Usage:
+  ./bin/hushh stack --mode <local|uat|prod> [-- <next-dev args>]
+EOF
+          exit 0
+          ;;
+        *)
+          die "Unknown option for stack: $1"
+          ;;
+      esac
+    done
+    [ -n "$mode" ] || die "stack requires --mode"
+    if [ "${#next_args[@]}" -gt 0 ]; then
+      exec bash "$REPO_ROOT/scripts/runtime/launch_stack.sh" "$mode" -- "${next_args[@]}"
+    fi
+    exec bash "$REPO_ROOT/scripts/runtime/launch_stack.sh" "$mode"
+    ;;
+  terminal)
+    run_terminal "$@"
+    ;;
+  web)
+    run_web "$@"
+    ;;
+  backend)
+    mode="local"
+    extra=()
+    while [ "$#" -gt 0 ]; do
+      case "${1:-}" in
+        --mode)
+          mode="${2:-}"
+          shift 2
+          ;;
+        --reload|--no-reload|--skip-activate|--preflight-only|--skip-preflight)
+          extra+=("$1")
+          shift
+          ;;
+        -h|--help)
+          cat <<'EOF'
+Usage:
+  ./bin/hushh backend [--mode local] [--reload|--no-reload]
+EOF
+          exit 0
+          ;;
+        *)
+          die "Unknown option for backend: $1"
+          ;;
+      esac
+    done
+    if [ "${#extra[@]}" -gt 0 ]; then
+      exec bash "$REPO_ROOT/scripts/runtime/run_backend_local.sh" "$mode" "${extra[@]}"
+    fi
+    exec bash "$REPO_ROOT/scripts/runtime/run_backend_local.sh" "$mode"
+    ;;
+  native)
+    run_native "$@"
+    ;;
+  lint)
+    [ "$#" -eq 0 ] || die "lint does not accept extra arguments"
+    run_lint
+    ;;
+  test)
+    [ "$#" -eq 0 ] || die "test does not accept extra arguments"
+    run_test
+    ;;
+  ci)
+    run_ci "$@"
+    ;;
+  docs)
+    run_docs "$@"
+    ;;
+  compose)
+    run_compose "$@"
+    ;;
+  env)
+    run_env "$@"
+    ;;
+  db)
+    run_db "$@"
+    ;;
+  protocol)
+    run_protocol "$@"
+    ;;
+  codex)
+    run_codex "$@"
+    ;;
+  sync)
+    run_sync "$@"
+    ;;
+  *)
+    main_usage
+    exit 1
+    ;;
+esac

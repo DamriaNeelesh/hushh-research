@@ -333,6 +333,34 @@ class DebateEngine:
         # stream.py calculates this manually, so we just finish.
         pass
 
+    async def orchestrate_debate(
+        self,
+        fundamental_insight: FundamentalInsight,
+        sentiment_insight: SentimentInsight,
+        valuation_insight: ValuationInsight,
+        user_context: Optional[Dict[str, Any]] = None,
+    ) -> DebateResult:
+        """
+        Non-streaming compatibility wrapper for callers that need a final DebateResult.
+
+        The debate engine's canonical implementation is streaming-first. This helper
+        consumes the stream internally, then builds the same final consensus object
+        used by the streaming route.
+        """
+        async for _event in self.orchestrate_debate_stream(
+            fundamental_insight=fundamental_insight,
+            sentiment_insight=sentiment_insight,
+            valuation_insight=valuation_insight,
+            user_context=user_context,
+        ):
+            pass
+
+        return await self._build_consensus(
+            fundamental=fundamental_insight,
+            sentiment=sentiment_insight,
+            valuation=valuation_insight,
+        )
+
     async def _stream_agent_turn(
         self,
         round_num: int,
@@ -890,7 +918,7 @@ class DebateEngine:
 
         CONTEXT FUSION RULES (MANDATORY):
         - Reference at least one Renaissance screening signal (tier, investable/avoid, rubric criteria).
-        - Reference at least one world-model portfolio fact (holdings, concentration, coverage, or statement signal).
+        - Reference at least one PKM portfolio fact (holdings, concentration, coverage, or statement signal).
         - Explicitly frame risk tradeoff (concentration/diversification/downside) for this user.
         - If your view conflicts with Renaissance screening, state the conflict and mitigation.
         - Avoid raw data dumps; use only the highest-signal facts.
@@ -1020,7 +1048,20 @@ class DebateEngine:
                     f"{agent_id.capitalize()} agent dissents: recommends {vote}"
                 )
 
-        # Generate final statement
+        # If no consensus and low confidence, explain the disagreement
+        # deterministically without adding another LLM call to the decision path.
+        if not consensus_reached and confidence < 0.60:
+            logger.info(
+                "[Conflict Resolution] Low confidence detected. Adding deterministic dissent summary."
+            )
+            conflict_summary = self._build_conflict_summary(
+                fundamental,
+                sentiment,
+                valuation,
+            )
+            if conflict_summary:
+                dissenting_opinions.append(conflict_summary)
+
         final_statement = self._generate_final_statement(
             decision, confidence, consensus_reached, dissenting_opinions
         )
@@ -1052,7 +1093,6 @@ class DebateEngine:
         valuation: ValuationInsight,
     ) -> tuple[DecisionType, float]:
         """Calculate weighted decision based on risk profile."""
-
         # Convert recommendations to numeric scores
         scores = {
             "fundamental": self._rec_to_score(fundamental.recommendation),
@@ -1112,7 +1152,7 @@ class DebateEngine:
             if tier in {"ACE", "KING"} and scores["fundamental"] > 0:
                 shift += 0.05
 
-        # User preference overlays from world model context.
+        # User preference overlays from PKM context.
         preferences = self.user_context.get("preferences", {}) if self.user_context else {}
         style = str(preferences.get("investment_style") or "").lower()
         horizon = str(preferences.get("investment_horizon") or "").lower()
@@ -1140,6 +1180,67 @@ class DebateEngine:
             return -1.0
         else:
             return 0.0
+
+    def _build_conflict_summary(
+        self,
+        fundamental: FundamentalInsight,
+        sentiment: SentimentInsight,
+        valuation: ValuationInsight,
+    ) -> Optional[str]:
+        """Summarize the strongest disagreement without changing the final decision."""
+        insights = {
+            "fundamental": fundamental,
+            "sentiment": sentiment,
+            "valuation": valuation,
+        }
+        scores = {
+            agent_id: self._rec_to_score(insight.recommendation)
+            for agent_id, insight in insights.items()
+        }
+        agent_ids = list(scores.keys())
+        pair = (agent_ids[0], agent_ids[1])
+        max_gap = -1.0
+
+        for i in range(len(agent_ids)):
+            for j in range(i + 1, len(agent_ids)):
+                gap = abs(scores[agent_ids[i]] - scores[agent_ids[j]])
+                if gap > max_gap:
+                    max_gap = gap
+                    pair = (agent_ids[i], agent_ids[j])
+
+        if max_gap == 0:
+            pair = tuple(
+                sorted(
+                    agent_ids,
+                    key=lambda agent_id: len(str(insights[agent_id].summary or "")),
+                    reverse=True,
+                )[:2]
+            )
+
+        first_id, second_id = pair
+        first = insights[first_id]
+        second = insights[second_id]
+        first_summary = self._summarize_conflict_evidence(first_id, first)
+        second_summary = self._summarize_conflict_evidence(second_id, second)
+
+        return (
+            "Conflict evidence: "
+            f"{first_id} recommends {first.recommendation} while "
+            f"{second_id} recommends {second.recommendation}. "
+            f"{first_summary} {second_summary} "
+            "Kai is preserving lower confidence until the source evidence converges."
+        )
+
+    def _summarize_conflict_evidence(
+        self,
+        agent_id: str,
+        insight: FundamentalInsight | SentimentInsight | ValuationInsight,
+    ) -> str:
+        text = self.current_statements.get(agent_id) or insight.summary or "No summary provided."
+        text = " ".join(str(text).split())
+        if len(text) > 140:
+            text = f"{text[:137].rstrip()}..."
+        return f"{agent_id.capitalize()} evidence: {text}"
 
     def _generate_final_statement(
         self,

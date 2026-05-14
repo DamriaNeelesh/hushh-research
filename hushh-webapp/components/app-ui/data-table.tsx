@@ -1,15 +1,11 @@
 "use client";
 
-/**
- * Reusable DataTable Component with Filtering and Pagination
- * Built on TanStack Table + shadcn/ui table component
- */
-
 import * as React from "react";
 import {
-  ColumnDef,
-  ColumnFiltersState,
-  SortingState,
+  type ColumnDef,
+  type ColumnFiltersState,
+  type SortingState,
+  type Row,
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
@@ -41,8 +37,33 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ChevronLeft, ChevronRight, Search } from "lucide-react";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import { Search } from "lucide-react";
+import { surfaceDataTableShellClassName } from "@/lib/morphy-ux/surfaces";
 import { cn } from "@/lib/utils";
+
+const TABLE_SWIPE_THRESHOLD_PX = 44;
+
+function buildPaginationItems(currentPage: number, pageCount: number): Array<number | "ellipsis"> {
+  if (pageCount <= 7) {
+    return Array.from({ length: pageCount }, (_, index) => index + 1);
+  }
+  if (currentPage <= 4) {
+    return [1, 2, 3, 4, 5, "ellipsis", pageCount];
+  }
+  if (currentPage >= pageCount - 3) {
+    return [1, "ellipsis", pageCount - 4, pageCount - 3, pageCount - 2, pageCount - 1, pageCount];
+  }
+  return [1, "ellipsis", currentPage - 1, currentPage, currentPage + 1, "ellipsis", pageCount];
+}
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -60,39 +81,62 @@ interface DataTableProps<TData, TValue> {
   enableSearch?: boolean;
   tableContainerClassName?: string;
   tableClassName?: string;
+  density?: "default" | "compact";
+  stickyHeader?: boolean;
 }
 
 export function DataTable<TData, TValue>({
   columns,
   data,
-  searchKey: _searchKey,
+  searchKey,
   globalSearchKeys,
   searchPlaceholder = "Search...",
   filterKey,
   filterOptions,
   filterPlaceholder = "Filter...",
   onRowClick,
-  initialPageSize = 10,
-  pageSizeOptions = [10, 25, 50],
+  initialPageSize = 8,
+  pageSizeOptions = [8, 16, 24],
   rowClassName,
   enableSearch = true,
   tableContainerClassName,
   tableClassName,
+  density = "default",
+  stickyHeader = false,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = React.useState<SortingState>([]);
-  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
-    []
-  );
+  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([]);
+  const [searchTerm, setSearchTerm] = React.useState("");
   const [globalFilter, setGlobalFilter] = React.useState("");
+
+  const swipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      setGlobalFilter(searchTerm);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
   const normalizedSearchKeys = React.useMemo(
     () =>
       Array.from(
-        new Set((globalSearchKeys ?? []).map((key) => key.trim()).filter((key) => key.length > 0))
+        new Set(
+          (globalSearchKeys && globalSearchKeys.length > 0
+            ? globalSearchKeys
+            : searchKey
+              ? [searchKey]
+              : []
+          )
+            .map((key) => key.trim())
+            .filter((key) => key.length > 0)
+        )
       ),
-    [globalSearchKeys]
+    [globalSearchKeys, searchKey]
   );
+
   const globalSearchFilterFn = React.useCallback(
-    (row: { original: TData }, _columnId: string, filterValue: unknown) => {
+    (row: Row<TData>, _columnId: string, filterValue: unknown) => {
       if (typeof filterValue !== "string") return true;
       const query = filterValue.trim().toLowerCase();
       if (!query) return true;
@@ -106,6 +150,7 @@ export function DataTable<TData, TValue>({
     },
     [normalizedSearchKeys]
   );
+
   const normalizedPageSizeOptions = React.useMemo(
     () =>
       Array.from(new Set([initialPageSize, ...pageSizeOptions]))
@@ -125,9 +170,7 @@ export function DataTable<TData, TValue>({
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
     ...(normalizedSearchKeys.length > 0
-      ? {
-          globalFilterFn: globalSearchFilterFn,
-        }
+      ? { globalFilterFn: globalSearchFilterFn }
       : {}),
     state: {
       sorting,
@@ -141,6 +184,10 @@ export function DataTable<TData, TValue>({
     },
   });
 
+  React.useEffect(() => {
+    table.setPageIndex(0);
+  }, [globalFilter, columnFilters, table]);
+
   const filteredCount = table.getFilteredRowModel().rows.length;
   const pageIndex = table.getState().pagination.pageIndex;
   const pageSize = table.getState().pagination.pageSize;
@@ -148,38 +195,81 @@ export function DataTable<TData, TValue>({
   const rangeEnd = filteredCount === 0 ? 0 : Math.min((pageIndex + 1) * pageSize, filteredCount);
   const pageCount = table.getPageCount();
   const currentPage = pageCount === 0 ? 0 : pageIndex + 1;
+  const hasMultiplePages = pageCount > 1;
+
+  const paginationItems = React.useMemo(
+    () => buildPaginationItems(currentPage, pageCount),
+    [currentPage, pageCount]
+  );
+
+  const handleTouchStart = React.useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }, []);
+
+  const handleTouchEnd = React.useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      const start = swipeStartRef.current;
+      swipeStartRef.current = null;
+      if (!start || !hasMultiplePages) return;
+
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const deltaX = touch.clientX - start.x;
+      const deltaY = touch.clientY - start.y;
+
+      if (Math.abs(deltaX) < TABLE_SWIPE_THRESHOLD_PX || Math.abs(deltaY) > Math.abs(deltaX)) {
+        return;
+      }
+
+      if (deltaX < 0 && table.getCanNextPage()) {
+        table.nextPage();
+        return;
+      }
+
+      if (deltaX > 0 && table.getCanPreviousPage()) {
+        table.previousPage();
+      }
+    },
+    [hasMultiplePages, table]
+  );
+
+  const compact = density === "compact";
+  const resolvedTableShellClassName = cn("w-full", tableContainerClassName);
 
   return (
-    <div className="space-y-4">
-      {/* Search and Filter Controls */}
+    <div
+      className="space-y-[var(--data-table-controls-gap)]"
+      data-no-route-swipe={hasMultiplePages ? "true" : undefined}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
       {(enableSearch || (filterKey && filterOptions)) && (
-        <div className="flex flex-col sm:flex-row gap-3">
-          {/* Global Search */}
-          {enableSearch ? (
+        <div className="flex flex-col gap-3 sm:flex-row">
+          {enableSearch && (
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden="true" />
               <Input
                 placeholder={searchPlaceholder}
-                value={globalFilter ?? ""}
-                onChange={(e) => setGlobalFilter(e.target.value)}
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-9 cursor-text"
+                aria-label="Search table"
               />
             </div>
-          ) : null}
+          )}
 
-          {/* Column Filter Dropdown */}
           {filterKey && filterOptions && (
             <Select
-              value={
-                (table.getColumn(filterKey)?.getFilterValue() as string) ?? "all"
-              }
+              value={(table.getColumn(filterKey)?.getFilterValue() as string) ?? "all"}
               onValueChange={(value) =>
                 table
                   .getColumn(filterKey)
                   ?.setFilterValue(value === "all" ? undefined : value)
               }
             >
-              <SelectTrigger className="w-full sm:w-[200px] cursor-pointer">
+              <SelectTrigger className="w-full sm:w-[200px] cursor-pointer" aria-label={filterPlaceholder}>
                 <SelectValue placeholder={filterPlaceholder} />
               </SelectTrigger>
               <SelectContent>
@@ -201,26 +291,37 @@ export function DataTable<TData, TValue>({
         </div>
       )}
 
-      {/* Table */}
-      <div className={cn("overflow-x-auto overflow-y-hidden rounded border", tableContainerClassName)}>
+      <div
+        className={cn(surfaceDataTableShellClassName, resolvedTableShellClassName)}
+        data-slot="surface-data-table-shell"
+      >
         <Table className={tableClassName}>
-          <TableHeader>
+          <TableHeader
+            className={
+              stickyHeader
+                ? "sticky top-0 z-10 bg-[color:var(--app-card-surface-sticky-header-solid)] backdrop-blur"
+                : undefined
+            }
+          >
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
                   <TableHead
                     key={header.id}
-                    className={
-                      header.column.getCanSort() ? "cursor-pointer" : ""
-                    }
+                    className={cn(
+                      compact
+                        ? "px-[max(10px,calc(var(--data-table-cell-px)-2px))] py-2 text-[11px] uppercase tracking-[0.16em] text-muted-foreground"
+                        : "px-[var(--data-table-cell-px)] py-[calc(var(--data-table-cell-py)-1px)]",
+                      header.column.getCanSort() ? "cursor-pointer select-none" : ""
+                    )}
                     onClick={header.column.getToggleSortingHandler()}
                   >
                     {header.isPlaceholder
                       ? null
                       : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext()
-                        )}
+                        header.column.columnDef.header,
+                        header.getContext()
+                      )}
                     {{
                       asc: " ↑",
                       desc: " ↓",
@@ -230,20 +331,29 @@ export function DataTable<TData, TValue>({
               </TableRow>
             ))}
           </TableHeader>
-          <TableBody>
+          <TableBody data-no-auto-fade="true">
             {table.getRowModel().rows?.length ? (
               table.getRowModel().rows.map((row) => (
                 <TableRow
                   key={row.id}
                   data-state={row.getIsSelected() && "selected"}
                   className={cn(
-                    onRowClick ? "cursor-pointer hover:bg-muted/50" : "hover:bg-muted/40",
+                    onRowClick
+                      ? "cursor-pointer transition-[background-color,transform] duration-200 ease-out hover:-translate-y-px hover:bg-foreground/[0.045] active:translate-y-0 active:bg-foreground/[0.065]"
+                      : "transition-[background-color] duration-200 ease-out hover:bg-foreground/[0.032]",
                     rowClassName?.(row.original)
                   )}
                   onClick={onRowClick ? () => onRowClick(row.original) : undefined}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
+                    <TableCell
+                      key={cell.id}
+                      className={cn(
+                        compact
+                          ? "px-[max(10px,calc(var(--data-table-cell-px)-2px))] py-2.5 align-middle"
+                          : "px-[var(--data-table-cell-px)] py-[var(--data-table-cell-py)]"
+                      )}
+                    >
                       {flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext()
@@ -256,9 +366,9 @@ export function DataTable<TData, TValue>({
               <TableRow>
                 <TableCell
                   colSpan={columns.length}
-                  className="h-24 text-center"
+                  className="h-24 px-[var(--data-table-cell-px)] text-center text-muted-foreground"
                 >
-                  No results.
+                  No results found.
                 </TableCell>
               </TableRow>
             )}
@@ -266,62 +376,97 @@ export function DataTable<TData, TValue>({
         </Table>
       </div>
 
-      {/* Pagination Controls */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-xs text-muted-foreground sm:text-sm">
-          Showing {rangeStart}-{rangeEnd} of {filteredCount}
-        </div>
+      {hasMultiplePages && (
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs text-muted-foreground sm:text-sm">
+            Showing {rangeStart}-{rangeEnd} of {filteredCount}
+          </div>
 
-        <div className="flex items-center justify-between gap-2 sm:justify-end">
-          {/* Page Size Selector */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 min-w-[64px] justify-between px-2 text-xs sm:min-w-[80px] sm:px-3 sm:text-sm"
-                data-no-route-swipe
-              >
-                {table.getState().pagination.pageSize}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {normalizedPageSizeOptions.map((size) => (
-                <DropdownMenuItem
-                  key={size}
-                  onSelect={() => table.setPageSize(size)}
-                  className="cursor-pointer"
-                >
-                  {size}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="flex flex-col items-stretch gap-2 sm:items-end">
+            <div className="flex items-center justify-between gap-2 sm:justify-end">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 min-w-[64px] justify-between px-2 text-xs sm:min-w-[80px] sm:px-3 sm:text-sm"
+                    data-no-route-swipe
+                  >
+                    {table.getState().pagination.pageSize}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {normalizedPageSizeOptions.map((size) => (
+                    <DropdownMenuItem
+                      key={size}
+                      onSelect={() => table.setPageSize(size)}
+                      className="cursor-pointer"
+                    >
+                      {size}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <span className="text-xs text-muted-foreground sm:text-sm">
+                Page {currentPage} of {pageCount}
+              </span>
+            </div>
 
-          {/* Page Navigation */}
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => table.previousPage()}
-            disabled={!table.getCanPreviousPage()}
-            className="cursor-pointer"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <span className="text-sm">
-            Page {currentPage} of {pageCount}
-          </span>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => table.nextPage()}
-            disabled={!table.getCanNextPage()}
-            className="cursor-pointer"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
+            <Pagination className="justify-end">
+              <PaginationContent data-no-route-swipe>
+                <PaginationItem>
+                  <PaginationPrevious
+                    href="#"
+                    aria-disabled={!table.getCanPreviousPage()}
+                    className={cn(
+                      !table.getCanPreviousPage() && "pointer-events-none opacity-50"
+                    )}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (table.getCanPreviousPage()) {
+                        table.previousPage();
+                      }
+                    }}
+                  />
+                </PaginationItem>
+                {paginationItems.map((item, index) =>
+                  item === "ellipsis" ? (
+                    <PaginationItem key={`ellipsis-${index}`}>
+                      <PaginationEllipsis />
+                    </PaginationItem>
+                  ) : (
+                    <PaginationItem key={item}>
+                      <PaginationLink
+                        href="#"
+                        isActive={item === currentPage}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          table.setPageIndex(item - 1);
+                        }}
+                      >
+                        {item}
+                      </PaginationLink>
+                    </PaginationItem>
+                  )
+                )}
+                <PaginationItem>
+                  <PaginationNext
+                    href="#"
+                    aria-disabled={!table.getCanNextPage()}
+                    className={cn(!table.getCanNextPage() && "pointer-events-none opacity-50")}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (table.getCanNextPage()) {
+                        table.nextPage();
+                      }
+                    }}
+                  />
+                </PaginationItem>
+              </PaginationContent>
+            </Pagination>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

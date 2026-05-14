@@ -17,6 +17,7 @@
  *   - No localStorage: Vault key only in memory
  */
 import { base64ToBytes, bytesToBase64 } from "@/lib/vault/base64";
+import { resolvePasskeyRpId } from "@/lib/vault/passkey-rp";
 
 // PRF Support Matrix (as of 2024):
 // Chrome + Google Password Manager = ✅ PRF supported
@@ -82,14 +83,10 @@ export async function checkPrfSupport(): Promise<boolean> {
  * Get the appropriate RP ID for the current environment
  */
 export function getRpId(): string {
-  // For localhost, use 'localhost'
-  if (
-    window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1"
-  ) {
-    return "localhost";
-  }
-  return window.location.hostname;
+  return resolvePasskeyRpId({
+    isNative: false,
+    hostname: typeof window !== "undefined" ? window.location.hostname : null,
+  });
 }
 
 /**
@@ -282,12 +279,11 @@ export async function registerWithPrf(
 
   console.log("🔐 Registering passkey with PRF...");
   console.log("  RP ID:", rpId);
-  console.log("  User:", displayName);
 
   const createOptions: PublicKeyCredentialCreationOptions = {
     challenge,
     rp: {
-      name: "Hushh",
+      name: "Hussh",
       id: rpId,
     },
     user: {

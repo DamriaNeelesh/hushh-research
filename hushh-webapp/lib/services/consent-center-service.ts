@@ -2,7 +2,10 @@ import { ApiService } from "@/lib/services/api-service";
 import { CacheService, CACHE_KEYS, CACHE_TTL } from "@/lib/services/cache-service";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
 
+export const CONSENT_CENTER_PAGE_SIZE = 20;
+
 export type ConsentCenterActor = "investor" | "ria";
+export type ConsentCenterMode = "consents" | "connections";
 export type ConsentCenterView =
   | "incoming"
   | "outgoing"
@@ -18,15 +21,31 @@ export interface ConsentCenterEntry {
   action: string;
   scope?: string | null;
   scope_description?: string | null;
+  scope_icon_name?: string | null;
+  scope_color_hex?: string | null;
   counterpart_type: "ria" | "investor" | "developer" | "self";
   counterpart_id?: string | null;
   counterpart_label?: string | null;
+  counterpart_email?: string | null;
+  counterpart_secondary_label?: string | null;
+  counterpart_image_url?: string | null;
+  counterpart_website_url?: string | null;
   request_id?: string | null;
   invite_id?: string | null;
   relationship_status?: string | null;
+  relationship_state?: string | null;
   allowed_next_action?: string | null;
   issued_at?: number | string | null;
   expires_at?: number | string | null;
+  approval_timeout_at?: number | string | null;
+  request_url?: string | null;
+  reason?: string | null;
+  is_scope_upgrade?: boolean | null;
+  existing_granted_scopes?: string[] | null;
+  additional_access_summary?: string | null;
+  technical_identity?: {
+    user_id?: string | null;
+  } | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -83,7 +102,6 @@ export interface ConsentCenterResponse {
     primary_nav_persona: "investor" | "ria";
     ria_setup_available: boolean;
     ria_switch_available: boolean;
-    dev_ria_bypass_allowed: boolean;
     investor_marketplace_opt_in: boolean;
     iam_schema_ready: boolean;
     mode: "full" | "compat_investor";
@@ -112,6 +130,30 @@ export interface ConsentCenterResponse {
   self_activity_summary?: SelfActivitySummary | null;
 }
 
+export interface ConsentCenterPageSummary {
+  user_id: string;
+  actor: ConsentCenterActor;
+  mode?: ConsentCenterMode;
+  counts: {
+    pending: number;
+    active: number;
+    previous: number;
+  };
+}
+
+export interface ConsentCenterPageListResponse {
+  user_id: string;
+  actor: ConsentCenterActor;
+  mode?: ConsentCenterMode;
+  surface: "pending" | "active" | "previous";
+  query: string;
+  page: number;
+  limit: number;
+  total: number;
+  has_more: boolean;
+  items: ConsentCenterEntry[];
+}
+
 interface FetchCenterOptions {
   idToken: string;
   userId: string;
@@ -125,8 +167,8 @@ interface CreateRequestOptions {
   userId: string;
   payload: {
     subject_user_id: string;
-    requester_actor_type?: "ria";
-    subject_actor_type?: "investor";
+    requester_actor_type?: ConsentCenterActor;
+    subject_actor_type?: ConsentCenterActor;
     scope_template_id: string;
     selected_scope?: string;
     duration_mode?: "preset" | "custom";
@@ -134,6 +176,50 @@ interface CreateRequestOptions {
     firm_id?: string;
     reason?: string;
   };
+}
+
+export interface HandshakeTimelineEntry {
+  id: string;
+  action: string;
+  status: string;
+  scope?: string | null;
+  scope_description?: string | null;
+  issued_at?: number | string | null;
+  expires_at?: number | string | null;
+  request_id?: string | null;
+  actor: ConsentCenterActor;
+  counterpart_id: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface HandshakeHistoryResponse {
+  user_id: string;
+  counterpart_id: string;
+  actor: ConsentCenterActor;
+  page: number;
+  limit: number;
+  total: number;
+  has_more: boolean;
+  timeline: HandshakeTimelineEntry[];
+}
+
+interface HandshakeHistoryOptions {
+  idToken: string;
+  counterpartId: string;
+  actor?: ConsentCenterActor;
+  page?: number;
+  limit?: number;
+}
+
+interface DisconnectRelationshipOptions {
+  idToken: string;
+  investor_user_id?: string;
+  ria_profile_id?: string;
+}
+
+interface ErrorPayload {
+  detail?: string;
+  error?: string;
 }
 
 export class ConsentCenterService {
@@ -195,6 +281,102 @@ export class ConsentCenterService {
     return { items: payload.items || [] };
   }
 
+  static async getSummary(options: {
+    idToken: string;
+    userId: string;
+    actor?: ConsentCenterActor;
+    mode?: ConsentCenterMode;
+    force?: boolean;
+  }): Promise<ConsentCenterPageSummary> {
+    const actor = options.actor || "investor";
+    const mode = options.mode || "consents";
+    const cacheKey = CACHE_KEYS.CONSENT_CENTER_SUMMARY(options.userId, `${actor}:${mode}`);
+    const cache = CacheService.getInstance();
+    if (!options.force) {
+      const cached = cache.get<ConsentCenterPageSummary>(cacheKey);
+      if (cached) return cached;
+    }
+    const query = new URLSearchParams({ actor, mode });
+    const response = await ApiService.apiFetch(`/api/consent/center/summary?${query.toString()}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${options.idToken}`,
+      },
+    });
+    const payload = (await response.json().catch(() => ({}))) as ConsentCenterPageSummary & ErrorPayload;
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || `Request failed: ${response.status}`);
+    }
+    cache.set(cacheKey, payload, CACHE_TTL.SHORT);
+    return payload;
+  }
+
+  static async listEntries(options: {
+    idToken: string;
+    userId: string;
+    actor?: ConsentCenterActor;
+    mode?: ConsentCenterMode;
+    surface: "pending" | "active" | "previous";
+    q?: string;
+    page?: number;
+    limit?: number;
+    top?: number;
+    force?: boolean;
+  }): Promise<ConsentCenterPageListResponse> {
+    const actor = options.actor || "investor";
+    const mode = options.mode || "consents";
+    const q = options.q || "";
+    const previewTop = typeof options.top === "number" ? Math.max(1, Math.min(options.top, 10)) : null;
+    const page = previewTop ? 1 : options.page || 1;
+    const limit = previewTop ?? (options.limit || CONSENT_CENTER_PAGE_SIZE);
+    const cacheKey = previewTop
+      ? CACHE_KEYS.CONSENT_CENTER_PREVIEW(
+          options.userId,
+          `${actor}:${mode}`,
+          options.surface,
+          previewTop
+        )
+      : CACHE_KEYS.CONSENT_CENTER_LIST(
+          options.userId,
+          `${actor}:${mode}`,
+          options.surface,
+          q,
+          page,
+          limit
+        );
+    const cache = CacheService.getInstance();
+    if (!options.force) {
+      const cached = cache.get<ConsentCenterPageListResponse>(cacheKey);
+      if (cached) return cached;
+    }
+    const query = new URLSearchParams({
+      actor,
+      mode,
+      surface: options.surface,
+    });
+    if (previewTop) {
+      query.set("top", String(previewTop));
+    } else {
+      query.set("page", String(page));
+      query.set("limit", String(limit));
+    }
+    if (q.trim()) query.set("q", q.trim());
+    const response = await ApiService.apiFetch(`/api/consent/center/list?${query.toString()}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${options.idToken}`,
+      },
+    });
+    const payload = (await response.json().catch(() => ({}))) as ConsentCenterPageListResponse &
+      ErrorPayload;
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || `Request failed: ${response.status}`);
+    }
+    payload.items = Array.isArray(payload.items) ? payload.items : [];
+    cache.set(cacheKey, payload, CACHE_TTL.SHORT);
+    return payload;
+  }
+
   static async createRequest(options: CreateRequestOptions) {
     const { idToken, userId, payload } = options;
     const response = await ApiService.apiFetch("/api/consent/requests", {
@@ -204,9 +386,9 @@ export class ConsentCenterService {
         Authorization: `Bearer ${idToken}`,
       },
       body: JSON.stringify({
+        duration_mode: "preset",
         requester_actor_type: "ria",
         subject_actor_type: "investor",
-        duration_mode: "preset",
         ...payload,
       }),
     });
@@ -225,6 +407,65 @@ export class ConsentCenterService {
     }
 
     CacheSyncService.onConsentMutated(userId);
+    return body;
+  }
+
+  static async getHandshakeHistory(
+    options: HandshakeHistoryOptions
+  ): Promise<HandshakeHistoryResponse> {
+    const { idToken, counterpartId, actor = "investor", page = 1, limit = 50 } = options;
+    const query = new URLSearchParams({
+      counterpart_id: counterpartId,
+      actor,
+      page: String(page),
+      limit: String(limit),
+    });
+    const response = await ApiService.apiFetch(
+      `/api/consent/handshake/history?${query.toString()}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+        },
+      }
+    );
+
+    const payload = (await response.json().catch(() => ({}))) as HandshakeHistoryResponse &
+      ErrorPayload;
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || `Request failed: ${response.status}`);
+    }
+    payload.timeline = Array.isArray(payload.timeline) ? payload.timeline : [];
+    return payload;
+  }
+
+  static async disconnectRelationship(options: DisconnectRelationshipOptions) {
+    const response = await ApiService.apiFetch("/api/consent/relationships/disconnect", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${options.idToken}`,
+      },
+      body: JSON.stringify({
+        investor_user_id: options.investor_user_id,
+        ria_profile_id: options.ria_profile_id,
+      }),
+    });
+
+    const body = (await response.json().catch(() => ({}))) as {
+      detail?: string;
+      error?: string;
+      relationship_status?: string;
+      revoked_scopes?: string[];
+    };
+
+    if (!response.ok) {
+      throw new Error(body.detail || body.error || `Request failed: ${response.status}`);
+    }
+
+    if (options.investor_user_id) {
+      CacheSyncService.onConsentMutated(options.investor_user_id);
+    }
     return body;
   }
 }

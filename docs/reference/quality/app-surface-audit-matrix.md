@@ -1,5 +1,10 @@
 # App Surface Audit Matrix
 
+
+## Visual Context
+
+Canonical visual owner: [Quality and Design System Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
 This matrix tracks the target design-system contract for the current application surfaces.
 
 ## Phase 1: Kai Investor Shell
@@ -11,6 +16,7 @@ This matrix tracks the target design-system contract for the current application
 | `/kai/investments` | `PageHeader`, `SettingsGroup`, `SettingsRow`, Plaid grouped sections | In scope for shared header + settings language |
 | `/kai/analysis` | `PageHeader`, tabs, debate/history surfaces | In scope for heading and icon normalization |
 | Consent center | `PageHeader`, grouped rows, detail panels | In scope for investor-facing consistency |
+| `/one/kyc` | `PageHeader`, `SettingsGroup`, `SettingsRow`, `SettingsDetailPanel`, `HushhLoader` | Mobile-first KYC workflow surface aligned to Profile mechanics |
 | Profile | canonical settings reference | Already the baseline |
 | Top/bottom chrome | shared shell contract | Canonical layout authority |
 
@@ -18,12 +24,12 @@ This matrix tracks the target design-system contract for the current application
 
 | Surface | Target primitives | Status |
 |---|---|---|
-| `/ria` | `RiaPageShell` on top of `PageHeader` and `SectionHeader` | Uses shared shell, needs continued audit discipline |
+| `/ria` | `RiaPageShell`, grouped status band, simple route-launch rows | Simplified into lightweight workspace launcher |
 | `/ria/onboarding` | shared shell spacing + page header contract | In scope for route-level review |
-| `/ria/clients` | `SectionHeader`, grouped operational surfaces | In scope for audit cleanup |
-| `/ria/requests` | `RiaPageShell`, grouped request bundles, scope selection surfaces | In scope and now part of the minimum RIA shell |
+| `/ria/clients` | `SectionHeader`, `SettingsGroup`, `SettingsRow`, detail panel workflow | Simplified into mobile-first roster with Connected / Pending / Invites |
+| `/ria/requests` | shared consent alias | Redirect-only compatibility route into `/consents` |
 | `/ria/picks` | `RiaPageShell`, upload surface, grouped active/history rows | In scope and now part of the minimum RIA shell |
-| `/ria/workspace/[clientId]` | `SectionHeader`, grouped access/data surfaces | In scope for audit cleanup |
+| `/ria/workspace?clientId=...` | `SectionHeader`, grouped access/data surfaces | Simplified into access summary + data view + request/disconnect actions |
 | `/marketplace` | shared shell, grouped discovery rows/cards | In scope for audit cleanup |
 
 ## Open Follow-Through

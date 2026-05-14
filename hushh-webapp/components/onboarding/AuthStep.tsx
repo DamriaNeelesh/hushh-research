@@ -1,14 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getRedirectResult } from "firebase/auth";
-import { Phone, Shield } from "lucide-react";
+import { Shield } from "lucide-react";
 import { AuthService } from "@/lib/services/auth-service";
 import { ApiService } from "@/lib/services/api-service";
 import { auth } from "@/lib/firebase/config";
 import { useAuth } from "@/lib/firebase/auth-context";
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
+import { NativeTestBeacon } from "@/components/app-ui/native-test-beacon";
 import { useStepProgress } from "@/lib/progress/step-progress-context";
 import { isAndroid } from "@/lib/capacitor/platform";
 import { BrandMark, Icon } from "@/lib/morphy-ux/ui";
@@ -24,6 +25,13 @@ import {
 import { ROUTES } from "@/lib/navigation/routes";
 import { type KaiLegalDocumentType } from "@/lib/legal/kai-legal-content";
 import { trackEvent } from "@/lib/observability/client";
+import {
+  resolveGrowthEntrySurface,
+  resolveGrowthJourneyForPath,
+  trackGrowthFunnelStepCompleted,
+} from "@/lib/observability/growth";
+import { getNativeTestConfig, useNativeTestConfig } from "@/lib/testing/native-test";
+import { resolveLocalReviewerCredentials } from "@/lib/testing/local-reviewer-auth";
 
 export function AuthStep({
   redirectPath,
@@ -32,12 +40,39 @@ export function AuthStep({
   redirectPath: string;
   compact?: boolean;
 }) {
+  const nativeTestConfig = useNativeTestConfig();
   const router = useRouter();
   const { user, loading: authLoading, setNativeUser } = useAuth();
   const { registerSteps, completeStep, reset } = useStepProgress();
+  const lastNavigationKeyRef = useRef<string | null>(null);
+  const autoReviewerLoginStartedRef = useRef(false);
+  const [nativeReviewerVisible, setNativeReviewerVisible] = useState(
+    nativeTestConfig.autoReviewerLogin
+  );
+  const [nativeAuthState, setNativeAuthState] = useState<
+    "anonymous" | "pending" | "authenticated"
+  >(nativeTestConfig.autoReviewerLogin ? "pending" : "anonymous");
+  const [nativeDataState, setNativeDataState] = useState<
+    "loading" | "loaded" | "error"
+  >(nativeTestConfig.autoReviewerLogin ? "loading" : "loaded");
+  const [nativeErrorCode, setNativeErrorCode] = useState<string | null>(null);
 
   const [reviewModeConfig, setReviewModeConfig] = useState<{ enabled: boolean }>(
     { enabled: false }
+  );
+  const shouldUseNativeTestBootstrap =
+    nativeTestConfig.enabled &&
+    nativeTestConfig.autoReviewerLogin &&
+    Boolean(nativeTestConfig.expectedUserId) &&
+    Boolean(nativeTestConfig.vaultPassphrase);
+  const preserveOnboardingAuditRoute =
+    nativeTestConfig.enabled &&
+    nativeTestConfig.expectedRoute === ROUTES.KAI_ONBOARDING &&
+    redirectPath === ROUTES.KAI_ONBOARDING;
+  const growthJourney = useMemo(() => resolveGrowthJourneyForPath(redirectPath), [redirectPath]);
+  const growthEntrySurface = useMemo(
+    () => resolveGrowthEntrySurface(redirectPath),
+    [redirectPath]
   );
   const [activeLegalDoc, setActiveLegalDoc] = useState<KaiLegalDocumentType | null>(
     null
@@ -48,14 +83,27 @@ export function AuthStep({
   }, []);
 
   const resolveAndNavigate = useCallback(
-    async (userId: string, idToken?: string) => {
+    async (userId: string, idToken?: string, phoneNumber?: string | null) => {
+      const navigationKey = `${userId}:${redirectPath || ROUTES.KAI_HOME}`;
+      if (lastNavigationKeyRef.current === navigationKey) {
+        return;
+      }
+      lastNavigationKeyRef.current = navigationKey;
+
       try {
+        if (preserveOnboardingAuditRoute) {
+          setOnboardingRequiredCookie(false);
+          setOnboardingFlowActiveCookie(false);
+          router.push(ROUTES.KAI_ONBOARDING);
+          return;
+        }
         const resolvedIdToken =
           idToken || (user ? await user.getIdToken().catch(() => undefined) : undefined);
         const resolvedPath = await PostAuthRouteService.resolveAfterLogin({
           userId,
           redirectPath,
           idToken: resolvedIdToken,
+          phoneNumber,
         });
 
         const resumeImportFlow =
@@ -68,12 +116,16 @@ export function AuthStep({
       } catch (error) {
         console.warn("[AuthStep] Failed to resolve post-auth route:", error);
         const fallbackPath = redirectPath || ROUTES.KAI_HOME;
-        setOnboardingRequiredCookie(fallbackPath === ROUTES.KAI_ONBOARDING);
-        setOnboardingFlowActiveCookie(fallbackPath === ROUTES.KAI_IMPORT);
-        router.push(fallbackPath);
+        const safeFallbackPath =
+          fallbackPath === ROUTES.KAI_ONBOARDING || fallbackPath === ROUTES.KAI_IMPORT
+            ? ROUTES.KAI_HOME
+            : fallbackPath;
+        setOnboardingRequiredCookie(safeFallbackPath === ROUTES.KAI_ONBOARDING);
+        setOnboardingFlowActiveCookie(safeFallbackPath === ROUTES.KAI_IMPORT);
+        router.push(safeFallbackPath);
       }
     },
-    [redirectPath, router, user]
+    [preserveOnboardingAuditRoute, redirectPath, router, user]
   );
 
   const debugLog = (...args: unknown[]) => {
@@ -96,6 +148,17 @@ export function AuthStep({
   }, [registerSteps, reset]);
 
   useEffect(() => {
+    if (!growthJourney || authLoading || user) return;
+    trackGrowthFunnelStepCompleted({
+      journey: growthJourney,
+      step: "entered",
+      entrySurface: growthEntrySurface,
+      dedupeKey: `growth:${growthJourney}:entered:${growthEntrySurface}`,
+      dedupeWindowMs: 5_000,
+    });
+  }, [authLoading, growthEntrySurface, growthJourney, user]);
+
+  useEffect(() => {
     if (authLoading) return;
     completeStep();
 
@@ -106,9 +169,23 @@ export function AuthStep({
             action: "redirect",
             result: "success",
           });
+          if (growthJourney) {
+            trackGrowthFunnelStepCompleted({
+              journey: growthJourney,
+              step: "auth_completed",
+              entrySurface: growthEntrySurface,
+              authMethod: "redirect",
+              dedupeKey: `growth:${growthJourney}:auth_completed:redirect`,
+              dedupeWindowMs: 5_000,
+            });
+          }
           debugLog("[AuthStep] Redirect result found, navigating to:", redirectPath);
           setNativeUser(result.user);
-          void resolveAndNavigate(result.user.uid, await result.user.getIdToken());
+          void resolveAndNavigate(
+            result.user.uid,
+            await result.user.getIdToken(),
+            result.user.phoneNumber
+          );
         }
       })
       .catch((err) => {
@@ -116,18 +193,26 @@ export function AuthStep({
       });
 
     if (user) {
-      trackEvent("auth_succeeded", {
-        action: "redirect",
-        result: "success",
-      });
+      if (growthJourney) {
+        trackGrowthFunnelStepCompleted({
+          journey: growthJourney,
+          step: "auth_completed",
+          entrySurface: growthEntrySurface,
+          authMethod: "existing_session",
+          dedupeKey: `growth:${growthJourney}:auth_completed:existing_session`,
+          dedupeWindowMs: 5_000,
+        });
+      }
       debugLog("[AuthStep] User authenticated, navigating to:", redirectPath);
-      void resolveAndNavigate(user.uid, undefined);
+      void resolveAndNavigate(user.uid, undefined, user.phoneNumber);
     }
   }, [
     redirectPath,
     user,
     authLoading,
     completeStep,
+    growthEntrySurface,
+    growthJourney,
     setNativeUser,
     resolveAndNavigate,
   ]);
@@ -142,6 +227,139 @@ export function AuthStep({
       cancelled = true;
     };
   }, []);
+
+  const handleReviewerLogin = useCallback(async () => {
+    trackEvent("auth_started", {
+      action: "reviewer",
+    });
+    try {
+      const localReviewerCredentials = resolveLocalReviewerCredentials(
+        typeof window !== "undefined" ? window.location.hostname : null
+      );
+
+      if (
+        !reviewModeConfig.enabled &&
+        !nativeTestConfig.autoReviewerLogin &&
+        !localReviewerCredentials
+      ) {
+        throw new Error("Reviewer mode is not enabled");
+      }
+
+      const authResult = localReviewerCredentials
+        ? await AuthService.signInWithEmailAndPassword(
+            localReviewerCredentials.email,
+            localReviewerCredentials.password
+          )
+        : await (async () => {
+            const { token } = await ApiService.createAppReviewModeSession("reviewer", {
+              smokePassphrase: nativeTestConfig.autoReviewerLogin
+                ? nativeTestConfig.vaultPassphrase
+                : null,
+            });
+            return AuthService.signInWithCustomToken(token);
+          })();
+      const authenticatedUser = authResult.user;
+
+      if (authenticatedUser) {
+        setNativeAuthState("authenticated");
+        setNativeDataState("loaded");
+        setNativeErrorCode(null);
+        trackEvent("auth_succeeded", {
+          action: "reviewer",
+          result: "success",
+        });
+        if (growthJourney) {
+          trackGrowthFunnelStepCompleted({
+            journey: growthJourney,
+            step: "auth_completed",
+            entrySurface: growthEntrySurface,
+            authMethod: "reviewer",
+            dedupeKey: `growth:${growthJourney}:auth_completed:reviewer`,
+            dedupeWindowMs: 5_000,
+          });
+        }
+        setNativeUser(authenticatedUser);
+        await resolveAndNavigate(
+          authenticatedUser.uid,
+          await authenticatedUser.getIdToken(),
+          authenticatedUser.phoneNumber
+        );
+      } else {
+        trackEvent("auth_failed", {
+          action: "reviewer",
+          result: "error",
+          error_class: "missing_user",
+        });
+        morphyToast.error("Reviewer login failed: no user session returned.");
+      }
+    } catch (err: any) {
+      setNativeAuthState("anonymous");
+      setNativeDataState("error");
+      setNativeErrorCode("reviewer_login_failed");
+      debugError("[AuthStep] Reviewer login failed", err);
+      trackEvent("auth_failed", {
+        action: "reviewer",
+        result: "error",
+        error_class: "auth_failed",
+      });
+      morphyToast.error(err.message || "Failed to sign in as reviewer");
+    }
+  }, [
+    growthEntrySurface,
+    growthJourney,
+    nativeTestConfig.autoReviewerLogin,
+    nativeTestConfig.vaultPassphrase,
+    resolveAndNavigate,
+    reviewModeConfig.enabled,
+    setNativeUser,
+  ]);
+
+  useEffect(() => {
+    if (shouldUseNativeTestBootstrap) {
+      return;
+    }
+    if (authLoading || user || autoReviewerLoginStartedRef.current) {
+      return;
+    }
+
+    let attempts = 0;
+    const tryAutoReviewerLogin = () => {
+      const liveConfig = getNativeTestConfig();
+      const requested = liveConfig.enabled && liveConfig.autoReviewerLogin;
+      setNativeReviewerVisible(requested);
+      if (!requested) {
+        attempts += 1;
+        return attempts >= 40;
+      }
+
+      autoReviewerLoginStartedRef.current = true;
+      setNativeAuthState("pending");
+      setNativeDataState("loading");
+      setNativeErrorCode(null);
+      void handleReviewerLogin();
+      return true;
+    };
+
+    if (tryAutoReviewerLogin()) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      if (tryAutoReviewerLogin()) {
+        window.clearInterval(timer);
+      }
+    }, 250);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    authLoading,
+    handleReviewerLogin,
+    reviewModeConfig.enabled,
+    shouldUseNativeTestBootstrap,
+    user,
+  ]);
 
   if (authLoading || user) {
     return <HushhLoader label="Checking session..." variant="fullscreen" />;
@@ -162,8 +380,22 @@ export function AuthStep({
           action: "google",
           result: "success",
         });
+        if (growthJourney) {
+          trackGrowthFunnelStepCompleted({
+            journey: growthJourney,
+            step: "auth_completed",
+            entrySurface: growthEntrySurface,
+            authMethod: "google",
+            dedupeKey: `growth:${growthJourney}:auth_completed:google`,
+            dedupeWindowMs: 5_000,
+          });
+        }
         setNativeUser(authenticatedUser);
-        await resolveAndNavigate(authenticatedUser.uid, await authenticatedUser.getIdToken());
+        await resolveAndNavigate(
+          authenticatedUser.uid,
+          await authenticatedUser.getIdToken(),
+          authenticatedUser.phoneNumber
+        );
       } else {
         debugError("[AuthStep] No user returned from signInWithGoogle");
         trackEvent("auth_failed", {
@@ -200,8 +432,22 @@ export function AuthStep({
           action: "apple",
           result: "success",
         });
+        if (growthJourney) {
+          trackGrowthFunnelStepCompleted({
+            journey: growthJourney,
+            step: "auth_completed",
+            entrySurface: growthEntrySurface,
+            authMethod: "apple",
+            dedupeKey: `growth:${growthJourney}:auth_completed:apple`,
+            dedupeWindowMs: 5_000,
+          });
+        }
         setNativeUser(authenticatedUser);
-        await resolveAndNavigate(authenticatedUser.uid, await authenticatedUser.getIdToken());
+        await resolveAndNavigate(
+          authenticatedUser.uid,
+          await authenticatedUser.getIdToken(),
+          authenticatedUser.phoneNumber
+        );
       } else {
         debugError("[AuthStep] No user returned from signInWithApple");
         trackEvent("auth_failed", {
@@ -220,45 +466,6 @@ export function AuthStep({
         result: "error",
         error_class: "auth_failed",
       });
-    }
-  };
-
-  const handleReviewerLogin = async () => {
-    trackEvent("auth_started", {
-      action: "reviewer",
-    });
-    try {
-      if (!reviewModeConfig.enabled) {
-        throw new Error("Reviewer mode is not enabled");
-      }
-
-      const { token } = await ApiService.createAppReviewModeSession();
-      const authResult = await AuthService.signInWithCustomToken(token);
-      const authenticatedUser = authResult.user;
-
-      if (authenticatedUser) {
-        trackEvent("auth_succeeded", {
-          action: "reviewer",
-          result: "success",
-        });
-        setNativeUser(authenticatedUser);
-        await resolveAndNavigate(authenticatedUser.uid, await authenticatedUser.getIdToken());
-      } else {
-        trackEvent("auth_failed", {
-          action: "reviewer",
-          result: "error",
-          error_class: "missing_user",
-        });
-        morphyToast.error("Reviewer login failed: no user session returned.");
-      }
-    } catch (err: any) {
-      debugError("[AuthStep] Reviewer login failed", err);
-      trackEvent("auth_failed", {
-        action: "reviewer",
-        result: "error",
-        error_class: "auth_failed",
-      });
-      morphyToast.error(err.message || "Failed to sign in as reviewer");
     }
   };
 
@@ -293,7 +500,30 @@ export function AuthStep({
       ];
 
   return (
-    <main className="min-h-[100dvh] w-full bg-transparent">
+    <main className="min-h-[100dvh] w-full bg-transparent" data-testid="auth-step-primary">
+      <NativeTestBeacon
+        routeId="/login"
+        marker="native-route-login"
+        authState={nativeAuthState}
+        dataState={nativeDataState}
+        attachToBridge={(bridge) => {
+          bridge.triggerReviewerLogin = () => {
+            if (autoReviewerLoginStartedRef.current) {
+              return;
+            }
+            autoReviewerLoginStartedRef.current = true;
+            setNativeReviewerVisible(true);
+            setNativeAuthState("pending");
+            setNativeDataState("loading");
+            setNativeErrorCode(null);
+            void handleReviewerLogin();
+          };
+        }}
+        errorCode={
+          nativeErrorCode ??
+          `cfg_${nativeTestConfig.enabled ? "1" : "0"}_${nativeTestConfig.autoReviewerLogin ? "1" : "0"}`
+        }
+      />
       <div
         className={
           compact
@@ -339,17 +569,11 @@ export function AuthStep({
               />
             ))}
 
-            <AuthProviderButton
-              label="Continue with Phone Number"
-              icon={<Icon icon={Phone} size="md" className="text-[var(--morphy-primary-start)]" />}
-              disabled
-            />
-
             <p className="pt-1 text-center text-xs text-muted-foreground">
-              Phone sign-in is coming soon.
+              After sign-in, Kai requires a verified phone number before you continue.
             </p>
 
-            {reviewModeConfig.enabled && (
+            {(reviewModeConfig.enabled || nativeReviewerVisible) && (
               <AuthProviderButton
                 label="Continue as Reviewer"
                 icon={<Icon icon={Shield} size="md" />}

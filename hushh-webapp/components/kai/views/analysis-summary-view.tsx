@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, RefreshCw, Scale } from "lucide-react";
+import { APP_MEASURE_STYLES } from "@/components/app-ui/app-page-shell";
 
 import { Button } from "@/lib/morphy-ux/button";
 import { Card, CardContent } from "@/lib/morphy-ux/card";
@@ -254,7 +255,10 @@ export function AnalysisSummaryView({
   showHeader = true,
 }: AnalysisSummaryViewProps) {
   const rawCard = useMemo(
-    () => (entry.raw_card || {}) as Record<string, unknown>,
+    () =>
+      entry.raw_card && typeof entry.raw_card === "object"
+        ? (entry.raw_card as Record<string, unknown>)
+        : {},
     [entry.raw_card]
   );
   const entryRecord = entry as unknown as Record<string, unknown>;
@@ -354,7 +358,7 @@ export function AnalysisSummaryView({
         : "bg-blue-500/12 text-blue-600 dark:text-blue-400 border-blue-500/30";
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-safe pt-4">
+    <div className="mx-auto w-full space-y-4 pb-safe pt-1" style={APP_MEASURE_STYLES.reading}>
       {!embedded ? (
         <div className="flex items-center justify-between gap-3">
           <Button variant="none" effect="fade" size="sm" onClick={onBack} disabled={!onBack}>
@@ -408,7 +412,7 @@ export function AnalysisSummaryView({
         </div>
       ) : null}
 
-      <Card variant="none" effect="glass" className="rounded-3xl p-0">
+      <Card variant="none" effect="glass" preset="hero">
         <CardContent className="space-y-5 p-6">
           <div className="flex items-center justify-between gap-3">
             <span className="text-xs font-bold uppercase tracking-widest text-primary">Analysis</span>
@@ -452,7 +456,7 @@ export function AnalysisSummaryView({
         </CardContent>
       </Card>
 
-      <Card variant="muted" effect="fill" className="rounded-2xl p-0">
+      <Card variant="muted" effect="fill" preset="default">
         <CardContent className="space-y-3 p-4">
           <div className="border-l-2 border-primary pl-3">
             <p className="text-sm font-medium leading-relaxed">{shortRecommendation}</p>

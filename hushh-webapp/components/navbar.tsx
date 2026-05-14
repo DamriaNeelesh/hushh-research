@@ -6,8 +6,9 @@
 import React, { useEffect, useMemo, type CSSProperties } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  Activity,
   BriefcaseBusiness,
+  Compass,
+  FileSpreadsheet,
   LayoutDashboard,
   LineChart,
   Store,
@@ -16,8 +17,8 @@ import {
 } from "lucide-react";
 
 import { useAuth } from "@/hooks/use-auth";
-import { usePendingConsentCount } from "@/components/consent/notification-provider";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { ThemeToggleCompact } from "@/components/theme-toggle";
+import { useConsentPendingSummaryCount } from "@/lib/consent/use-consent-pending-summary-count";
 import { useKaiSession } from "@/lib/stores/kai-session-store";
 import { getKaiChromeState } from "@/lib/navigation/kai-chrome-state";
 import { SegmentedPill, type SegmentedPillOption } from "@/lib/morphy-ux/ui";
@@ -30,8 +31,8 @@ import { activeKaiRouteTabFromPath } from "@/lib/navigation/kai-route-tabs";
 import { activeRiaRouteTabFromPath } from "@/lib/navigation/ria-route-tabs";
 import { useVault } from "@/lib/vault/vault-context";
 
-type InvestorNavKey = "dashboard" | "market" | "analysis" | "profile";
-type RiaNavKey = "home" | "clients" | "activity" | "profile";
+type InvestorNavKey = "dashboard" | "market" | "connect" | "analysis" | "profile";
+type RiaNavKey = "home" | "clients" | "connect" | "picks" | "profile";
 type NavKey = InvestorNavKey | RiaNavKey;
 
 export const Navbar = () => {
@@ -39,8 +40,8 @@ export const Navbar = () => {
   const router = useRouter();
   const { isAuthenticated } = useAuth();
   const { isVaultUnlocked } = useVault();
-  const { activePersona, riaEntryRoute } = usePersonaState();
-  const pendingConsents = usePendingConsentCount();
+  const { activePersona } = usePersonaState();
+  const pendingConsents = useConsentPendingSummaryCount();
   const pillRef = React.useRef<HTMLDivElement | null>(null);
   const chromeState = useMemo(() => getKaiChromeState(pathname), [pathname]);
   const useOnboardingChrome = chromeState.useOnboardingChrome;
@@ -50,8 +51,6 @@ export const Navbar = () => {
   const allowScrollHide = isAuthenticated && !useOnboardingChrome && !preserveBottomChrome;
   const { hidden: hideBottomChrome, progress: hideBottomChromeProgress } = useKaiBottomChromeVisibility(allowScrollHide);
 
-  const lastKaiPath = useKaiSession((s) => s.lastKaiPath);
-  const lastRiaPath = useKaiSession((s) => s.lastRiaPath);
   const busyOperations = useKaiSession((s) => s.busyOperations);
 
   React.useLayoutEffect(() => {
@@ -91,20 +90,9 @@ export const Navbar = () => {
       useKaiSession.getState().setLastRiaPath(pathname);
     }
   }, [pathname]);
-  const hideNavbar = pathname?.startsWith(ROUTES.LABS_PROFILE_APPEARANCE);
-
-  useEffect(() => {
-    if (activePersona === "ria") {
-      router.prefetch(lastRiaPath || riaEntryRoute);
-      router.prefetch(ROUTES.RIA_CLIENTS);
-      router.prefetch(ROUTES.RIA_REQUESTS);
-      return;
-    }
-
-    router.prefetch(lastKaiPath || ROUTES.KAI_HOME);
-    router.prefetch(ROUTES.KAI_DASHBOARD);
-    router.prefetch(ROUTES.KAI_ANALYSIS);
-  }, [activePersona, lastKaiPath, lastRiaPath, riaEntryRoute, router]);
+  const hideNavbar =
+    pathname?.startsWith(ROUTES.LABS_PROFILE_APPEARANCE) ||
+    pathname === ROUTES.DEVELOPERS;
 
   const navOptions = useMemo<SegmentedPillOption[]>(
     () =>
@@ -123,10 +111,16 @@ export const Navbar = () => {
               dataTourId: "nav-ria-clients",
             },
             {
-              value: "activity",
-              label: "Activity",
-              icon: Activity,
-              dataTourId: "nav-ria-activity",
+              value: "picks",
+              label: "Picks",
+              icon: FileSpreadsheet,
+              dataTourId: "nav-ria-picks",
+            },
+            {
+              value: "connect",
+              label: "Connect",
+              icon: Compass,
+              dataTourId: "nav-ria-connect",
             },
             {
               value: "profile",
@@ -138,22 +132,28 @@ export const Navbar = () => {
           ]
         : [
             {
-              value: "dashboard",
-              label: "Portfolio",
-              icon: LayoutDashboard,
-              dataTourId: "nav-portfolio",
-            },
-            {
               value: "market",
               label: "Market",
               icon: Store,
               dataTourId: "nav-market",
             },
             {
+              value: "dashboard",
+              label: "Portfolio",
+              icon: LayoutDashboard,
+              dataTourId: "nav-portfolio",
+            },
+            {
               value: "analysis",
               label: "Analysis",
               icon: LineChart,
               dataTourId: "nav-analysis",
+            },
+            {
+              value: "connect",
+              label: "Connect",
+              icon: Compass,
+              dataTourId: "nav-connect",
             },
             {
               value: "profile",
@@ -173,26 +173,26 @@ export const Navbar = () => {
   if (!isAuthenticated || useOnboardingChrome) {
     return (
       <nav
-        className="fixed left-0 right-0 z-50 flex justify-center px-4 pointer-events-none"
+        className="fixed right-0 top-0 z-50 flex justify-end px-4 pointer-events-none"
         style={{
-          bottom:
-            "calc(max(var(--app-safe-area-bottom-effective), 0.5rem) + var(--app-bottom-chrome-lift, 0px))",
+          top: "calc(max(var(--app-safe-area-top-effective), 0.5rem))",
         }}
       >
         <div ref={pillRef} className="pointer-events-auto">
-          <ThemeToggle className="bg-white/85 dark:bg-black/85" />
+          <ThemeToggleCompact />
         </div>
       </nav>
     );
   }
 
   const normalizedPathname = pathname?.replace(/\/$/, "") || "";
-  const activeNav: NavKey =
-    normalizedPathname.startsWith(ROUTES.PROFILE) || normalizedPathname.startsWith(ROUTES.CONSENTS)
-      ? "profile"
-      : activePersona === "ria"
-      ? activeRiaRouteTabFromPath(normalizedPathname)
-      : activeKaiRouteTabFromPath(normalizedPathname);
+  const activeNav: NavKey = normalizedPathname.startsWith(ROUTES.PROFILE)
+    ? "profile"
+    : normalizedPathname.startsWith(ROUTES.CONSENTS)
+    ? "profile"
+    : activePersona === "ria"
+    ? activeRiaRouteTabFromPath(normalizedPathname)
+    : activeKaiRouteTabFromPath(normalizedPathname);
 
   const navigateTo = (value: string) => {
     if (busyOperations["portfolio_save"]) {
@@ -220,14 +220,17 @@ export const Navbar = () => {
       case "analysis":
         router.push(`${ROUTES.KAI_ANALYSIS}?tab=history`);
         return;
+      case "connect":
+        router.push(ROUTES.MARKETPLACE);
+        return;
       case "home":
-        router.push(lastRiaPath || riaEntryRoute);
+        router.push(ROUTES.RIA_HOME);
         return;
       case "clients":
         router.push(ROUTES.RIA_CLIENTS);
         return;
-      case "activity":
-        router.push(ROUTES.RIA_REQUESTS);
+      case "picks":
+        router.push(ROUTES.RIA_PICKS);
         return;
       case "profile":
         router.push(ROUTES.PROFILE);
@@ -249,7 +252,7 @@ export const Navbar = () => {
           bottom:
             "calc(max(var(--app-safe-area-bottom-effective), 0.75rem) + var(--app-bottom-chrome-lift, 0px))",
           transform:
-            "translate3d(0, calc(var(--bottom-chrome-progress, 0) * (var(--app-bottom-fixed-ui) + 10px)), 0)",
+            "translate3d(0, calc(var(--bottom-chrome-progress, 0) * var(--bottom-chrome-hide-distance, var(--bottom-chrome-full-height))), 0)",
           "--bottom-chrome-progress": String(hideBottomChromeProgress),
         } as CSSProperties
       }
@@ -265,15 +268,15 @@ export const Navbar = () => {
           ref={pillRef}
           size="compact"
           layout="stacked"
-          hitArea="content"
+          hitArea="segment"
           value={activeNav}
           options={navOptions}
           onValueChange={navigateTo}
           ariaLabel="Main navigation"
           className={cn(
             "relative z-10 w-full chrome-bottom-foreground",
-            !isVaultUnlocked &&
-              "!border-border/80 !bg-background/92 !backdrop-blur-none shadow-[0_10px_22px_rgba(15,23,42,0.08)] dark:!bg-background/94"
+            "!border-0 !bg-background/80 !backdrop-blur-[var(--blur-standard)]",
+            "dark:!bg-background/90"
           )}
         />
       </div>

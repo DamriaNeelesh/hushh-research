@@ -6,6 +6,7 @@ Usage:
     python db/migrate.py --table vault_keys        # Create vault_keys table
     python db/migrate.py --table consent_audit     # Create consent_audit table
     python db/migrate.py --consent                 # Create all consent-related tables
+    python db/migrate.py --release                 # Apply the canonical release lane
     python db/migrate.py --full                    # Drop and recreate ALL tables (DESTRUCTIVE!)
     python db/migrate.py --clear consent_audit     # Clear specific table
     python db/migrate.py --status                  # Show table summary
@@ -16,11 +17,16 @@ Environment:
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
 import asyncpg
 from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # Load env so DB_* are available (same as runtime)
 load_dotenv()
@@ -37,10 +43,43 @@ except EnvironmentError as e:
     sys.exit(1)
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-IAM_MIGRATION_FILES = (
-    "020_ria_iam_foundation.sql",
-    "021_runtime_persona_state.sql",
-    "022_ria_invites.sql",
+CONSENT_EVOLUTION_MIGRATION_FILES = ("035_strict_zero_knowledge_consent_exports.sql",)
+RELEASE_MANIFEST_PATH = Path(__file__).resolve().parent / "release_migration_manifest.json"
+
+# Load env so DB_* are available (same as runtime)
+load_dotenv()
+
+
+def _load_release_manifest(path: Path) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    if not path.exists():
+        raise FileNotFoundError(f"Release migration manifest missing: {path}")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    ordered = payload.get("ordered_migrations")
+    groups = payload.get("groups", {})
+    iam = groups.get("iam")
+    pkm = groups.get("pkm")
+
+    if not isinstance(ordered, list) or not ordered:
+        raise RuntimeError("release_migration_manifest.json must define ordered_migrations")
+    if not isinstance(iam, list) or not iam:
+        raise RuntimeError("release_migration_manifest.json must define groups.iam")
+    if not isinstance(pkm, list) or not pkm:
+        raise RuntimeError("release_migration_manifest.json must define groups.pkm")
+
+    ordered_tuple = tuple(str(item).strip() for item in ordered if str(item).strip())
+    iam_tuple = tuple(str(item).strip() for item in iam if str(item).strip())
+    pkm_tuple = tuple(str(item).strip() for item in pkm if str(item).strip())
+    ordered_set = set(ordered_tuple)
+    if any(item not in ordered_set for item in iam_tuple + pkm_tuple):
+        raise RuntimeError(
+            "release_migration_manifest.json groups must be subsets of ordered_migrations"
+        )
+    return ordered_tuple, iam_tuple, pkm_tuple
+
+
+RELEASE_MIGRATION_FILES, IAM_MIGRATION_FILES, PKM_MIGRATION_FILES = _load_release_manifest(
+    RELEASE_MANIFEST_PATH
 )
 
 
@@ -162,20 +201,103 @@ async def create_consent_audit(pool: asyncpg.Pool):
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_consent_audit_pending ON consent_audit(user_id) WHERE action = 'REQUESTED'"
     )
+    await pool.execute("""
+        CREATE OR REPLACE FUNCTION consent_audit_notify()
+        RETURNS TRIGGER AS $$
+        DECLARE payload TEXT;
+        BEGIN
+          payload := json_build_object(
+            'user_id', NEW.user_id,
+            'request_id', COALESCE(NEW.request_id, ''),
+            'action', NEW.action,
+            'scope', COALESCE(NEW.scope, ''),
+            'agent_id', COALESCE(NEW.agent_id, ''),
+            'scope_description', COALESCE(NEW.scope_description, ''),
+            'issued_at', NEW.issued_at,
+            'bundle_id', COALESCE(NEW.metadata->>'bundle_id', ''),
+            'bundle_label', COALESCE(NEW.metadata->>'bundle_label', ''),
+            'bundle_scope_count', COALESCE(NEW.metadata->>'bundle_scope_count', '1')
+          )::TEXT;
+          PERFORM pg_notify('consent_audit_new', payload);
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+    """)
+    await pool.execute("DROP TRIGGER IF EXISTS consent_audit_after_insert ON consent_audit")
+    await pool.execute("""
+        CREATE TRIGGER consent_audit_after_insert
+        AFTER INSERT ON consent_audit
+        FOR EACH ROW EXECUTE FUNCTION consent_audit_notify()
+    """)
     print("✅ consent_audit ready!")
 
 
-async def create_world_model_data(pool: asyncpg.Pool):
+async def create_user_push_tokens(pool: asyncpg.Pool):
+    """Create user_push_tokens table (push token registry)."""
+    print("📲 Creating user_push_tokens table...")
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS user_push_tokens (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            token TEXT NOT NULL,
+            platform TEXT NOT NULL CHECK (platform IN ('web', 'ios', 'android')),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (user_id, platform)
+        )
+    """)
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_push_tokens_user_id ON user_push_tokens(user_id)"
+    )
+    print("✅ user_push_tokens ready!")
+
+
+async def create_internal_access_events(pool: asyncpg.Pool):
+    """Create internal_access_events table (self/internal activity ledger)."""
+    print("🧾 Creating internal_access_events table...")
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS internal_access_events (
+            id SERIAL PRIMARY KEY,
+            token_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            action TEXT NOT NULL,
+            issued_at BIGINT NOT NULL,
+            expires_at BIGINT,
+            revoked_at BIGINT,
+            metadata JSONB,
+            token_type VARCHAR(20) DEFAULT 'internal',
+            request_id VARCHAR(32),
+            scope_description TEXT
+        )
+    """)
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_internal_access_events_user_id ON internal_access_events(user_id)"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_internal_access_events_user_action ON internal_access_events(user_id, action)"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_internal_access_events_issued_at ON internal_access_events(issued_at DESC)"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_internal_access_events_user_scope_agent ON internal_access_events(user_id, agent_id, scope, issued_at DESC)"
+    )
+    print("✅ internal_access_events ready!")
+
+
+async def create_pkm_data(pool: asyncpg.Pool):
     """
-    Create world_model_data table (PRIVATE, E2E ENCRYPTED USER DATA).
+    Create pkm_data table (PRIVATE, E2E ENCRYPTED USER DATA).
 
     This is the PRIMARY storage for ALL user data using BYOK encryption.
     Single encrypted blob containing all domain data (financial, food, professional, etc.).
     """
-    print("🔐 Creating world_model_data table...")
+    print("🔐 Creating pkm_data table...")
 
     await pool.execute("""
-        CREATE TABLE IF NOT EXISTS world_model_data (
+        CREATE TABLE IF NOT EXISTS pkm_data (
             user_id TEXT PRIMARY KEY REFERENCES vault_keys(user_id) ON DELETE CASCADE,
             
             -- Encrypted data blob (BYOK - client encrypts, server stores only ciphertext)
@@ -193,20 +315,20 @@ async def create_world_model_data(pool: asyncpg.Pool):
         )
     """)
 
-    print("✅ world_model_data ready!")
+    print("✅ pkm_data ready!")
 
 
-async def create_world_model_index_v2(pool: asyncpg.Pool):
+async def create_pkm_index(pool: asyncpg.Pool):
     """
-    Create world_model_index_v2 table (QUERYABLE INDEX FOR WORLD MODEL).
+    Create pkm_index table (QUERYABLE INDEX FOR PKM).
 
-    This is the queryable metadata layer for the world model.
+    This is the queryable metadata layer for the PKM.
     Non-encrypted, used for UI display and MCP scope generation.
     """
-    print("📊 Creating world_model_index_v2 table...")
+    print("📊 Creating pkm_index table...")
 
     await pool.execute("""
-        CREATE TABLE IF NOT EXISTS world_model_index_v2 (
+        CREATE TABLE IF NOT EXISTS pkm_index (
             user_id TEXT PRIMARY KEY REFERENCES vault_keys(user_id) ON DELETE CASCADE,
             
             -- Domain summaries (JSONB - { domain_key: { summary_data } })
@@ -233,16 +355,16 @@ async def create_world_model_index_v2(pool: asyncpg.Pool):
     """)
 
     await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wmi2_domains ON world_model_index_v2 USING GIN(domain_summaries)"
+        "CREATE INDEX IF NOT EXISTS idx_pkm_index_domains ON pkm_index USING GIN(domain_summaries)"
     )
     await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wmi2_available ON world_model_index_v2 USING GIN(available_domains)"
+        "CREATE INDEX IF NOT EXISTS idx_pkm_index_available ON pkm_index USING GIN(available_domains)"
     )
     await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wmi2_tags ON world_model_index_v2 USING GIN(computed_tags)"
+        "CREATE INDEX IF NOT EXISTS idx_pkm_index_tags ON pkm_index USING GIN(computed_tags)"
     )
 
-    print("✅ world_model_index_v2 ready!")
+    print("✅ pkm_index ready!")
 
 
 async def create_consent_exports(pool: asyncpg.Pool):
@@ -265,7 +387,15 @@ async def create_consent_exports(pool: asyncpg.Pool):
             encrypted_data TEXT NOT NULL,
             iv TEXT NOT NULL,
             tag TEXT NOT NULL,
-            export_key TEXT NOT NULL,
+            export_key TEXT,
+            wrapped_key_bundle JSONB,
+            connector_key_id TEXT,
+            connector_wrapping_alg TEXT,
+            export_revision INTEGER NOT NULL DEFAULT 1,
+            export_generated_at TIMESTAMPTZ DEFAULT NOW(),
+            source_content_revision INTEGER,
+            source_manifest_revision INTEGER,
+            refresh_status TEXT NOT NULL DEFAULT 'current' CHECK (refresh_status IN ('current', 'refresh_pending', 'stale')),
             
             -- Scope this export is for
             scope TEXT NOT NULL,
@@ -288,11 +418,51 @@ async def create_consent_exports(pool: asyncpg.Pool):
     print("✅ consent_exports ready!")
 
 
+async def create_consent_export_refresh_jobs(pool: asyncpg.Pool):
+    """Create consent_export_refresh_jobs table (on-device refresh queue metadata)."""
+    print("🔁 Creating consent_export_refresh_jobs table...")
+
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS consent_export_refresh_jobs (
+            id BIGSERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES vault_keys(user_id) ON DELETE CASCADE,
+            consent_token TEXT NOT NULL REFERENCES consent_exports(consent_token) ON DELETE CASCADE,
+            granted_scope TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+            trigger_domain TEXT,
+            trigger_paths JSONB NOT NULL DEFAULT '[]'::JSONB,
+            requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_error TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (consent_token)
+        )
+    """)
+
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_consent_export_refresh_jobs_user ON consent_export_refresh_jobs(user_id, requested_at DESC)"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_consent_export_refresh_jobs_status ON consent_export_refresh_jobs(status, updated_at DESC)"
+    )
+    await pool.execute(
+        "DROP TRIGGER IF EXISTS trigger_update_consent_export_refresh_jobs_timestamp ON consent_export_refresh_jobs"
+    )
+    await pool.execute("""
+        CREATE TRIGGER trigger_update_consent_export_refresh_jobs_timestamp
+        BEFORE UPDATE ON consent_export_refresh_jobs
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()
+    """)
+
+    print("✅ consent_export_refresh_jobs ready!")
+
+
 async def create_domain_registry(pool: asyncpg.Pool):
     """
     Create domain_registry table (DYNAMIC DOMAIN REGISTRY).
 
-    Registry of all available domains in the world model.
+    Registry of all available domains in the PKM.
     Used for UI display and scope generation.
     """
     print("📂 Creating domain_registry table...")
@@ -517,25 +687,202 @@ async def create_kai_market_cache_entries(pool: asyncpg.Pool):
     print("✅ kai_market_cache_entries ready!")
 
 
+async def create_developer_registry(pool: asyncpg.Pool):
+    """Create public developer registry tables for UAT/public MCP beta."""
+    print("🧩 Creating developer registry tables...")
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS developer_applications (
+            id BIGSERIAL PRIMARY KEY,
+            slug TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            contact_name TEXT,
+            contact_email TEXT NOT NULL,
+            support_url TEXT,
+            policy_url TEXT,
+            website_url TEXT,
+            use_case TEXT,
+            requested_tool_groups JSONB NOT NULL DEFAULT '["core_consent"]'::jsonb,
+            requested_agent_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            notes TEXT,
+            reviewed_at BIGINT,
+            reviewed_by TEXT,
+            rejection_reason TEXT,
+            created_at BIGINT NOT NULL,
+            updated_at BIGINT NOT NULL,
+            CONSTRAINT developer_applications_status_check
+                CHECK (status IN ('pending', 'approved', 'rejected'))
+        )
+    """)
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_developer_applications_status ON developer_applications(status)"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_developer_applications_created_at ON developer_applications(created_at DESC)"
+    )
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS developer_apps (
+            app_id TEXT PRIMARY KEY,
+            application_id BIGINT REFERENCES developer_applications(id) ON DELETE SET NULL,
+            agent_id TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            contact_email TEXT NOT NULL,
+            support_url TEXT,
+            policy_url TEXT,
+            website_url TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            allowed_tool_groups JSONB NOT NULL DEFAULT '["core_consent"]'::jsonb,
+            approved_at BIGINT,
+            approved_by TEXT,
+            notes TEXT,
+            created_at BIGINT NOT NULL,
+            updated_at BIGINT NOT NULL,
+            owner_firebase_uid TEXT,
+            owner_email TEXT,
+            owner_display_name TEXT,
+            owner_provider_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+            CONSTRAINT developer_apps_status_check
+                CHECK (status IN ('active', 'suspended', 'revoked'))
+        )
+    """)
+    await pool.execute(
+        "ALTER TABLE developer_apps ADD COLUMN IF NOT EXISTS owner_firebase_uid TEXT"
+    )
+    await pool.execute("ALTER TABLE developer_apps ADD COLUMN IF NOT EXISTS owner_email TEXT")
+    await pool.execute(
+        "ALTER TABLE developer_apps ADD COLUMN IF NOT EXISTS owner_display_name TEXT"
+    )
+    await pool.execute(
+        "ALTER TABLE developer_apps ADD COLUMN IF NOT EXISTS owner_provider_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_developer_apps_status ON developer_apps(status)"
+    )
+    await pool.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_developer_apps_owner_firebase_uid ON developer_apps(owner_firebase_uid) WHERE owner_firebase_uid IS NOT NULL"
+    )
+    await pool.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = current_schema()
+                  AND table_name = 'developer_api_keys'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = current_schema()
+                  AND table_name = 'developer_tokens'
+            ) THEN
+                EXECUTE 'ALTER TABLE developer_api_keys RENAME TO developer_tokens';
+            END IF;
+        END
+        $$;
+    """)
+    await pool.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'developer_tokens'
+                  AND column_name = 'key_prefix'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'developer_tokens'
+                  AND column_name = 'token_prefix'
+            ) THEN
+                EXECUTE 'ALTER TABLE developer_tokens RENAME COLUMN key_prefix TO token_prefix';
+            END IF;
+        END
+        $$;
+    """)
+    await pool.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'developer_tokens'
+                  AND column_name = 'key_hash'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'developer_tokens'
+                  AND column_name = 'token_hash'
+            ) THEN
+                EXECUTE 'ALTER TABLE developer_tokens RENAME COLUMN key_hash TO token_hash';
+            END IF;
+        END
+        $$;
+    """)
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS developer_tokens (
+            id BIGSERIAL PRIMARY KEY,
+            app_id TEXT NOT NULL REFERENCES developer_apps(app_id) ON DELETE CASCADE,
+            token_prefix TEXT NOT NULL UNIQUE,
+            token_hash TEXT NOT NULL UNIQUE,
+            label TEXT,
+            created_by TEXT,
+            revoked_by TEXT,
+            created_at BIGINT NOT NULL,
+            revoked_at BIGINT,
+            last_used_at BIGINT,
+            last_used_ip TEXT,
+            last_used_user_agent TEXT
+        )
+    """)
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_developer_tokens_app_id ON developer_tokens(app_id)"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_developer_tokens_revoked_at ON developer_tokens(revoked_at)"
+    )
+    print("✅ developer registry ready!")
+
+
 # Table registry for modular access
 TABLE_CREATORS = {
     "vault_keys": create_vault_keys,
     "vault_key_wrappers": create_vault_key_wrappers,
     "consent_audit": create_consent_audit,
-    "world_model_data": create_world_model_data,
-    "world_model_index_v2": create_world_model_index_v2,
+    "user_push_tokens": create_user_push_tokens,
+    "internal_access_events": create_internal_access_events,
+    "pkm_data": create_pkm_data,
+    "pkm_index": create_pkm_index,
     "domain_registry": create_domain_registry,
     "tickers": create_tickers,
     "ticker_facts_snapshot": create_ticker_facts_snapshot,
     "ticker_enrichment_runs": create_ticker_enrichment_runs,
     "consent_exports": create_consent_exports,
+    "consent_export_refresh_jobs": create_consent_export_refresh_jobs,
     "kai_market_cache_entries": create_kai_market_cache_entries,
+    "developer_registry": create_developer_registry,
 }
 
 
 # ============================================================================
 # MIGRATION OPERATIONS
 # ============================================================================
+
+
+async def apply_migration_files(
+    pool: asyncpg.Pool,
+    filenames: tuple[str, ...],
+    *,
+    label: str,
+):
+    """Apply an explicit ordered list of SQL migration files."""
+    print(f"Running {label} migration set (explicit mode)...")
+    async with pool.acquire() as conn:
+        for filename in filenames:
+            migration_path = MIGRATIONS_DIR / filename
+            if not migration_path.exists():
+                raise FileNotFoundError(f"{label} migration file missing: {migration_path}")
+            sql = migration_path.read_text(encoding="utf-8")
+            print(f"  -> applying {filename}")
+            await conn.execute(sql)
+    print(f"{label} migration set complete!")
 
 
 async def run_full_migration(pool: asyncpg.Pool):
@@ -548,46 +895,65 @@ async def run_full_migration(pool: asyncpg.Pool):
         "vault_key_wrappers",
         "vault_keys",
         "consent_audit",
-        "world_model_data",
-        "world_model_index_v2",
+        "user_push_tokens",
+        "internal_access_events",
+        "pkm_data",
+        "pkm_index",
         "domain_registry",
         "ticker_facts_snapshot",
         "ticker_enrichment_runs",
         "consent_exports",
+        "consent_export_refresh_jobs",
         "kai_market_cache_entries",
+        "developer_tokens",
+        "developer_api_keys",
+        "developer_apps",
+        "developer_applications",
         "tickers",
     ]:
         await pool.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
 
     # Create in dependency order
-    print("\n[1/11] Creating vault_keys (vault headers + recovery wrapper)...")
+    print("\n[1/13] Creating vault_keys (vault headers + recovery wrapper)...")
     await create_vault_keys(pool)
 
     print("[2/11] Creating vault_key_wrappers (enrolled unlock methods)...")
     await create_vault_key_wrappers(pool)
 
-    print("[3/11] Creating consent_audit (consent tracking)...")
+    print("[3/13] Creating consent_audit (consent tracking)...")
     await create_consent_audit(pool)
 
-    print("[4/11] Creating world_model_data (encrypted user data blob)...")
-    await create_world_model_data(pool)
+    print("[4/13] Creating user_push_tokens (push token registry)...")
+    await create_user_push_tokens(pool)
 
-    print("[5/11] Creating world_model_index_v2 (queryable metadata index)...")
-    await create_world_model_index_v2(pool)
+    print("[5/13] Creating internal_access_events (self/internal ledger)...")
+    await create_internal_access_events(pool)
 
-    print("[6/11] Creating domain_registry (dynamic domain registry)...")
+    print("[6/13] Creating pkm_data (encrypted user data blob)...")
+    await create_pkm_data(pool)
+
+    print("[7/13] Creating pkm_index (queryable metadata index)...")
+    await create_pkm_index(pool)
+
+    print("[8/13] Creating domain_registry (dynamic domain registry)...")
     await create_domain_registry(pool)
 
-    print("[7/11] Creating tickers (symbol master)...")
+    print("[9/13] Creating tickers (symbol master)...")
     await create_tickers(pool)
-    print("[8/11] Creating ticker_facts_snapshot (SEC fundamentals snapshot)...")
+    print("[10/13] Creating ticker_facts_snapshot (SEC fundamentals snapshot)...")
     await create_ticker_facts_snapshot(pool)
-    print("[9/11] Creating ticker_enrichment_runs (run audit)...")
+    print("[11/13] Creating ticker_enrichment_runs (run audit)...")
     await create_ticker_enrichment_runs(pool)
-    print("[10/11] Creating consent_exports (MCP zero-knowledge export)...")
+    print("[12/13] Creating consent_exports (MCP zero-knowledge export)...")
     await create_consent_exports(pool)
-    print("[11/11] Creating kai_market_cache_entries (Kai market L2 cache)...")
+    print("[13/15] Creating consent_export_refresh_jobs (encrypted export refresh queue)...")
+    await create_consent_export_refresh_jobs(pool)
+    print("[14/15] Creating kai_market_cache_entries (Kai market L2 cache)...")
     await create_kai_market_cache_entries(pool)
+    print("[15/15] Creating developer registry (public MCP beta auth)...")
+    await create_developer_registry(pool)
+    print("[16/16] Applying canonical release migrations...")
+    await run_release_migration(pool)
 
     print("\n✅ Full migration complete!")
 
@@ -596,23 +962,43 @@ async def run_consent_migration(pool: asyncpg.Pool):
     """Create all consent-related tables."""
     print("Running consent protocol migration...")
     await create_consent_audit(pool)
+    await create_user_push_tokens(pool)
+    await create_internal_access_events(pool)
+    await create_developer_registry(pool)
     print("Consent protocol tables ready!")
 
 
 async def run_iam_migration(pool: asyncpg.Pool):
     """Apply IAM foundation schema through explicit migration files."""
-    print("Running IAM schema migration (explicit mode)...")
+    await apply_migration_files(pool, IAM_MIGRATION_FILES, label="IAM schema")
+
+
+async def run_pkm_migration(pool: asyncpg.Pool):
+    """Apply the canonical PKM evolution lane, including upgrade and strict-ZK work."""
+    await apply_migration_files(pool, PKM_MIGRATION_FILES, label="PKM schema")
+
+
+async def run_release_migration(pool: asyncpg.Pool):
+    """Apply the full canonical release schema lane used by operators and UAT automation."""
+    await apply_migration_files(pool, RELEASE_MIGRATION_FILES, label="release schema")
+
+
+async def run_consent_evolution_migration(pool: asyncpg.Pool):
+    """Apply strict zero-knowledge consent export evolution."""
+    print("Running consent evolution migration (explicit mode)...")
 
     async with pool.acquire() as conn:
-        for filename in IAM_MIGRATION_FILES:
+        for filename in CONSENT_EVOLUTION_MIGRATION_FILES:
             migration_path = MIGRATIONS_DIR / filename
             if not migration_path.exists():
-                raise FileNotFoundError(f"IAM migration file missing: {migration_path}")
+                raise FileNotFoundError(
+                    f"Consent evolution migration file missing: {migration_path}"
+                )
             sql = migration_path.read_text(encoding="utf-8")
             print(f"  -> applying {filename}")
             await conn.execute(sql)
 
-    print("IAM schema migration complete!")
+    print("Consent evolution migration complete!")
 
 
 async def run_init_migration(pool: asyncpg.Pool):
@@ -624,34 +1010,46 @@ async def run_init_migration(pool: asyncpg.Pool):
     print("Initializing database tables (non-destructive)...")
 
     # Create in dependency order
-    print("\n[1/11] Creating vault_keys (vault headers + recovery wrapper)...")
+    print("\n[1/13] Creating vault_keys (vault headers + recovery wrapper)...")
     await create_vault_keys(pool)
 
     print("[2/11] Creating vault_key_wrappers (enrolled unlock methods)...")
     await create_vault_key_wrappers(pool)
 
-    print("[3/11] Creating consent_audit (consent tracking)...")
+    print("[3/13] Creating consent_audit (consent tracking)...")
     await create_consent_audit(pool)
 
-    print("[4/11] Creating world_model_data (encrypted user data blob)...")
-    await create_world_model_data(pool)
+    print("[4/13] Creating user_push_tokens (push token registry)...")
+    await create_user_push_tokens(pool)
 
-    print("[5/11] Creating world_model_index_v2 (queryable metadata index)...")
-    await create_world_model_index_v2(pool)
+    print("[5/13] Creating internal_access_events (self/internal ledger)...")
+    await create_internal_access_events(pool)
 
-    print("[6/11] Creating domain_registry (dynamic domain registry)...")
+    print("[6/13] Creating pkm_data (encrypted user data blob)...")
+    await create_pkm_data(pool)
+
+    print("[7/13] Creating pkm_index (queryable metadata index)...")
+    await create_pkm_index(pool)
+
+    print("[8/13] Creating domain_registry (dynamic domain registry)...")
     await create_domain_registry(pool)
 
-    print("[7/11] Creating tickers (symbol master)...")
+    print("[9/13] Creating tickers (symbol master)...")
     await create_tickers(pool)
-    print("[8/11] Creating ticker_facts_snapshot (SEC fundamentals snapshot)...")
+    print("[10/13] Creating ticker_facts_snapshot (SEC fundamentals snapshot)...")
     await create_ticker_facts_snapshot(pool)
-    print("[9/11] Creating ticker_enrichment_runs (run audit)...")
+    print("[11/13] Creating ticker_enrichment_runs (run audit)...")
     await create_ticker_enrichment_runs(pool)
-    print("[10/11] Creating consent_exports (MCP zero-knowledge export)...")
+    print("[12/13] Creating consent_exports (MCP zero-knowledge export)...")
     await create_consent_exports(pool)
-    print("[11/11] Creating kai_market_cache_entries (Kai market L2 cache)...")
+    print("[13/15] Creating consent_export_refresh_jobs (encrypted export refresh queue)...")
+    await create_consent_export_refresh_jobs(pool)
+    print("[14/15] Creating kai_market_cache_entries (Kai market L2 cache)...")
     await create_kai_market_cache_entries(pool)
+    print("[15/15] Creating developer registry (public MCP beta auth)...")
+    await create_developer_registry(pool)
+    print("[16/16] Applying canonical release migrations...")
+    await run_release_migration(pool)
 
     print("\nAll tables initialized successfully!")
 
@@ -680,15 +1078,33 @@ async def show_status(pool: asyncpg.Pool):
         "vault_keys",
         "vault_key_wrappers",
         "consent_audit",
-        "world_model_data",
-        "world_model_index_v2",
+        "user_push_tokens",
+        "internal_access_events",
+        "pkm_data",
+        "pkm_index",
         "domain_registry",
         "tickers",
         "ticker_facts_snapshot",
         "ticker_enrichment_runs",
         "consent_exports",
         "kai_market_cache_entries",
+        "developer_applications",
+        "developer_apps",
+        "developer_tokens",
+        "developer_api_keys",
         "runtime_persona_state",
+        "pkm_index",
+        "pkm_blobs",
+        "pkm_manifests",
+        "pkm_manifest_paths",
+        "pkm_scope_registry",
+        "pkm_events",
+        "pkm_migration_state",
+        "pkm_upgrade_runs",
+        "pkm_upgrade_steps",
+        "consent_export_refresh_jobs",
+        "relationship_share_grants",
+        "relationship_share_events",
     ]:
         if table in all_tables:
             try:
@@ -712,9 +1128,12 @@ async def main():
         epilog="""
 Examples:
   python db/migrate.py --init                    # First-time setup (RECOMMENDED)
-  python db/migrate.py --table world_model_data  # Create single table
+  python db/migrate.py --table pkm_data  # Create single table
   python db/migrate.py --consent                 # Create all consent tables
-  python db/migrate.py --iam                     # Apply IAM schema foundation (020 + 021)
+  python db/migrate.py --iam                     # Apply IAM schema foundation
+  python db/migrate.py --pkm                     # Apply PKM evolution migrations
+  python db/migrate.py --consent-evolution       # Apply strict consent export evolution
+  python db/migrate.py --release                 # Apply the ordered release migration manifest
   python db/migrate.py --full                    # Full reset (WARNING: DESTRUCTIVE!)
   python db/migrate.py --status                  # Show table summary
         """,
@@ -729,7 +1148,7 @@ Examples:
         choices=list(TABLE_CREATORS.keys()),
         help=(
             "Create a specific table (vault_keys, vault_key_wrappers, consent_audit, "
-            "world_model_data, world_model_index_v2, domain_registry, tickers, "
+            "pkm_data, pkm_index, domain_registry, tickers, "
             "ticker_facts_snapshot, ticker_enrichment_runs, consent_exports, "
             "kai_market_cache_entries)"
         ),
@@ -738,7 +1157,22 @@ Examples:
     parser.add_argument(
         "--iam",
         action="store_true",
-        help="Apply IAM schema foundation migrations (020 + 021)",
+        help="Apply the IAM schema foundation lane from release_migration_manifest.json",
+    )
+    parser.add_argument(
+        "--pkm",
+        action="store_true",
+        help="Apply the PKM evolution lane from release_migration_manifest.json",
+    )
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="Apply the full canonical release lane from release_migration_manifest.json",
+    )
+    parser.add_argument(
+        "--consent-evolution",
+        action="store_true",
+        help="Apply strict zero-knowledge consent export evolution",
     )
     parser.add_argument(
         "--full", action="store_true", help="Drop and recreate ALL tables (DESTRUCTIVE!)"
@@ -750,7 +1184,20 @@ Examples:
 
     args = parser.parse_args()
 
-    if not any([args.init, args.table, args.consent, args.iam, args.full, args.clear, args.status]):
+    if not any(
+        [
+            args.init,
+            args.table,
+            args.consent,
+            args.iam,
+            args.pkm,
+            args.consent_evolution,
+            args.release,
+            args.full,
+            args.clear,
+            args.status,
+        ]
+    ):
         parser.print_help()
         return
 
@@ -797,6 +1244,14 @@ Examples:
 
         if args.iam:
             await run_iam_migration(pool)
+
+        if args.pkm:
+            await run_pkm_migration(pool)
+
+        if args.consent_evolution:
+            await run_consent_evolution_migration(pool)
+        if args.release:
+            await run_release_migration(pool)
 
         if args.clear:
             await clear_table(pool, args.clear)

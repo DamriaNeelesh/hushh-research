@@ -11,21 +11,28 @@ This ensures consistent consent-first architecture throughout the system.
 """
 
 import logging
+import re
 import time
 from typing import Dict
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError as SqlalchemyOperationalError
 
 from api.middleware import require_firebase_auth, require_vault_owner_token
 from api.utils.firebase_auth import verify_firebase_bearer
 from hushh_mcp.consent.scope_helpers import get_scope_description as get_dynamic_scope_description
 from hushh_mcp.consent.scope_helpers import resolve_scope_to_enum
-from hushh_mcp.consent.token import issue_token, validate_token
+from hushh_mcp.consent.token import issue_token, revoke_token, validate_token_with_db
 from hushh_mcp.constants import ConsentScope
+from hushh_mcp.services.actor_identity_service import ActorIdentityService
 from hushh_mcp.services.consent_center_service import ConsentCenterService
 from hushh_mcp.services.consent_db import ConsentDBService
-from hushh_mcp.services.ria_iam_service import RIAIAMPolicyError, RIAIAMService
+from hushh_mcp.services.ria_iam_service import (
+    IAMSchemaNotReadyError,
+    RIAIAMPolicyError,
+    RIAIAMService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +41,105 @@ router = APIRouter(prefix="/api/consent", tags=["Consent Management"])
 # NOTE: Export data is now persisted to database via ConsentDBService.store_consent_export()
 # The in-memory dict is kept as a fast cache but database is the source of truth
 _consent_exports: Dict[str, Dict] = {}
+_UUID_LIKE_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_CONSENT_STORAGE_ERROR_PATTERNS = (
+    "connection refused",
+    "server closed the connection unexpectedly",
+    "db operation failed",
+    "timed out",
+    "timeout",
+)
+_CONNECTOR_WRAPPING_ALG = "X25519-AES256-GCM"
+
+
+def _clean_text(value: object | None) -> str:
+    return str(value or "").strip()
+
+
+def _require_non_empty_text(value: object | None, field_name: str) -> str:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required.")
+    return cleaned
+
+
+def _expected_connector_key_id(metadata: dict | None) -> str:
+    return _clean_text((metadata or {}).get("connector_key_id"))
+
+
+def _expected_connector_wrapping_alg(metadata: dict | None) -> str:
+    return _clean_text((metadata or {}).get("connector_wrapping_alg")) or _CONNECTOR_WRAPPING_ALG
+
+
+def _build_verified_wrapped_key_bundle(
+    *,
+    metadata: dict | None,
+    wrapped_export_key: str | None,
+    wrapped_key_iv: str | None,
+    wrapped_key_tag: str | None,
+    sender_public_key: str | None,
+    wrapping_alg: str | None,
+    connector_key_id: str | None,
+) -> dict:
+    wrapped_export_key = _require_non_empty_text(wrapped_export_key, "wrappedExportKey")
+    wrapped_key_iv = _require_non_empty_text(wrapped_key_iv, "wrappedKeyIv")
+    wrapped_key_tag = _require_non_empty_text(wrapped_key_tag, "wrappedKeyTag")
+    sender_public_key = _require_non_empty_text(sender_public_key, "senderPublicKey")
+    expected_key_id = _expected_connector_key_id(metadata)
+    provided_key_id = _clean_text(connector_key_id)
+    if expected_key_id and not provided_key_id:
+        raise HTTPException(status_code=400, detail="Connector key id is required.")
+    if expected_key_id and provided_key_id != expected_key_id:
+        raise HTTPException(status_code=400, detail="Connector key id does not match request.")
+    normalized_alg = _clean_text(wrapping_alg) or _expected_connector_wrapping_alg(metadata)
+    expected_alg = _expected_connector_wrapping_alg(metadata)
+    if normalized_alg != expected_alg or normalized_alg != _CONNECTOR_WRAPPING_ALG:
+        raise HTTPException(
+            status_code=400,
+            detail="Connector wrapping algorithm does not match request.",
+        )
+    return {
+        "wrapped_export_key": wrapped_export_key,
+        "wrapped_key_iv": wrapped_key_iv,
+        "wrapped_key_tag": wrapped_key_tag,
+        "sender_public_key": sender_public_key,
+        "wrapping_alg": normalized_alg,
+        "connector_key_id": provided_key_id or expected_key_id or None,
+    }
+
+
+def _require_encrypted_export_payload(
+    *,
+    encrypted_data: object | None,
+    encrypted_iv: object | None,
+    encrypted_tag: object | None,
+) -> tuple[str, str, str]:
+    return (
+        _require_non_empty_text(encrypted_data, "encryptedData"),
+        _require_non_empty_text(encrypted_iv, "encryptedIv"),
+        _require_non_empty_text(encrypted_tag, "encryptedTag"),
+    )
+
+
+def _is_consent_storage_unavailable(exc: Exception) -> bool:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if current.__class__.__name__ == "DatabaseExecutionError":
+            return True
+        if isinstance(current, SqlalchemyOperationalError):
+            return True
+        if isinstance(current, (ConnectionError, OSError, TimeoutError)):
+            return True
+        message = str(current).strip().lower()
+        if message and any(pattern in message for pattern in _CONSENT_STORAGE_ERROR_PATTERNS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def get_scope_description(scope: str) -> str:
@@ -43,6 +149,60 @@ def get_scope_description(scope: str) -> str:
     Delegated to centralized dynamic scope resolution.
     """
     return get_dynamic_scope_description(scope)
+
+
+def _looks_technical_requester_label(
+    value: object | None, *, counterpart_id: str | None = None
+) -> bool:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return True
+    if counterpart_id and normalized == counterpart_id:
+        return True
+    if normalized.lower().startswith("ria:"):
+        return True
+    if _UUID_LIKE_PATTERN.match(normalized):
+        return True
+    return False
+
+
+async def _hydrate_pending_requester_labels(pending_items: list[dict]) -> list[dict]:
+    if not pending_items:
+        return pending_items
+
+    identity_ids: list[str] = []
+    pending_identity_map: list[str | None] = []
+    for item in pending_items:
+        metadata = item.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        agent_id = str(item.get("agent_id") or item.get("developer") or "").strip()
+        counterpart_id = str(metadata.get("requester_entity_id") or "").strip() or None
+        requester_actor_type = str(metadata.get("requester_actor_type") or "").strip().lower()
+        identity_id: str | None = None
+        if requester_actor_type == "ria" or agent_id.lower().startswith("ria:"):
+            identity_id = counterpart_id
+            if not identity_id and agent_id.lower().startswith("ria:"):
+                identity_id = agent_id.split(":", 1)[1].strip() or None
+        pending_identity_map.append(identity_id)
+        if identity_id:
+            identity_ids.append(identity_id)
+
+    identities = await ActorIdentityService().ensure_many(identity_ids)
+
+    for item, identity_id in zip(pending_items, pending_identity_map, strict=False):
+        if not identity_id:
+            continue
+        identity = identities.get(identity_id) or {}
+        display_name = str(identity.get("display_name") or "").strip()
+        photo_url = str(identity.get("photo_url") or "").strip()
+        current_label = str(item.get("requesterLabel") or "").strip()
+        if display_name and _looks_technical_requester_label(
+            current_label, counterpart_id=identity_id
+        ):
+            item["requesterLabel"] = display_name
+        if photo_url and not str(item.get("requesterImageUrl") or "").strip():
+            item["requesterImageUrl"] = photo_url
+    return pending_items
 
 
 # ============================================================================
@@ -55,6 +215,13 @@ class CancelConsentRequest(BaseModel):
     requestId: str
 
 
+class PendingConsentOpenedRequest(BaseModel):
+    userId: str
+    requestId: str | None = None
+    bundleId: str | None = None
+    openedVia: str | None = None
+
+
 class GenericConsentRequestCreate(BaseModel):
     subject_user_id: str
     requester_actor_type: str = "ria"
@@ -65,6 +232,33 @@ class GenericConsentRequestCreate(BaseModel):
     duration_hours: int | None = None
     firm_id: str | None = None
     reason: str | None = None
+
+
+class RelationshipDisconnectRequest(BaseModel):
+    investor_user_id: str | None = None
+    ria_profile_id: str | None = None
+
+
+class RefreshExportUploadRequest(BaseModel):
+    userId: str
+    consentToken: str
+    encryptedData: str
+    encryptedIv: str
+    encryptedTag: str
+    wrappedExportKey: str
+    wrappedKeyIv: str
+    wrappedKeyTag: str
+    senderPublicKey: str
+    wrappingAlg: str | None = None
+    connectorKeyId: str | None = None
+    sourceContentRevision: int | None = None
+    sourceManifestRevision: int | None = None
+
+
+class RefreshExportFailureRequest(BaseModel):
+    userId: str
+    consentToken: str
+    lastError: str | None = None
 
 
 @router.get("/pending")
@@ -82,9 +276,40 @@ async def get_pending_consents(
         raise HTTPException(status_code=403, detail="User ID does not match authenticated user")
 
     service = ConsentDBService()
-    pending_from_db = await service.get_pending_requests(userId)
-    logger.info("consent.pending_fetched count=%s", len(pending_from_db))
-    return {"pending": pending_from_db}
+    try:
+        pending_from_db = await service.get_pending_requests(userId)
+        pending_from_db = await _hydrate_pending_requester_labels(pending_from_db)
+        logger.info("consent.pending_fetched count=%s", len(pending_from_db))
+        return {"pending": pending_from_db}
+    except Exception as exc:
+        if _is_consent_storage_unavailable(exc):
+            logger.warning(
+                "consent.pending_degraded user_id=%s reason=%s",
+                userId,
+                exc,
+            )
+            return {"pending": [], "degraded": True}
+        raise
+
+
+@router.post("/pending/opened")
+async def mark_pending_consent_opened(
+    body: PendingConsentOpenedRequest,
+    token_data: dict = Depends(require_vault_owner_token),
+):
+    if token_data["user_id"] != body.userId:
+        raise HTTPException(status_code=403, detail="User ID does not match authenticated user")
+
+    service = ConsentDBService()
+    opened = await service.mark_pending_request_opened(
+        user_id=body.userId,
+        request_id=body.requestId,
+        bundle_id=body.bundleId,
+        opened_via=body.openedVia,
+    )
+    if opened is None:
+        return {"ok": True, "acknowledged": False}
+    return {"ok": True, "acknowledged": True, **opened}
 
 
 @router.post("/pending/approve")
@@ -98,16 +323,24 @@ async def approve_consent(
     SECURITY: Requires VAULT_OWNER token. User can only approve their own consent requests.
 
     Browser sends encrypted export data (server never sees plaintext).
-    Export key is embedded in the consent token.
+    For connector-backed approvals, the export key is wrapped to the connector public key
+    and the backend never persists a plaintext decrypt key.
     """
     body = await request.json()
     userId = body.get("userId")
     requestId = body.get("requestId")
-    exportKey = body.get("exportKey")  # Hex-encoded AES-256 key
     encryptedData = body.get("encryptedData")  # Base64 ciphertext
     encryptedIv = body.get("encryptedIv")  # Base64 IV
     encryptedTag = body.get("encryptedTag")  # Base64 auth tag
+    wrappedExportKey = body.get("wrappedExportKey")
+    wrappedKeyIv = body.get("wrappedKeyIv")
+    wrappedKeyTag = body.get("wrappedKeyTag")
+    senderPublicKey = body.get("senderPublicKey")
+    wrappingAlg = body.get("wrappingAlg")
+    connectorKeyId = body.get("connectorKeyId")
     requested_duration_hours = body.get("durationHours")
+    source_content_revision = body.get("sourceContentRevision")
+    source_manifest_revision = body.get("sourceManifestRevision")
 
     # Verify user is approving their own consent
     if token_data["user_id"] != userId:
@@ -133,6 +366,22 @@ async def approve_consent(
 
     # Optional metadata on pending request (used for expiry hints)
     metadata = pending_request.get("metadata", {})
+    developer_label = (
+        metadata.get("developer_app_display_name") if isinstance(metadata, dict) else None
+    ) or pending_request["developer"]
+    connector_public_key = (
+        metadata.get("connector_public_key") if isinstance(metadata, dict) else None
+    )
+    is_developer_request = bool(
+        connector_public_key
+        or (
+            isinstance(metadata, dict)
+            and (
+                metadata.get("request_source") == "developer_api_v1"
+                or metadata.get("requester_actor_type") == "developer"
+            )
+        )
+    )
     expiry_hours = metadata.get("expiry_hours", 24)
     if isinstance(requested_duration_hours, int) and requested_duration_hours > 0:
         expiry_hours = min(requested_duration_hours, 24 * 365)
@@ -142,41 +391,99 @@ async def approve_consent(
     # This prevents duplication and ensures a clean audit log.
 
     service = ConsentDBService()
-    active_tokens = await service.get_active_tokens(
+    existing_token = await service.find_covering_active_token(
         userId,
         agent_id=pending_request["developer"],
-        scope=requested_scope,
+        requested_scope=requested_scope,
     )
-    existing_token = None
-
-    # 1. Filter active tokens for the requested scope and agent.
-    for t in active_tokens:
-        expires_at = t.get("expires_at", 0)
-        if expires_at > (time.time() * 1000) + (60 * 60 * 1000):
-            existing_token = t
-            break
+    if existing_token and is_developer_request:
+        existing_export = await service.get_consent_export_metadata(
+            str(existing_token.get("token_id") or "")
+        )
+        if not (
+            isinstance(existing_export, dict) and existing_export.get("is_strict_zero_knowledge")
+        ):
+            logger.warning(
+                "consent.token_reuse_skipped_missing_strict_export scope=%s token=%s",
+                requested_scope,
+                str(existing_token.get("token_id") or "")[:32],
+            )
+            existing_token = None
+        elif existing_token.get("scope") != requested_scope:
+            logger.info(
+                "consent.token_reuse_skipped_developer_superset requested_scope=%s token_scope=%s",
+                requested_scope,
+                existing_token.get("scope"),
+            )
+            existing_token = None
+        elif existing_export.get("refresh_status") != "current":
+            logger.info(
+                "consent.token_reuse_skipped_stale_export scope=%s token=%s",
+                requested_scope,
+                str(existing_token.get("token_id") or "")[:32],
+            )
+            existing_token = None
+        elif _expected_connector_key_id(metadata) and existing_export.get(
+            "connector_key_id"
+        ) != _expected_connector_key_id(metadata):
+            logger.warning(
+                "consent.token_reuse_skipped_connector_key_mismatch scope=%s token=%s",
+                requested_scope,
+                str(existing_token.get("token_id") or "")[:32],
+            )
+            existing_token = None
+        elif existing_export.get("connector_wrapping_alg") != _expected_connector_wrapping_alg(
+            metadata
+        ):
+            logger.warning(
+                "consent.token_reuse_skipped_connector_wrapping_mismatch scope=%s token=%s",
+                requested_scope,
+                str(existing_token.get("token_id") or "")[:32],
+            )
+            existing_token = None
 
     if existing_token:
         # IDEMPOTENT RETURN: Reuse existing token
         logger.info("consent.token_reused scope=%s", requested_scope)
 
-        # Log REUSE event for audit trail (optional, but good for tracking)
-        # await consent_db.insert_event(..., action="TOKEN_REUSED", ...)
+        reuse_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        reuse_metadata["reused_consent_token"] = True
+        await service.insert_event(
+            user_id=userId,
+            agent_id=pending_request["developer"],
+            scope=requested_scope,
+            action="CONSENT_GRANTED",
+            token_id=existing_token.get("token_id"),
+            request_id=requestId,
+            scope_description=get_scope_description(requested_scope),
+            expires_at=existing_token.get("expires_at"),
+            metadata=reuse_metadata,
+        )
+        try:
+            await RIAIAMService().sync_relationship_from_consent_action(
+                user_id=userId,
+                request_id=requestId,
+                action="CONSENT_GRANTED",
+            )
+        except Exception:
+            logger.exception(
+                "ria.relationship_sync_failed action=CONSENT_GRANTED reused_token=true"
+            )
 
         return {
             "status": "approved",
-            "message": f"Consent granted to {pending_request['developer']} (Existing)",
-            "consent_token": existing_token.get("id")
-            or existing_token.get("token"),  # access db model field
-            "export_key": exportKey,  # Reuse provided key for this session or potentially re-encrypt (Scope limitation: Reusing token implies reusing access)
-            # Note: Export Key is ephemeral for the SESSION. If we reuse token, the Client might need the key.
-            # But in ZK flow, Client HAS the key. We just need to authorize.
+            "message": f"Consent granted to {developer_label} (Existing)",
+            "consent_token": existing_token.get("token_id"),
             "expires_at": existing_token.get("expires_at"),
             "bundle_id": metadata.get("bundle_id"),
+            "granted_scope": existing_token.get("scope"),
+            "coverage_kind": "exact"
+            if existing_token.get("scope") == requested_scope
+            else "superset",
         }
 
     # CRITICAL FIX: Pass original scope STRING to issue_token, not enum
-    # This ensures token contains 'attr.financial.*' not 'world_model.read'
+    # This ensures token contains 'attr.financial.*' not 'pkm.read'
     # The enum was validated above, but the token must preserve the exact scope
     token = issue_token(
         user_id=userId,
@@ -189,29 +496,83 @@ async def approve_consent(
 
     # Store encrypted export linked to token
     # Persist to database for cross-instance consistency
-    if encryptedData and exportKey:
+    wrapped_key_bundle = None
+    if connector_public_key:
+        wrapped_key_bundle = _build_verified_wrapped_key_bundle(
+            metadata=metadata,
+            wrapped_export_key=wrappedExportKey,
+            wrapped_key_iv=wrappedKeyIv,
+            wrapped_key_tag=wrappedKeyTag,
+            sender_public_key=senderPublicKey,
+            wrapping_alg=wrappingAlg,
+            connector_key_id=connectorKeyId,
+        )
+    elif is_developer_request and encryptedData:
+        raise HTTPException(
+            status_code=400,
+            detail="Developer consent approvals must include a connector-backed wrapped export key bundle.",
+        )
+
+    if is_developer_request and not encryptedData:
+        raise HTTPException(
+            status_code=400,
+            detail="Developer consent approvals must include an encrypted export payload.",
+        )
+
+    encrypted_export_payload = None
+    if is_developer_request:
+        encrypted_export_payload = _require_encrypted_export_payload(
+            encrypted_data=encryptedData,
+            encrypted_iv=encryptedIv,
+            encrypted_tag=encryptedTag,
+        )
+
+    if encryptedData and wrapped_key_bundle:
+        payload_data, payload_iv, payload_tag = encrypted_export_payload or (
+            _clean_text(encryptedData),
+            _clean_text(encryptedIv),
+            _clean_text(encryptedTag),
+        )
         # Store in database (source of truth)
-        await service.store_consent_export(
+        stored = await service.store_consent_export(
             consent_token=token.token,
             user_id=userId,
-            encrypted_data=encryptedData,
-            iv=encryptedIv or "",
-            tag=encryptedTag or "",
-            export_key=exportKey,
+            encrypted_data=payload_data,
+            iv=payload_iv,
+            tag=payload_tag,
+            export_key=None,
+            wrapped_key_bundle=wrapped_key_bundle,
             scope=pending_request["scope"],
             expires_at_ms=token.expires_at,
+            source_content_revision=source_content_revision
+            if isinstance(source_content_revision, int)
+            else None,
+            source_manifest_revision=source_manifest_revision
+            if isinstance(source_manifest_revision, int)
+            else None,
+            refresh_status="current",
         )
+        if not stored:
+            raise HTTPException(status_code=500, detail="Failed to store encrypted consent export")
 
         # Also cache in memory for fast access
         _consent_exports[token.token] = {
-            "encrypted_data": encryptedData,
-            "iv": encryptedIv,
-            "tag": encryptedTag,
-            "export_key": exportKey,
+            "encrypted_data": payload_data,
+            "iv": payload_iv,
+            "tag": payload_tag,
+            "wrapped_key_bundle": wrapped_key_bundle,
+            "connector_key_id": wrapped_key_bundle.get("connector_key_id"),
+            "connector_wrapping_alg": wrapped_key_bundle.get("wrapping_alg"),
             "scope": pending_request["scope"],
+            "export_revision": 1,
+            "export_generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "refresh_status": "current",
+            "is_strict_zero_knowledge": True,
             "created_at": int(time.time() * 1000),
         }
         logger.info("   Stored encrypted export for token (DB + cache)")
+
+    granted_event_metadata = dict(metadata) if isinstance(metadata, dict) else {}
 
     # Log CONSENT_GRANTED with the normalized requested scope string.
     await service.insert_event(
@@ -222,8 +583,49 @@ async def approve_consent(
         token_id=token.token,
         request_id=requestId,
         expires_at=token.expires_at,
+        metadata=granted_event_metadata,
     )
     logger.info("consent.granted_event_saved")
+
+    superseded_scopes: list[str] = []
+    superseded_tokens = await service.get_superseded_active_tokens(
+        userId,
+        agent_id=pending_request["developer"],
+        requested_scope=requested_scope,
+    )
+    for index, superseded_token in enumerate(superseded_tokens):
+        superseded_scope = str(superseded_token.get("scope") or "").strip()
+        superseded_token_id = str(superseded_token.get("token_id") or "").strip()
+        if not superseded_scope or not superseded_token_id:
+            continue
+
+        revoke_token(superseded_token_id)
+        await service.delete_consent_export(superseded_token_id)
+        _consent_exports.pop(superseded_token_id, None)
+
+        superseded_metadata = {
+            "superseded_by_broader_scope": True,
+            "superseded_by_request_id": requestId,
+            "superseded_by_scope": requested_scope,
+            "superseded_by_token_id": token.token,
+        }
+        await service.insert_event(
+            user_id=userId,
+            agent_id=pending_request["developer"],
+            scope=superseded_scope,
+            action="REVOKED",
+            token_id=f"REVOKED_SUPERSEDED_{int(time.time() * 1000)}_{index}",
+            request_id=superseded_token.get("request_id"),
+            metadata=superseded_metadata,
+        )
+        superseded_scopes.append(superseded_scope)
+
+    if superseded_scopes:
+        logger.info(
+            "consent.superseded_narrower_tokens scope=%s superseded_scopes=%s",
+            requested_scope,
+            superseded_scopes,
+        )
     try:
         await RIAIAMService().sync_relationship_from_consent_action(
             user_id=userId,
@@ -233,14 +635,15 @@ async def approve_consent(
     except Exception:
         logger.exception("ria.relationship_sync_failed action=CONSENT_GRANTED")
 
-    # Return token with export key for MCP decryption
     return {
         "status": "approved",
-        "message": f"Consent granted to {pending_request['developer']}",
+        "message": f"Consent granted to {developer_label}",
         "consent_token": token.token,
-        "export_key": exportKey,  # MCP uses this to decrypt
         "expires_at": token.expires_at,
         "bundle_id": metadata.get("bundle_id"),
+        "granted_scope": requested_scope,
+        "coverage_kind": "exact",
+        "superseded_scopes": superseded_scopes,
     }
 
 
@@ -268,6 +671,11 @@ async def deny_consent(
     if not pending_request:
         raise HTTPException(status_code=404, detail="Consent request not found")
 
+    metadata = pending_request.get("metadata", {})
+    developer_label = (
+        metadata.get("developer_app_display_name") if isinstance(metadata, dict) else None
+    ) or pending_request["developer"]
+
     # Log CONSENT_DENIED to database
     await service.insert_event(
         user_id=userId,
@@ -286,7 +694,7 @@ async def deny_consent(
     except Exception:
         logger.exception("ria.relationship_sync_failed action=CONSENT_DENIED")
 
-    return {"status": "denied", "message": f"Consent denied to {pending_request['developer']}"}
+    return {"status": "denied", "message": f"Consent denied to {developer_label}"}
 
 
 @router.post("/cancel")
@@ -339,6 +747,40 @@ async def get_consent_center(firebase_uid: str = Depends(require_firebase_auth))
     return await service.get_center(firebase_uid)
 
 
+@router.get("/center/summary")
+async def get_consent_center_summary(
+    actor: str = Query(default="investor"),
+    mode: str = Query(default="consents"),
+    firebase_uid: str = Depends(require_firebase_auth),
+):
+    service = ConsentCenterService()
+    return await service.get_center_summary(firebase_uid, actor=actor, mode=mode)
+
+
+@router.get("/center/list")
+async def get_consent_center_list(
+    actor: str = Query(default="investor"),
+    surface: str = Query(default="pending"),
+    mode: str = Query(default="consents"),
+    q: str | None = Query(default=None),
+    top: int | None = Query(default=None, ge=1, le=10),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    firebase_uid: str = Depends(require_firebase_auth),
+):
+    service = ConsentCenterService()
+    return await service.list_center(
+        firebase_uid,
+        actor=actor,
+        surface=surface,
+        mode=mode,
+        query=q,
+        top=top,
+        page=page,
+        limit=limit,
+    )
+
+
 @router.get("/requests/outgoing")
 async def get_outgoing_requests(firebase_uid: str = Depends(require_firebase_auth)):
     service = ConsentCenterService()
@@ -350,6 +792,17 @@ async def create_generic_consent_request(
     payload: GenericConsentRequestCreate,
     firebase_uid: str = Depends(require_firebase_auth),
 ):
+    # If the requester is an RIA, enforce verification before allowing
+    # consent requests to investors (mirrors the gate on POST /api/ria/requests).
+    if payload.requester_actor_type == "ria":
+        service = RIAIAMService()
+        try:
+            await service.require_ria_verified(firebase_uid)
+        except IAMSchemaNotReadyError as exc:
+            raise HTTPException(status_code=503, detail="Verification service unavailable") from exc
+        except RIAIAMPolicyError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
     try:
         return await RIAIAMService().create_ria_consent_request(
             firebase_uid,
@@ -362,6 +815,40 @@ async def create_generic_consent_request(
             duration_hours=payload.duration_hours,
             firm_id=payload.firm_id,
             reason=payload.reason,
+        )
+    except RIAIAMPolicyError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.get("/handshake/history")
+async def get_handshake_history(
+    counterpart_id: str = Query(..., min_length=1),
+    actor: str = Query(default="investor"),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    firebase_uid: str = Depends(require_firebase_auth),
+):
+    """Consent handshake timeline between the caller and a counterpart."""
+    service = ConsentCenterService()
+    return await service.get_handshake_history(
+        firebase_uid,
+        counterpart_id=counterpart_id,
+        actor=actor,
+        page=page,
+        limit=limit,
+    )
+
+
+@router.post("/relationships/disconnect")
+async def disconnect_relationship(
+    payload: RelationshipDisconnectRequest,
+    firebase_uid: str = Depends(require_firebase_auth),
+):
+    try:
+        return await RIAIAMService().disconnect_relationship(
+            firebase_uid,
+            investor_user_id=payload.investor_user_id,
+            ria_profile_id=payload.ria_profile_id,
         )
     except RIAIAMPolicyError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -431,7 +918,7 @@ async def issue_vault_owner_token(request: Request):
                         logger.warning("vault_owner.reuse_missing_token_id")
                         break
 
-                    is_valid, reason, payload = validate_token(
+                    is_valid, reason, payload = await validate_token_with_db(
                         candidate_token, ConsentScope.VAULT_OWNER
                     )
                     if not is_valid or not payload:
@@ -592,27 +1079,55 @@ async def revoke_consent(
 
 
 @router.get("/data")
-async def get_consent_export_data(consent_token: str):
+async def get_consent_export_data(
+    request: Request,
+    consent_token: str | None = Query(default=None),
+):
     """
     Retrieve encrypted export data for a consent token (Zero-Knowledge).
 
     MCP calls this with a valid consent token.
-    Returns encrypted data + export key for client-side decryption.
-    Server NEVER sees plaintext.
+    Returns encrypted data + wrapped export key bundle for client-side decryption.
+    Server NEVER sees plaintext and only returns wrapped-key export packages.
 
     Data is retrieved from database (source of truth) with in-memory cache fallback.
     """
-    logger.info("consent.export_requested")
+    authorization = str(request.headers.get("authorization") or "").strip()
+    bearer_token = (
+        authorization.removeprefix("Bearer ").strip()
+        if authorization.lower().startswith("bearer ")
+        else ""
+    )
+    consent_token = bearer_token or _clean_text(consent_token)
+    if not consent_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing consent token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    # Validate the consent token
-    valid, reason, token_obj = validate_token(consent_token)
+    logger.info(
+        "consent.export_requested token_transport=%s", "bearer" if bearer_token else "query"
+    )
+
+    # Validate the consent token — DB-backed revocation check.
+    valid, reason, token_obj = await validate_token_with_db(consent_token)
     if not valid:
         logger.warning("consent.export_invalid_token reason=%s", reason)
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # Try in-memory cache first (fast path)
     if consent_token in _consent_exports:
         export_data = _consent_exports[consent_token]
+        if not export_data.get("wrapped_key_bundle"):
+            raise HTTPException(
+                status_code=410,
+                detail="Legacy plaintext export format is no longer supported. Request consent again.",
+            )
         logger.info(
             f"✅ Returning encrypted export from cache for scope: {export_data.get('scope')}"
         )
@@ -621,8 +1136,11 @@ async def get_consent_export_data(consent_token: str):
             "encrypted_data": export_data["encrypted_data"],
             "iv": export_data["iv"],
             "tag": export_data["tag"],
-            "export_key": export_data["export_key"],
+            "wrapped_key_bundle": export_data.get("wrapped_key_bundle"),
             "scope": export_data["scope"],
+            "export_revision": export_data.get("export_revision", 1),
+            "export_generated_at": export_data.get("export_generated_at"),
+            "export_refresh_status": export_data.get("refresh_status", "current"),
         }
 
     # Fall back to database (cross-instance consistency)
@@ -632,6 +1150,11 @@ async def get_consent_export_data(consent_token: str):
     if not export_data:
         logger.warning("⚠️ No export data found for token (checked cache and DB)")
         raise HTTPException(status_code=404, detail="No export data for this token")
+    if not export_data.get("is_strict_zero_knowledge"):
+        raise HTTPException(
+            status_code=410,
+            detail="Legacy plaintext export format is no longer supported. Request consent again.",
+        )
 
     # Cache for future requests
     _consent_exports[consent_token] = export_data
@@ -643,9 +1166,168 @@ async def get_consent_export_data(consent_token: str):
         "encrypted_data": export_data["encrypted_data"],
         "iv": export_data["iv"],
         "tag": export_data["tag"],
-        "export_key": export_data["export_key"],
+        "wrapped_key_bundle": export_data.get("wrapped_key_bundle"),
         "scope": export_data["scope"],
+        "export_revision": export_data.get("export_revision"),
+        "export_generated_at": export_data.get("export_generated_at"),
+        "export_refresh_status": export_data.get("refresh_status"),
     }
+
+
+@router.get("/export-refresh/jobs")
+async def list_export_refresh_jobs(
+    userId: str,
+    token_data: dict = Depends(require_vault_owner_token),
+):
+    if token_data["user_id"] != userId:
+        raise HTTPException(status_code=403, detail="User ID does not match authenticated user")
+
+    service = ConsentDBService()
+    jobs = await service.list_consent_export_refresh_jobs(userId)
+    active_tokens = await service.get_active_tokens(userId)
+    active_by_token = {
+        str(token.get("token_id") or "").strip(): token
+        for token in active_tokens
+        if str(token.get("token_id") or "").strip()
+    }
+
+    payload = []
+    for job in jobs:
+        consent_token = str(job.get("consent_token") or "").strip()
+        active = active_by_token.get(consent_token)
+        if not active:
+            continue
+        metadata = active.get("metadata") if isinstance(active.get("metadata"), dict) else {}
+        export_metadata_raw = await service.get_consent_export_metadata(consent_token)
+        export_metadata = export_metadata_raw if isinstance(export_metadata_raw, dict) else {}
+        connector_public_key = str(metadata.get("connector_public_key") or "").strip()
+        if not connector_public_key:
+            continue
+        payload.append(
+            {
+                "consentToken": consent_token,
+                "grantedScope": active.get("scope") or job.get("granted_scope"),
+                "connectorPublicKey": connector_public_key,
+                "connectorKeyId": metadata.get("connector_key_id")
+                or export_metadata.get("connector_key_id"),
+                "connectorWrappingAlg": metadata.get("connector_wrapping_alg")
+                or export_metadata.get("connector_wrapping_alg")
+                or "X25519-AES256-GCM",
+                "status": job.get("status"),
+                "triggerDomain": job.get("trigger_domain"),
+                "triggerPaths": job.get("trigger_paths") or [],
+                "requestedAt": job.get("requested_at"),
+                "attemptCount": job.get("attempt_count"),
+                "lastError": job.get("last_error"),
+                "exportRevision": export_metadata.get("export_revision"),
+                "exportRefreshStatus": export_metadata.get("refresh_status"),
+            }
+        )
+
+    return {"jobs": payload}
+
+
+@router.post("/export-refresh/upload")
+async def upload_refreshed_export(
+    request: RefreshExportUploadRequest,
+    token_data: dict = Depends(require_vault_owner_token),
+):
+    if token_data["user_id"] != request.userId:
+        raise HTTPException(status_code=403, detail="User ID does not match authenticated user")
+
+    valid, reason, token_obj = await validate_token_with_db(request.consentToken)
+    if not valid or token_obj is None:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid consent token for export refresh: {reason or 'unknown'}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if str(token_obj.user_id) != request.userId:
+        raise HTTPException(status_code=403, detail="Consent token user mismatch")
+
+    service = ConsentDBService()
+    existing_export = await service.get_consent_export(request.consentToken)
+    granted_scope = (
+        (
+            str(existing_export.get("scope") or "").strip()
+            if isinstance(existing_export, dict)
+            else ""
+        )
+        or token_obj.scope_str
+        or token_obj.scope.value
+    )
+    export_revision = (
+        int(existing_export.get("export_revision") or 1) if isinstance(existing_export, dict) else 1
+    ) + 1
+    existing_metadata = {
+        "connector_key_id": existing_export.get("connector_key_id") if existing_export else None,
+        "connector_wrapping_alg": existing_export.get("connector_wrapping_alg")
+        if existing_export
+        else None,
+    }
+    wrapped_key_bundle = _build_verified_wrapped_key_bundle(
+        metadata=existing_metadata,
+        wrapped_export_key=request.wrappedExportKey,
+        wrapped_key_iv=request.wrappedKeyIv,
+        wrapped_key_tag=request.wrappedKeyTag,
+        sender_public_key=request.senderPublicKey,
+        wrapping_alg=request.wrappingAlg,
+        connector_key_id=request.connectorKeyId,
+    )
+    stored = await service.store_consent_export(
+        consent_token=request.consentToken,
+        user_id=request.userId,
+        encrypted_data=request.encryptedData,
+        iv=request.encryptedIv,
+        tag=request.encryptedTag,
+        export_key=None,
+        wrapped_key_bundle=wrapped_key_bundle,
+        scope=granted_scope,
+        expires_at_ms=token_obj.expires_at,
+        export_revision=export_revision,
+        source_content_revision=request.sourceContentRevision,
+        source_manifest_revision=request.sourceManifestRevision,
+        refresh_status="current",
+    )
+    if not stored:
+        raise HTTPException(status_code=500, detail="Failed to store refreshed encrypted export")
+
+    _consent_exports[request.consentToken] = {
+        "encrypted_data": request.encryptedData,
+        "iv": request.encryptedIv,
+        "tag": request.encryptedTag,
+        "wrapped_key_bundle": wrapped_key_bundle,
+        "scope": granted_scope,
+        "export_revision": export_revision,
+        "export_generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "refresh_status": "current",
+        "is_strict_zero_knowledge": True,
+        "created_at": int(time.time() * 1000),
+    }
+    await service.complete_consent_export_refresh_job(request.consentToken)
+    return {
+        "success": True,
+        "consentToken": request.consentToken,
+        "exportRevision": export_revision,
+    }
+
+
+@router.post("/export-refresh/fail")
+async def fail_export_refresh(
+    request: RefreshExportFailureRequest,
+    token_data: dict = Depends(require_vault_owner_token),
+):
+    if token_data["user_id"] != request.userId:
+        raise HTTPException(status_code=403, detail="User ID does not match authenticated user")
+
+    service = ConsentDBService()
+    updated = await service.fail_consent_export_refresh_job(
+        request.consentToken,
+        last_error=request.lastError,
+    )
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to mark export refresh as failed")
+    return {"success": True, "consentToken": request.consentToken}
 
 
 # Expose _consent_exports for other modules that need it

@@ -16,13 +16,12 @@ import {
 } from "@/lib/morphy-ux/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { ApiService } from "@/lib/services/api-service";
 import type { KaiHomeInsightsV2 } from "@/lib/services/api-service";
 import { CACHE_KEYS, CacheService } from "@/lib/services/cache-service";
 import type { KaiStreamEnvelope } from "@/lib/streaming/kai-stream-types";
 import { useKaiSession } from "@/lib/stores/kai-session-store";
 import { KaiProfileService } from "@/lib/services/kai-profile-service";
-import { WorldModelService } from "@/lib/services/world-model-service";
+import { PersonalKnowledgeModelService } from "@/lib/services/personal-knowledge-model-service";
 import { cn } from "@/lib/utils";
 import { toInvestorMessage, toInvestorStreamText } from "@/lib/copy/investor-language";
 import type { PortfolioSource } from "@/lib/kai/brokerage/portfolio-sources";
@@ -31,9 +30,13 @@ import {
   type DebateRunTask,
 } from "@/lib/services/debate-run-manager";
 import {
+  fetchLatestMarketSnapshot,
   getLatestMarketSnapshotFromCache,
   pickPreferredMarketSnapshot,
 } from "@/lib/kai/market-snapshot";
+import { PkmDomainResourceService } from "@/lib/pkm/pkm-domain-resource";
+import { assignWindowLocation } from "@/lib/utils/browser-navigation";
+import { trackEvent } from "@/lib/observability/client";
 import {
   getInitialRoundCollapseState,
   getRoundCollapseStateForDecision,
@@ -186,8 +189,6 @@ function getErrorDisplay(errorType: ErrorType, retryIn?: number): { icon: React.
 // Constants
 // ============================================================================
 
-const HEADER_MARKET_QUOTE_TTL_MS = 10 * 60 * 1000;
-
 const TICKER_SYMBOL_REGEX = /^[A-Z][A-Z0-9.\-]{0,5}$/;
 
 function toFiniteNumber(value: unknown): number | undefined {
@@ -199,6 +200,28 @@ function toFiniteNumber(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const normalized = value
+    .map((item) => String(item || "").trim())
+    .filter((item) => item.length > 0);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function isCashEquivalentRow(row: {
@@ -417,8 +440,12 @@ interface DebateStreamViewProps {
   runId?: string;
   portfolioContextOverride?: Record<string, unknown> | null;
   portfolioSource?: PortfolioSource;
+  pickSource?: string;
+  pickSourceLabel?: string;
+  pickSourceKind?: string;
   onClose: () => void;
-  onDecisionSaved?: (entry: AnalysisHistoryEntry) => void;
+  onDecisionReady?: (entry: AnalysisHistoryEntry, meta: { runId: string | null }) => void;
+  onDecisionPersisted?: (entry: AnalysisHistoryEntry, meta: { runId: string }) => void;
   showHeader?: boolean;
 }
 
@@ -436,6 +463,19 @@ type HeaderMarketQuote = {
   source: string;
 };
 
+function toDecisionMarketSnapshot(quote: HeaderMarketQuote | null): NonNullable<
+  NonNullable<DecisionResult["raw_card"]>["market_snapshot"]
+> {
+  return {
+    last_price: quote?.last_price ?? null,
+    change_pct: quote?.change_pct ?? null,
+    observed_at: quote?.observed_at ?? null,
+    source: quote?.source ?? "unavailable",
+  };
+}
+
+type StreamPayload = Record<string, unknown>;
+
 function toMarketNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -445,7 +485,7 @@ function toMarketNumber(value: unknown): number | null {
   return null;
 }
 
-function extractMarketSnapshotFromDecision(data: Record<string, any>): MarketSnapshot {
+function extractMarketSnapshotFromDecision(data: StreamPayload): MarketSnapshot {
   const rawCard =
     data.raw_card && typeof data.raw_card === "object" ? (data.raw_card as Record<string, unknown>) : {};
   const keyMetrics =
@@ -642,8 +682,12 @@ export function DebateStreamView({
   runId,
   portfolioContextOverride,
   portfolioSource,
+  pickSource,
+  pickSourceKind,
+  pickSourceLabel,
   onClose,
-  onDecisionSaved,
+  onDecisionReady,
+  onDecisionPersisted,
   showHeader = true,
 }: DebateStreamViewProps) {
   const setBusyOperation = useKaiSession((s) => s.setBusyOperation);
@@ -738,6 +782,7 @@ export function DebateStreamView({
   const processedSeqRef = useRef(0);
   const decisionNotifiedRef = useRef(false);
   const finalizingNotifiedRef = useRef(false);
+  const persistedNotifiedRef = useRef(false);
   // Helper to update specific agent state in current round
   const updateAgentState = useCallback((round: 1 | 2, agent: string, update: Partial<AgentState>) => {
     // Update Ref (Source of Truth for Stream)
@@ -787,22 +832,29 @@ export function DebateStreamView({
   }, [retryCountdown]);
 
   useEffect(() => {
-    if (!showHeader) {
-      setHeaderMarketQuote(null);
-      setHeaderQuoteLoading(false);
-      return;
-    }
     if (!userId || !normalizedTicker) {
       setHeaderMarketQuote(null);
       setHeaderQuoteLoading(false);
       return;
     }
     let cancelled = false;
-    const cache = CacheService.getInstance();
     const cached = getCachedHeaderQuote(userId, normalizedTicker);
-    setHeaderQuoteLoading(Boolean(vaultOwnerToken) && !cached);
+    setHeaderQuoteLoading(Boolean(showHeader && vaultOwnerToken) && !cached);
     if (!cancelled) {
       setHeaderMarketQuote(cached);
+      if (cached) {
+        setDecision((prev) =>
+          prev
+            ? {
+                ...prev,
+                raw_card: {
+                  ...(prev.raw_card || {}),
+                  market_snapshot: toDecisionMarketSnapshot(cached),
+                },
+              }
+            : prev
+        );
+      }
     }
 
     if (!vaultOwnerToken) {
@@ -814,21 +866,29 @@ export function DebateStreamView({
 
     void (async () => {
       try {
-        const payload = await ApiService.getKaiMarketInsights({
+        const liveQuote = await fetchLatestMarketSnapshot({
           userId,
           vaultOwnerToken,
-          symbols: [normalizedTicker],
+          ticker: normalizedTicker,
           daysBack: 7,
         });
-        const liveQuote = extractHeaderQuoteFromKaiHome(payload, normalizedTicker);
         if (!cancelled) {
-          setHeaderMarketQuote((prev) => pickPreferredHeaderQuote(prev, liveQuote));
+          setHeaderMarketQuote((prev) => {
+            const nextQuote = pickPreferredHeaderQuote(prev, liveQuote);
+            setDecision((currentDecision) =>
+              currentDecision
+                ? {
+                    ...currentDecision,
+                    raw_card: {
+                      ...(currentDecision.raw_card || {}),
+                      market_snapshot: toDecisionMarketSnapshot(nextQuote),
+                    },
+                  }
+                : currentDecision
+            );
+            return nextQuote;
+          });
         }
-        cache.set(
-          CACHE_KEYS.KAI_MARKET_HOME(userId, normalizedTicker, 7),
-          payload,
-          HEADER_MARKET_QUOTE_TTL_MS
-        );
       } catch {
         // Non-blocking: keep best known cached quote in header.
       } finally {
@@ -860,13 +920,14 @@ export function DebateStreamView({
     setRetryCountdown(null);
     decisionNotifiedRef.current = false;
     finalizingNotifiedRef.current = false;
+    persistedNotifiedRef.current = false;
     processedSeqRef.current = 0;
     // Reset refs
     round1StatesRef.current = JSON.parse(JSON.stringify(INITIAL_ROUND_STATE));
     round2StatesRef.current = JSON.parse(JSON.stringify(INITIAL_ROUND_STATE));
   }, []);
 
-  const resolveRoundForEnvelope = useCallback((data: Record<string, any>): 1 | 2 => {
+  const resolveRoundForEnvelope = useCallback((data: StreamPayload): 1 | 2 => {
     if (data.round === 2 || data.round === "2") return 2;
     if (data.round === 1 || data.round === "1") return 1;
     const phase = typeof data.phase === "string" ? data.phase.toLowerCase() : "";
@@ -878,7 +939,7 @@ export function DebateStreamView({
   const applyEnvelope = useCallback(
     (envelope: KaiStreamEnvelope) => {
       const resolvedEventType = envelope.event;
-      const data = envelope.payload as Record<string, any>;
+      const data = envelope.payload as StreamPayload;
       setLoading(false);
       setRetryCountdown(null);
 
@@ -969,14 +1030,18 @@ export function DebateStreamView({
           }
 
           const setter = r === 1 ? setRound1States : setRound2States;
-          setter((prev) => ({
-            ...prev,
-            [ag]: {
-                ...prev[ag],
-                stage: prev[ag]?.stage === "idle" ? "active" : prev[ag]?.stage,
-                text: toInvestorStreamText((prev[ag]?.text || "") + txt),
+          setter((prev) => {
+            const current = prev[ag];
+            if (!current) return prev;
+            return {
+              ...prev,
+              [ag]: {
+                ...current,
+                stage: current.stage === "idle" ? "active" : current.stage,
+                text: toInvestorStreamText((current.text || "") + txt),
               },
-            }));
+            };
+          });
           break;
         }
         case "agent_complete": {
@@ -985,25 +1050,25 @@ export function DebateStreamView({
             stage: "complete",
             text: toInvestorStreamText(data.summary || ""),
             thoughts: [],
-            recommendation: data.recommendation,
-            confidence: data.confidence,
-            sources: data.sources,
-            keyMetrics: data.key_metrics,
-            quantMetrics: data.quant_metrics,
-            businessMoat: data.business_moat,
-            financialResilience: data.financial_resilience,
-            growthEfficiency: data.growth_efficiency,
-            bullCase: data.bull_case,
-            bearCase: data.bear_case,
-            sentimentScore: data.sentiment_score,
-            keyCatalysts: data.key_catalysts,
-            valuationMetrics: data.valuation_metrics,
-            peerComparison: data.peer_comparison,
-            priceTargets: data.price_targets,
+            recommendation: optionalString(data.recommendation),
+            confidence: optionalNumber(data.confidence),
+            sources: optionalStringArray(data.sources),
+            keyMetrics: optionalRecord(data.key_metrics),
+            quantMetrics: optionalRecord(data.quant_metrics),
+            businessMoat: optionalString(data.business_moat),
+            financialResilience: optionalString(data.financial_resilience),
+            growthEfficiency: optionalString(data.growth_efficiency),
+            bullCase: optionalString(data.bull_case),
+            bearCase: optionalString(data.bear_case),
+            sentimentScore: optionalNumber(data.sentiment_score),
+            keyCatalysts: optionalStringArray(data.key_catalysts),
+            valuationMetrics: optionalRecord(data.valuation_metrics),
+            peerComparison: optionalRecord(data.peer_comparison),
+            priceTargets: optionalRecord(data.price_targets),
           });
           if (
             r === 2 &&
-            !decision &&
+            !decisionNotifiedRef.current &&
             AGENTS.every((agent) => round2StatesRef.current[agent]?.stage === "complete")
           ) {
             setKaiThinking("Preparing your final recommendation...");
@@ -1018,7 +1083,7 @@ export function DebateStreamView({
         }
         case "agent_error": {
           const r = resolveRoundForEnvelope(data);
-          const errMsg = data.error || "Agent analysis failed";
+          const errMsg = optionalString(data.error) || "Agent analysis failed";
           updateAgentState(r, (data.agent || "").toString(), {
             stage: "error",
             error: errMsg,
@@ -1073,10 +1138,22 @@ export function DebateStreamView({
           );
           const resolvedMarketSnapshot =
             pickPreferredMarketSnapshot(marketSnapshot, cachedMarketSnapshot) || marketSnapshot;
-          const incomingRawCard =
+          const incomingRawCard: Record<string, unknown> =
             data.raw_card && typeof data.raw_card === "object"
-              ? (data.raw_card as DecisionResult["raw_card"])
+              ? ((data.raw_card as DecisionResult["raw_card"]) ?? {})
               : {};
+          const fallbackPickSource =
+            typeof data.pick_source === "string" && data.pick_source.trim().length > 0
+              ? data.pick_source.trim()
+              : pickSource;
+          const fallbackPickSourceLabel =
+            typeof data.pick_source_label === "string" && data.pick_source_label.trim().length > 0
+              ? data.pick_source_label.trim()
+              : pickSourceLabel;
+          const fallbackPickSourceKind =
+            typeof data.pick_source_kind === "string" && data.pick_source_kind.trim().length > 0
+              ? data.pick_source_kind.trim()
+              : pickSourceKind;
           const normalizedDecision: DecisionResult = {
             ticker: String(data.ticker || ticker).toUpperCase(),
             decision: String(data.decision || "hold"),
@@ -1125,6 +1202,11 @@ export function DebateStreamView({
             raw_card: {
               ...incomingRawCard,
               market_snapshot: resolvedMarketSnapshot,
+              pick_source: incomingRawCard.pick_source || fallbackPickSource,
+              pick_source_label:
+                incomingRawCard.pick_source_label || fallbackPickSourceLabel,
+              pick_source_kind:
+                incomingRawCard.pick_source_kind || fallbackPickSourceKind,
             } as DecisionResult["raw_card"],
           };
           setDecision(normalizedDecision);
@@ -1133,6 +1215,14 @@ export function DebateStreamView({
           setBusyOperation("stock_analysis_stream", false);
           if (!decisionNotifiedRef.current) {
             decisionNotifiedRef.current = true;
+            trackEvent("analysis_stream_terminal_decision", {
+              result: "success",
+            });
+            const completedRunId =
+              (typeof data.run_id === "string" && data.run_id.trim()) ||
+              currentRunId ||
+              runId ||
+              null;
             const historyEntry: AnalysisHistoryEntry = {
               ticker: ticker.toUpperCase(),
               timestamp: new Date().toISOString(),
@@ -1147,7 +1237,7 @@ export function DebateStreamView({
                 round2: round2StatesRef.current,
               },
             };
-            onDecisionSaved?.(historyEntry);
+            onDecisionReady?.(historyEntry, { runId: completedRunId });
           }
           break;
         }
@@ -1174,7 +1264,19 @@ export function DebateStreamView({
           break;
       }
     },
-    [decision, onDecisionSaved, resolveRoundForEnvelope, setBusyOperation, ticker, updateAgentState, userId]
+    [
+      currentRunId,
+      onDecisionReady,
+      pickSource,
+      pickSourceKind,
+      pickSourceLabel,
+      resolveRoundForEnvelope,
+      runId,
+      setBusyOperation,
+      ticker,
+      updateAgentState,
+      userId,
+    ]
   );
 
   useEffect(() => {
@@ -1235,24 +1337,29 @@ export function DebateStreamView({
           : extractDebatePortfolioContext(userId);
       if (!hasRequiredDebateContext(portfolioContext) && vaultKey) {
         try {
-          const fullBlob = await WorldModelService.loadFullBlob({
-            userId,
-            vaultKey,
-            vaultOwnerToken,
-          });
           const financialDomain =
-            fullBlob.financial &&
-            typeof fullBlob.financial === "object" &&
-            !Array.isArray(fullBlob.financial)
-              ? (fullBlob.financial as Record<string, unknown>)
-              : null;
+            (
+              await PkmDomainResourceService.getStaleFirst({
+                userId,
+                domain: "financial",
+                vaultKey,
+                vaultOwnerToken,
+                backgroundRefresh: false,
+              })
+            )?.data ??
+            (await PersonalKnowledgeModelService.loadDomainData({
+              userId,
+              domain: "financial",
+              vaultKey,
+              vaultOwnerToken,
+            }));
           const hydratedContext =
-            extractDebatePortfolioContext(userId, financialDomain ?? fullBlob) ??
+            extractDebatePortfolioContext(userId, financialDomain ?? undefined) ??
             portfolioContext;
           portfolioContext = hydratedContext;
         } catch (blobError) {
           console.warn(
-            "[DebateStreamView] Failed to hydrate debate context from world-model blob:",
+            "[DebateStreamView] Failed to hydrate debate context from the financial PKM domain:",
             blobError
           );
         }
@@ -1275,7 +1382,8 @@ export function DebateStreamView({
 
       try {
         let resolvedTask: DebateRunTask | null = null;
-        if (runId) {
+        const forceFreshRun = reloadNonce > 0;
+        if (runId && !forceFreshRun) {
           const existingTask = DebateRunManagerService.getTask(runId);
           if (existingTask && existingTask.userId === userId) {
             resolvedTask = existingTask;
@@ -1310,6 +1418,9 @@ export function DebateStreamView({
             ticker,
             riskProfile: effectiveRiskProfile,
             userContext: context,
+            pickSource,
+            pickSourceLabel,
+            pickSourceKind,
             vaultOwnerToken,
             vaultKey,
           });
@@ -1320,9 +1431,7 @@ export function DebateStreamView({
               action: {
                 label: "Open active",
                 onClick: () => {
-                  if (typeof window !== "undefined") {
-                    window.location.assign("/kai/analysis");
-                  }
+                  assignWindowLocation("/kai/analysis");
                 },
               },
             });
@@ -1346,6 +1455,14 @@ export function DebateStreamView({
           setManagerTask(nextTask);
         });
 
+        const unsubscribeHistory = DebateRunManagerService.subscribeHistory((entry, task) => {
+          if (task.runId !== resolvedTask!.runId) return;
+          if (task.persistenceState !== "saved") return;
+          if (persistedNotifiedRef.current) return;
+          persistedNotifiedRef.current = true;
+          onDecisionPersisted?.(entry, { runId: resolvedTask!.runId });
+        });
+
         unsubscribeRun = DebateRunManagerService.subscribeRunEvents(
           resolvedTask.runId,
           (envelope) => {
@@ -1355,6 +1472,11 @@ export function DebateStreamView({
           },
           { replay: true }
         );
+        const originalUnsubscribeRun = unsubscribeRun;
+        unsubscribeRun = () => {
+          originalUnsubscribeRun();
+          unsubscribeHistory();
+        };
       } catch (streamError) {
         if (cancelled) return;
         setError((streamError as Error).message || "Unable to start analysis right now.");
@@ -1376,8 +1498,12 @@ export function DebateStreamView({
     };
   }, [
     applyEnvelope,
+    onDecisionPersisted,
     portfolioContextOverride,
     portfolioSource,
+    pickSource,
+    pickSourceKind,
+    pickSourceLabel,
     reloadNonce,
     resetState,
     riskProfileProp,
@@ -1430,6 +1556,8 @@ export function DebateStreamView({
                   size="sm"
                   onClick={() => {
                     resetState();
+                    setCurrentRunId(null);
+                    setManagerTask(null);
                     setReloadNonce((prev) => prev + 1);
                   }}
                 >
@@ -1515,6 +1643,31 @@ export function DebateStreamView({
           </div>
           {!decision && loading ? (
             <div className="mt-3">
+              <div className="mb-1.5 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  {[1, 2].map((round) => (
+                    <span
+                      key={round}
+                      className={cn(
+                        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors",
+                        activeRound > round
+                          ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                          : activeRound === round
+                          ? "bg-primary/15 text-primary"
+                          : "bg-muted text-muted-foreground"
+                      )}
+                    >
+                      {activeRound > round ? (
+                        <Icon icon={CheckCircle2} size={10} className="mr-0.5" />
+                      ) : null}
+                      R{round}
+                    </span>
+                  ))}
+                </div>
+                <span className="text-[10px] tabular-nums text-muted-foreground">
+                  {Math.round(overallProgress)}%
+                </span>
+              </div>
               <Progress value={overallProgress} className="h-1.5 rounded-full" />
               <p className="mt-1 text-center text-[10px] text-muted-foreground">{progressLabel}</p>
             </div>

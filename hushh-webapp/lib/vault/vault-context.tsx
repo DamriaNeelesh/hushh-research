@@ -14,7 +14,7 @@
  * the React component tree's memory space.
  *
  * PERFORMANCE:
- * - Prefetches common data (world model, vault status, consents) on vault unlock
+ * - Prefetches common data (PKM, vault status, consents) on vault unlock
  * - Data is cached via CacheService for faster page loads
  */
 
@@ -26,10 +26,14 @@ import React, {
   useState,
   useCallback,
   useEffect,
+  useRef,
   ReactNode,
 } from "react";
 import { useAuth } from "@/lib/firebase/auth-context";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
+import { trackGrowthFunnelStepCompleted } from "@/lib/observability/growth";
+import { ConsentExportRefreshOrchestrator } from "@/lib/services/consent-export-refresh-orchestrator";
+import { PkmUpgradeOrchestrator } from "@/lib/services/pkm-upgrade-orchestrator";
 import { UnlockWarmOrchestrator } from "@/lib/services/unlock-warm-orchestrator";
 import { VaultService } from "@/lib/services/vault-service";
 
@@ -89,19 +93,42 @@ export function VaultProvider({ children }: VaultProviderProps) {
   // VAULT_OWNER consent token (also memory-only for security)
   const [vaultOwnerToken, setVaultOwnerToken] = useState<string | null>(null);
   const [tokenExpiresAt, setTokenExpiresAt] = useState<number | null>(null);
+  const lastUpgradeKickoffKeyRef = useRef<string | null>(null);
 
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const lockVault = useCallback(() => {
     console.log("🔒 Vault locked (key + token cleared from memory)");
+    if (user?.uid && vaultOwnerToken) {
+      void PkmUpgradeOrchestrator.pauseForLocalAuthResume({
+        userId: user.uid,
+        vaultOwnerToken,
+      }).catch((error) => {
+        console.warn("[VaultProvider] Failed to pause PKM upgrade for local auth resume:", error);
+      });
+    }
+    if (user?.uid) {
+      ConsentExportRefreshOrchestrator.pauseForLocalAuthResume({ userId: user.uid });
+    }
     setVaultKey(null);
     setVaultOwnerToken(null);
     setTokenExpiresAt(null);
+    lastUpgradeKickoffKeyRef.current = null;
 
     if (user?.uid) {
       CacheSyncService.onVaultStateChanged(user.uid);
+      void import("@/lib/kai/kai-financial-resource")
+        .then(({ KaiFinancialResourceService }) => {
+          KaiFinancialResourceService.invalidate(user.uid, { includeDevice: false });
+        })
+        .catch(() => undefined);
+      void import("@/lib/pkm/pkm-domain-resource")
+        .then(({ PkmDomainResourceService }) => {
+          PkmDomainResourceService.invalidateDomain(user.uid, "financial");
+        })
+        .catch(() => undefined);
     }
     VaultService.invalidateVaultStateCache();
-  }, [user?.uid]);
+  }, [user?.uid, vaultOwnerToken]);
 
   // Auto-Lock on Sign Out
   // If AuthContext reports no user, we MUST clear the decrypted key from memory immediately.
@@ -126,6 +153,116 @@ export function VaultProvider({ children }: VaultProviderProps) {
     return () =>
       window.removeEventListener("vault-lock-requested", handleLockRequest);
   }, [lockVault]);
+
+  useEffect(() => {
+    if (!user?.uid || !vaultKey || !vaultOwnerToken) {
+      return;
+    }
+
+    const handleDomainStored = (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        userId?: string;
+        domain?: string;
+      }>;
+      if (customEvent.detail?.userId !== user.uid) {
+        return;
+      }
+      void ConsentExportRefreshOrchestrator.ensureRunning({
+        userId: user.uid,
+        vaultKey,
+        vaultOwnerToken,
+        initiatedBy: "pkm_domain_store",
+      }).catch((error) => {
+        console.warn("[VaultProvider] Consent export refresh orchestration failed:", error);
+      });
+    };
+
+    window.addEventListener("pkm-domain-stored", handleDomainStored);
+    return () => {
+      window.removeEventListener("pkm-domain-stored", handleDomainStored);
+    };
+  }, [user?.uid, vaultKey, vaultOwnerToken]);
+
+  useEffect(() => {
+    if (!user?.uid || !vaultKey) {
+      return;
+    }
+
+    void import("@/lib/kai/kai-financial-resource")
+      .then(({ KaiFinancialResourceService }) =>
+        KaiFinancialResourceService.hydrateFromSecureCache({
+          userId: user.uid,
+          vaultKey,
+        })
+      )
+      .catch(() => null);
+
+    void import("@/lib/pkm/pkm-domain-resource")
+      .then(({ PkmDomainResourceService }) =>
+        PkmDomainResourceService.hydrateFromSecureCache({
+          userId: user.uid,
+          domain: "financial",
+          vaultKey,
+        })
+      )
+      .catch(() => null);
+  }, [user?.uid, vaultKey]);
+
+  useEffect(() => {
+    if (!user?.uid || !vaultKey || !vaultOwnerToken) {
+      return;
+    }
+
+    const kickoffKey = `${user.uid}:${vaultOwnerToken}`;
+    if (lastUpgradeKickoffKeyRef.current === kickoffKey) {
+      return;
+    }
+    lastUpgradeKickoffKeyRef.current = kickoffKey;
+
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let idleHandle: number | null = null;
+
+    const kickoffUpgrade = () => {
+      if (cancelled) return;
+      void PkmUpgradeOrchestrator.ensureRunning({
+        userId: user.uid,
+        vaultKey,
+        vaultOwnerToken,
+        initiatedBy: "app_entry",
+      }).catch((error) => {
+        console.warn("[VaultProvider] PKM upgrade orchestration failed during app entry:", error);
+      });
+    };
+
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      const requestIdle = window.requestIdleCallback as (
+        callback: IdleRequestCallback,
+        options?: IdleRequestOptions
+      ) => number;
+      const cancelIdle = window.cancelIdleCallback as (handle: number) => void;
+      idleHandle = requestIdle(() => {
+        kickoffUpgrade();
+      }, { timeout: 6000 });
+      return () => {
+        cancelled = true;
+        if (idleHandle !== null) {
+          cancelIdle(idleHandle);
+        }
+      };
+    }
+
+    timeoutId = globalThis.setTimeout(() => {
+      kickoffUpgrade();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        globalThis.clearTimeout(timeoutId);
+      }
+    };
+  }, [user?.uid, vaultKey, vaultOwnerToken]);
 
   /**
    * Prefetch common data after vault unlock to speed up page loads.
@@ -157,10 +294,32 @@ export function VaultProvider({ children }: VaultProviderProps) {
       setVaultOwnerToken(token);
       setTokenExpiresAt(expiresAt);
 
+      const routePath =
+        typeof window !== "undefined" ? window.location.pathname : "";
+      if (!routePath.startsWith("/ria")) {
+        trackGrowthFunnelStepCompleted({
+          journey: "investor",
+          step: "vault_ready",
+          dedupeKey: "growth:investor:vault_ready",
+          dedupeWindowMs: 5_000,
+        });
+      }
+
       if (user?.uid) {
-        const routePath =
-          typeof window !== "undefined" ? window.location.pathname : undefined;
-        prefetchDashboardData(user.uid, token, key, routePath);
+        const warmRoutePath = routePath || undefined;
+        const scheduleWarm = () => {
+          void prefetchDashboardData(user.uid, token, key, warmRoutePath);
+        };
+
+        if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+          const requestIdle = window.requestIdleCallback as (
+            callback: IdleRequestCallback,
+            options?: IdleRequestOptions
+          ) => number;
+          requestIdle(() => scheduleWarm(), { timeout: 1500 });
+        } else {
+          globalThis.setTimeout(scheduleWarm, 300);
+        }
       }
     },
     [user, prefetchDashboardData]

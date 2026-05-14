@@ -14,8 +14,12 @@ import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { useVault } from "@/lib/vault/vault-context";
 import { ApiService } from "@/lib/services/api-service";
-import { WorldModelService } from "@/lib/services/world-model-service";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
+import {
+  CONSENT_ACTION_COMPLETE_EVENT,
+  dispatchConsentStateChanged,
+} from "@/lib/consent/consent-events";
+import { buildConsentExportForScope } from "@/lib/consent/export-builder";
 
 // ============================================================================
 // Types
@@ -24,12 +28,23 @@ import { CacheSyncService } from "@/lib/cache/cache-sync-service";
 export interface PendingConsent {
   id: string;
   developer: string;
+  developerImageUrl?: string;
+  developerWebsiteUrl?: string;
   scope: string;
   scopeDescription?: string;
   requestedAt: number;
+  approvalTimeoutAt?: number;
   expiryHours?: number;
   durationHours?: number;
   bundleId?: string;
+  requestUrl?: string;
+  reason?: string;
+  isScopeUpgrade?: boolean;
+  existingGrantedScopes?: string[];
+  additionalAccessSummary?: string;
+  metadata?: Record<string, unknown> | null;
+  notificationOpenedAt?: number;
+  notificationAcknowledged?: boolean;
 }
 
 type RequestStatus = "pending" | "handling" | "handled";
@@ -45,28 +60,17 @@ interface UseConsentActionsOptions {
 // Helpers: Scope detection and vault data endpoint
 // ============================================================================
 
-/** world_model.read or attr.{domain}.* (domain: alphanumeric + underscore only) */
-const WORLD_MODEL_READ = "world_model.read";
-const ATTR_SCOPE_REGEX = /^attr\.([a-zA-Z0-9_]+)\.\*$/;
+/** pkm.read or attr.{domain}.* (domain: alphanumeric + underscore only) */
+const PKM_READ = "pkm.read";
 
-function isWorldModelScope(scope: string): boolean {
-  return scope === WORLD_MODEL_READ || ATTR_SCOPE_REGEX.test(scope);
-}
-
-/** Parse attr.{domain}.* to domain, or null if not matching. */
-function parseAttrScopeDomain(scope: string): string | null {
-  const m = scope.match(ATTR_SCOPE_REGEX);
-  return m?.[1] ?? null;
+function isPkmScope(scope: string): boolean {
+  return scope === PKM_READ || scope.startsWith("attr.");
 }
 
 function getScopeDataEndpoint(scope: string): string | null {
   const scopeMap: Record<string, string> = {
-    // Dynamic attr.* scopes (canonical - preferred)
+    // Dynamic attr.* scopes (canonical)
     "attr.financial.*": "/api/vault/finance",
-    // Legacy underscore format (deprecated)
-    vault_read_finance: "/api/vault/finance",
-    // Legacy dot format (deprecated)
-    "vault.read.finance": "/api/vault/finance",
   };
   return scopeMap[scope] || null;
 }
@@ -152,8 +156,14 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
       if (!userId || !vaultKey) {
         toast.error("Vault not unlocked", {
           id: toastId,
-          description: "Please unlock your vault to approve this request.",
-          duration: 3000,
+          description: "Unlock your vault to approve this request.",
+          duration: 6000,
+          action: {
+            label: "Unlock",
+            onClick: () => {
+              window.location.href = "/kai";
+            },
+          },
         });
         // Reset to pending if not unlocked
         markAsPending(consent.id);
@@ -167,77 +177,27 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
         }
 
         let scopeData: Record<string, unknown> = {};
+        let sourceContentRevision: number | undefined;
+        let sourceManifestRevision: number | undefined;
 
-        // World model scopes: build export from world model blob (BYOK)
-        if (isWorldModelScope(consent.scope)) {
+        // PKM scopes: build export from encrypted PKM storage (BYOK)
+        if (isPkmScope(consent.scope)) {
           try {
-            const metadata = await WorldModelService.getMetadata(userId, false, vaultOwnerToken);
-            const availableDomains = metadata.domains.map((d) => d.key);
-
-            if (consent.scope === WORLD_MODEL_READ) {
-              if (availableDomains.length === 0) {
-                scopeData = {};
-                console.info("[Consent] Consent approved with empty world model export (no domains)");
-              } else {
-                const firstDomain = availableDomains[0];
-                const blob = firstDomain
-                  ? await WorldModelService.getDomainData(userId, firstDomain, vaultOwnerToken)
-                  : null;
-                if (!blob) {
-                  scopeData = {};
-                  console.info("[Consent] Consent approved with empty world model export (no data)");
-                } else {
-                  const { decryptData } = await import("@/lib/vault/encrypt");
-                  const decrypted = await decryptData(
-                    {
-                      ciphertext: blob.ciphertext,
-                      iv: blob.iv,
-                      tag: blob.tag,
-                      encoding: "base64",
-                      algorithm: (blob.algorithm || "aes-256-gcm") as "aes-256-gcm",
-                    },
-                    vaultKey
-                  );
-                  const full = JSON.parse(decrypted) as Record<string, unknown>;
-                  scopeData = {};
-                  for (const key of availableDomains) {
-                    if (Object.prototype.hasOwnProperty.call(full, key)) {
-                      scopeData[key] = full[key];
-                    }
-                  }
-                }
-              }
-            } else {
-              const domain = parseAttrScopeDomain(consent.scope);
-              if (!domain) {
-                scopeData = {};
-              } else {
-                const blob = await WorldModelService.getDomainData(userId, domain, vaultOwnerToken);
-                if (!blob) {
-                  scopeData = { [domain]: {} };
-                } else {
-                  const { decryptData } = await import("@/lib/vault/encrypt");
-                  const decrypted = await decryptData(
-                    {
-                      ciphertext: blob.ciphertext,
-                      iv: blob.iv,
-                      tag: blob.tag,
-                      encoding: "base64",
-                      algorithm: (blob.algorithm || "aes-256-gcm") as "aes-256-gcm",
-                    },
-                    vaultKey
-                  );
-                  const full = JSON.parse(decrypted) as Record<string, unknown>;
-                  scopeData = { [domain]: full[domain] ?? {} };
-                }
-              }
-            }
+            const builtExport = await buildConsentExportForScope({
+              userId,
+              scope: consent.scope,
+              vaultKey,
+              vaultOwnerToken,
+            });
+            scopeData = builtExport.payload;
+            sourceContentRevision = builtExport.sourceContentRevision;
+            sourceManifestRevision = builtExport.sourceManifestRevision;
           } catch (err) {
             if (err instanceof SyntaxError) {
-              console.error("[Consent] Failed to parse world model blob after decrypt");
+              console.error("[Consent] Failed to parse PKM blob after decrypt");
               throw new Error("Could not prepare export; check vault.");
             }
-            console.error("[Consent] World model export build failed:", err);
+            console.error("[Consent] PKM export build failed:", err);
             throw new Error("Could not load your data; try again.");
           }
         }
@@ -251,7 +211,7 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
           console.log("[NativeDebug] Fetching scope data for:", consent.scope);
 
           try {
-            // Scope mapping to ApiService methods (food/professional removed; use world-model)
+            // Scope mapping to ApiService methods (food/professional removed; use PKM)
             if (consent.scope.includes("finance")) {
               // Legacy finance endpoint if needed
               console.warn("Finance scope: legacy endpoint not yet populated");
@@ -338,20 +298,56 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
           }
         }
 
-        if (Object.keys(scopeData).length === 0 && !isWorldModelScope(consent.scope) && !getScopeDataEndpoint(consent.scope)) {
+        if (Object.keys(scopeData).length === 0 && !isPkmScope(consent.scope) && !getScopeDataEndpoint(consent.scope)) {
           console.info("[Consent] Unknown scope, approving with empty export:", consent.scope);
         }
 
         console.log("[NativeDebug] Generating export key...");
         // Generate export key and encrypt
-        const { generateExportKey, encryptForExport } = await import(
+        const { generateExportKey, encryptForExport, wrapExportKeyForConnector } = await import(
           "@/lib/vault/export-encrypt"
         );
+        const consentMetadata =
+          consent.metadata && typeof consent.metadata === "object"
+            ? (consent.metadata as Record<string, unknown>)
+            : {};
+        const connectorPublicKey =
+          typeof consentMetadata.connector_public_key === "string"
+            ? consentMetadata.connector_public_key
+            : "";
+        const connectorKeyId =
+          typeof consentMetadata.connector_key_id === "string"
+            ? consentMetadata.connector_key_id
+            : undefined;
+        const requesterActorType =
+          typeof consentMetadata.requester_actor_type === "string"
+            ? consentMetadata.requester_actor_type
+            : "";
+        const requestSource =
+          typeof consentMetadata.request_source === "string"
+            ? consentMetadata.request_source
+            : "";
+        const isDeveloperRequest =
+          Boolean(connectorPublicKey) ||
+          requesterActorType === "developer" ||
+          requestSource === "developer_api_v1";
+        if (isDeveloperRequest && !connectorPublicKey) {
+          throw new Error(
+            "Missing connector public key. The developer needs to re-send this request with a public key. Contact them or try again later."
+          );
+        }
         const exportKey = await generateExportKey();
         const encrypted = await encryptForExport(
           JSON.stringify(scopeData),
           exportKey
         );
+        const wrappedKeyBundle = connectorPublicKey
+          ? await wrapExportKeyForConnector({
+              exportKeyHex: exportKey,
+              connectorPublicKey,
+              connectorKeyId,
+            })
+          : null;
 
         console.log("[NativeDebug] Submitting approval to backend...");
         // Send to server
@@ -359,10 +355,17 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
           userId,
           requestId: consent.id,
           vaultOwnerToken,
-          exportKey,
           encryptedData: encrypted.ciphertext,
           encryptedIv: encrypted.iv,
           encryptedTag: encrypted.tag,
+          wrappedExportKey: wrappedKeyBundle?.wrappedExportKey,
+          wrappedKeyIv: wrappedKeyBundle?.wrappedKeyIv,
+          wrappedKeyTag: wrappedKeyBundle?.wrappedKeyTag,
+          senderPublicKey: wrappedKeyBundle?.senderPublicKey,
+          wrappingAlg: wrappedKeyBundle?.wrappingAlg,
+          connectorKeyId: wrappedKeyBundle?.connectorKeyId,
+          sourceContentRevision,
+          sourceManifestRevision,
           durationHours: consent.durationHours,
         });
 
@@ -393,10 +396,11 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
 
         // Dispatch custom event so consents page can refresh tables
         window.dispatchEvent(
-          new CustomEvent("consent-action-complete", {
+          new CustomEvent(CONSENT_ACTION_COMPLETE_EVENT, {
             detail: { action: "approve", requestId: consent.id },
           })
         );
+        dispatchConsentStateChanged({ action: "approve", requestId: consent.id });
       } catch (err) {
         console.error("Error approving consent:", err);
         markAsPending(consent.id);
@@ -457,10 +461,11 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
 
         // Dispatch custom event so consents page can refresh tables
         window.dispatchEvent(
-          new CustomEvent("consent-action-complete", {
+          new CustomEvent(CONSENT_ACTION_COMPLETE_EVENT, {
             detail: { action: "deny", requestId },
           })
         );
+        dispatchConsentStateChanged({ action: "deny", requestId });
       } catch (err) {
         console.error("Error denying consent:", err);
         markAsPending(requestId);
@@ -578,6 +583,7 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
         
         CacheSyncService.onConsentMutated(userId);
         onActionComplete?.();
+        dispatchConsentStateChanged({ action: "revoke", scope });
       } catch (err) {
         console.error("Error revoking consent:", err);
       }

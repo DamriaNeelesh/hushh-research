@@ -66,13 +66,16 @@ export interface MorphyButtonBaseProps extends MorphyInteractiveProps {
 export interface MorphyCardBaseProps extends MorphyInteractiveProps {
   /**
    * Design-system preset for consistent radius/elevation without per-callsite className.
+   * - "compact": small utility/summary cards
    * - "default": standard card surface
-   * - "hero": large-radius, elevated hero surface (e.g. onboarding previews)
+   * - "hero": large, neutral hero surface (e.g. onboarding previews)
+   * - "surface": shared app data surface with standardized card chrome
+   * - "surface-feature": shared app feature surface with slightly stronger depth
    */
-  preset?: "default" | "hero";
+  preset?: "compact" | "default" | "hero" | "surface" | "surface-feature";
   /**
-   * Optional glass accent overlay for depth/highlight on glass cards.
-   * Keep centralized via tokens so light/dark stay balanced.
+   * Optional neutral highlight overlay for depth on glass cards.
+   * This does not tint the outer card shell.
    */
   glassAccent?: "none" | "soft" | "balanced";
   /**

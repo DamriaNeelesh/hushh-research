@@ -1,11 +1,33 @@
 # Kai Brokerage Connectivity Architecture
 
+
+## Visual Map
+
+```mermaid
+flowchart LR
+  statement["Statement Import"]
+  plaid["Plaid Read-only Connect"]
+  financial["Encrypted financial PKM"]
+  source["Active Source Selection"]
+  surfaces["Dashboard / Analysis / Optimize"]
+  statement --> financial
+  plaid --> financial
+  financial --> source --> surfaces
+```
+
 Canonical reference for how Kai handles brokerage connectivity today and how the model stays compatible with future broker execution.
+
+Founder-language framing:
+
+- this surface is governed by `Separation of Duties`: brokerage transport, app-facing context, and future execution adapters stay intentionally split
+- `Capability Tokens` gate portfolio access and source selection
+- `Cryptographic Primitives` keep private investor context encrypted while Plaid server-state stays outside PKM
+- future execution requires stronger approval flows beyond today's PCHP-backed read path
 
 ## North Stars
 
 - Consent before access and consent before action
-- BYOK and memory-only sensitive state
+- Cryptographic Primitives and memory-only sensitive state
 - Tri-flow parity across web, iOS, and Android
 - Low-friction investor answers, with debate remaining separate
 - Clear provenance: editable statement data vs immutable broker-sourced data
@@ -55,7 +77,7 @@ Kai exposes three portfolio views:
 
 ## Persistence Model
 
-### Editable world-model contract
+### Editable PKM contract
 
 - `financial.sources.statement`
 - `financial.sources.plaid`
@@ -78,7 +100,7 @@ Kai exposes three portfolio views:
 - `kai_portfolio_source_preferences`
   - active source selection
 
-Plaid access tokens never live in the world model.
+Plaid access tokens never live in the PKM.
 
 ## OAuth and Web Callback Model
 
@@ -89,7 +111,7 @@ Callback path:
 Runtime rules:
 
 1. Client requests a Link token with a frontend-derived absolute `redirect_uri`.
-2. Backend validates the origin against `FRONTEND_URL` and the path against `PLAID_REDIRECT_PATH`.
+2. Backend validates the origin against `APP_FRONTEND_ORIGIN` and the path against `PLAID_REDIRECT_PATH`.
 3. Backend persists an opaque `resume_session_id` in `kai_plaid_link_sessions`.
 4. Browser stores only that opaque session id, never the vault key or a persisted vault token.
 5. On return from the institution, Kai re-issues a fresh `VAULT_OWNER` token, fetches the stored Link token, resumes Link with `receivedRedirectUri`, exchanges the `public_token`, and clears the session.
@@ -159,4 +181,4 @@ Execution principles:
 - broker-adapter based, not Plaid based
 - explicit human approval by default
 - audit logging and idempotency mandatory
-- post-trade reconciliation writes back into the world model as a separate source of truth
+- post-trade reconciliation writes back into the PKM as a separate source of truth

@@ -1,5 +1,25 @@
 # Cloud + On-Device AI Reference
 
+
+## Visual Map
+
+```mermaid
+flowchart TD
+  root["Cloud + On-Device AI Reference"]
+  n1["Benchmark Acceptance Matrix"]
+  root --> n1
+  n2["Model Landscape Feb 2026"]
+  root --> n2
+  n3["Pathway A Lean Offline"]
+  root --> n3
+  n4["Pathway B Balanced Hybrid"]
+  root --> n4
+  n5["Pathway C Private Pro"]
+  root --> n5
+  n6["Runtime Packaging Contract"]
+  root --> n6
+```
+
 ## Status
 
 `Future Plan` (pre-implementation). This directory is a planning baseline and does not imply these capabilities are already shipped.
@@ -15,7 +35,7 @@ Convert these files into implementation docs only after all of the following are
 
 ## Purpose
 
-This section defines how Hushh keeps cloud AI as a first-class runtime while adding on-device AI as an optional offline mode.
+This section defines how Hussh keeps cloud AI as a first-class runtime while adding on-device AI as an optional offline mode.
 
 Scope:
 

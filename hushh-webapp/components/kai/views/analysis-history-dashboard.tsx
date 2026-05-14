@@ -5,7 +5,7 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
-  Search,
+
   BarChart3,
   MessageSquareText,
   Trash2,
@@ -39,12 +39,19 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import {
+  SurfaceCard,
+  SurfaceCardContent,
+  SurfaceCardDescription,
+  SurfaceCardHeader,
+  SurfaceCardTitle,
+  SurfaceInset,
+} from "@/components/app-ui/surfaces";
 import { Button } from "@/lib/morphy-ux/button";
 import { format } from "date-fns";
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
-import { WorldModelService } from "@/lib/services/world-model-service";
+import { PersonalKnowledgeModelService } from "@/lib/services/personal-knowledge-model-service";
 import { CacheService, CACHE_KEYS } from "@/lib/services/cache-service";
 import { mapPortfolioToDashboardViewModel } from "@/components/kai/views/dashboard-data-mapper";
 import type { PortfolioData } from "@/components/kai/types/portfolio";
@@ -67,7 +74,9 @@ export interface AnalysisHistoryDashboardProps {
   vaultOwnerToken?: string;
   onSelectTicker: (ticker: string) => void;
   onViewHistory: (entry: AnalysisHistoryEntry) => void;
+  onHistoryCount?: (count: number) => void;
   showDebateInputs?: boolean;
+  ephemeralEntry?: AnalysisHistoryEntry | null;
 }
 
 interface DebateCoverageRow {
@@ -132,15 +141,15 @@ function decisionStyles(decision: string, ownsPosition?: boolean | null): {
   return {
     bg:
       presentation.label === "WATCH"
-        ? "bg-blue-500/10"
+        ? "bg-[var(--app-card-surface-compact)]"
         : "bg-amber-500/10",
     text:
       presentation.label === "WATCH"
-        ? "text-blue-600 dark:text-blue-400"
+        ? "text-muted-foreground"
         : "text-amber-600 dark:text-amber-400",
     border:
       presentation.label === "WATCH"
-        ? "border-blue-500/30"
+        ? "border-[color:var(--app-card-border-standard)]"
         : "border-amber-500/30",
     icon: <Icon icon={Minus} size={12} />,
     label: presentation.label,
@@ -281,6 +290,57 @@ function buildDebateInputsSnapshot(
   };
 }
 
+function toTextCandidate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function extractCompanyName(entry: AnalysisHistoryEntry, canonicalTicker: string): string | undefined {
+  const rawCard = isRecord(entry.raw_card) ? entry.raw_card : null;
+  const quote = rawCard && isRecord(rawCard.quote) ? rawCard.quote : null;
+  const marketSnapshot =
+    rawCard && isRecord(rawCard.market_snapshot) ? rawCard.market_snapshot : null;
+  const candidates = [
+    toTextCandidate(rawCard?.company_name),
+    toTextCandidate(rawCard?.companyName),
+    toTextCandidate(rawCard?.security_name),
+    toTextCandidate(rawCard?.securityName),
+    toTextCandidate(rawCard?.entity_name),
+    toTextCandidate(quote?.company_name),
+    toTextCandidate(marketSnapshot?.company_name),
+    toTextCandidate(rawCard?.name),
+    toTextCandidate(rawCard?.title),
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (candidate.toUpperCase() === canonicalTicker) continue;
+    return candidate;
+  }
+
+  return undefined;
+}
+
+function buildSearchText(
+  entry: AnalysisHistoryEntry,
+  canonicalTicker: string,
+  companyName?: string
+): string {
+  const rawCard = isRecord(entry.raw_card) ? entry.raw_card : null;
+  const parts = [
+    canonicalTicker,
+    companyName,
+    toTextCandidate(entry.final_statement),
+    toTextCandidate(rawCard?.short_recommendation),
+    toTextCandidate(rawCard?.fundamental_summary),
+    toTextCandidate(rawCard?.sentiment_summary),
+    toTextCandidate(rawCard?.valuation_summary),
+  ].filter((value): value is string => Boolean(value));
+
+  return Array.from(new Set(parts)).join(" ");
+}
+
 /**
  * Dedupe history table to one row per ticker.
  *
@@ -307,14 +367,19 @@ function processHistory(map: AnalysisHistoryMap): HistoryEntryWithVersion[] {
       (a, b) => epochOf(a.timestamp) - epochOf(b.timestamp)
     );
 
-    const withVersions: HistoryEntryWithVersion[] = sortedByDateAsc.map((entry, index) => ({
-      ...entry,
-      ticker:
-        typeof entry.ticker === "string" && entry.ticker.trim().length > 0
-          ? entry.ticker
-          : canonicalTicker,
-      version: index + 1,
-    }));
+    const withVersions: HistoryEntryWithVersion[] = sortedByDateAsc.map((entry, index) => {
+      const companyName = extractCompanyName(entry, canonicalTicker);
+      return {
+        ...entry,
+        ticker:
+          typeof entry.ticker === "string" && entry.ticker.trim().length > 0
+            ? entry.ticker
+            : canonicalTicker,
+        companyName,
+        searchText: buildSearchText(entry, canonicalTicker, companyName),
+        version: index + 1,
+      };
+    });
 
     // Latest is the newest timestamp
     const latest = withVersions[withVersions.length - 1];
@@ -420,6 +485,17 @@ function upsertEntryInHistoryMap(
   return nextMap;
 }
 
+function mergeRunManagerHistoryEntries(
+  historyMap: AnalysisHistoryMap,
+  items: Array<{ entry: AnalysisHistoryEntry }>
+): AnalysisHistoryMap {
+  let nextMap = historyMap;
+  for (const { entry } of items) {
+    nextMap = upsertEntryInHistoryMap(nextMap, entry);
+  }
+  return nextMap;
+}
+
 function removeEntryFromHistoryMap(
   historyMap: AnalysisHistoryMap,
   entry: AnalysisHistoryEntry
@@ -513,41 +589,45 @@ function DebateInputsCard({
   const quickStartTickers = eligibleSymbols.length > 0 ? eligibleSymbols : historyTickers;
 
   return (
-    <Card className="rounded-2xl border border-border/60 bg-background/75 shadow-sm">
-      <CardHeader>
+    <SurfaceCard>
+      <SurfaceCardHeader>
         <div className="flex items-center justify-between gap-2">
-          <CardTitle className="flex items-center gap-2 text-sm">
+          <SurfaceCardTitle className="flex items-center gap-2 text-sm">
             <Icon icon={MessageSquareText} size="sm" className="text-primary" />
             Debate Inputs
-          </CardTitle>
+          </SurfaceCardTitle>
           <Badge variant="secondary" className="text-[11px] font-semibold">
             {eligibleSymbols.length} eligible
           </Badge>
         </div>
-        <CardDescription>
+        <SurfaceCardDescription>
           Start a debate directly from history using your current vault portfolio context.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+        </SurfaceCardDescription>
+      </SurfaceCardHeader>
+      <SurfaceCardContent className="space-y-4">
         {loading ? (
-          <div className="rounded-xl border border-dashed border-border/60 bg-background/80 p-3 text-sm text-muted-foreground">
+          <SurfaceInset className="border-dashed p-3 text-sm text-muted-foreground">
             Loading debate context from vault...
-          </div>
+          </SurfaceInset>
         ) : !hasPortfolio ? (
-          <div className="rounded-xl border border-dashed border-border/60 bg-background/80 p-3 text-sm text-muted-foreground">
+          <SurfaceInset className="border-dashed p-3 text-sm text-muted-foreground">
             No imported statement found for this user yet. Import/connect a statement to unlock portfolio-based debate inputs.
-          </div>
+          </SurfaceInset>
         ) : (
           <>
-            <div className="rounded-xl border border-border/60 bg-background/80 p-3">
+            <SurfaceInset className="p-3">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>Overall readiness</span>
                 <span className="font-semibold text-foreground">
                   {Math.round(snapshot?.readinessScore || 0)} / 100
                 </span>
               </div>
-              <Progress value={snapshot?.readinessScore || 0} className="mt-2 h-2" />
-            </div>
+              <Progress
+                value={snapshot?.readinessScore || 0}
+                className="mt-2 h-2 bg-foreground/[0.08]"
+                indicatorClassName="bg-foreground/70"
+              />
+            </SurfaceInset>
 
             <DebateReadinessChart
               data={coverageRows.map((row) => ({
@@ -560,19 +640,19 @@ function DebateInputsCard({
 
             <div className="grid gap-3 sm:grid-cols-2">
               {coverageRows.map((row) => (
-                <div key={row.key} className="rounded-xl border border-border/60 bg-background/80 p-3">
+                <SurfaceInset key={row.key} className="p-3">
                   <div className="flex items-center justify-between text-sm">
                     <span className="font-semibold">{row.label}</span>
                     <span className="text-muted-foreground">{Math.round(row.value)}%</span>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">{row.detail}</p>
-                </div>
+                </SurfaceInset>
               ))}
             </div>
           </>
         )}
 
-        <div className="rounded-xl border border-border/60 bg-background/80 p-3">
+        <SurfaceInset className="p-3">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Quick Start
           </p>
@@ -596,10 +676,10 @@ function DebateInputsCard({
               No eligible symbols yet. Import a statement first.
             </p>
           )}
-        </div>
+        </SurfaceInset>
 
         {exclusionSummary.length > 0 ? (
-          <div className="rounded-xl border border-border/60 bg-background/80 p-3">
+          <SurfaceInset className="p-3">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Exclusion Reasons
             </p>
@@ -613,10 +693,10 @@ function DebateInputsCard({
                 </span>
               ))}
             </div>
-          </div>
+          </SurfaceInset>
         ) : null}
-      </CardContent>
-    </Card>
+      </SurfaceCardContent>
+    </SurfaceCard>
   );
 }
 
@@ -630,7 +710,9 @@ export function AnalysisHistoryDashboard({
   vaultOwnerToken,
   onSelectTicker,
   onViewHistory,
+  onHistoryCount,
   showDebateInputs = true,
+  ephemeralEntry,
 }: AnalysisHistoryDashboardProps) {
   const [entries, setEntries] = useState<HistoryEntryWithVersion[]>([]);
   const [loading, setLoading] = useState(true);
@@ -648,11 +730,21 @@ export function AnalysisHistoryDashboard({
     historyMapRef.current = historyMap;
   }, [historyMap]);
 
+  useEffect(() => {
+    onHistoryCount?.(entries.length);
+  }, [entries.length, onHistoryCount]);
+
   const applyHistoryMap = useCallback((nextMap: AnalysisHistoryMap) => {
     historyMapRef.current = nextMap;
     setHistoryMap(nextMap);
     setEntries(processHistory(nextMap));
   }, []);
+
+  useEffect(() => {
+    if (!ephemeralEntry) return;
+    const nextMap = upsertEntryInHistoryMap(historyMapRef.current, ephemeralEntry);
+    applyHistoryMap(nextMap);
+  }, [applyHistoryMap, ephemeralEntry]);
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -662,10 +754,18 @@ export function AnalysisHistoryDashboard({
         vaultKey,
         vaultOwnerToken,
       });
-      applyHistoryMap(nextMap);
+      const mergedMap = mergeRunManagerHistoryEntries(
+        nextMap,
+        DebateRunManagerService.getHistoryEntriesForUser(userId)
+      );
+      applyHistoryMap(mergedMap);
     } catch (err) {
       console.error("[AnalysisHistoryDashboard] Failed to load history:", err);
-      setEntries([]);
+      const mergedMap = mergeRunManagerHistoryEntries(
+        {},
+        DebateRunManagerService.getHistoryEntriesForUser(userId)
+      );
+      applyHistoryMap(mergedMap);
     } finally {
       setLoading(false);
     }
@@ -698,13 +798,13 @@ export function AnalysisHistoryDashboard({
         return;
       }
 
-      const blob = await WorldModelService.loadFullBlob({
+      const financialDomain = await PersonalKnowledgeModelService.loadDomainData({
         userId,
+        domain: "financial",
         vaultKey,
         vaultOwnerToken,
       });
 
-      const financialDomain = isRecord(blob.financial) ? blob.financial : null;
       const portfolioCandidate = financialDomain && isRecord(financialDomain.portfolio)
         ? financialDomain.portfolio
         : financialDomain;
@@ -805,6 +905,14 @@ export function AnalysisHistoryDashboard({
   }, [applyHistoryMap, historyMap, userId, vaultKey, vaultOwnerToken]);
 
   useEffect(() => {
+    const pendingEntries = DebateRunManagerService.getHistoryEntriesForUser(userId);
+    if (pendingEntries.length > 0) {
+      let nextMap = historyMapRef.current;
+      for (const { entry } of pendingEntries) {
+        nextMap = upsertEntryInHistoryMap(nextMap, entry);
+      }
+      applyHistoryMap(nextMap);
+    }
     return DebateRunManagerService.subscribeHistory((entry, task) => {
       if (task.userId !== userId) return;
       const nextMap = upsertEntryInHistoryMap(historyMapRef.current, entry);
@@ -838,7 +946,6 @@ export function AnalysisHistoryDashboard({
   }, []);
 
   const columns = getColumns({
-    onView: onViewHistory,
     onDelete: handleDeleteEntry,
     onDeleteTicker: handleDeleteTicker,
     onViewVersions: openVersions,
@@ -890,10 +997,12 @@ export function AnalysisHistoryDashboard({
   // ----- Loading state -----
   if (loading) {
     return (
-      <div className="px-4 sm:px-6 pb-safe max-w-4xl mx-auto">
-        <div className="flex min-h-52 items-center justify-center rounded-2xl border border-border/40 bg-card/60">
-          <HushhLoader variant="inline" label="Loading analysis history…" />
-        </div>
+      <div className="w-full pb-safe">
+        <SurfaceCard className="overflow-hidden">
+          <SurfaceCardContent className="flex min-h-52 items-center justify-center p-6">
+            <HushhLoader variant="inline" label="Loading analysis history…" />
+          </SurfaceCardContent>
+        </SurfaceCard>
       </div>
     );
   }
@@ -901,7 +1010,7 @@ export function AnalysisHistoryDashboard({
   // ----- Empty state -----
   if (entries.length === 0) {
     return (
-      <div className="space-y-6 px-4 sm:px-6 pb-safe max-w-4xl mx-auto">
+      <div className="w-full space-y-6 pb-safe">
         <EmptyState />
         {showDebateInputs ? (
           <DebateInputsCard
@@ -917,34 +1026,29 @@ export function AnalysisHistoryDashboard({
 
   // ----- Populated state -----
   return (
-    <div className="space-y-6 px-4 sm:px-6 pb-safe max-w-4xl mx-auto">
-      {/* Header (search is global in Kai layout) */}
-      <div className="flex items-center gap-2">
-        <Icon icon={Search} size="sm" className="text-muted-foreground" />
-        <h2 className="app-section-heading text-muted-foreground uppercase tracking-[0.12em]">
-          Analysis History
-        </h2>
-        <Badge variant="secondary" className="text-[10px]">
-          {entries.length}
-        </Badge>
-      </div>
-
+    <div className="w-full space-y-6 pb-safe">
       {/* Data Table */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-10">
-        <DataTable
-          columns={columns}
-          data={entries}
-          searchKey="ticker"
-          searchPlaceholder="Search analysis history by ticker..."
-          enableSearch
-          filterKey="decision"
-          filterOptions={[
-            { label: "Buy", value: "buy" },
-            { label: "Hold / Watch", value: "hold" },
-            { label: "Reduce", value: "reduce" },
-          ]}
-        />
-      </div>
+      <DataTable
+        columns={columns}
+        data={entries}
+        onRowClick={onViewHistory}
+        searchKey="ticker"
+        globalSearchKeys={["ticker", "companyName", "searchText"]}
+        searchPlaceholder="Search analysis history by ticker or company..."
+        enableSearch
+        filterKey="decision"
+        filterOptions={[
+          { label: "Buy", value: "buy" },
+          { label: "Hold / Watch", value: "hold" },
+          { label: "Reduce", value: "reduce" },
+        ]}
+        initialPageSize={10}
+        pageSizeOptions={[10, 20, 30]}
+        density="compact"
+        stickyHeader
+        tableContainerClassName="w-full"
+        tableClassName="w-full min-w-[640px]"
+      />
 
       {showDebateInputs ? (
         <DebateInputsCard

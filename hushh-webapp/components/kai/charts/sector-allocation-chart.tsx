@@ -13,7 +13,7 @@
 
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { memo, useMemo, useState, useEffect } from "react";
 import {
   BarChart,
   Bar,
@@ -23,9 +23,13 @@ import {
   Cell,
   LabelList,
 } from "recharts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/lib/morphy-ux/card";
-import { ChevronDown, ChevronUp, PieChart as PieChartIcon } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import {
+  ChartSurfaceCard,
+  SurfaceInset,
+} from "@/components/app-ui/surfaces";
 import {
   Collapsible,
   CollapsibleContent,
@@ -69,6 +73,16 @@ interface SectorDatum {
   holdings: SectorHoldingItem[];
 }
 
+type SectorBarChartProps = {
+  chartConfig: ChartConfig;
+  chartHeight: number;
+  leftMargin: number;
+  rightMargin: number;
+  yAxisWidth: number;
+  showInlineValueLabels: boolean;
+  sectorData: { data: SectorDatum[]; total: number };
+};
+
 // Distinct palette so neighboring sectors are easy to scan.
 const CHART_COLORS = [
   "#2563eb",
@@ -80,8 +94,6 @@ const CHART_COLORS = [
   "#8b5cf6",
   "#ec4899",
 ];
-
-const HOLDINGS_PAGE_SIZE = 10;
 
 function formatCurrency(value: number): string {
   if (value >= 1000000) {
@@ -102,6 +114,106 @@ function compactSectorLabel(value: string): string {
   return `${value.slice(0, 15)}…`;
 }
 
+const SectorBarChart = memo(function SectorBarChart({
+  chartConfig,
+  chartHeight,
+  leftMargin,
+  rightMargin,
+  yAxisWidth,
+  showInlineValueLabels,
+  sectorData,
+}: SectorBarChartProps) {
+  return (
+    <SurfaceInset className="p-3 sm:p-4">
+      <ChartContainer
+        config={chartConfig}
+        className="w-full min-w-0"
+        style={{ height: `${chartHeight}px` }}
+      >
+        <BarChart
+          data={sectorData.data}
+          layout="vertical"
+          margin={{ top: 5, right: rightMargin, left: leftMargin, bottom: 5 }}
+        >
+          <XAxis
+            type="number"
+            tickFormatter={(value) => formatCurrency(value)}
+            axisLine={false}
+            tickLine={false}
+            tick={{ fontSize: 10, fill: "hsl(var(--foreground) / 0.72)" }}
+          />
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="hsl(var(--foreground) / 0.22)"
+            strokeOpacity={0.55}
+          />
+          <YAxis
+            type="category"
+            dataKey="name"
+            tickFormatter={(value) => compactSectorLabel(String(value))}
+            axisLine={false}
+            tickLine={false}
+            width={yAxisWidth}
+            tick={{ fontSize: 10, fill: "hsl(var(--foreground) / 0.72)" }}
+          />
+          <ChartTooltip
+            cursor={false}
+            content={
+              <ChartTooltipContent
+                hideLabel
+                formatter={(value, name, item) => {
+                  const payload = item.payload as {
+                    name: string;
+                    value: number;
+                    count: number;
+                  };
+                  return (
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Sector Allocation
+                      </span>
+                      <span className="text-sm font-semibold">{payload.name}</span>
+                      <span className="text-base font-bold text-foreground">
+                        {formatCurrency(payload.value)}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {payload.count} holding{payload.count !== 1 ? "s" : ""}
+                      </span>
+                    </div>
+                  );
+                }}
+              />
+            }
+          />
+          <Bar
+            dataKey="value"
+            radius={[0, 4, 4, 0]}
+            animationDuration={550}
+            maxBarSize={24}
+          >
+            {showInlineValueLabels ? (
+              <LabelList
+                dataKey="value"
+                position="right"
+                className="fill-foreground"
+                fontSize={10}
+                formatter={(value: number) => formatCurrency(Number(value))}
+              />
+            ) : null}
+            {sectorData.data.map((entry, index) => (
+              <Cell
+                key={`cell-${index}`}
+                fill={entry.color}
+                style={{ cursor: "pointer" }}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </ChartContainer>
+    </SurfaceInset>
+  );
+});
+
 export function SectorAllocationChart({
   holdings,
   className,
@@ -114,6 +226,7 @@ export function SectorAllocationChart({
   );
   const [sectorHoldingPages, setSectorHoldingPages] = useState<Record<string, number>>({});
   const [openSectors, setOpenSectors] = useState<Record<string, boolean>>({});
+  const holdingsPageSize = windowWidth < 640 ? 4 : 8;
 
   useEffect(() => {
     if (!responsive) return;
@@ -177,13 +290,13 @@ export function SectorAllocationChart({
     setSectorHoldingPages((prev) => {
       const next: Record<string, number> = {};
       for (const sector of sectorData.data) {
-        const totalPages = Math.max(1, Math.ceil(sector.holdings.length / HOLDINGS_PAGE_SIZE));
+        const totalPages = Math.max(1, Math.ceil(sector.holdings.length / holdingsPageSize));
         const prevPage = prev[sector.name] ?? 0;
         next[sector.name] = Math.min(Math.max(prevPage, 0), totalPages - 1);
       }
       return next;
     });
-  }, [sectorData.data]);
+  }, [holdingsPageSize, sectorData.data]);
 
   useEffect(() => {
     setOpenSectors(() => {
@@ -239,106 +352,30 @@ export function SectorAllocationChart({
   }
 
   return (
-    <Card variant="none" effect="glass" className={className}>
-      <CardHeader className="pb-2 pt-4 px-4">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <PieChartIcon className="w-5 h-5 text-primary" />
-          {title}
-        </CardTitle>
-        {subtitle ? (
-          <p className="text-xs text-muted-foreground pt-1">{subtitle}</p>
-        ) : null}
-      </CardHeader>
-      <CardContent className="px-3 pb-4 min-w-0 overflow-hidden sm:px-4">
-        <ChartContainer config={chartConfig} className="w-full min-w-0" style={{ height: `${chartHeight}px` }}>
-          <BarChart
-            data={sectorData.data}
-            layout="vertical"
-            margin={{ top: 5, right: rightMargin, left: leftMargin, bottom: 5 }}
-          >
-            <XAxis
-              type="number"
-              tickFormatter={(value) => formatCurrency(value)}
-              axisLine={false}
-              tickLine={false}
-              tick={{ fontSize: 10, fill: "hsl(var(--foreground) / 0.72)" }}
-            />
-            <CartesianGrid
-              strokeDasharray="3 3"
-              stroke="hsl(var(--foreground) / 0.22)"
-              strokeOpacity={0.55}
-            />
-            <YAxis
-              type="category"
-              dataKey="name"
-              tickFormatter={(value) => compactSectorLabel(String(value))}
-              axisLine={false}
-              tickLine={false}
-              width={yAxisWidth}
-              tick={{ fontSize: 10, fill: "hsl(var(--foreground) / 0.72)" }}
-            />
-            <ChartTooltip
-              cursor={false}
-              content={
-                <ChartTooltipContent
-                  hideLabel
-                  formatter={(value, name, item) => {
-                    const payload = item.payload as {
-                      name: string;
-                      value: number;
-                      count: number;
-                    };
-                    return (
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          Sector Allocation
-                        </span>
-                        <span className="text-sm font-semibold">{payload.name}</span>
-                        <span className="text-foreground text-base font-bold">{formatCurrency(payload.value)}</span>
-                        <span className="text-muted-foreground text-xs">
-                          {payload.count} holding{payload.count !== 1 ? "s" : ""}
-                        </span>
-                      </div>
-                    );
-                  }}
-                />
-              }
-            />
-            <Bar
-              dataKey="value"
-              radius={[0, 4, 4, 0]}
-              animationDuration={800}
-              maxBarSize={24}
-            >
-              {showInlineValueLabels ? (
-                <LabelList
-                  dataKey="value"
-                  position="right"
-                  className="fill-foreground"
-                  fontSize={10}
-                  formatter={(value: number) => formatCurrency(Number(value))}
-                />
-              ) : null}
-              {sectorData.data.map((entry, index) => (
-                <Cell
-                  key={`cell-${index}`}
-                  fill={entry.color}
-                  style={{ cursor: "pointer" }}
-                />
-              ))}
-            </Bar>
-          </BarChart>
-        </ChartContainer>
+    <ChartSurfaceCard
+      title={title}
+      description={subtitle}
+      className={cn("h-full min-w-0", className)}
+      contentClassName="space-y-3"
+    >
+      <SectorBarChart
+        chartConfig={chartConfig}
+        chartHeight={chartHeight}
+        leftMargin={leftMargin}
+        rightMargin={rightMargin}
+        yAxisWidth={yAxisWidth}
+        showInlineValueLabels={showInlineValueLabels}
+        sectorData={sectorData}
+      />
 
-        {/* Summary - simplified legend */}
-        <div className="mt-3 pt-3 border-t border-border/50">
+      <SurfaceInset className="px-3 py-3 sm:px-4">
           <div className="space-y-2">
             {sectorData.data.map((sector) => {
-              const totalPages = Math.max(1, Math.ceil(sector.holdings.length / HOLDINGS_PAGE_SIZE));
+              const totalPages = Math.max(1, Math.ceil(sector.holdings.length / holdingsPageSize));
               const currentPage = sectorHoldingPages[sector.name] ?? 0;
               const clampedPage = Math.min(Math.max(currentPage, 0), totalPages - 1);
-              const start = clampedPage * HOLDINGS_PAGE_SIZE;
-              const end = start + HOLDINGS_PAGE_SIZE;
+              const start = clampedPage * holdingsPageSize;
+              const end = start + holdingsPageSize;
               const visibleHoldings = sector.holdings.slice(start, end);
               const isOpen = openSectors[sector.name] ?? false;
 
@@ -349,7 +386,7 @@ export function SectorAllocationChart({
                   onOpenChange={(nextOpen) =>
                     setOpenSectors((prev) => ({ ...prev, [sector.name]: nextOpen }))
                   }
-                  className="rounded-lg border border-border/60 bg-background/70"
+                  className="rounded-lg border border-border/60 bg-background/80"
                 >
                   <CollapsibleTrigger asChild>
                     <button
@@ -374,7 +411,7 @@ export function SectorAllocationChart({
                       )}
                     </button>
                   </CollapsibleTrigger>
-                  <CollapsibleContent className="overflow-hidden border-t border-border/50 data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down">
+                  <CollapsibleContent className="border-t border-border/50">
                     <div className="space-y-2 p-2.5">
                       <div className="flex flex-wrap gap-1.5">
                         {visibleHoldings.map((holding) => (
@@ -434,9 +471,8 @@ export function SectorAllocationChart({
               );
             })}
           </div>
-        </div>
-      </CardContent>
-    </Card>
+      </SurfaceInset>
+    </ChartSurfaceCard>
   );
 }
 

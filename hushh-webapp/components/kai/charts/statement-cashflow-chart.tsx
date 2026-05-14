@@ -9,7 +9,10 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import { Card, CardContent, CardHeader, CardTitle } from "@/lib/morphy-ux/card";
+import {
+  ChartSurfaceCard,
+  SurfaceInset,
+} from "@/components/app-ui/surfaces";
 import { cn } from "@/lib/utils";
 
 export interface StatementCashflowDatum {
@@ -66,15 +69,12 @@ export function StatementCashflowChart({
   };
 
   return (
-    <Card
-      variant="none"
-      effect="glass"
-      className={cn("min-w-0 overflow-hidden rounded-[22px]", className)}
+    <ChartSurfaceCard
+      title="Statement Cashflow Signals"
+      className={cn("min-w-0", className)}
+      contentClassName="space-y-0"
     >
-      <CardHeader className="pb-2 px-5 pt-5">
-        <CardTitle className="text-sm">Statement Cashflow Signals</CardTitle>
-      </CardHeader>
-      <CardContent className="px-5 pb-5 pt-0">
+      <SurfaceInset className="overflow-hidden">
         <ChartContainer config={chartConfig} className="h-[214px] w-full">
           <BarChart
             accessibilityLayer
@@ -125,7 +125,7 @@ export function StatementCashflowChart({
             </Bar>
           </BarChart>
         </ChartContainer>
-      </CardContent>
-    </Card>
+      </SurfaceInset>
+    </ChartSurfaceCard>
   );
 }

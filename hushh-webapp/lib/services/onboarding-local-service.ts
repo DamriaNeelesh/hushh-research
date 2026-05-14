@@ -1,36 +1,26 @@
 "use client";
 
 import { Preferences } from "@capacitor/preferences";
+import {
+  getLocalItem,
+  removeLocalItem,
+  setLocalItem,
+} from "@/lib/utils/session-storage";
 
 const ONBOARDING_MARKETING_SEEN_KEY = "onboarding_marketing_seen_v1";
 const ONBOARDING_FORCE_INTRO_ONCE_KEY = "onboarding_force_intro_once_v1";
 
 export class OnboardingLocalService {
   private static setLocalValue(key: string, value: string): void {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(key, value);
-    } catch {
-      // no-op
-    }
+    setLocalItem(key, value);
   }
 
   private static getLocalValue(key: string): string | null {
-    if (typeof window === "undefined") return null;
-    try {
-      return window.localStorage.getItem(key);
-    } catch {
-      return null;
-    }
+    return getLocalItem(key);
   }
 
   private static removeLocalValue(key: string): void {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.removeItem(key);
-    } catch {
-      // no-op
-    }
+    removeLocalItem(key);
   }
 
   static async hasSeenMarketing(): Promise<boolean> {

@@ -17,10 +17,10 @@ def resolve_scope_to_enum(scope: str) -> ConsentScope:
     Handles:
     - Dynamic attr.{domain}.* scopes
     - Dynamic attr.{domain}.{attribute} scopes
-    - World model scopes (world_model.read, world_model.write)
+    - PKM scopes (pkm.read, pkm.write) and internal aliases
     - Agent permissions (agent.*)
     - vault.owner master scope
-    - custom.* temporary scopes
+    - Other static ConsentScope values
 
     Args:
         scope: The scope string to resolve
@@ -35,35 +35,44 @@ def resolve_scope_to_enum(scope: str) -> ConsentScope:
         return ConsentScope.VAULT_OWNER
 
     # Dynamic attr.* scopes - each domain gets isolated handling
-    # CRITICAL: Do NOT map all attr.* to WORLD_MODEL_READ - this breaks isolation!
-    # Instead, we use WORLD_MODEL_READ as a base but validate scope strings directly
+    # CRITICAL: Do NOT map all attr.* to PKM_READ - this breaks isolation!
+    # Instead, we use PKM_READ as a base but validate scope strings directly
     if generator.is_dynamic_scope(scope):
         domain, attribute_key, is_wildcard = generator.parse_scope(scope)
-        # Return WORLD_MODEL_READ but scope validation will check exact domain match
+        # Return PKM_READ but scope validation will check exact domain match
         # This allows dynamic scopes while maintaining isolation
-        return ConsentScope.WORLD_MODEL_READ
+        return ConsentScope.PKM_READ
 
-    # World model scopes
-    if scope == "world_model.read":
-        return ConsentScope.WORLD_MODEL_READ
-    if scope == "world_model.write":
-        return ConsentScope.WORLD_MODEL_WRITE
+    # Static PKM scopes
+    if scope == "pkm.read":
+        return ConsentScope.PKM_READ
+    if scope == "pkm.write":
+        return ConsentScope.PKM_WRITE
 
     # Agent permissions
+    _AGENT_SCOPE_MAP = {
+        "agent.one.orchestrate": ConsentScope.AGENT_ONE_ORCHESTRATE,
+        "agent.kai.analyze": ConsentScope.AGENT_KAI_ANALYZE,
+        "agent.kai.debate": ConsentScope.AGENT_KAI_DEBATE,
+        "agent.kai.infer": ConsentScope.AGENT_KAI_INFER,
+        "agent.kai.chat": ConsentScope.AGENT_KAI_CHAT,
+        "agent.kai.execute": ConsentScope.AGENT_KAI_EXECUTE,
+        "agent.nav.review": ConsentScope.AGENT_NAV_REVIEW,
+        "agent.nav.revoke": ConsentScope.AGENT_NAV_REVOKE,
+        "agent.kyc.process": ConsentScope.AGENT_KYC_PROCESS,
+        "agent.kyc.draft": ConsentScope.AGENT_KYC_DRAFT,
+        "agent.kyc.writeback": ConsentScope.AGENT_KYC_WRITEBACK,
+    }
     if scope.startswith("agent."):
-        return ConsentScope.AGENT_EXECUTE
+        resolved = _AGENT_SCOPE_MAP.get(scope)
+        if resolved is None:
+            raise ValueError(f"Unknown agent scope: {scope!r}")
+        return resolved
 
-    # Custom/temporary scopes
-    if scope.startswith("custom."):
-        return ConsentScope.CUSTOM_TEMPORARY
-
-    # API format (e.g. attr_food, world_model_read) - resolve via normalize then re-check
-    dot_scope = _api_format_to_dot(scope)
-    if dot_scope != scope:
-        return resolve_scope_to_enum(dot_scope)
-
-    # Default to custom temporary
-    return ConsentScope.CUSTOM_TEMPORARY
+    try:
+        return ConsentScope(scope)
+    except ValueError as exc:
+        raise ValueError(f"Unknown scope: {scope!r}") from exc
 
 
 def scope_matches(granted_scope: str, requested_scope: str) -> bool:
@@ -73,7 +82,7 @@ def scope_matches(granted_scope: str, requested_scope: str) -> bool:
     This is the KEY function for scope isolation. It ensures:
     - attr.financial.* ONLY matches attr.financial.* or attr.financial.{specific}
     - attr.financial.* does NOT match attr.food.* or other domains
-    - world_model.read matches ALL attr.* scopes (full access)
+    - pkm.read matches ALL attr.* scopes (full access)
     - vault.owner matches EVERYTHING (master key)
 
     Args:
@@ -91,8 +100,8 @@ def scope_matches(granted_scope: str, requested_scope: str) -> bool:
     if granted_scope == "vault.owner":
         return True
 
-    # world_model.read grants access to ALL attr.* domains
-    if granted_scope == "world_model.read":
+    # PKM read grants access to ALL attr.* domains
+    if granted_scope == "pkm.read":
         generator = get_scope_generator()
         if generator.is_dynamic_scope(requested_scope):
             return True
@@ -112,7 +121,7 @@ def get_scope_description(scope: str) -> str:
     """
     Get human-readable description for any scope.
 
-    Uses DynamicScopeGenerator for attr.* scopes; hardcoded for world_model and agent scopes.
+    Uses DynamicScopeGenerator for attr.* scopes; hardcoded for PKM and agent scopes.
 
     Args:
         scope: The scope string
@@ -120,33 +129,115 @@ def get_scope_description(scope: str) -> str:
     Returns:
         Human-readable description
     """
+    info = get_scope_display_metadata(scope)
+    return info["description"]
+
+
+def get_scope_display_metadata(scope: str) -> dict:
+    """
+    Get full display metadata for any scope: label, description, icon_name, color_hex.
+
+    This is the primary function for consent UIs to resolve scope presentation.
+
+    Args:
+        scope: The scope string
+
+    Returns:
+        Dict with keys: label, description, icon_name, color_hex
+    """
     generator = get_scope_generator()
 
-    # Dynamic attr.* scopes - generate description from scope structure
+    # Dynamic attr.* scopes — resolve via DynamicScopeGenerator + domain contracts
     if generator.is_dynamic_scope(scope):
         display_info = generator.get_scope_display_info(scope)
-        domain = display_info["domain"]
-        attribute = display_info["attribute"]
-        is_wildcard = display_info["is_wildcard"]
+        return {
+            "label": display_info["display_name"],
+            "description": display_info["description"]
+            or f"Access your {display_info['domain']} data",
+            "icon_name": display_info["icon_name"],
+            "color_hex": display_info["color_hex"],
+        }
 
-        if is_wildcard:
-            return f"Access all your {domain} data"
-        elif attribute:
-            attr_display = attribute.replace("_", " ").title()
-            return f"Access your {domain} - {attr_display}"
-        else:
-            return f"Access your {domain} domain"
-
-    # Hardcoded descriptions for non-dynamic scopes (world-model only; no legacy vault.*)
-    descriptions = {
-        "vault.owner": "Full access to your vault (master key)",
-        "world_model.read": "Read your world model data",
-        "world_model.write": "Write to your world model",
-        "agent.kai.analyze": "Allow Kai agent to analyze your data",
-        "agent.kai.execute": "Allow Kai agent to execute actions",
+    # Static scope metadata
+    _STATIC_SCOPE_META: dict[str, dict] = {
+        "vault.owner": {
+            "label": "Full Vault Access",
+            "description": "Full access to your vault (master key)",
+            "icon_name": "shield",
+            "color_hex": "#D4AF37",
+        },
+        "pkm.read": {
+            "label": "Read All Personal Data",
+            "description": "Read your personal knowledge model data",
+            "icon_name": "book-open",
+            "color_hex": "#3B82F6",
+        },
+        "pkm.write": {
+            "label": "Write Personal Data",
+            "description": "Write to your personal knowledge model",
+            "icon_name": "pencil",
+            "color_hex": "#3B82F6",
+        },
+        "agent.one.orchestrate": {
+            "label": "One Orchestration",
+            "description": "Allow One to route a bounded task to the right specialist",
+            "icon_name": "route",
+            "color_hex": "#3B82F6",
+        },
+        "agent.kai.analyze": {
+            "label": "Kai Analysis",
+            "description": "Allow Kai agent to analyze your data",
+            "icon_name": "brain",
+            "color_hex": "#D4AF37",
+        },
+        "agent.kai.execute": {
+            "label": "Kai Actions",
+            "description": "Allow Kai agent to execute actions",
+            "icon_name": "zap",
+            "color_hex": "#D4AF37",
+        },
+        "agent.nav.review": {
+            "label": "Nav Scope Review",
+            "description": "Allow Nav to review consent, privacy, vault, and scope decisions",
+            "icon_name": "shield-check",
+            "color_hex": "#10B981",
+        },
+        "agent.nav.revoke": {
+            "label": "Nav Revocation",
+            "description": "Allow Nav to help revoke or narrow an existing permission",
+            "icon_name": "shield-x",
+            "color_hex": "#10B981",
+        },
+        "agent.kyc.process": {
+            "label": "KYC Processing",
+            "description": "Allow KYC to process identity workflow requirements inside the granted scope",
+            "icon_name": "id-card",
+            "color_hex": "#6366F1",
+        },
+        "agent.kyc.draft": {
+            "label": "KYC Drafts",
+            "description": "Allow KYC to draft approval-gated workflow replies",
+            "icon_name": "file-pen",
+            "color_hex": "#6366F1",
+        },
+        "agent.kyc.writeback": {
+            "label": "KYC PKM Writeback",
+            "description": "Allow KYC to save structured workflow facts and artifacts to PKM",
+            "icon_name": "database",
+            "color_hex": "#6366F1",
+        },
     }
 
-    return descriptions.get(scope, f"Access: {scope}")
+    meta = _STATIC_SCOPE_META.get(scope)
+    if meta:
+        return meta
+
+    return {
+        "label": scope.replace(".", " ").replace("_", " ").title(),
+        "description": f"Access: {scope}",
+        "icon_name": None,
+        "color_hex": None,
+    }
 
 
 def is_write_scope(scope: str) -> bool:
@@ -162,54 +253,21 @@ def is_write_scope(scope: str) -> bool:
     if scope == "vault.owner":
         return True
 
-    if scope == "world_model.write":
+    if scope == "pkm.write":
+        return True
+
+    if scope == "agent.kyc.writeback":
         return True
 
     # For attr.* scopes, write is determined by context, not scope
     return False
 
 
-# API format (underscore) -> dot notation for backend/MCP consistency
-_API_FORMAT_TO_DOT = {
-    "world_model_read": "world_model.read",
-    "world_model_write": "world_model.write",
-    "vault_owner": "vault.owner",
-}
-
-# Pattern for dynamic API-format attr scopes:
-# - attr_{domain}
-# - attr_{domain}__{subintent}__{nested}
-# Double underscore is used as path separator.
-_DYNAMIC_API_ATTR_RE = __import__("re").compile(r"^attr_([a-z][a-z0-9_]*(?:__[a-z][a-z0-9_]*)*)$")
-
-
-def _api_format_to_dot(scope: str) -> str:
-    """Convert API format (e.g. attr_food) to dot notation (attr.food.*).
-
-    Supports both the static lookup table and dynamic attr_{domain} patterns.
-    """
-    static = _API_FORMAT_TO_DOT.get(scope)
-    if static:
-        return static
-    m = _DYNAMIC_API_ATTR_RE.match(scope)
-    if m:
-        parts = [part for part in m.group(1).split("__") if part]
-        if not parts:
-            return scope
-        domain = parts[0]
-        if len(parts) == 1:
-            return f"attr.{domain}.*"
-        subpath = ".".join(parts[1:])
-        return f"attr.{domain}.{subpath}.*"
-    return scope
-
-
 def normalize_scope(scope: str) -> str:
     """
     Normalize scope string to canonical dot notation.
 
-    Converts API format (e.g. attr_food) to dot notation (attr.food.*).
-    Only world-model scopes are supported; legacy vault.* formats are not converted.
+    Accepts canonical dot notation only.
 
     Args:
         scope: The scope string to normalize
@@ -220,8 +278,7 @@ def normalize_scope(scope: str) -> str:
     generator = get_scope_generator()
 
     # Already in canonical dot format
-    if generator.is_dynamic_scope(scope) or scope in ("world_model.read", "world_model.write"):
+    if generator.is_dynamic_scope(scope) or scope in ("pkm.read", "pkm.write"):
         return scope
 
-    # API format -> dot notation
-    return _api_format_to_dot(scope)
+    return scope

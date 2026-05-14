@@ -1,5 +1,10 @@
 # Kai Analysis Layout + Review Mode Notes
 
+
+## Visual Context
+
+Canonical visual owner: [Hussh Webapp Docs](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
 ## Global Top Spacing
 - Root shell owns top spacing at layout level for all routes via `resolveTopShellMetrics(...)`.
 - Effective top inset token is `--app-safe-area-top-effective`:
@@ -45,8 +50,8 @@
   - `components/kai/views/columns.tsx`
 - Menu trigger stops row click propagation for reliable touch behavior.
 
-## Kai Preferences (World Model)
-- Preferences are persisted to encrypted world model path `financial.profile` via:
+## Kai Preferences (PKM)
+- Preferences are persisted to encrypted PKM path `financial.profile` via:
   - `lib/services/kai-profile-service.ts` (`KaiProfileService.savePreferences`, `KaiProfileService.setOnboardingCompleted`)
 - Onboarding flow (post-auth + vault unlock):
   - `app/kai/onboarding/page.tsx` (wizard -> persona -> dashboard)

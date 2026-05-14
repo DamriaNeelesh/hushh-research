@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 /**
  * Next.js Configuration
@@ -15,6 +16,9 @@ import type { NextConfig } from "next";
 const isCapacitorBuild = process.env.CAPACITOR_BUILD === "true";
 
 const config: NextConfig = {
+  // Keep file tracing and workspace discovery scoped to this monorepo.
+  outputFileTracingRoot: path.join(process.cwd(), ".."),
+
   // Dynamic output mode
   // 'standalone' is REQUIRED for Docker/Cloud Run builds to reduce image size
   output: isCapacitorBuild ? "export" : "standalone",

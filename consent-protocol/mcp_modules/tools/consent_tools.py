@@ -2,7 +2,7 @@
 """
 Consent request and status check handlers.
 
-Only world-model scopes are supported: world_model.read, world_model.write,
+Canonical PKM scopes are supported: pkm.read, pkm.write,
 attr.{domain}.*, and optional nested attr.{domain}.{subintent}.* scopes.
 
 Regulated cutover note:
@@ -17,38 +17,58 @@ from typing import Optional
 import httpx
 from mcp.types import TextContent
 
+from hushh_mcp.services.user_identifier_service import resolve_lookup_identifier
 from mcp_modules.config import (
     DEVELOPER_API_ENABLED,
     FASTAPI_URL,
-    FRONTEND_URL,
-    MCP_AGENT_ID,
-    MCP_DEVELOPER_TOKEN,
     PRODUCTION_MODE,
     resolve_scope_api,
 )
+from mcp_modules.developer_context import get_developer_request_headers, get_developer_request_query
 
 logger = logging.getLogger("hushh-mcp-server")
 
 
-async def resolve_email_to_uid(user_id: str) -> tuple[Optional[str], str | None, str | None]:
+async def resolve_user_identifier_to_uid(
+    user_id: str,
+    *,
+    country_iso2: str | None = None,
+    country: str | None = None,
+) -> tuple[Optional[str], str | None, str | None]:
     """
-    If user_id is an email, resolve to Firebase UID.
+    If user_id is an email or phone number, resolve to Firebase UID.
     Returns (user_id, email, display_name).
     """
-    if not user_id or "@" not in user_id:
+    try:
+        lookup_kind, lookup_identifier = resolve_lookup_identifier(
+            identifier=user_id,
+            email=None,
+            phone_number=None,
+            country_iso2=country_iso2,
+            country=country,
+        )
+    except ValueError:
         return user_id, None, None
 
-    if not MCP_DEVELOPER_TOKEN:
-        logger.warning("Email-to-UID lookup skipped: MCP_DEVELOPER_TOKEN not configured")
+    if lookup_kind == "uid":
+        return user_id, None, None
+
+    token_headers = get_developer_request_headers()
+    if not token_headers:
+        logger.warning("User-identifier lookup skipped: developer token not configured")
         return user_id, None, None
 
     try:
         async with httpx.AsyncClient() as client:
             lookup_response = await client.get(
                 f"{FASTAPI_URL}/api/user/lookup",
-                params={"email": user_id},
-                headers={"X-MCP-Developer-Token": MCP_DEVELOPER_TOKEN},
-                timeout=5.0,
+                params={
+                    "identifier": lookup_identifier,
+                    **({"country_iso2": country_iso2} if country_iso2 else {}),
+                    **({"country": country} if country else {}),
+                },
+                headers=token_headers,
+                timeout=10.0,
             )
 
             if lookup_response.status_code == 200:
@@ -57,15 +77,28 @@ async def resolve_email_to_uid(user_id: str) -> tuple[Optional[str], str | None,
                     resolved_uid = lookup_data["user_id"]
                     email = lookup_data.get("email")
                     display_name = lookup_data.get("display_name")
-                    logger.info("Resolved email to uid for consent request")
+                    logger.info("Resolved user identifier to uid for consent request")
                     return resolved_uid, email, display_name
-                return None, user_id, None
+                return None, lookup_identifier, None
 
-            logger.warning("Email lookup failed with status=%s", lookup_response.status_code)
+            logger.warning("User lookup failed with status=%s", lookup_response.status_code)
     except Exception as e:
-        logger.warning("Email lookup failed: %s", e)
+        logger.warning("User lookup failed: %s", e)
 
     return user_id, None, None
+
+
+async def resolve_email_to_uid(
+    user_id: str,
+    *,
+    country_iso2: str | None = None,
+    country: str | None = None,
+) -> tuple[Optional[str], str | None, str | None]:
+    return await resolve_user_identifier_to_uid(
+        user_id,
+        country_iso2=country_iso2,
+        country=country,
+    )
 
 
 async def handle_request_consent(args: dict) -> list[TextContent]:
@@ -74,25 +107,81 @@ async def handle_request_consent(args: dict) -> list[TextContent]:
 
     In production, this endpoint returns:
     - granted: if already granted
-    - pending: user must approve in Hushh app/dashboard
+    - pending: user must approve in Hussh app/dashboard
     """
     user_id = args.get("user_id")
+    country_iso2 = args.get("country_iso2")
+    country = args.get("country")
     scope_str = args.get("scope")
+    scope_bundle_key = args.get("scope_bundle")
+
+    # If a scope bundle is provided, expand it and use the first scope
+    # (bundled consent creates one request per scope in the bundle)
+    if scope_bundle_key and not scope_str:
+        from hushh_mcp.consent.scope_bundles import expand_bundle
+
+        try:
+            expanded = expand_bundle(scope_bundle_key)
+            scope_str = expanded[0] if len(expanded) == 1 else expanded[0]
+            # For multi-scope bundles, we request the domain wildcard
+            if len(expanded) > 1:
+                # Find common domain prefix or use first scope
+                scope_str = expanded[0]
+        except ValueError:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "status": "error",
+                            "error": f"Unknown scope bundle: {scope_bundle_key}",
+                            "available_bundles": [
+                                "financial_overview",
+                                "full_portfolio_review",
+                                "risk_assessment",
+                                "health_wellness",
+                                "lifestyle_preferences",
+                            ],
+                        }
+                    ),
+                )
+            ]
+
+    reason = str(args.get("reason") or "").strip() or None
+    expiry_hours = args.get("expiry_hours")
+    approval_timeout_minutes = args.get("approval_timeout_minutes")
+    connector_public_key = str(args.get("connector_public_key") or "").strip()
+    connector_key_id = str(args.get("connector_key_id") or "").strip()
+    connector_wrapping_alg = str(args.get("connector_wrapping_alg") or "").strip()
+
+    try:
+        resolved_expiry_hours = int(expiry_hours) if expiry_hours is not None else 24
+    except (TypeError, ValueError):
+        resolved_expiry_hours = 24
+    try:
+        resolved_approval_timeout_minutes = (
+            int(approval_timeout_minutes) if approval_timeout_minutes is not None else 24 * 60
+        )
+    except (TypeError, ValueError):
+        resolved_approval_timeout_minutes = 24 * 60
 
     original_identifier = user_id
-    user_id, user_email, user_display_name = await resolve_email_to_uid(user_id)
+    user_id, user_email, user_display_name = await resolve_user_identifier_to_uid(
+        user_id,
+        country_iso2=str(country_iso2 or "").strip() or None,
+        country=str(country or "").strip() or None,
+    )
 
     if user_id is None:
-        frontend_url = FRONTEND_URL
         return [
             TextContent(
                 type="text",
                 text=json.dumps(
                     {
                         "status": "user_not_found",
-                        "email": original_identifier,
-                        "message": f"No Hushh account found for {original_identifier}",
-                        "signup_url": f"{frontend_url}/login",
+                        "identifier": original_identifier,
+                        "message": f"No Hussh account found for {original_identifier}",
+                        "next_step": "Ask the user to sign in to the Hussh app before requesting consent.",
                     }
                 ),
             )
@@ -108,8 +197,8 @@ async def handle_request_consent(args: dict) -> list[TextContent]:
                         "status": "error",
                         "error": f"Invalid scope: {scope_str}",
                         "valid_scopes": [
-                            "world_model.read",
-                            "world_model.write",
+                            "pkm.read",
+                            "pkm.write",
                             "attr.{domain}.*",
                             "attr.{domain}.{subintent}.*",
                         ],
@@ -133,15 +222,16 @@ async def handle_request_consent(args: dict) -> list[TextContent]:
             )
         ]
 
-    if not MCP_DEVELOPER_TOKEN:
-        logger.error("request_consent aborted: MCP_DEVELOPER_TOKEN missing")
+    token_query = get_developer_request_query()
+    if not token_query:
+        logger.error("request_consent aborted: developer token missing")
         return [
             TextContent(
                 type="text",
                 text=json.dumps(
                     {
                         "status": "error",
-                        "error": "MCP developer token is not configured",
+                        "error": "Developer token is not configured",
                     }
                 ),
             )
@@ -163,17 +253,40 @@ async def handle_request_consent(args: dict) -> list[TextContent]:
 
     display_id = user_display_name or user_email or user_id
     logger.info("Requesting consent for %s / %s", display_id, scope_str)
+    if not all([connector_public_key, connector_key_id, connector_wrapping_alg]):
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "status": "error",
+                        "error": (
+                            "Strict zero-knowledge mode requires connector_public_key, "
+                            "connector_key_id, and connector_wrapping_alg."
+                        ),
+                        "hint": (
+                            "Generate an X25519 keypair in the external connector, keep the private key there, "
+                            "and pass the public bundle into request_consent."
+                        ),
+                    }
+                ),
+            )
+        ]
 
     try:
         async with httpx.AsyncClient() as client:
             create_response = await client.post(
                 f"{FASTAPI_URL}/api/v1/request-consent",
+                params=token_query,
                 json={
-                    "developer_token": MCP_DEVELOPER_TOKEN,
-                    "agent_id": MCP_AGENT_ID,
                     "user_id": user_id,
                     "scope": scope_dot,
-                    "expiry_hours": 24,
+                    "reason": reason,
+                    "expiry_hours": resolved_expiry_hours,
+                    "approval_timeout_minutes": resolved_approval_timeout_minutes,
+                    "connector_public_key": connector_public_key,
+                    "connector_key_id": connector_key_id,
+                    "connector_wrapping_alg": connector_wrapping_alg,
                 },
                 timeout=10.0,
             )
@@ -233,7 +346,22 @@ async def handle_request_consent(args: dict) -> list[TextContent]:
                                 "consent_token": data.get("consent_token"),
                                 "user_id": user_id,
                                 "scope": data.get("scope", scope_dot),
-                                "message": "Consent already granted.",
+                                "requested_scope": data.get(
+                                    "requested_scope", data.get("scope", scope_dot)
+                                ),
+                                "granted_scope": data.get(
+                                    "granted_scope", data.get("scope", scope_dot)
+                                ),
+                                "coverage_kind": data.get("coverage_kind", "exact"),
+                                "covered_by_existing_grant": data.get(
+                                    "covered_by_existing_grant", True
+                                ),
+                                "expiry_hours": data.get("expiry_hours"),
+                                "request_url": data.get("request_url"),
+                                "requester_label": data.get("requester_label"),
+                                "requester_image_url": data.get("requester_image_url"),
+                                "reason": data.get("reason"),
+                                "message": data.get("message", "Consent already granted."),
                             }
                         ),
                     )
@@ -274,9 +402,31 @@ async def handle_request_consent(args: dict) -> list[TextContent]:
                             "status": "pending",
                             "user_id": user_id,
                             "scope": data.get("scope", scope_dot),
+                            "requested_scope": data.get(
+                                "requested_scope", data.get("scope", scope_dot)
+                            ),
+                            "granted_scope": data.get("granted_scope"),
+                            "coverage_kind": data.get("coverage_kind"),
+                            "covered_by_existing_grant": data.get(
+                                "covered_by_existing_grant", False
+                            ),
                             "request_id": request_id,
-                            "message": "Consent request submitted. User approval is pending in Hushh app.",
-                            "dashboard_url": f"{FRONTEND_URL}/consents?tab=pending",
+                            "message": data.get(
+                                "message",
+                                "Consent request submitted. User approval is pending in Hussh app.",
+                            ),
+                            "approval_surface": data.get("approval_surface", "/consents"),
+                            "request_url": data.get("request_url"),
+                            "approval_timeout_at": data.get("approval_timeout_at")
+                            or data.get("poll_timeout_at"),
+                            "approval_timeout_minutes": data.get("approval_timeout_minutes"),
+                            "expiry_hours": data.get("expiry_hours"),
+                            "requester_label": data.get("requester_label"),
+                            "requester_image_url": data.get("requester_image_url"),
+                            "reason": data.get("reason"),
+                            "is_scope_upgrade": data.get("is_scope_upgrade"),
+                            "existing_granted_scopes": data.get("existing_granted_scopes"),
+                            "additional_access_summary": data.get("additional_access_summary"),
                             "next_step": "Call check_consent_status later, or wait for user confirmation.",
                         }
                     ),
@@ -317,7 +467,10 @@ async def handle_check_consent_status(args: dict) -> list[TextContent]:
     Check consent status - returns active token if available, or pending status.
     """
     user_id = args.get("user_id")
+    country_iso2 = args.get("country_iso2")
+    country = args.get("country")
     scope_str = args.get("scope")
+    request_id = args.get("request_id")
 
     if not DEVELOPER_API_ENABLED:
         return [
@@ -334,7 +487,11 @@ async def handle_check_consent_status(args: dict) -> list[TextContent]:
         ]
 
     original_identifier = user_id
-    user_id, _user_email, _user_display_name = await resolve_email_to_uid(user_id)
+    user_id, _user_email, _user_display_name = await resolve_user_identifier_to_uid(
+        user_id,
+        country_iso2=str(country_iso2 or "").strip() or None,
+        country=str(country or "").strip() or None,
+    )
 
     if user_id is None:
         return [
@@ -343,8 +500,8 @@ async def handle_check_consent_status(args: dict) -> list[TextContent]:
                 text=json.dumps(
                     {
                         "status": "user_not_found",
-                        "email": original_identifier,
-                        "message": f"No Hushh account found for {original_identifier}",
+                        "identifier": original_identifier,
+                        "message": f"No Hussh account found for {original_identifier}",
                     }
                 ),
             )
@@ -353,48 +510,36 @@ async def handle_check_consent_status(args: dict) -> list[TextContent]:
     logger.info("Checking consent status user=%s scope=%s", user_id, scope_str)
 
     try:
-        # Note: These endpoints require VAULT_OWNER auth. If unavailable, we return
-        # a pending/not_found response instead of polling consent events.
+        token_query = get_developer_request_query()
+        if not token_query:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "status": "error",
+                            "error": "Developer token is not configured",
+                            "hint": "Set HUSHH_DEVELOPER_TOKEN for stdio or append ?token=<developer-token> to the remote MCP URL.",
+                        }
+                    ),
+                )
+            ]
+
         async with httpx.AsyncClient() as client:
-            active_response = await client.get(
-                f"{FASTAPI_URL}/api/consent/active",
-                params={"userId": user_id},
+            status_response = await client.get(
+                f"{FASTAPI_URL}/api/v1/consent-status",
+                params={
+                    "user_id": user_id,
+                    **({"scope": scope_str} if scope_str else {}),
+                    **({"request_id": request_id} if request_id else {}),
+                    **token_query,
+                },
                 timeout=10.0,
             )
+            status_response.raise_for_status()
+            data = status_response.json()
 
-            if active_response.status_code == 200:
-                active_list = active_response.json().get("active", [])
-                active_token = next((t for t in active_list if t.get("scope") == scope_str), None)
-                if active_token:
-                    return [
-                        TextContent(
-                            type="text",
-                            text=json.dumps(
-                                {
-                                    "status": "granted",
-                                    "consent_token": active_token.get("token_id"),
-                                    "user_id": user_id,
-                                    "scope": scope_str,
-                                    "expires_at": active_token.get("expiresAt"),
-                                    "message": "Consent is active.",
-                                }
-                            ),
-                        )
-                    ]
-
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps(
-                    {
-                        "status": "pending_or_unavailable",
-                        "user_id": user_id,
-                        "scope": scope_str,
-                        "message": "Consent not yet active or status endpoint unavailable without user session.",
-                    }
-                ),
-            )
-        ]
+        return [TextContent(type="text", text=json.dumps(data))]
 
     except httpx.ConnectError:
         return [

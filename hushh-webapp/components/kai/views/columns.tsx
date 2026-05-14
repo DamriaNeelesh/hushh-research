@@ -12,7 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MoreHorizontal, ArrowRight, Trash2, Eye } from "lucide-react";
+import { MoreHorizontal, ArrowRight, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, isValid, parseISO } from "date-fns";
 import { Icon } from "@/lib/morphy-ux/ui";
@@ -21,10 +21,11 @@ import { toInvestorDecisionLabel } from "@/lib/copy/investor-language";
 // Extended type to include version number computed at runtime
 export type HistoryEntryWithVersion = AnalysisHistoryEntry & {
   version: number;
+  companyName?: string;
+  searchText?: string;
 };
 
 interface ColumnsProps {
-  onView: (entry: AnalysisHistoryEntry) => void;
   onDelete: (entry: AnalysisHistoryEntry) => void;
   onDeleteTicker: (ticker: string) => void;
   onViewVersions?: (ticker: string) => void;
@@ -66,7 +67,6 @@ function formatHistoryTimestamp(value: unknown): string {
 }
 
 export const getColumns = ({
-  onView,
   onDelete,
   onDeleteTicker,
   onViewVersions,
@@ -94,10 +94,6 @@ export const getColumns = ({
           </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
             <DropdownMenuLabel>Actions</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => onView(entry)}>
-              <Icon icon={Eye} size="sm" className="mr-2" />
-              View Analysis
-            </DropdownMenuItem>
             {onViewVersions && (
               <DropdownMenuItem onSelect={() => onViewVersions(entry.ticker)}>
                 <Icon icon={ArrowRight} size="sm" className="mr-2" />
@@ -132,7 +128,12 @@ export const getColumns = ({
       return (
         <div className="flex flex-col">
           <span className="font-bold text-base">{entry.ticker}</span>
-          <span className="text-xs text-muted-foreground">v{entry.version}</span>
+          <span className="text-xs text-muted-foreground">
+            {entry.companyName ? entry.companyName : `Version ${entry.version}`}
+          </span>
+          {entry.companyName ? (
+            <span className="text-[11px] text-muted-foreground/80">v{entry.version}</span>
+          ) : null}
         </div>
       );
     },
@@ -164,7 +165,7 @@ export const getColumns = ({
       } else if (decisionPresentation.label === "HOLD") {
         colorClass = "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30";
       } else if (decisionPresentation.label === "WATCH") {
-        colorClass = "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30";
+        colorClass = "bg-[var(--app-card-surface-compact)] text-muted-foreground border-[color:var(--app-card-border-standard)]";
       }
 
       return (
@@ -182,9 +183,9 @@ export const getColumns = ({
       const percent = val >= 1 ? val : Math.round(val * 100);
       return (
         <div className="flex items-center gap-2">
-           <div className="h-1.5 w-16 bg-muted rounded-full overflow-hidden">
+           <div className="h-1.5 w-16 overflow-hidden rounded-full bg-foreground/[0.08]">
              <div 
-               className="h-full bg-primary" 
+               className="h-full rounded-full bg-foreground/70" 
                style={{ width: `${percent}%` }}
              />
            </div>

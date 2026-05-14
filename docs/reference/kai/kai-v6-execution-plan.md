@@ -1,5 +1,15 @@
 # Kai V6 Execution Plan (Accuracy-First, Real-Data-Only)
 
+
+## Visual Context
+
+Canonical visual owner: [Kai Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
+Plan status note:
+
+- This file is an execution-plan artifact, not the source of truth for current Kai runtime behavior.
+- For the live Kai voice/runtime implementation, use [kai-voice-runtime-architecture.md](./kai-voice-runtime-architecture.md).
+
 ## Objective
 Deliver a production-grade Kai experience where dashboard, analysis, and optimization are strictly based on validated realtime + filing-backed evidence, with no speculative fallback in decision-critical flows.
 

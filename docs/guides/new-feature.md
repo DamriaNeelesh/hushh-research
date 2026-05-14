@@ -1,5 +1,10 @@
 # New Feature Development Checklist
 
+
+## Visual Context
+
+Canonical visual owner: [Guides Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
 Use this checklist for EVERY new feature that involves data operations.
 
 ## Before You Start
@@ -94,7 +99,7 @@ If you add a new `.swift` file (e.g. a new plugin or helper) and need to edit `i
 
 ## Testing
 
-- [ ] Test on web (`make local` or `make local-web`)
+- [ ] Test on web (`./bin/hushh web --mode local`)
 - [ ] Test on iOS simulator (if available)
 - [ ] Test on Android emulator
 - [ ] Verify data persists after refresh
@@ -102,7 +107,8 @@ If you add a new `.swift` file (e.g. a new plugin or helper) and need to edit `i
 
 ## Documentation
 
-- [ ] Add route to `hushh-webapp/route-contracts.json`
+- [ ] Add route to `hushh-webapp/lib/navigation/routes.ts` when it is part of the app navigation contract
+- [ ] Update `hushh-webapp/native-route-inventory.json` and run `cd hushh-webapp && npm run verify:capacitor:static` for native-visible routes
 - [ ] Update `docs/reference/architecture/api-contracts.md` if needed
 - [ ] Add JSDoc comments to service methods
 - [ ] Add/update PR impact map using `docs/reference/quality/pr-impact-checklist.md`

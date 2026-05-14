@@ -13,7 +13,7 @@ class ConsentScope(str, Enum):
     Consent scopes for MCP-compliant data access.
 
     Design Principles:
-    - VAULT_OWNER grants full world model access (user's own data)
+    - VAULT_OWNER grants full PKM access (user's own data)
     - Dynamic attr.{domain}.{key} scopes are validated via DynamicScopeGenerator
     - Static operation scopes are defined in this enum
 
@@ -31,6 +31,7 @@ class ConsentScope(str, Enum):
     PORTFOLIO_IMPORT = "portfolio.import"
     PORTFOLIO_ANALYZE = "portfolio.analyze"
     PORTFOLIO_READ = "portfolio.read"
+    BROKERAGE_TRANSFER_WRITE = "brokerage.transfer.write"
 
     # ==================== CHAT HISTORY ====================
     CHAT_HISTORY_READ = "chat.history.read"
@@ -40,16 +41,26 @@ class ConsentScope(str, Enum):
     EMBEDDING_PROFILE_READ = "embedding.profile.read"
     EMBEDDING_PROFILE_COMPUTE = "embedding.profile.compute"
 
-    # ==================== WORLD MODEL OPERATIONS ====================
-    WORLD_MODEL_READ = "world_model.read"
-    WORLD_MODEL_WRITE = "world_model.write"
-    WORLD_MODEL_METADATA = "world_model.metadata"
+    # ==================== PKM OPERATIONS ====================
+    PKM_READ = "pkm.read"
+    PKM_WRITE = "pkm.write"
+    PKM_METADATA = "pkm.metadata"
 
-    # ==================== KAI AGENT OPERATIONS ====================
+    # ==================== AGENT OPERATIONS ====================
+    AGENT_ONE_ORCHESTRATE = "agent.one.orchestrate"
+
     AGENT_KAI_ANALYZE = "agent.kai.analyze"
     AGENT_KAI_DEBATE = "agent.kai.debate"
     AGENT_KAI_INFER = "agent.kai.infer"
     AGENT_KAI_CHAT = "agent.kai.chat"
+    AGENT_KAI_EXECUTE = "agent.kai.execute"
+
+    AGENT_NAV_REVIEW = "agent.nav.review"
+    AGENT_NAV_REVOKE = "agent.nav.revoke"
+
+    AGENT_KYC_PROCESS = "agent.kyc.process"
+    AGENT_KYC_DRAFT = "agent.kyc.draft"
+    AGENT_KYC_WRITEBACK = "agent.kyc.writeback"
 
     # ==================== EXTERNAL DATA SOURCES ====================
     # Hybrid mode - per-request consent
@@ -58,7 +69,7 @@ class ConsentScope(str, Enum):
     EXTERNAL_MARKET_DATA = "external.market.data"
     EXTERNAL_RENAISSANCE = "external.renaissance.data"
 
-    # Data access uses world_model.read, world_model.write, and dynamic attr.{domain}.* scopes.
+    # Data access uses pkm.read, pkm.write, and dynamic attr.{domain}.* scopes.
 
     @classmethod
     def list(cls):
@@ -171,23 +182,31 @@ class ConsentScope(str, Enum):
             cls.PORTFOLIO_IMPORT,
             cls.PORTFOLIO_ANALYZE,
             cls.PORTFOLIO_READ,
+            cls.BROKERAGE_TRANSFER_WRITE,
             cls.CHAT_HISTORY_READ,
             cls.CHAT_HISTORY_WRITE,
             cls.EMBEDDING_PROFILE_READ,
             cls.EMBEDDING_PROFILE_COMPUTE,
-            cls.WORLD_MODEL_READ,
-            cls.WORLD_MODEL_WRITE,
-            cls.WORLD_MODEL_METADATA,
+            cls.PKM_READ,
+            cls.PKM_WRITE,
+            cls.PKM_METADATA,
         ]
 
     @classmethod
     def agent_scopes(cls):
         """Return all agent operation scopes."""
         return [
+            cls.AGENT_ONE_ORCHESTRATE,
             cls.AGENT_KAI_ANALYZE,
             cls.AGENT_KAI_DEBATE,
             cls.AGENT_KAI_INFER,
             cls.AGENT_KAI_CHAT,
+            cls.AGENT_KAI_EXECUTE,
+            cls.AGENT_NAV_REVIEW,
+            cls.AGENT_NAV_REVOKE,
+            cls.AGENT_KYC_PROCESS,
+            cls.AGENT_KYC_DRAFT,
+            cls.AGENT_KYC_WRITEBACK,
         ]
 
     @classmethod
@@ -206,7 +225,10 @@ class ConsentScope(str, Enum):
 # Port assignments for agent-to-agent communication
 AGENT_PORTS = {
     "agent_orchestrator": 10000,
+    "agent_one": 10000,  # One top personal agent / orchestration layer
     "agent_kai": 10005,  # Kai investment analysis agent
+    "agent_nav": 10006,  # Nav privacy and consent guardian
+    "agent_kyc": 10007,  # KYC identity workflow specialist
 }
 
 # ==================== Token & Link Prefixes ====================

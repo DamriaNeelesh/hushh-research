@@ -53,6 +53,11 @@ fi
 UPSTREAM_TREE="$(git rev-parse "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH^{tree}" 2>/dev/null || true)"
 LOCAL_TREE="$(git rev-parse "HEAD:$SUBTREE_PREFIX" 2>/dev/null || true)"
 
+if [ -n "$UPSTREAM_TREE" ] && [ -n "$LOCAL_TREE" ] && [ "$UPSTREAM_TREE" = "$LOCAL_TREE" ]; then
+  echo "✅ consent-protocol/ subtree content matches upstream."
+  exit 0
+fi
+
 LOCAL_SPLIT="$(git subtree split --prefix="$SUBTREE_PREFIX" HEAD 2>/dev/null || true)"
 if [ -z "$LOCAL_SPLIT" ]; then
   # Some histories contain missing split hashes from old subtree joins.
@@ -67,23 +72,18 @@ fi
 
 if [ -n "$LOCAL_SPLIT" ] && git merge-base --is-ancestor "$UPSTREAM_COMMIT" "$LOCAL_SPLIT" 2>/dev/null; then
   AHEAD_BY="$(git rev-list --count "$UPSTREAM_COMMIT..$LOCAL_SPLIT" 2>/dev/null || echo "unknown")"
-  log_notice "consent-protocol/ subtree is ahead of upstream by ${AHEAD_BY} commit(s). Run: make push-protocol"
+  log_notice "consent-protocol/ subtree is ahead of upstream by ${AHEAD_BY} commit(s). Run: ./bin/hushh protocol push"
   exit 0
 fi
 
 if [ -n "$LOCAL_SPLIT" ] && git merge-base --is-ancestor "$LOCAL_SPLIT" "$UPSTREAM_COMMIT" 2>/dev/null; then
   BEHIND_BY="$(git rev-list --count "$LOCAL_SPLIT..$UPSTREAM_COMMIT" 2>/dev/null || echo "unknown")"
-  log_warning "consent-protocol/ subtree is behind upstream by ${BEHIND_BY} commit(s). Run: make sync-protocol"
-  exit 0
-fi
-
-if [ -n "$UPSTREAM_TREE" ] && [ -n "$LOCAL_TREE" ] && [ "$UPSTREAM_TREE" = "$LOCAL_TREE" ]; then
-  echo "✅ consent-protocol/ subtree content matches upstream."
+  log_warning "consent-protocol/ subtree is behind upstream by ${BEHIND_BY} commit(s). Run: ./bin/hushh protocol sync"
   exit 0
 fi
 
 if [ ! -x "$MONOREPO_SYNC_CHECK" ]; then
-  log_notice "consent-protocol/ subtree differs from upstream (direction undetermined). Verify manually with make check-protocol-sync."
+  log_notice "consent-protocol/ subtree differs from upstream (direction undetermined). Verify manually with ./bin/hushh protocol check-sync."
   exit 0
 fi
 
@@ -101,11 +101,11 @@ set -e
 SYNC_GATE_SUMMARY="$(printf '%s' "$SYNC_GATE_OUTPUT" | sed -E 's/\x1b\[[0-9;]*m//g' | tr -s '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-220)"
 
 if [ "$SYNC_GATE_EXIT" -eq 0 ]; then
-  log_notice "consent-protocol/ subtree differs from upstream; upstream is not ahead of the known sync baseline. If these subtree changes are intentional, run: make push-protocol"
+  log_notice "consent-protocol/ subtree differs from upstream; upstream is not ahead of the known sync baseline. If these subtree changes are intentional, run: ./bin/hushh protocol push"
   exit 0
 fi
 
-log_warning "consent-protocol/ subtree differs from upstream and upstream may be ahead (or sync metadata is stale). Run: make sync-protocol, then make push-protocol if needed."
+log_warning "consent-protocol/ subtree differs from upstream and upstream may be ahead (or sync metadata is stale). Run: ./bin/hushh protocol sync, then ./bin/hushh protocol push if needed."
 if [ -n "$SYNC_GATE_SUMMARY" ]; then
   log_notice "sync-gate: $SYNC_GATE_SUMMARY"
 fi

@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
 
+import { SurfaceInset } from "@/components/app-ui/surfaces";
 import { Button } from "@/lib/morphy-ux/button";
-import { Card, CardContent } from "@/lib/morphy-ux/card";
 import { Icon } from "@/lib/morphy-ux/ui";
 import { ApiService, type KaiDashboardProfilePick } from "@/lib/services/api-service";
 import { CacheService, CACHE_KEYS, CACHE_TTL } from "@/lib/services/cache-service";
@@ -39,18 +39,16 @@ function PicksSkeleton() {
   return (
     <div className="space-y-2">
       {Array.from({ length: 3 }).map((_, idx) => (
-        <Card key={idx} variant="none" effect="glass" className="rounded-2xl p-0">
-          <CardContent className="flex items-center justify-between gap-3 p-4">
-            <div className="flex items-center gap-3">
-              <Skeleton className="h-10 w-10 rounded-full" />
-              <div className="space-y-1">
-                <Skeleton className="h-3 w-28" />
-                <Skeleton className="h-3 w-20" />
-              </div>
+        <SurfaceInset key={idx} className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-10 w-10 rounded-full" />
+            <div className="space-y-1">
+              <Skeleton className="h-3 w-28" />
+              <Skeleton className="h-3 w-20" />
             </div>
-            <Skeleton className="h-8 w-8 rounded-full" />
-          </CardContent>
-        </Card>
+          </div>
+          <Skeleton className="h-8 w-8 rounded-full" />
+        </SurfaceInset>
       ))}
     </div>
   );
@@ -162,13 +160,11 @@ export function ProfileBasedPicksList({
       {loading ? <PicksSkeleton /> : null}
 
       {!loading && picks.length === 0 ? (
-        <Card variant="muted" effect="fill" className="rounded-2xl p-0">
-          <CardContent className="p-3 text-xs text-muted-foreground">
-            {error
-              ? "Profile picks are temporarily unavailable."
-              : "No profile picks available from current market context."}
-          </CardContent>
-        </Card>
+        <SurfaceInset className="p-3 text-xs text-muted-foreground">
+          {error
+            ? "Profile picks are temporarily unavailable."
+            : "No profile picks available from current market context."}
+        </SurfaceInset>
       ) : null}
 
       {!loading && picks.length > 0 ? (
@@ -176,46 +172,49 @@ export function ProfileBasedPicksList({
           {picks.map((pick) => {
             const change = typeof pick.change_percent === "number" ? pick.change_percent : null;
             return (
-              <Card key={pick.symbol} variant="none" effect="glass" className="rounded-2xl p-0" showRipple>
-                <CardContent className="flex items-center justify-between gap-3 p-3">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className="grid h-9 w-9 place-items-center rounded-full border border-border/70 bg-muted text-[11px] font-black">
-                      {pick.symbol}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-bold leading-tight">{pick.company_name}</p>
-                      <p className="truncate text-xs font-medium text-muted-foreground">
-                        {(pick.tier || "Tier N/A").toUpperCase()}
-                        {pick.sector ? ` • ${pick.sector}` : ""}
-                      </p>
-                      <p className="text-[11px] text-muted-foreground">
-                        {formatPrice(pick.price)}
-                        {change !== null ? (
-                          <span
-                            className={cn(
-                              "ml-1 font-semibold",
-                              change >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
-                            )}
-                          >
-                            {change >= 0 ? "+" : ""}
-                            {change.toFixed(2)}%
-                          </span>
-                        ) : null}
-                      </p>
-                    </div>
+              <SurfaceInset
+                key={pick.symbol}
+                className="flex items-center justify-between gap-3 p-3"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="grid h-9 w-9 place-items-center rounded-full border border-border/70 bg-muted text-[11px] font-black">
+                    {pick.symbol}
                   </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-bold leading-tight">{pick.company_name}</p>
+                    <p className="truncate text-xs font-medium text-muted-foreground">
+                      {(pick.tier || "Tier N/A").toUpperCase()}
+                      {pick.sector ? ` • ${pick.sector}` : ""}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {formatPrice(pick.price)}
+                      {change !== null ? (
+                        <span
+                          className={cn(
+                            "ml-1 font-semibold",
+                            change >= 0
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-rose-600 dark:text-rose-400"
+                          )}
+                        >
+                          {change >= 0 ? "+" : ""}
+                          {change.toFixed(2)}%
+                        </span>
+                      ) : null}
+                    </p>
+                  </div>
+                </div>
 
-                  <Button
-                    variant="none"
-                    effect="fade"
-                    size="icon-sm"
-                    aria-label={`Add ${pick.symbol}`}
-                    onClick={() => onAdd(pick.symbol)}
-                  >
-                    <Icon icon={Plus} size="sm" />
-                  </Button>
-                </CardContent>
-              </Card>
+                <Button
+                  variant="none"
+                  effect="fade"
+                  size="icon-sm"
+                  aria-label={`Add ${pick.symbol}`}
+                  onClick={() => onAdd(pick.symbol)}
+                >
+                  <Icon icon={Plus} size="sm" />
+                </Button>
+              </SurfaceInset>
             );
           })}
         </div>

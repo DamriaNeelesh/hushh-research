@@ -8,6 +8,12 @@
 
 All data access is gated by consent tokens. Firebase auth is only used to bootstrap the initial VAULT_OWNER token.
 
+Founder-language note:
+
+- `Capability Tokens` are the architecture headline
+- this file keeps the runtime labels `VAULT_OWNER`, `consent-token`, and `developer token` because readers need the exact wire contract
+- `PCHP` maps here to the `/api/v1/request-consent`, `/api/v1/consent-status`, and `/api/v1/scoped-export` flow
+
 ```
 Firebase Sign-In
       │
@@ -22,12 +28,24 @@ POST /api/consent/vault-owner-token  (Firebase Bearer)
       └── Can delegate scoped tokens to MCP agents (7d)
 ```
 
-| Token Type            | Purpose                          | Duration | Auth Header Format              |
-| --------------------- | -------------------------------- | -------- | ------------------------------- |
+| Token Type            | Purpose                            | Duration | Auth Format                    |
+| --------------------- | ---------------------------------- | -------- | ------------------------------ |
 | Firebase ID Token     | Identity verification only       | 1 hour   | `Bearer <firebase-id-token>`   |
 | VAULT_OWNER Token     | Consent + identity for all data  | 24 hours | `Bearer <vault-owner-token>`   |
 | Agent Scoped Token    | Delegated MCP agent access       | 7 days   | `Bearer <consent-token>`       |
-| Developer Token       | External API access              | N/A      | `X-MCP-Developer-Token` or request body |
+| Developer Token       | External API and remote MCP access | N/A    | `?token=<developer-token>`     |
+
+---
+
+## Visual Map
+
+```text
+Client surfaces
+  -> Next.js API proxies / native plugins
+    -> FastAPI route families
+      -> consent, PKM, IAM, Kai, RIA, marketplace, notifications
+        -> encrypted storage, scoped sharing, and public lookup contracts
+```
 
 ---
 
@@ -47,7 +65,7 @@ POST /api/consent/vault-owner-token  (Firebase Bearer)
 | GET | `/api/tickers/all` | Full ticker universe export with enrichment metadata |
 | POST | `/api/validate-token` | Validate a consent token |
 | GET | `/api/app-config/review-mode` | Review mode toggle (enabled only) |
-| POST | `/api/app-config/review-mode/session` | Mint Firebase custom token for `REVIEWER_UID` when review mode enabled |
+| POST | `/api/app-config/review-mode/session` | Mint Firebase custom token for `REVIEWER_UID`; non-production smoke may use `REVIEWER_VAULT_PASSPHRASE` |
 
 ### Developer API (Developer Token / Developer API Enabled)
 
@@ -55,8 +73,20 @@ POST /api/consent/vault-owner-token  (Firebase Bearer)
 | ------ | ---- | ----------- |
 | GET | `/api/v1` | Developer API root summary (`410` when developer API disabled) |
 | GET | `/api/v1/list-scopes` | Generic dynamic scope catalog (`410` when developer API disabled) |
-| GET | `/api/v1/user-scopes/{user_id}` | Discover dynamic user scopes for one user (requires `X-MCP-Developer-Token`) |
-| POST | `/api/v1/request-consent` | Create or reuse consent for one discovered scope (requires developer token) |
+| GET | `/api/v1/tool-catalog` | Public-beta or app-filtered tool visibility |
+| GET | `/api/v1/user-scopes/{user_id}` | Discover dynamic user scopes for one user (requires `?token=<developer-token>`) |
+| GET | `/api/v1/consent-status` | Check app-scoped consent status by scope or request id |
+| POST | `/api/v1/request-consent` | Create or reuse consent for one discovered scope (requires `?token=<developer-token>`) |
+| POST | `/api/v1/scoped-export` | Fetch encrypted consent export metadata and ciphertext for an approved developer grant |
+
+### Developer Portal (Firebase Sign-In / Self-Serve)
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET | `/api/developer/access` | Read the self-serve developer workspace for the signed-in Kai account |
+| POST | `/api/developer/access/enable` | Create the self-serve developer app and first active token |
+| PATCH | `/api/developer/access/profile` | Update the app identity shown during Kai consent review |
+| POST | `/api/developer/access/rotate-key` | Revoke the current developer token and issue a replacement |
 
 ### Debug (Dev Only)
 
@@ -75,6 +105,44 @@ POST /api/consent/vault-owner-token  (Firebase Bearer)
 | DELETE | `/api/notifications/unregister` | Unregister FCM tokens (logout) |
 | POST | `/api/kai/consent/grant` | Grant consent for Kai scopes |
 
+### One Email KYC
+
+One mailbox intake is One-led and approval-gated. KYC workspace routes require
+a VAULT_OWNER token plus a matching `user_id`; mailbox maintenance routes use
+Pub/Sub OIDC or the One maintenance token, not user Firebase auth. Strict
+client-side ZK means the backend never decrypts consent exports, never builds
+review drafts, and never persists review draft plaintext. Dev/UAT One Email now
+uses text-only multi-scope disclosure intake: the backend stores detected
+domains, candidate scopes, thread metadata, hashes, and consent/writeback/send
+metadata only; the vault-unlocked client confirms scopes and builds the final
+draft from approved encrypted exports.
+
+Inbound user resolution uses exact verified email evidence. The resolver checks
+verified `To`, `Cc`, and `Reply-To` recipients before falling back to all
+participants, so a broker or alternate sender account does not override the
+vault owner explicitly copied on the request. Apple private relay addresses are
+not inferred to original emails; original addresses must be verified as aliases
+before they can resolve intake.
+
+| Method | Path | Auth | Description |
+| ------ | ---- | ---- | ----------- |
+| POST | `/api/one/email/webhook` | Pub/Sub OIDC | Receive Gmail Pub/Sub notifications for the delegated One mailbox |
+| POST | `/api/one/email/watch/renew` | `X-Hushh-Maintenance-Token` | Renew the Gmail watch for the delegated One mailbox |
+| GET | `/api/one/kyc/client-connector?user_id={user_id}` | VAULT_OWNER Bearer | Read registered public client connector metadata |
+| POST | `/api/one/kyc/client-connector` | VAULT_OWNER Bearer | Register public client connector metadata after vault unlock; private key remains client/vault-only |
+| GET | `/api/one/kyc/workflows?user_id={user_id}` | VAULT_OWNER Bearer | List One KYC workflows for the vault owner |
+| GET | `/api/one/kyc/workflows/{workflow_id}?user_id={user_id}` | VAULT_OWNER Bearer | Read one workflow and metadata-only draft state for the vault owner |
+| POST | `/api/one/kyc/workflows/{workflow_id}/scope-selection` | VAULT_OWNER Bearer | Confirm or narrow backend-detected candidate scopes before consent requests are created |
+| POST | `/api/one/kyc/workflows/{workflow_id}/refresh` | VAULT_OWNER Bearer | Refresh workflow state after consent approval; returns encrypted export metadata for client-side draft generation |
+| GET | `/api/one/kyc/workflows/{workflow_id}/consent-export?user_id={user_id}` | VAULT_OWNER Bearer | Return the encrypted wrapped-key export package for this ready workflow without exposing the consent token to the browser |
+| GET | `/api/one/kyc/workflows/{workflow_id}/consent-exports?user_id={user_id}` | VAULT_OWNER Bearer | Return all selected encrypted wrapped-key export packages for multi-scope client-side draft generation |
+| POST | `/api/one/kyc/workflows/{workflow_id}/send-approved-reply` | VAULT_OWNER Bearer | Transiently send the user-approved final email body as Gmail reply-all in the original thread; persist metadata/hashes and thread verification only |
+| POST | `/api/one/kyc/workflows/{workflow_id}/writeback-complete` | VAULT_OWNER Bearer | Record encrypted PKM writeback status and artifact hash |
+| POST | `/api/one/kyc/workflows/{workflow_id}/approve-draft` | VAULT_OWNER Bearer | Deprecated; returns gone because server-side draft approval is disabled |
+| POST | `/api/one/kyc/workflows/{workflow_id}/reject-draft` | VAULT_OWNER Bearer | Reject and block the workflow |
+| POST | `/api/one/kyc/workflows/{workflow_id}/redraft` | VAULT_OWNER Bearer | Record typed or voice-originated redraft instruction metadata; draft revision is client-local |
+| POST | `/api/one/kyc/retention/purge` | `X-Hushh-Maintenance-Token` | Redact terminal workflow drafts after the retention window |
+
 ### VAULT_OWNER (Consent-Gated)
 
 #### Consent Management
@@ -89,17 +157,39 @@ POST /api/consent/vault-owner-token  (Firebase Bearer)
 | GET | `/api/consent/history` | Paginated consent audit history |
 | GET | `/api/consent/active` | Active (non-expired) tokens |
 
-#### World Model
+#### RIA And Relationship Sharing
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| POST | `/api/world-model/store-domain` | Store encrypted domain data + update index |
-| GET | `/api/world-model/data/{user_id}` | Get full encrypted data blob |
-| GET | `/api/world-model/domain-data/{user_id}/{domain}` | Get encrypted domain data |
-| DELETE | `/api/world-model/domain-data/{user_id}/{domain}` | Delete a domain |
-| GET | `/api/world-model/metadata/{user_id}` | Get world model metadata for UI |
-| GET | `/api/world-model/scopes/{user_id}` | Get available scopes for user |
-| POST | `/api/world-model/get-context` | Get user context for analysis |
+| GET | `/api/ria/clients` | Advisor-facing relationship summary list, including implicit relationship-share status |
+| GET | `/api/ria/clients/{investor_user_id}` | Advisor-facing relationship detail, including scoped grants and included advisor-picks benefit |
+| GET | `/api/ria/workspace/{investor_user_id}` | Advisor workspace over investor-consented data plus relationship-share status |
+| GET | `/api/kai/market/insights/{user_id}` | Investor market home payload with rights-gated `pick_sources[]` and RIA feed share metadata |
+
+RIA relationship bundle note:
+
+- investor private data -> RIA stays on explicit scope consent
+- RIA active picks feed -> investor is an implicit relationship share (`ria_active_picks_feed_v1`)
+- advisor picks are gated by both relationship approval and an active relationship-share grant, not by a second consent prompt
+
+#### Personal Knowledge Model
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| POST | `/api/pkm/store-domain` | Store encrypted PKM domain data + update index; accepts optional non-sensitive `write_projections[]` for derived read models such as decision history |
+| GET | `/api/pkm/data/{user_id}` | Get full encrypted PKM payload |
+| GET | `/api/pkm/domain-data/{user_id}/{domain}` | Get encrypted PKM domain data |
+| DELETE | `/api/pkm/domain-data/{user_id}/{domain}` | Delete a PKM domain |
+| GET | `/api/pkm/metadata/{user_id}` | Get PKM metadata for UI |
+| POST | `/api/pkm/domains/{domain}/scope-exposure` | Enable/disable top-level PKM section exposure and revoke overlapping active grants |
+| GET | `/api/pkm/upgrade/status/{user_id}` | Get generic PKM upgrade status + resumable run metadata |
+| POST | `/api/pkm/upgrade/start-or-resume` | Start or resume a client-side PKM upgrade run |
+| POST | `/api/pkm/upgrade/runs/{run_id}/status` | Update run-level PKM upgrade status |
+| POST | `/api/pkm/upgrade/runs/{run_id}/steps/{domain}` | Update per-domain PKM upgrade checkpoint |
+| POST | `/api/pkm/upgrade/runs/{run_id}/complete` | Mark a PKM upgrade run completed |
+| POST | `/api/pkm/upgrade/runs/{run_id}/fail` | Mark a PKM upgrade run failed |
+| GET | `/api/pkm/scopes/{user_id}` | Get available PKM scope handles for the user |
+| POST | `/api/pkm/get-context` | Get user context for analysis |
 
 #### Kai Chat
 
@@ -117,7 +207,7 @@ POST /api/consent/vault-owner-token  (Firebase Bearer)
 | ------ | ---- | ----------- |
 | POST | `/api/kai/portfolio/import` | Import brokerage statement (CSV/PDF) |
 | POST | `/api/kai/portfolio/import/stream` | Streaming import with deterministic Gemini extraction, thought telemetry, and strict quality-gate aborts |
-| GET | `/api/kai/portfolio/summary/{user_id}` | Portfolio summary from world model |
+| GET | `/api/kai/portfolio/summary/{user_id}` | Portfolio summary from PKM discovery metadata |
 | GET | `/api/kai/dashboard/profile-picks/{user_id}` | Real profile-based picks for dashboard cards (`symbols`, `limit`) |
 | POST | `/api/kai/portfolio/analyze-losers` | Analyze losers vs Renaissance |
 | POST | `/api/kai/portfolio/analyze-losers/stream` | Streaming losers analysis (SSE, deterministic config, cash-excluded investable universe) |
@@ -168,18 +258,23 @@ Operational note:
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET | `/api/kai/decisions/{user_id}` | Decision history from domain summaries |
+| GET | `/api/kai/decisions/{user_id}` | Decision history from PKM `decision_projection` events with summary fallback only for legacy users |
 
 #### Kai Personalization
 
 Kai personalization no longer uses dedicated `/api/kai/preferences/*` endpoints.
-Optional intro fields are persisted in encrypted world-model path `financial.profile`.
-Frontend reads/writes these fields through the centralized onboarding/profile flows that call world-model APIs.
+Optional intro fields are persisted in encrypted PKM path `financial.profile`.
+Frontend reads/writes these fields through the centralized onboarding/profile flows that call PKM APIs.
 
 #### Account & Sync
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
+| POST | `/api/account/identity/refresh` | Refresh backend identity shadow from Firebase Auth |
+| POST | `/api/account/phone/claim` | Persist a secondary Firebase phone-session token as the signed-in actor's verified app-level phone claim |
+| GET | `/api/account/email-aliases` | List vault-owner account email aliases |
+| POST | `/api/account/email-aliases/verification/start` | Start explicit email alias verification; dev/UAT review mode may echo the code |
+| POST | `/api/account/email-aliases/verification/confirm` | Confirm an email alias before it can match One Email KYC intake |
 | DELETE | `/api/account/delete` | Delete user account and all data |
 
 Reserved future surface:
@@ -213,7 +308,8 @@ Method-management semantics:
 
 Security invariant:
 - No plaintext-at-rest path is allowed.
-- World-model encryption/decryption always uses the same DEK regardless of unlock method.
+- PKM encryption/decryption always uses the same DEK regardless of unlock method.
+- Generic PKM upgrades remain client-side after unlock; the backend only stores resumable run metadata and ciphertext.
 | POST | `/api/sync/vault` | Disabled in regulated cutover (`501`, `SYNC_DISABLED`) |
 | POST | `/api/sync/batch` | Disabled in regulated cutover (`501`, `SYNC_DISABLED`) |
 | GET | `/api/sync/pull` | Disabled in regulated cutover (`501`, `SYNC_DISABLED`) |
@@ -222,7 +318,7 @@ Security invariant:
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET | `/api/consent/data?token={consent_token}` | Retrieve encrypted export for token |
+| GET | `/api/consent/data` | Retrieve encrypted export for a valid consent token carried as `Authorization: Bearer <consent-token>`; legacy `consent_token` query transport remains backend-supported for non-browser callers |
 
 ### SSE (Server-Sent Events)
 
@@ -235,13 +331,18 @@ Security invariant:
 
 | Method | Path | Replacement |
 | ------ | ---- | ----------- |
-| POST | `/api/v1/food-data` | `GET /api/world-model/domain-data/{uid}/{discovered_domain}` after runtime domain discovery, or the publishable flow `/api/v1/user-scopes/{uid}` → `/api/v1/request-consent` → `/api/consent/data` |
-| POST | `/api/v1/professional-data` | `GET /api/world-model/domain-data/{uid}/{discovered_domain}` after runtime domain discovery, or the publishable flow `/api/v1/user-scopes/{uid}` → `/api/v1/request-consent` → `/api/consent/data` |
-| DELETE | `/api/world-model/attributes/{uid}/{domain}/{key}` | Client-side BYOK operation |
-| POST | `/api/kai/decision/store` | `POST /api/world-model/store-domain` with domain=`financial` |
+| POST | `/api/v1/food-data` | `GET /api/pkm/domain-data/{uid}/{discovered_domain}` after runtime domain discovery, or the publishable flow `/api/v1/user-scopes/{uid}` → `/api/v1/request-consent` → `/api/consent/data` |
+| POST | `/api/v1/professional-data` | `GET /api/pkm/domain-data/{uid}/{discovered_domain}` after runtime domain discovery, or the publishable flow `/api/v1/user-scopes/{uid}` → `/api/v1/request-consent` → `/api/consent/data` |
+| DELETE | `/api/pkm/attributes/{uid}/{domain}/{key}` | Client-side BYOK operation |
+| POST | `/api/kai/decision/store` | `POST /api/pkm/store-domain` with domain=`financial`; first-party flows now attach `write_projections[]` instead of relying on legacy summary inference |
 | GET | `/api/kai/decision/{id}` | `GET /api/kai/decisions/{user_id}` |
-| DELETE | `/api/kai/decision/{id}` | `POST /api/world-model/store-domain` with domain=`financial` |
+| DELETE | `/api/kai/decision/{id}` | `POST /api/pkm/store-domain` with domain=`financial` |
 | `*` | `/api/identity/*` | Removed from app surface; compatibility stubs return `410` |
+
+Notes:
+- First-party PKM writes are version-aware through the frontend `PkmWriteCoordinator`; stale domains may trigger resumable client-side PKM upgrade before save.
+- Debate/analysis history remains encrypted in `financial.analysis_history` and mirrors a privacy-safe `decision_history_v1` projection for backend/read-model consumers.
+- Current history retention is `3` saved versions per ticker, newest first.
 
 ---
 
@@ -337,12 +438,14 @@ External developers (MCP agents, third-party apps) use the `/api/v1` endpoints:
 
 ```
 1. GET /api/v1/user-scopes/{user_id}
-   Header: X-MCP-Developer-Token: <token>
+   Query: ?token=<developer-token>
    → Returns: { user_id, available_domains, scopes }
 
 2. POST /api/v1/request-consent
-   Body: { user_id, scope, agent_id, developer_token, reason }
-   → Returns: { request_id, status: "pending" }
+   Query: ?token=<developer-token>
+   Body: { user_id, scope, reason, approval_timeout_minutes, connector_public_key, connector_key_id, connector_wrapping_alg }
+   → Returns: { request_id, status: "pending" } or an immediate reuse payload with
+     { requested_scope, granted_scope, coverage_kind, covered_by_existing_grant }
 
 3. User receives FCM notification → approves in app
 
@@ -350,14 +453,21 @@ External developers (MCP agents, third-party apps) use the `/api/v1` endpoints:
    Body: { token: "<consent-token>" }
    → Returns: { valid, user_id, scope, expires_at }
 
-5. GET /api/consent/data?token=<consent-token>
+5. GET /api/consent/data with Authorization: Bearer <consent-token>
    → Returns: { ciphertext, iv, tag, export_key }
    → Developer decrypts with export_key
 ```
 
 For MCP hosts, the recommended consumption surface is:
 
-`discover_user_domains` → `request_consent` → `check_consent_status` → `get_scoped_data`
+`discover_user_domains` → `request_consent` → `check_consent_status` → `get_scoped_data(expected_scope=original_scope)`
+
+Coverage rules:
+
+- broader active grant → narrower ask: reuse immediately
+- narrower active grant → broader ask: requires fresh approval
+- exact duplicate pending request → reuse the existing request_id
+- broader-token reuse must still return the narrower requested slice when `expected_scope` is supplied
 
 Production policy:
 - All `/api/v1/*` endpoints return `410` with:
@@ -367,8 +477,8 @@ Production policy:
 ### Available Scopes
 
 ```
-world_model.read
-world_model.write
+pkm.read
+pkm.write
 attr.{domain}.*
 attr.{domain}.{subintent}.*
 attr.{domain}.{subintent}.{attribute}
@@ -376,8 +486,8 @@ attr.{domain}.{subintent}.{attribute}
 
 Scope strings are dynamic. Do not hardcode domain keys. Discover user-available scopes via:
 
-- `GET /api/world-model/scopes/{user_id}`
-- `GET /api/v1/user-scopes/{user_id}` with `X-MCP-Developer-Token`
+- `GET /api/pkm/scopes/{user_id}`
+- `GET /api/v1/user-scopes/{user_id}?token=<developer-token>`
 - `discover_user_domains(user_id)` in MCP
 
 ### Token Format
@@ -408,7 +518,7 @@ Service:  { userId: "abc", domainSummaries: {...} }
 React:    Uses camelCase throughout
 ```
 
-Plugins requiring camelCase transformation: WorldModel, Kai.
+Plugins requiring camelCase transformation: PersonalKnowledgeModel, Kai.
 
 ---
 
@@ -421,8 +531,8 @@ Plugins requiring camelCase transformation: WorldModel, Kai.
 5. Create Next.js proxy: `hushh-webapp/app/api/{path}/route.ts`
 6. Create Capacitor plugin: iOS Swift + Android Kotlin
 7. Add service method: `hushh-webapp/lib/services/{name}-service.ts`
-8. Add route contract: `hushh-webapp/route-contracts.json`
-9. Verify: `npm run verify:routes`
+8. Update app navigation truth when needed: `hushh-webapp/lib/navigation/routes.ts`
+9. Verify route/docs alignment: `bash scripts/ci/docs-parity-check.sh`
 
 See [Architecture: Tri-Flow](./architecture.md#tri-flow-architecture) for the full pattern.
 
@@ -431,5 +541,5 @@ See [Architecture: Tri-Flow](./architecture.md#tri-flow-architecture) for the fu
 ## See Also
 
 - [Architecture](./architecture.md) -- System overview and tri-flow
-- [World Model](../../../consent-protocol/docs/reference/world-model.md) -- Data storage endpoints
+- [Personal Knowledge Model](../../../consent-protocol/docs/reference/personal-knowledge-model.md) -- Data storage endpoints
 - [Consent Protocol](../../../consent-protocol/docs/reference/consent-protocol.md) -- Token lifecycle

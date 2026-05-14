@@ -8,7 +8,7 @@
  * - Summary section (beginning/ending value, cash, equities)
  * - Scrollable holdings list with edit buttons
  * - Add Holding button
- * - Save Changes button with encryption and world model storage
+ * - Save Changes button with encryption and PKM storage
  */
 
 "use client";
@@ -33,8 +33,13 @@ import { Button } from "@/lib/morphy-ux/button";
 import { useStepProgress } from "@/lib/progress/step-progress-context";
 import { useVault } from "@/lib/vault/vault-context";
 import { useAuth } from "@/lib/firebase";
-import { WorldModelService } from "@/lib/services/world-model-service";
-import { normalizeStoredPortfolio } from "@/lib/utils/portfolio-normalize";
+import { PersonalKnowledgeModelService } from "@/lib/services/personal-knowledge-model-service";
+import { PkmDomainResourceService } from "@/lib/pkm/pkm-domain-resource";
+import { PkmWriteCoordinator } from "@/lib/services/pkm-write-coordinator";
+import {
+  consolidateHoldingsBySymbol,
+  normalizeStoredPortfolio,
+} from "@/lib/utils/portfolio-normalize";
 import { useCache, type PortfolioData as CachedPortfolioData } from "@/lib/cache/cache-context";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
 import { EditHoldingModal } from "@/components/kai/modals/edit-holding-modal";
@@ -209,8 +214,8 @@ export function ManagePortfolioView() {
           return;
         }
 
-        // Get encrypted data from world model
-        const response = await WorldModelService.getMetadata(
+        // Get PKM metadata first so we only decrypt the financial domain when needed.
+        const response = await PersonalKnowledgeModelService.getMetadata(
           user.uid,
           false,
           vaultOwnerToken || undefined
@@ -221,16 +226,18 @@ export function ManagePortfolioView() {
           // Priority 1: CacheProvider (shared with dashboard)
           let parsed: PortfolioData | null = getPortfolioData(user.uid);
           
-          // Priority 2: Decrypt from World Model (fallback)
+          // Priority 2: Decrypt the financial PKM domain (fallback)
           if (!parsed) {
-            console.log("[ManagePortfolio] No cache, attempting to decrypt from World Model...");
+            console.log("[ManagePortfolio] No cache, attempting to decrypt the financial PKM domain...");
             try {
-              const allData = await WorldModelService.loadFullBlob({
+              const snapshot = await PkmDomainResourceService.getStaleFirst({
                 userId: user.uid,
+                domain: "financial",
                 vaultKey,
                 vaultOwnerToken: vaultOwnerToken || undefined,
+                backgroundRefresh: false,
               });
-              const rawFinancial = allData.financial;
+              const rawFinancial = snapshot?.data ?? null;
 
               if (!hasValidFinancialShape(rawFinancial)) {
                 toast.error("Portfolio index exists but financial data is missing. Please re-import your statement.");
@@ -243,7 +250,7 @@ export function ManagePortfolioView() {
                 console.log("[ManagePortfolio] Decrypted and cached portfolio data");
               }
             } catch (decryptError) {
-              console.error("[ManagePortfolio] Failed to decrypt from World Model:", decryptError);
+              console.error("[ManagePortfolio] Failed to decrypt the financial PKM domain:", decryptError);
               toast.error("Unable to decrypt portfolio data. Please re-import your statement.");
             }
           }
@@ -316,7 +323,12 @@ export function ManagePortfolioView() {
     setIsSaving(true);
     try {
       // 1. Build complete portfolio data object
-      const holdingsForSave = activeHoldings.map(({ pending_delete: _pending_delete, ...rest }) => rest);
+      const holdingsForSave = consolidateHoldingsBySymbol(
+        activeHoldings.map(({ pending_delete: _pending_delete, ...rest }) => rest) as unknown as Record<
+          string,
+          unknown
+        >[]
+      ) as Holding[];
       const updatedPortfolioData: PortfolioData = {
         account_info: accountInfo,
         account_summary: {
@@ -338,69 +350,61 @@ export function ManagePortfolioView() {
       };
 
       const nowIso = new Date().toISOString();
-      const fullBlob = await WorldModelService.loadFullBlob({
-        userId: user.uid,
-        vaultKey,
-        vaultOwnerToken: vaultOwnerToken || undefined,
-      }).catch(() => ({} as Record<string, unknown>));
-      const existingFinancialRaw = fullBlob.financial;
-      const existingFinancial =
-        existingFinancialRaw &&
-        typeof existingFinancialRaw === "object" &&
-        !Array.isArray(existingFinancialRaw)
-          ? ({ ...(existingFinancialRaw as Record<string, unknown>) } as Record<string, unknown>)
-          : {};
-
-      const nextFinancialDomain = {
-        ...existingFinancial,
-        // Compatibility mirror for readers still using direct financial fields.
-        ...updatedPortfolioData,
-        schema_version: 3,
-        domain_intent: {
-          primary: "financial",
-          source: "domain_registry_prepopulate",
-          contract_version: 1,
-          updated_at: nowIso,
-        },
-        portfolio: {
-          ...updatedPortfolioData,
-          domain_intent: {
-            primary: "financial",
-            secondary: "portfolio",
-            source: "kai_manage_edit",
-            captured_sections: ["account_info", "account_summary", "holdings", "transactions"],
-            updated_at: nowIso,
-          },
-        },
-        updated_at: nowIso,
-      };
 
       // 2. Store via prepared-blob path to avoid a second load/decrypt cycle.
-      const result = await WorldModelService.storeMergedDomainWithPreparedBlob({
+      const result = await PkmWriteCoordinator.saveMergedDomain({
         userId: user.uid,
-        vaultKey,
         domain: "financial",
-        domainData: nextFinancialDomain as unknown as Record<string, unknown>,
-        summary: {
-          intent_source: "kai_manage_edit",
-          has_portfolio: true,
-          holdings_count: holdingsForSave.length,
-          total_value: updatedPortfolioData.account_summary?.ending_value || 0,
-          portfolio_risk_bucket: deriveRiskBucket(holdingsForSave),
-          risk_bucket: deriveRiskBucket(holdingsForSave),
-          domain_contract_version: 1,
-          intent_map: [
-            "portfolio",
-            "profile",
-            "documents",
-            "analysis_history",
-            "runtime",
-            "analysis.decisions",
-          ],
-          last_updated: nowIso,
-        },
-        baseFullBlob: fullBlob,
+        vaultKey,
         vaultOwnerToken: vaultOwnerToken || undefined,
+        build: (context) => {
+          const existingFinancial =
+            (context.currentDomainData as Record<string, unknown> | null) ?? {};
+          const nextFinancialDomain = {
+            ...existingFinancial,
+            ...updatedPortfolioData,
+            schema_version: 3,
+            domain_intent: {
+              primary: "financial",
+              source: "domain_registry_prepopulate",
+              contract_version: 2,
+              updated_at: nowIso,
+            },
+            portfolio: {
+              ...updatedPortfolioData,
+              domain_intent: {
+                primary: "financial",
+                secondary: "portfolio",
+                source: "kai_manage_edit",
+                captured_sections: ["account_info", "account_summary", "holdings", "transactions"],
+                updated_at: nowIso,
+              },
+            },
+            updated_at: nowIso,
+          };
+
+          return {
+            domainData: nextFinancialDomain as unknown as Record<string, unknown>,
+            summary: {
+              intent_source: "kai_manage_edit",
+              has_portfolio: true,
+              holdings_count: holdingsForSave.length,
+              total_value: updatedPortfolioData.account_summary?.ending_value || 0,
+              portfolio_risk_bucket: deriveRiskBucket(holdingsForSave),
+              risk_bucket: deriveRiskBucket(holdingsForSave),
+              domain_contract_version: 2,
+              intent_map: [
+                "portfolio",
+                "profile",
+                "documents",
+                "analysis_history",
+                "runtime",
+                "analysis.decisions",
+              ],
+              last_updated: nowIso,
+            },
+          };
+        },
       });
 
       if (result.success) {

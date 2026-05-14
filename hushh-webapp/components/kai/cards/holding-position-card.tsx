@@ -39,7 +39,7 @@ export function HoldingPositionCard({ holding, onAnalyze, onManage }: HoldingPos
   const positive = holding.gainLossValue >= 0;
 
   return (
-    <Card variant="none" effect="glass" className="rounded-2xl p-0" showRipple>
+    <Card variant="none" effect="glass" preset="default" showRipple>
       <CardContent className="space-y-3 p-4">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">

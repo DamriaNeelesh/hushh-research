@@ -2,55 +2,98 @@
 
 > Governance for Next.js proxy routes, native plugin parity, and app navigation truth.
 
-Hushh uses a contract manifest to keep the declared runtime surface aligned across:
+
+## Visual Map
+
+```mermaid
+flowchart TD
+  contracts["Route Contracts"]
+  standard["standard routes"]
+  flow["flow routes"]
+  hidden["hidden / redirect routes"]
+  parity["Web / iOS / Android parity"]
+  contracts --> standard
+  contracts --> flow
+  contracts --> hidden
+  standard --> parity
+  flow --> parity
+  hidden --> parity
+```
+
+Hussh uses a code-owned route contract plus docs/runtime checks to keep the declared runtime surface aligned across:
 
 - Next.js API route handlers under `hushh-webapp/app/api/**/route.ts`
 - backend router prefixes and path families
 - Capacitor TypeScript, iOS, and Android plugin surfaces
+- mobile parity guidance for the visible page tree
 
 ## Files
 
-- Manifest: `hushh-webapp/route-contracts.json`
-- Verifier: `hushh-webapp/scripts/verify-route-contracts.cjs`
-- Run locally:
-  - `cd hushh-webapp && npm run verify:routes`
-  - `cd hushh-webapp && npm run verify:capacitor:routes`
+- Canonical app route source: `hushh-webapp/lib/navigation/routes.ts`
+- Route governance reference: `docs/reference/architecture/route-contracts.md`
+- Frontend/native surface mapper: `docs/reference/architecture/frontend-native-surface-map.md`
+- Mobile parity reference: `docs/reference/mobile/capacitor-parity-audit.md`
+- Docs/runtime verification:
+  - `bash scripts/ci/docs-parity-check.sh`
+  - `node scripts/verify-doc-runtime-parity.cjs`
 
 ## Canonical App Routes
 
 Keep navigation documentation aligned with `hushh-webapp/lib/navigation/routes.ts`:
 
 - `/`
+- `/developers`
 - `/login`
+- `/register-phone`
 - `/logout`
 - `/labs/profile-appearance`
 - `/profile`
 - `/consents`
+- `/one/kyc`
 - `/marketplace`
 - `/marketplace/ria`
 - `/ria`
 - `/ria/onboarding`
 - `/ria/clients`
+- `/ria/picks`
 - `/ria/requests`
 - `/ria/settings`
 - `/kai`
 - `/kai/onboarding`
 - `/kai/import`
 - `/kai/plaid/oauth/return`
+- `/kai/alpaca/oauth/return`
+- `/kai/investments`
+- `/kai/funding-trade`
 - `/kai/portfolio`
 - `/kai/analysis`
 - `/kai/optimize`
 
-Implemented route families that are not represented as named constants but still belong to the live app surface:
+Detail entrypoints that require an identifier use query-backed static routes so Capacitor export stays compatible:
 
-- `/marketplace/ria/[riaId]`
-- `/ria/workspace/[clientId]`
+- `/marketplace/ria?riaId=<ria_id>`
+- `/ria/workspace?clientId=<investor_user_id>`
 
 Legacy navigation surfaces and aliases must not be reintroduced without updating both `routes.ts` and this reference.
 
-## When To Update `route-contracts.json`
+## Visible Route Coverage
 
-Update the manifest whenever you:
+`hushh-webapp/lib/navigation/routes.ts` is the declared inventory for the canonical app navigation surface. The mobile parity docs must classify visible routes as:
+
+- native-supported
+- intentionally web-only
+
+If a route is added to the navigation contract, the corresponding architecture/mobile docs must be updated in the same change.
+
+Auth-only routes can still be mandatory even when they intentionally bypass the standard shell. Current hidden auth routes include:
+
+- `/login`
+- `/register-phone`
+- `/logout`
+
+## When To Update Route Governance
+
+Update the route contract docs whenever you:
 
 - add a new Next.js API route under `hushh-webapp/app/api/`
 - change a backend router prefix or supported backend path family
@@ -59,31 +102,16 @@ Update the manifest whenever you:
 
 ## Contract Shape
 
-Each `contracts[]` entry typically includes:
+The practical contract is split across:
 
-- `id`: stable identifier used in verification errors
-- `webRouteFile` or `webRouteFiles`: repo-relative Next.js `route.ts` files
-- `backend`:
-  - `file`: FastAPI router module path
-  - `routerPrefix`: declared `APIRouter(prefix="...")`
-  - `paths`: supported path family list relative to the prefix
-- `native`:
-  - `tsPluginFile`: TypeScript plugin export
-  - `iosPluginFile`: Swift plugin
-  - `androidPluginFile`: Kotlin plugin
-  - `requiredMethodNames`: TS methods that must exist
-
-## Allowlisting
-
-`allowlistedWebRouteFiles` is reserved for intentional exceptions such as web-only utilities.
-
-Default stance:
-
-- tri-flow features should use a real contract entry
-- removed legacy routes should be deleted, not allowlisted
-- wildcard proxies should be constrained to supported backend paths
+- `hushh-webapp/lib/navigation/routes.ts` for app-visible routes
+- backend route modules and Next.js proxy handlers for API surfaces
+- mobile parity docs for platform-specific expectations and exceptions
+- `hushh-webapp/frontend-native-surface-map.generated.json` for the
+  route-to-API/native/plugin/voice scaffold used by Codex agents and parity audits
 
 ## Relationship To Other Docs
 
 - [api-contracts.md](./api-contracts.md) describes the API surface itself.
-- `route-contracts.json` is a guardrail that prevents undeclared route drift.
+- `hushh-webapp/lib/navigation/routes.ts` is the code-owned navigation source of truth.
+- [../mobile/capacitor-parity-audit.md](../mobile/capacitor-parity-audit.md) defines the stricter mobile release gate layered on top of route contracts.

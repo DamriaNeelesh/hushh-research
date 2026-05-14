@@ -11,7 +11,7 @@ interface SectorRotationCardProps {
 export function SectorRotationCard({ rows }: SectorRotationCardProps) {
   if (!rows.length) {
     return (
-      <Card variant="muted" effect="fill" className="rounded-xl p-0">
+      <Card variant="muted" effect="fill" preset="compact">
         <CardContent className="p-4 text-sm text-muted-foreground">
           Sector movement data is unavailable right now.
         </CardContent>
@@ -25,7 +25,7 @@ export function SectorRotationCard({ rows }: SectorRotationCardProps) {
   );
 
   return (
-    <Card variant="none" effect="glass" className="rounded-xl p-0">
+    <Card variant="none" effect="glass" preset="compact">
       <CardContent className="space-y-3 p-4">
         <p className="text-sm font-black tracking-tight">Sector Rotation</p>
         <div className="space-y-2">

@@ -1,4 +1,51 @@
-# Hushh WebApp
+# Hussh Web App (`hushh-webapp`)
+
+
+## Visual Map
+
+```mermaid
+flowchart TB
+  subgraph routes["UI and route surfaces"]
+    app["Next.js App Router"]
+    investor["Kai investor surfaces"]
+    ria["RIA surfaces"]
+    shared["Shared surfaces<br/>profile, consents, marketplace"]
+  end
+
+  subgraph shell["Runtime shell and state"]
+    providers["providers.tsx<br/>shell orchestration"]
+    guards["Auth, onboarding, vault, persona guards"]
+    cache["Cache + vault + persona + consent contexts"]
+  end
+
+  subgraph services["Frontend service layer"]
+    api["ApiService + domain services"]
+    resources["Stale-first resources<br/>PKM, financial, consent, market"]
+    sync["CacheSyncService + write coordinator"]
+  end
+
+  subgraph boundary["Platform boundary"]
+    web["Web route handlers<br/>app/api/*"]
+    native["Capacitor plugins<br/>auth, vault, consent, PKM"]
+  end
+
+  backend["consent-protocol backend"]
+
+  app --> investor
+  app --> ria
+  app --> shared
+  investor --> providers
+  ria --> providers
+  shared --> providers
+  providers --> guards
+  providers --> cache
+  guards --> api
+  cache --> resources
+  resources --> sync
+  api --> web --> backend
+  api --> native --> backend
+  resources --> api
+```
 
 Next.js + React + Capacitor client for Kai and consent-first personal data flows.
 
@@ -10,7 +57,7 @@ Next.js + React + Capacitor client for Kai and consent-first personal data flows
 
 Core invariants:
 - No direct `fetch()` in feature components (service layer only).
-- Vault/world-model operations require consent token + vault context.
+- Vault/PKM operations require consent token + vault context.
 - Encrypted-at-rest only (no plaintext fallback mode).
 
 ## Current Route Architecture
@@ -57,24 +104,29 @@ Use fused stack:
 - Morphy UX for brand surfaces/CTA physics
 - shadcn/ui as stock primitives (`components/ui/*`)
 - Lucide through `Icon` wrapper (`lib/morphy-ux/ui/icon.tsx`)
+- `components/app-ui/*` for Hussh semantic shell/page surfaces
+- `app/labs`, `components/labs`, and `lib/labs` for experimental work only
 
 References:
 - `docs/reference/quality/design-system.md`
+- `docs/reference/quality/frontend-ui-architecture-map.md`
 - `docs/reference/quality/frontend-pattern-catalog.md`
 - `hushh-webapp/components/README.md`
 
 ## Local Development
 
 ```bash
-npm install
-make local
+cd ..
+./bin/hushh bootstrap
+./bin/hushh web --mode uat
 ```
 
-Frontend-only against deployed backends:
+Package-local commands still exist when you are already inside `hushh-webapp/` and intentionally working at the package layer:
 
 ```bash
-make uat-web
-make prod-web
+cd hushh-webapp
+npm install
+npm run dev
 ```
 
 ## Verification Commands
@@ -84,9 +136,7 @@ cd hushh-webapp
 npm run typecheck
 npm test
 npm run build
-npm run verify:routes
-npm run verify:parity
-npm run verify:design-system
+npm run ios:test
 ```
 
 Backend tests (monorepo sibling):

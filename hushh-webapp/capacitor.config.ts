@@ -61,7 +61,10 @@ const config: CapacitorConfig = {
     FirebaseAuthentication: {
       // Use native Google Sign-In SDK on iOS/Android
       skipNativeAuth: false,
-      providers: ["google.com"],
+      providers: ["google.com", "phone"],
+    },
+    FirebaseMessaging: {
+      presentationOptions: ["alert", "badge", "sound"],
     },
     HushhVault: {
       backendUrl: NORMALIZED_BACKEND_URL,
@@ -75,7 +78,7 @@ const config: CapacitorConfig = {
     HushhNotifications: {
       backendUrl: NORMALIZED_BACKEND_URL,
     },
-    WorldModel: {
+    PersonalKnowledgeModel: {
       backendUrl: NORMALIZED_BACKEND_URL,
     },
     HushhAccount: {

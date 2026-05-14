@@ -3,16 +3,14 @@
 
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import {
-  isOnboardingRoute,
-  ONBOARDING_REQUIRED_COOKIE,
-} from "./lib/services/onboarding-route-cookie";
 import { ROUTES, isPublicRoute } from "./lib/navigation/routes";
 
 // Routes that don't require authentication (VaultLockGuard handles protected routes)
 const PUBLIC_ROUTES = [
   ROUTES.HOME,
+  ROUTES.DEVELOPERS,
   ROUTES.LOGIN,
+  ROUTES.PHONE_MANDATE,
   ROUTES.LOGOUT,
   ROUTES.PROFILE,
 ];
@@ -42,19 +40,19 @@ export function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Cookie-backed onboarding route guard:
-  // if onboarding is pending, keep users inside /kai/onboarding until completion.
-  const onboardingRequired = request.cookies.get(ONBOARDING_REQUIRED_COOKIE)?.value === "1";
-  if (
-    onboardingRequired &&
-    pathname.startsWith(ROUTES.KAI_HOME) &&
-    !isOnboardingRoute(pathname)
-  ) {
-    const nextUrl = request.nextUrl.clone();
-    nextUrl.pathname = ROUTES.KAI_ONBOARDING;
-    nextUrl.search = "";
-    return NextResponse.redirect(nextUrl);
-  }
+  // =========================================================================
+  // IMPORTANT: Firebase Auth is CLIENT-SIDE. We cannot reliably check auth
+  // server-side in proxy without session cookies (which we don't use).
+  //
+  // Auth is handled by:
+  // 1. VaultLockGuard in dashboard/consents layouts (checks Firebase auth + vault)
+  // 2. KaiOnboardingGuard + PostAuthRouteService (resolve onboarding from
+  //    real user/vault/profile state, not stale client cookies)
+  // 2. useAuth hook in individual pages
+  //
+  // The proxy just handles basic routing and allows all requests through.
+  // Protected pages will redirect to "/login" if not authenticated.
+  // =========================================================================
 
   // =========================================================================
   // IMPORTANT: Firebase Auth is CLIENT-SIDE. We cannot reliably check auth

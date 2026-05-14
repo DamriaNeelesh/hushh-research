@@ -1,67 +1,161 @@
 # Runtime DB Fact Sheet (Sanitized)
 
-This appendix records a read-only schema snapshot of the runtime Postgres database used in local development. It is documentation-only and intentionally excludes credentials, row payloads, and any user-secret values.
 
-Note: the original snapshot below predates the Investor + RIA IAM rollout. Current runtime also includes the IAM/public-workflow tables listed under "Post-IAM Extension Tables".
+## Visual Context
 
-- Captured at (UTC): `2026-03-02T03:52:45Z`
-- Source: read-only introspection using local `consent-protocol/.env` connectivity
+Canonical visual owner: [Architecture Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
+This appendix records the runtime database shape that matters for One, Kai, Nav/KYC, PKM, consent, IAM, provider caches, and regulated workflow state. It is documentation-only and intentionally excludes credentials, row payloads, and any user-secret values.
+
+- Captured at (UTC): `2026-03-20T00:00:00Z`
+- Source: read-only introspection against the live UAT-backed local environment
 - Schema: `public`
 
-## Public Tables (13)
+## Canonical Data-Plane Contract
 
-1. `consent_audit`
-2. `consent_exports`
-3. `domain_registry`
-4. `kai_market_cache_entries`
-5. `renaissance_avoid`
-6. `renaissance_screening_criteria`
-7. `renaissance_universe`
-8. `tickers`
-9. `user_push_tokens`
-10. `vault_key_wrappers`
-11. `vault_keys`
-12. `world_model_data`
-13. `world_model_index_v2`
+Human maintainer SOP: [data-model-governance.md](./data-model-governance.md).
 
-## Post-IAM Extension Tables
+Machine-readable contract: [runtime-db-data-plane-contract.json](./runtime-db-data-plane-contract.json).
 
-These tables are part of the current runtime architecture after the IAM rollout and should be treated as expected runtime schema, even though they were added after the original 13-table snapshot.
+The production rule is to govern table families, not create a giant table-by-table SOP. Every table family has an owner, data class, retention policy, deletion behavior, access path, and trust boundary.
+
+| Data class | Meaning | Default retention |
+| --- | --- | --- |
+| `personal_encrypted` | User-private ciphertext, hashes, encrypted wrappers, or legacy ciphertext during cutover | account/domain lifetime |
+| `personal_metadata` | Queryable user metadata, manifests, scope handles, persona state, or relationship metadata | account/relationship lifetime |
+| `workflow_state` | KYC, consent export, PKM upgrade, and other active workflow records | active workflow plus short terminal window |
+| `provider_cache` | Plaid, Gmail, market, and other provider-derived operational caches | short by default; refreshable or purgeable |
+| `audit_regulated` | Consent, internal access, funding/trading, and regulated operational evidence | long-retention metadata |
+| `reference` | Shared non-user-private reference data | refreshable/rebuildable |
+
+Production readiness is blocked when:
+
+1. a migration creates an unclassified table
+2. a table family lacks owner, retention, deletion, access-path, or trust-boundary metadata
+3. new canonical writes target legacy memory tables
+4. provider caches are described as durable user memory
+5. app DB tables are used as analytics source of truth instead of GA4/BigQuery reporting planes
+
+Run:
+
+```bash
+./bin/hushh codex data-model-audit
+```
+
+## Current Table Families
+
+| Family | Data class | Owner | Boundary |
+| --- | --- | --- | --- |
+| Vault key material | `personal_encrypted` | `vault-pkm-governance` | encrypted/hash-only vault state; not the general user model |
+| Actor identity state | `personal_metadata` | `iam-consent-governance` | actor/profile/persona/push metadata |
+| Consent authority audit | `audit_regulated` | `iam-consent-governance` | metadata audit; rows do not grant authority by themselves |
+| Consent export workflows | `workflow_state` | `iam-consent-governance` | encrypted exports and wrapped-key metadata only |
+| PKM encrypted memory | `personal_encrypted` | `vault-pkm-governance` | ciphertext segments; backend does not inspect plaintext PKM |
+| PKM metadata and scope | `personal_metadata` | `vault-pkm-governance` | manifests, scope handles, index metadata, replay metadata |
+| PKM upgrade workflows | `workflow_state` | `vault-pkm-governance` | client-side decrypt/transform/re-encrypt checkpoints |
+| Legacy memory cutover | `personal_encrypted` | `vault-pkm-governance` | no new canonical writes; delete after cutover evidence |
+| RIA marketplace relationships | `personal_metadata` | `iam-consent-governance` | professional/relationship metadata, not investor PKM |
+| Kai brokerage provider cache | `provider_cache` | `backend-runtime-governance` | encrypted tokens and bounded derived state |
+| Kai Gmail receipt cache | `provider_cache` | `backend-runtime-governance` | receipt summaries/previews; durable memory requires PKM write |
+| Market reference and cache | `reference` | `backend-runtime-governance` | shared market/reference data |
+| Funding/trading audit | `audit_regulated` | `backend-runtime-governance` | money-movement and trade-execution metadata |
+| One email KYC workflow | `workflow_state` | `backend-runtime-governance` | metadata and approval drafts; no raw mailbox memory |
+| Developer access | `audit_regulated` | `mcp-developer-surface` | developer metadata and token hashes/wrappers |
+
+## Identity Boundary Rule
+
+`actor_profiles` is the long-term actor/persona parent for application domains. `vault_keys` remains vault state and must not become the default foreign-key parent for unrelated future domains. New tables should reference `actor_profiles` unless they are truly vault-wrapper or vault-status rows.
+
+## Canonical PKM Tables
+
+1. `pkm_index`
+2. `pkm_blobs`
+3. `pkm_manifests`
+4. `pkm_manifest_paths`
+5. `pkm_scope_registry`
+6. `pkm_events`
+7. `pkm_migration_state`
+
+## Legacy Transition Tables
+
+These tables exist only for the bounded encrypted-user cutover window. No new product writes should target them.
+
+1. `pkm_data`
+2. `pkm_embeddings`
+3. `world_model_*`
+4. old chat/world-model tables retained only for migration compatibility or historical cleanup
+
+## Shared Application Tables
 
 1. `actor_profiles`
-2. `ria_profiles`
-3. `ria_firms`
-4. `ria_firm_memberships`
-5. `ria_verification_events`
-6. `advisor_investor_relationships`
-7. `ria_client_invites`
-8. `consent_scope_templates`
-9. `marketplace_public_profiles`
-10. `runtime_persona_state` (transitional compatibility only)
+2. `advisor_investor_relationships`
+3. `consent_audit`
+4. `consent_exports`
+5. `consent_scope_templates`
+6. `developer_applications`
+7. `developer_apps`
+8. `developer_tokens`
+9. `domain_registry`
+10. `kai_market_cache_entries`
+11. `kai_plaid_items`
+12. `kai_plaid_link_sessions`
+13. `kai_plaid_refresh_runs`
+14. `kai_portfolio_source_preferences`
+15. `marketplace_public_profiles`
+16. `renaissance_avoid`
+17. `renaissance_screening_criteria`
+18. `renaissance_universe`
+19. `ria_client_invites`
+20. `ria_firm_memberships`
+21. `ria_firms`
+22. `ria_profiles`
+23. `ria_verification_events`
+24. `runtime_persona_state`
+25. `tickers`
+26. `user_push_tokens`
+27. `vault_key_wrappers`
+28. `vault_keys`
 
 ## Key Column Snapshots
 
-### `world_model_data`
+### `pkm_blobs`
 
 - `user_id` (`text`)
-- `encrypted_data_ciphertext` (`text`)
-- `encrypted_data_iv` (`text`)
-- `encrypted_data_tag` (`text`)
+- `domain` (`text`)
+- `segment_id` (`text`)
+- `ciphertext` (`text`)
+- `iv` (`text`)
+- `tag` (`text`)
 - `algorithm` (`text`)
-- `data_version` (`integer`)
+- `content_revision` (`integer`)
+- `manifest_revision` (`integer`)
+- `size_bytes` (`integer`)
 - `created_at` (`timestamp with time zone`)
 - `updated_at` (`timestamp with time zone`)
 
-### `world_model_index_v2`
+### `pkm_index`
 
 - `user_id` (`text`)
-- `domain_summaries` (`jsonb`)
 - `available_domains` (`ARRAY`)
-- `computed_tags` (`ARRAY`)
+- `domain_freshness` (`jsonb`)
+- `summary_projection` (`jsonb`)
+- `capability_flags` (`jsonb`)
 - `activity_score` (`numeric`)
 - `last_active_at` (`timestamp with time zone`)
 - `total_attributes` (`integer`)
-- `model_version` (`integer`)
+- `created_at` (`timestamp with time zone`)
+- `updated_at` (`timestamp with time zone`)
+
+### `pkm_scope_registry`
+
+- `user_id` (`text`)
+- `domain` (`text`)
+- `scope_handle` (`text`)
+- `scope_label` (`text`)
+- `segment_ids` (`ARRAY`)
+- `sensitivity_tier` (`text`)
+- `manifest_revision` (`integer`)
+- `exposure_enabled` (`boolean`)
 - `created_at` (`timestamp with time zone`)
 - `updated_at` (`timestamp with time zone`)
 
@@ -92,11 +186,12 @@ These tables are part of the current runtime architecture after the IAM rollout 
 The `public` schema also includes extension/operator functions (vector/trigram) that are omitted here for readability. Core app-facing functions observed:
 
 1. `consent_audit_notify()`
-2. `get_user_world_model_metadata(p_user_id text)`
-3. `update_world_model_data_timestamp()`
-4. `merge_domain_summary(p_user_id text, p_domain text, p_summary jsonb)` (optional accelerator path)
-5. `remove_domain_summary_key(p_user_id text, p_domain text, p_key text)` (optional accelerator path)
+2. `auto_register_domain(p_domain text, p_label text, p_category text, p_description text)`
+3. legacy metadata compatibility helper retained during cutover
+4. legacy timestamp compatibility helper retained during cutover
 
 ## Reproducibility
 
 Use a read-only introspection query set against `information_schema`, `pg_catalog.pg_tables`, and `pg_proc` to refresh this file. Do not include credentials or data rows in documentation artifacts.
+
+Use [runtime-db-data-plane-contract.json](./runtime-db-data-plane-contract.json) and `./bin/hushh codex data-model-audit` to verify that newly created tables are classified and that legacy memory tables are not reintroduced as canonical write targets.

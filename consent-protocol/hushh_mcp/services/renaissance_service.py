@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from hushh_mcp.services.symbol_master_service import get_symbol_master_service
 from hushh_mcp.services.universe_list_service import SecurityListDescriptor, SecurityListMember
 
 logger = logging.getLogger(__name__)
@@ -60,40 +61,10 @@ class RenaissanceService:
     def __init__(self):
         self._db = None
 
-    def list_descriptors(self) -> list[SecurityListDescriptor]:
-        """Expose Renaissance datasets through the generic security-list contract."""
-        return [
-            SecurityListDescriptor(
-                list_id="renaissance_universe",
-                slug="renaissance-universe",
-                list_type="universe",
-                owner_type="system",
-                visibility="public",
-                title="Renaissance Universe",
-                description="Core Renaissance investable equity universe used by Kai.",
-                source_table="renaissance_universe",
-            ),
-            SecurityListDescriptor(
-                list_id="renaissance_avoid",
-                slug="renaissance-avoid",
-                list_type="avoid",
-                owner_type="system",
-                visibility="public",
-                title="Renaissance Avoid",
-                description="Explicit avoid list and disqualifying securities context.",
-                source_table="renaissance_avoid",
-            ),
-            SecurityListDescriptor(
-                list_id="renaissance_screening_criteria",
-                slug="renaissance-screening-criteria",
-                list_type="screening",
-                owner_type="system",
-                visibility="public",
-                title="Renaissance Screening Criteria",
-                description="Criteria and rubric rows that shape Renaissance ranking and debate context.",
-                source_table="renaissance_screening_criteria",
-            ),
-        ]
+    @staticmethod
+    def _is_supported_symbol(ticker: str) -> bool:
+        metadata = get_symbol_master_service().get_ticker_metadata(ticker)
+        return bool(metadata) and metadata.get("tradable") is not False
 
     @property
     def db(self):
@@ -102,6 +73,101 @@ class RenaissanceService:
 
             self._db = get_db()
         return self._db
+
+    def list_descriptors(self) -> list[SecurityListDescriptor]:
+        """Expose Renaissance tables through the generic security-list registry."""
+        return [
+            SecurityListDescriptor(
+                list_id="renaissance_universe",
+                slug="renaissance-universe",
+                list_type="universe",
+                owner_type="system",
+                visibility="shared",
+                title="Renaissance investable universe",
+                description="Tiered investable universe used by Kai and RIA workflows.",
+                source_table="renaissance_universe",
+            ),
+            SecurityListDescriptor(
+                list_id="renaissance_avoid",
+                slug="renaissance-avoid",
+                list_type="avoid",
+                owner_type="system",
+                visibility="shared",
+                title="Renaissance avoid list",
+                description="Explicit exclusions and avoid-context entries for Renaissance coverage.",
+                source_table="renaissance_avoid",
+            ),
+            SecurityListDescriptor(
+                list_id="renaissance_screening_criteria",
+                slug="renaissance-screening-criteria",
+                list_type="screening",
+                owner_type="system",
+                visibility="shared",
+                title="Renaissance screening criteria",
+                description="Structured screening rubric and criteria used to classify the universe.",
+                source_table="renaissance_screening_criteria",
+            ),
+        ]
+
+    async def list_members(self, list_id: str) -> list[SecurityListMember]:
+        """Expose list members through the generic security-list contract."""
+        normalized = str(list_id or "").strip().lower()
+        if normalized == "renaissance_universe":
+            return [
+                SecurityListMember(
+                    ticker=stock.ticker,
+                    company_name=stock.company_name,
+                    sector=stock.sector,
+                    metadata={
+                        "tier": stock.tier,
+                        "tier_rank": stock.tier_rank,
+                        "fcf_billions": stock.fcf_billions,
+                        "investment_thesis": stock.investment_thesis,
+                    },
+                )
+                for stock in await self.get_all_investable()
+            ]
+
+        if normalized == "renaissance_avoid":
+            try:
+                response = self.db.table("renaissance_avoid").select("*").order("ticker").execute()
+                rows = response.data or []
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Error listing Renaissance avoid members: %s", exc)
+                return []
+
+            return [
+                SecurityListMember(
+                    ticker=row.get("ticker", ""),
+                    company_name=row.get("company_name"),
+                    sector=row.get("sector"),
+                    metadata={
+                        "category": row.get("category"),
+                        "why_avoid": row.get("why_avoid"),
+                        "source": row.get("source"),
+                    },
+                )
+                for row in rows
+                if row.get("ticker")
+            ]
+
+        if normalized == "renaissance_screening_criteria":
+            criteria = await self.get_screening_criteria()
+            return [
+                SecurityListMember(
+                    ticker=f"criterion:{index + 1}",
+                    company_name=row.get("title"),
+                    sector=row.get("section"),
+                    metadata={
+                        "rule_index": row.get("rule_index"),
+                        "detail": row.get("detail"),
+                        "value_text": row.get("value_text"),
+                    },
+                )
+                for index, row in enumerate(criteria)
+            ]
+
+        return []
 
     async def is_investable(self, ticker: str) -> tuple[bool, Optional[RenaissanceStock]]:
         """
@@ -120,6 +186,8 @@ class RenaissanceService:
 
             if response.data and len(response.data) > 0:
                 row = response.data[0]
+                if not self._is_supported_symbol(row["ticker"]):
+                    return False, None
                 stock = RenaissanceStock(
                     ticker=row["ticker"],
                     company_name=row["company_name"],
@@ -167,6 +235,7 @@ class RenaissanceService:
                     tier_rank=row.get("tier_rank", 0),
                 )
                 for row in response.data
+                if self._is_supported_symbol(row["ticker"])
             ]
 
         except Exception as e:
@@ -195,6 +264,7 @@ class RenaissanceService:
                     tier_rank=row.get("tier_rank", 0),
                 )
                 for row in response.data
+                if self._is_supported_symbol(row["ticker"])
             ]
 
         except Exception as e:
@@ -223,73 +293,12 @@ class RenaissanceService:
                     tier_rank=row.get("tier_rank", 0),
                 )
                 for row in response.data
+                if self._is_supported_symbol(row["ticker"])
             ]
 
         except Exception as e:
             logger.error(f"Error getting sector {sector}: {e}")
             return []
-
-    async def list_members(self, list_id: str) -> list[SecurityListMember]:
-        """Return generic list members for Renaissance-backed security lists."""
-        if list_id == "renaissance_universe":
-            stocks = await self.get_all_investable()
-            return [
-                SecurityListMember(
-                    ticker=stock.ticker,
-                    company_name=stock.company_name,
-                    sector=stock.sector,
-                    metadata={
-                        "tier": stock.tier,
-                        "tier_rank": stock.tier_rank,
-                        "fcf_billions": stock.fcf_billions,
-                        "investment_thesis": stock.investment_thesis,
-                    },
-                )
-                for stock in stocks
-            ]
-
-        if list_id == "renaissance_avoid":
-            try:
-                response = (
-                    self.db.table("renaissance_avoid")
-                    .select("ticker, company_name, sector, category, why_avoid, source")
-                    .order("ticker")
-                    .execute()
-                )
-                return [
-                    SecurityListMember(
-                        ticker=row["ticker"],
-                        company_name=row.get("company_name"),
-                        sector=row.get("sector"),
-                        metadata={
-                            "category": row.get("category"),
-                            "why_avoid": row.get("why_avoid"),
-                            "source": row.get("source"),
-                        },
-                    )
-                    for row in (response.data or [])
-                ]
-            except Exception as e:
-                logger.error(f"Error listing Renaissance avoid members: {e}")
-                return []
-
-        if list_id == "renaissance_screening_criteria":
-            rows = await self.get_screening_criteria()
-            return [
-                SecurityListMember(
-                    ticker=f"RULE-{index + 1}",
-                    company_name=row.get("title"),
-                    metadata={
-                        "section": row.get("section"),
-                        "rule_index": row.get("rule_index"),
-                        "detail": row.get("detail"),
-                        "value_text": row.get("value_text"),
-                    },
-                )
-                for index, row in enumerate(rows)
-            ]
-
-        return []
 
     async def get_avoid_context(self, ticker: str) -> dict:
         """

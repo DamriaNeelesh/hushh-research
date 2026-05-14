@@ -1,59 +1,73 @@
 # Contributing to Consent Protocol
 
-Thank you for your interest in contributing to the Hushh Consent Protocol. This document explains how to contribute code, agents, operons, and documentation.
+Thank you for your interest in contributing to the Hussh Consent Protocol. This document explains how to contribute code, agents, operons, and documentation.
 
 ---
 
 ## Prerequisites
 
 - Python 3.13+
-- A virtual environment (`python -m venv .venv`)
-- Dependencies installed: `pip install -r requirements.txt -r requirements-dev.txt`
+- `uv`
+- Dependencies installed: `uv sync --frozen --group dev`
 
 ---
 
 ## Development Workflow
 
-### 1. Fork and Clone
+### 1. Choose the Right Contribution Surface
+
+If you are working inside the `hushh-research` monorepo, use the root contributor path:
+
+```bash
+cd ..
+./bin/hushh bootstrap
+./bin/hushh terminal backend --mode local --reload
+```
+
+If you are working on the standalone upstream backend:
+
+### 2. Fork and Clone
 
 ```bash
 git clone https://github.com/<your-username>/consent-protocol.git
 cd consent-protocol
+uv sync --frozen --group dev
 ```
 
-### 2. Create a Branch
+### 3. Create a Branch
 
 ```bash
 git checkout -b feat/my-new-operon
 ```
 
-### 3. Make Your Changes
+### 4. Make Your Changes
 
 Follow the architecture and coding standards below.
 
-### 4. Run All Checks
+### 5. Run All Checks
 
 Every PR must pass these before merge:
 
 ```bash
-make ci-local  # Runs all checks (lint, format, typecheck, test, security)
+./bin/consent-protocol ci  # Runs all checks (lint, format, typecheck, test, security)
 ```
 
 Or run individually:
 
 ```bash
-make lint          # Lint
-make format-check  # Format check
-make typecheck     # Type check
-make test          # Tests
-make security      # Security scan
+./bin/consent-protocol lint          # Lint
+./bin/consent-protocol format-check  # Format check
+./bin/consent-protocol typecheck     # Type check
+./bin/consent-protocol test          # Tests
+./bin/consent-protocol security      # Security scan
 ```
 
-### 5. Open a Pull Request
+### 6. Open a Pull Request
 
 - Target: `main`
 - Fill out the PR template (tests, ruff, mypy, consent validation, docs)
 - One approval required
+- Every commit must include `Signed-off-by` (`git commit -s`)
 
 ---
 
@@ -72,6 +86,7 @@ make security      # Security scan
 2. **Agents never call services directly.** The stack is: Agent > Tool > Operon > Service.
 3. **Consent is validated at every layer.** Use `HushhAgent` for agents, `@hushh_tool` for tools.
 4. **No `sessionStorage` or `localStorage` patterns.** The backend is stateless; state management is the frontend's concern.
+5. **Canonical PKM semantics must be agent-derived.** If a backend feature interprets user meaning, it must declare the owning agent, prompt contract, validator rules, and required live-eval phase. See `docs/reference/pkm-agent-north-star.md`.
 
 ---
 
@@ -136,6 +151,22 @@ tools:
 6. Add tests
 7. Register in `hushh_mcp/agents/__init__.py`
 
+### Semantic Feature Declaration
+
+If the feature classifies or restructures user meaning, the PR must declare:
+
+- owning agent
+- manifest path
+- structured output contract
+- deterministic validator rules
+- live-eval phase required before promotion
+
+Reference docs:
+
+- `docs/reference/pkm-agent-north-star.md`
+- `docs/reference/pkm-prompt-contract.md`
+- `docs/reference/backend-semantic-boundary.md`
+
 ---
 
 ## Adding API Routes
@@ -154,16 +185,26 @@ tools:
 - Every new agent or operon must be documented
 - Use relative paths for all internal links
 
+## Migration Authority
+
+Treat only these as release authority:
+
+- `db/migrations/`
+- `db/release_migration_manifest.json`
+
+Do not treat legacy/bootstrap SQL or one-off repair scripts as the normal migration lane for contributor work.
+
 ---
 
 ## PR Checklist
 
 Before submitting, verify:
 
-- [ ] `make ci-local` passes (or run checks individually)
+- [ ] `./bin/consent-protocol ci` passes (or run checks individually)
 - [ ] Consent validation is present at agent entry AND tool invocation
 - [ ] Tests cover the new code
 - [ ] Documentation is updated
+- [ ] Commits are signed off (`git log --format=%B -n 1`)
 
 ---
 

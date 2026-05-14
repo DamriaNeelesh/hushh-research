@@ -15,24 +15,86 @@ Benefits over REST API:
   - Consistent with migration scripts
 """
 
+import json
 import logging
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, TypeVar, Union
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
+from psycopg2.extras import Json as PsycopgJson
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.exc import OperationalError as SqlalchemyOperationalError
+from sqlalchemy.pool import NullPool, QueuePool
+
+from db.connection import format_database_unavailable_details, local_database_unavailable_hint
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+_DB_CONNECTION_ERROR_PATTERNS = (
+    "connection refused",
+    "server closed the connection unexpectedly",
+    "could not connect to server",
+    "connection reset by peer",
+    "terminating connection due to administrator command",
+    "connection not open",
+    "timeout",
+    "timed out",
+    "ssl syscall error: eof detected",
+)
+_DB_RETRY_ATTEMPTS = 2
+_T = TypeVar("_T")
 
 # Singleton engine instance
 _engine: Optional[Engine] = None
+
+
+def _env_truthy(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default %s", name, raw, default)
+        return default
+    if value < minimum:
+        logger.warning(
+            "Out-of-range integer for %s=%r; expected >= %s. Using default %s",
+            name,
+            raw,
+            minimum,
+            default,
+        )
+        return default
+    return value
+
+
+def _adapt_db_param_value(value: Any, dialect_name: str | None = None) -> Any:
+    """Adapt JSON-like values for the active DB driver."""
+    if isinstance(value, dict):
+        if dialect_name and dialect_name.startswith("postgres"):
+            return PsycopgJson(value)
+        return json.dumps(value)
+    return value
+
+
+def _adapt_db_params(params: dict[str, Any], dialect_name: str | None = None) -> dict[str, Any]:
+    return {
+        key: _adapt_db_param_value(value, dialect_name=dialect_name)
+        for key, value in params.items()
+    }
 
 
 class DatabaseExecutionError(RuntimeError):
@@ -44,18 +106,85 @@ class DatabaseExecutionError(RuntimeError):
         table_name: str,
         operation: str,
         details: str,
+        status_code: int = 500,
+        code: str = "DATABASE_EXECUTION_ERROR",
+        hint: str | None = None,
     ):
         self.table_name = table_name
         self.operation = operation
         self.details = details
+        self.status_code = status_code
+        self.code = code
+        self.hint = hint
         super().__init__(f"DB operation failed [{table_name}.{operation}]: {details}")
+
+
+def _iter_exception_chain(exc: BaseException):
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _is_transient_connection_error(exc: Exception) -> bool:
+    for current in _iter_exception_chain(exc):
+        if isinstance(
+            current, (SqlalchemyOperationalError, ConnectionError, OSError, TimeoutError)
+        ):
+            return True
+        message = str(current).strip().lower()
+        if message and any(pattern in message for pattern in _DB_CONNECTION_ERROR_PATTERNS):
+            return True
+    return False
+
+
+def _dispose_engine_quietly(engine: Any, *, reason: str) -> None:
+    dispose = getattr(engine, "dispose", None)
+    if not callable(dispose):
+        return
+    try:
+        dispose()
+    except Exception as exc:  # pragma: no cover - best-effort cleanup only
+        logger.warning("Failed to dispose database engine after %s: %s", reason, exc)
+
+
+def _run_with_connection_retry(
+    engine: Any,
+    *,
+    operation_label: str,
+    callback: Callable[[Any], _T],
+) -> _T:
+    last_error: Exception | None = None
+    for attempt in range(1, _DB_RETRY_ATTEMPTS + 1):
+        try:
+            with engine.connect() as conn:
+                return callback(conn)
+        except DatabaseExecutionError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            should_retry = attempt < _DB_RETRY_ATTEMPTS and _is_transient_connection_error(exc)
+            if not should_retry:
+                raise
+            logger.warning(
+                "Transient database connection error during %s; disposing engine and retrying once: %s",
+                operation_label,
+                exc,
+            )
+            _dispose_engine_quietly(engine, reason=operation_label)
+    if last_error is None:  # pragma: no cover - defensive fallback
+        raise RuntimeError(f"Database operation failed without captured error: {operation_label}")
+    raise last_error
 
 
 def get_db_engine() -> Engine:
     """
     Get SQLAlchemy engine using session pooler credentials.
 
-    Uses NullPool to let Supabase's session pooler handle connection pooling.
+    Defaults to QueuePool to reuse local TCP connections and reduce repeated
+    connection handshakes; can be switched back to NullPool via env.
 
     Returns:
         SQLAlchemy Engine instance
@@ -94,8 +223,43 @@ def get_db_engine() -> Engine:
             database_url = f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}{ssl_suffix}"
             target = f"{db_host}:{db_port}/{db_name}"
 
+        connect_args: dict[str, Any] = {
+            "connect_timeout": _env_int("DB_CONNECT_TIMEOUT_SECONDS", 10, minimum=1)
+        }
+        if not db_unix_socket:
+            connect_args.update(
+                {
+                    "keepalives": 1,
+                    "keepalives_idle": _env_int("DB_TCP_KEEPALIVE_IDLE_SECONDS", 30, minimum=1),
+                    "keepalives_interval": _env_int(
+                        "DB_TCP_KEEPALIVE_INTERVAL_SECONDS", 10, minimum=1
+                    ),
+                    "keepalives_count": _env_int("DB_TCP_KEEPALIVE_COUNT", 5, minimum=1),
+                }
+            )
+
+        use_null_pool = _env_truthy("DB_SQLALCHEMY_USE_NULL_POOL", False)
         logger.info(f"Initializing database connection to {target}")
-        _engine = create_engine(database_url, poolclass=NullPool)
+        if use_null_pool:
+            _engine = create_engine(
+                database_url,
+                poolclass=NullPool,
+                connect_args=connect_args,
+                pool_pre_ping=True,
+            )
+            logger.info("Database engine initialized with NullPool")
+        else:
+            _engine = create_engine(
+                database_url,
+                poolclass=QueuePool,
+                pool_size=_env_int("DB_SQLALCHEMY_POOL_SIZE", 5, minimum=1),
+                max_overflow=_env_int("DB_SQLALCHEMY_MAX_OVERFLOW", 10, minimum=0),
+                pool_timeout=_env_int("DB_SQLALCHEMY_POOL_TIMEOUT_SECONDS", 30, minimum=1),
+                pool_recycle=_env_int("DB_SQLALCHEMY_POOL_RECYCLE_SECONDS", 1800, minimum=30),
+                pool_pre_ping=True,
+                connect_args=connect_args,
+            )
+            logger.info("Database engine initialized with QueuePool")
         logger.info("Database engine initialized")
 
     return _engine
@@ -275,7 +439,7 @@ class TableQuery:
         self._limit_val = 1
         return self
 
-    def _build_where_clause(self, params: dict) -> str:
+    def _build_where_clause(self, params: dict, dialect_name: str | None = None) -> str:
         """Build WHERE clause from filters."""
         if not self._filters:
             return ""
@@ -288,55 +452,69 @@ class TableQuery:
                     conditions.append(f'"{column}" IS NULL')
                 else:
                     conditions.append(f'"{column}" IS :{param_name}')
-                    params[param_name] = value
+                    params[param_name] = _adapt_db_param_value(value, dialect_name=dialect_name)
             elif op == "IN":
                 # Handle IN clause with multiple parameters
                 in_params = []
                 for j, v in enumerate(value):
                     in_param = f"{param_name}_{j}"
                     in_params.append(f":{in_param}")
-                    params[in_param] = v
+                    params[in_param] = _adapt_db_param_value(v, dialect_name=dialect_name)
                 conditions.append(f'"{column}" IN ({", ".join(in_params)})')
             else:
                 conditions.append(f'"{column}" {op} :{param_name}')
-                params[param_name] = value
+                params[param_name] = _adapt_db_param_value(value, dialect_name=dialect_name)
 
         return " WHERE " + " AND ".join(conditions)
 
     def execute(self) -> QueryResult:
         """Execute the query and return results."""
         try:
-            with self.engine.connect() as conn:
+
+            def _execute(conn) -> QueryResult:
                 if self._operation == "select":
                     return self._execute_select(conn)
-                elif self._operation == "insert":
+                if self._operation == "insert":
                     return self._execute_insert(conn)
-                elif self._operation == "update":
+                if self._operation == "update":
                     return self._execute_update(conn)
-                elif self._operation == "upsert":
+                if self._operation == "upsert":
                     return self._execute_upsert(conn)
-                elif self._operation == "delete":
+                if self._operation == "delete":
                     return self._execute_delete(conn)
-                else:
-                    raise DatabaseExecutionError(
-                        table_name=self.table_name,
-                        operation=self._operation,
-                        details=f"Unknown operation: {self._operation}",
-                    )
+                raise DatabaseExecutionError(
+                    table_name=self.table_name,
+                    operation=self._operation,
+                    details=f"Unknown operation: {self._operation}",
+                )
+
+            return _run_with_connection_retry(
+                self.engine,
+                operation_label=f"{self.table_name}.{self._operation}",
+                callback=_execute,
+            )
         except DatabaseExecutionError:
             raise
         except Exception as e:
             logger.error(f"Database error: {e}")
+            is_unavailable = _is_transient_connection_error(e)
             raise DatabaseExecutionError(
                 table_name=self.table_name,
                 operation=self._operation,
-                details=str(e),
+                details=format_database_unavailable_details(str(e)) if is_unavailable else str(e),
+                status_code=503 if is_unavailable else 500,
+                code="DATABASE_UNAVAILABLE" if is_unavailable else "DATABASE_EXECUTION_ERROR",
+                hint=local_database_unavailable_hint() if is_unavailable else None,
             ) from e
 
     def _execute_select(self, conn) -> QueryResult:
         """Execute SELECT query."""
         params: dict[str, Any] = {}
-        where_clause = self._build_where_clause(params)
+        dialect_name = getattr(getattr(conn, "engine", None), "dialect", None)
+        dialect_name = getattr(dialect_name, "name", None) or getattr(
+            getattr(self.engine, "dialect", None), "name", None
+        )
+        where_clause = self._build_where_clause(params, dialect_name=dialect_name)
 
         # Build column list
         if self._columns == "*":
@@ -390,10 +568,13 @@ class TableQuery:
         columns = list(data_list[0].keys())
         col_names = ", ".join(f'"{c}"' for c in columns)
 
+        dialect_name = getattr(getattr(self.engine, "dialect", None), "name", None)
         inserted_rows = []
         for i, row_data in enumerate(data_list):
             param_names = ", ".join(f":v{i}_{c}" for c in columns)
-            params = {f"v{i}_{c}": row_data[c] for c in columns}
+            params = _adapt_db_params(
+                {f"v{i}_{c}": row_data[c] for c in columns}, dialect_name=dialect_name
+            )
 
             sql = (
                 f'INSERT INTO "{self.table_name}" ({col_names}) VALUES ({param_names}) RETURNING *'
@@ -410,14 +591,15 @@ class TableQuery:
             raise ValueError("No data to update")
 
         params = {}
+        dialect_name = getattr(getattr(self.engine, "dialect", None), "name", None)
         set_clauses = []
         for i, (col, val) in enumerate(self._update_data.items()):
             param_name = f"u{i}"
             set_clauses.append(f'"{col}" = :{param_name}')
-            params[param_name] = val
+            params[param_name] = _adapt_db_param_value(val, dialect_name=dialect_name)
 
         sql = f'UPDATE "{self.table_name}" SET {", ".join(set_clauses)}'
-        sql += self._build_where_clause(params)
+        sql += self._build_where_clause(params, dialect_name=dialect_name)
         sql += " RETURNING *"
 
         result = conn.execute(text(sql), params)
@@ -452,10 +634,13 @@ class TableQuery:
         ]
         update_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_cols)
 
+        dialect_name = getattr(getattr(self.engine, "dialect", None), "name", None)
         upserted_rows = []
         for i, row_data in enumerate(data_list):
             param_names = ", ".join(f":v{i}_{c}" for c in columns)
-            params = {f"v{i}_{c}": row_data[c] for c in columns}
+            params = _adapt_db_params(
+                {f"v{i}_{c}": row_data[c] for c in columns}, dialect_name=dialect_name
+            )
 
             if update_clause:
                 sql = f'''
@@ -481,7 +666,8 @@ class TableQuery:
         """Execute DELETE query."""
         params: dict[str, Any] = {}
         sql = f'DELETE FROM "{self.table_name}"'
-        sql += self._build_where_clause(params)
+        dialect_name = getattr(getattr(self.engine, "dialect", None), "name", None)
+        sql += self._build_where_clause(params, dialect_name=dialect_name)
         sql += " RETURNING *"
 
         result = conn.execute(text(sql), params)
@@ -540,24 +726,37 @@ class DatabaseClient:
             QueryResult with data
         """
         try:
-            with self.engine.connect() as conn:
-                result = conn.execute(text(sql), params or {})
+
+            def _execute(conn) -> QueryResult:
+                dialect_name = getattr(getattr(self.engine, "dialect", None), "name", None)
+                adapted_params = _adapt_db_params(params or {}, dialect_name=dialect_name)
+                result = conn.execute(text(sql), adapted_params)
 
                 # Check if this is a SELECT-like query that returns rows
                 if result.returns_rows:
                     rows = [dict(row._mapping) for row in result]
-                    return QueryResult(data=rows, count=len(rows))
-                else:
                     conn.commit()
-                    return QueryResult(data=[], count=result.rowcount)
+                    return QueryResult(data=rows, count=len(rows))
+                conn.commit()
+                return QueryResult(data=[], count=result.rowcount)
+
+            return _run_with_connection_retry(
+                self.engine,
+                operation_label="<raw_sql>.execute_raw",
+                callback=_execute,
+            )
         except DatabaseExecutionError:
             raise
         except Exception as e:
             logger.error(f"Raw SQL error: {e}")
+            is_unavailable = _is_transient_connection_error(e)
             raise DatabaseExecutionError(
                 table_name="<raw_sql>",
                 operation="execute_raw",
-                details=str(e),
+                details=format_database_unavailable_details(str(e)) if is_unavailable else str(e),
+                status_code=503 if is_unavailable else 500,
+                code="DATABASE_UNAVAILABLE" if is_unavailable else "DATABASE_EXECUTION_ERROR",
+                hint=local_database_unavailable_hint() if is_unavailable else None,
             ) from e
 
     def rpc(self, function_name: str, params: Optional[dict] = None) -> QueryResult:
@@ -572,24 +771,38 @@ class DatabaseClient:
             QueryResult with function result
         """
         try:
-            with self.engine.connect() as conn:
+
+            def _execute(conn) -> QueryResult:
                 if params:
                     param_list = ", ".join(f":{k}" for k in params.keys())
                     sql = f"SELECT {function_name}({param_list})"
                 else:
                     sql = f"SELECT {function_name}()"
 
-                result = conn.execute(text(sql), params or {})
+                dialect_name = getattr(getattr(self.engine, "dialect", None), "name", None)
+                adapted_params = _adapt_db_params(params or {}, dialect_name=dialect_name)
+                result = conn.execute(text(sql), adapted_params)
                 rows = [dict(row._mapping) for row in result]
+                conn.commit()
                 return QueryResult(data=rows, count=len(rows))
+
+            return _run_with_connection_retry(
+                self.engine,
+                operation_label=f"<rpc>.{function_name}",
+                callback=_execute,
+            )
         except DatabaseExecutionError:
             raise
         except Exception as e:
             logger.error(f"RPC error: {e}")
+            is_unavailable = _is_transient_connection_error(e)
             raise DatabaseExecutionError(
                 table_name="<rpc>",
                 operation=function_name,
-                details=str(e),
+                details=format_database_unavailable_details(str(e)) if is_unavailable else str(e),
+                status_code=503 if is_unavailable else 500,
+                code="DATABASE_UNAVAILABLE" if is_unavailable else "DATABASE_EXECUTION_ERROR",
+                hint=local_database_unavailable_hint() if is_unavailable else None,
             ) from e
 
 

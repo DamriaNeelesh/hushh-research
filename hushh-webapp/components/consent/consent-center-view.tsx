@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Shield,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { useAuth } from "@/hooks/use-auth";
 import { usePersonaState } from "@/lib/persona/persona-context";
@@ -26,9 +27,22 @@ import {
   type ConsentCenterResponse,
   type ConsentCenterView,
 } from "@/lib/services/consent-center-service";
+import { CacheService, CACHE_KEYS } from "@/lib/services/cache-service";
 import { ROUTES } from "@/lib/navigation/routes";
+import {
+  buildConsentSheetProfileHref,
+  CONSENT_BUNDLE_QUERY_KEY,
+  CONSENT_REQUEST_QUERY_KEY,
+  normalizeConsentSheetView,
+  type ConsentSheetView,
+} from "@/lib/consent/consent-sheet-route";
 import { Button } from "@/lib/morphy-ux/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  AppPageContentRegion,
+  AppPageHeaderRegion,
+  AppPageShell,
+} from "@/components/app-ui/app-page-shell";
 import {
   Select,
   SelectContent,
@@ -37,6 +51,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PageHeader, SectionHeader, ContentSurface } from "@/components/app-ui/page-sections";
+import { SurfaceInset, SurfaceStack } from "@/components/app-ui/surfaces";
 import { useConsentNotificationState } from "@/components/consent/notification-provider";
 import { Icon } from "@/lib/morphy-ux/ui";
 import { SegmentedPill, type SegmentedPillOption } from "@/lib/morphy-ux/ui";
@@ -48,13 +63,7 @@ const SURFACE_VIEW_LABELS = {
   previous: "Previous",
 } as const;
 
-type ConsentSurfaceView = keyof typeof SURFACE_VIEW_LABELS;
-
-function normalizeSurfaceView(view: string | null): ConsentSurfaceView {
-  if (view === "active") return "active";
-  if (view === "history" || view === "previous") return "previous";
-  return "pending";
-}
+type ConsentSurfaceView = ConsentSheetView;
 
 function resolveRequestView(
   actor: ConsentCenterActor,
@@ -93,6 +102,67 @@ function formatDate(value: number | string | null | undefined) {
   return date.toLocaleString();
 }
 
+function toTimestamp(value: number | string | null | undefined) {
+  if (typeof value === "number") return value;
+  if (!value) return null;
+  const parsed = new Date(String(value)).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatDurationLabel(hours: number | null | undefined) {
+  if (!hours || !Number.isFinite(hours)) return "24 hours";
+  if (hours === 24) return "24 hours";
+  if (hours % 24 === 0) {
+    const days = hours / 24;
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+function formatRelativeCountdown(value: number | string | null | undefined) {
+  const timestamp = toTimestamp(value);
+  if (!timestamp) return null;
+  const deltaMs = timestamp - Date.now();
+  if (deltaMs <= 0) return "Expired";
+  const totalMinutes = Math.ceil(deltaMs / (60 * 1000));
+  if (totalMinutes < 60) return `${totalMinutes} min left`;
+  const totalHours = Math.ceil(totalMinutes / 60);
+  if (totalHours < 48) return `${totalHours} hr left`;
+  const totalDays = Math.ceil(totalHours / 24);
+  return `${totalDays} day${totalDays === 1 ? "" : "s"} left`;
+}
+
+function resolveRequesterImage(
+  imageUrl?: string | null,
+  websiteUrl?: string | null
+) {
+  if (imageUrl) return imageUrl;
+  if (!websiteUrl) return null;
+  try {
+    const host = new URL(websiteUrl).host;
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
+  } catch {
+    return null;
+  }
+}
+
+function requesterInitials(label: string | null | undefined) {
+  const parts = String(label || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+  if (parts.length === 0) return "R";
+  return parts.map((part) => part[0]?.toUpperCase() || "").join("");
+}
+
+function normalizeScopeList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || "").trim())
+    .filter((item): item is string => item.length > 0);
+}
+
 function entryHeadline(entry: ConsentCenterEntry) {
   if (entry.counterpart_label) return entry.counterpart_label;
   if (entry.kind === "invite") return "Invite";
@@ -115,12 +185,25 @@ function getEntriesForSurfaceView(
   if (!center) return [];
 
   if (surfaceView === "active") return center.active_grants;
-  if (surfaceView === "previous") return center.history;
+  if (surfaceView === "previous") {
+    const previousEntries =
+      actor === "ria"
+        ? [...center.history, ...center.outgoing_requests, ...center.invites]
+        : center.history;
+    return previousEntries.filter((entry) => {
+      const status = String(entry.status || "").toLowerCase();
+      return !["pending", "request_pending", "sent", "active"].includes(status);
+    });
+  }
 
-  const pendingEntries =
+  const pendingEntries = (
     actor === "ria"
       ? [...center.outgoing_requests, ...center.invites]
-      : [...center.incoming_requests, ...center.developer_requests];
+      : [...center.incoming_requests]
+  ).filter((entry) => {
+    const status = String(entry.status || "").toLowerCase();
+    return ["pending", "request_pending", "sent"].includes(status);
+  });
 
   return pendingEntries.sort((left, right) => {
     const leftTime = left.issued_at ? new Date(String(left.issued_at)).getTime() : 0;
@@ -135,11 +218,8 @@ function getViewCount(
   surfaceView: ConsentSurfaceView
 ) {
   if (!center) return 0;
-  if (surfaceView === "active") return center.summary.active_grants;
-  if (surfaceView === "previous") return center.summary.history;
-  return actor === "ria"
-    ? center.summary.outgoing_requests + center.summary.invites
-    : center.summary.incoming_requests + center.summary.developer_requests;
+  if (surfaceView === "active") return center.active_grants.length;
+  return getEntriesForSurfaceView(center, actor, surfaceView).length;
 }
 
 function emptyStateCopy(actor: ConsentCenterActor, surfaceView: ConsentSurfaceView) {
@@ -241,9 +321,12 @@ function parseDurationHours(value: string | undefined) {
 }
 
 function toPendingConsent(entry: ConsentCenterEntry, durationHours?: number) {
+  const metadata = entry.metadata && typeof entry.metadata === "object" ? entry.metadata : {};
   return {
     id: entry.request_id || entry.id,
     developer: entry.counterpart_label || "requester",
+    developerImageUrl: entry.counterpart_image_url || undefined,
+    developerWebsiteUrl: entry.counterpart_website_url || undefined,
     scope: entry.scope || "",
     scopeDescription: entry.scope_description || undefined,
     requestedAt:
@@ -252,20 +335,42 @@ function toPendingConsent(entry: ConsentCenterEntry, durationHours?: number) {
         : entry.issued_at
           ? new Date(String(entry.issued_at)).getTime()
           : Date.now(),
+    approvalTimeoutAt:
+      typeof entry.approval_timeout_at === "number"
+        ? entry.approval_timeout_at
+        : entry.approval_timeout_at
+          ? new Date(String(entry.approval_timeout_at)).getTime()
+          : undefined,
+    expiryHours:
+      typeof metadata.expiry_hours === "number" ? metadata.expiry_hours : undefined,
     durationHours,
     bundleId:
-      entry.metadata && typeof entry.metadata === "object"
-        ? String(entry.metadata.bundle_id || "") || undefined
-        : undefined,
+      String(metadata.bundle_id || "") || undefined,
+    requestUrl: entry.request_url || undefined,
+    reason: entry.reason || (typeof metadata.reason === "string" ? metadata.reason : undefined),
+    isScopeUpgrade:
+      entry.is_scope_upgrade || Boolean(metadata.is_scope_upgrade) || undefined,
+    existingGrantedScopes:
+      entry.existing_granted_scopes ||
+      normalizeScopeList(metadata.existing_granted_scopes) ||
+      undefined,
+    additionalAccessSummary:
+      entry.additional_access_summary ||
+      (typeof metadata.additional_access_summary === "string"
+        ? metadata.additional_access_summary
+        : undefined),
+    metadata,
   };
 }
 
 export function ConsentCenterView({
   embedded = false,
   className,
+  initialView = "pending",
 }: {
   embedded?: boolean;
   className?: string;
+  initialView?: ConsentSurfaceView;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -274,10 +379,14 @@ export function ConsentCenterView({
   const { activePersona, riaCapability } = usePersonaState();
   const notificationState = useConsentNotificationState();
   const actor: ConsentCenterActor = activePersona === "ria" ? "ria" : "investor";
-  const [embeddedView, setEmbeddedView] = useState<ConsentSurfaceView>("pending");
+  const [embeddedView, setEmbeddedView] = useState<ConsentSurfaceView>(
+    normalizeConsentSheetView(initialView)
+  );
   const surfaceView = embedded
     ? embeddedView
-    : normalizeSurfaceView(searchParams.get("view"));
+    : normalizeConsentSheetView(searchParams.get("view"));
+  const focusedRequestId = searchParams.get(CONSENT_REQUEST_QUERY_KEY);
+  const focusedBundleId = searchParams.get(CONSENT_BUNDLE_QUERY_KEY);
   const requestView = resolveRequestView(actor, surfaceView);
 
   const [center, setCenter] = useState<ConsentCenterResponse | null>(null);
@@ -306,7 +415,16 @@ export function ConsentCenterView({
   const [bundleScopeDurations, setBundleScopeDurations] = useState<
     Record<string, Record<string, string>>
   >({});
+  const [singleRequestDurations, setSingleRequestDurations] = useState<Record<string, string>>({});
   const [expandedBundles, setExpandedBundles] = useState<Record<string, boolean>>({});
+  const [disconnectingCounterpartKey, setDisconnectingCounterpartKey] = useState<string | null>(
+    null
+  );
+
+  useEffect(() => {
+    if (!embedded) return;
+    setEmbeddedView(normalizeConsentSheetView(initialView));
+  }, [embedded, initialView]);
 
   const loadCenter = useCallback(
     async (options?: { force?: boolean; silent?: boolean }) => {
@@ -316,12 +434,30 @@ export function ConsentCenterView({
         return;
       }
 
-      if (!options?.silent) {
+      const cache = CacheService.getInstance();
+      const cachedSnapshot = cache.peek<ConsentCenterResponse>(
+        CACHE_KEYS.CONSENT_CENTER(user.uid, `${actor}:${requestView}`)
+      );
+      const cachedCenter = cachedSnapshot?.data ?? null;
+      const hasCachedCenter = Boolean(cachedCenter);
+      const shouldSkipNetwork = Boolean(cachedSnapshot?.isFresh) && !options?.force;
+
+      if (hasCachedCenter) {
+        setCenter(cachedCenter);
+        setLoading(false);
+      } else if (!options?.silent) {
         setLoading(true);
-      } else {
+      }
+
+      if (options?.silent || (hasCachedCenter && !shouldSkipNetwork)) {
         setRefreshing(true);
       }
       setError(null);
+
+      if (shouldSkipNetwork) {
+        setRefreshing(false);
+        return;
+      }
 
       try {
         const idToken = await user.getIdToken();
@@ -418,21 +554,95 @@ export function ConsentCenterView({
       setEmbeddedView(nextView);
       return;
     }
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("actor");
-    params.set("view", resolveRequestView(actor, nextView));
-    router.replace(`${ROUTES.CONSENTS}?${params.toString()}`);
+    router.replace(buildConsentSheetProfileHref(nextView));
   };
+
+  const handleDisconnectRelationship = useCallback(
+    async (entry: ConsentCenterEntry) => {
+      if (!user || !entry.counterpart_id) return;
+
+      const counterpartType = entry.counterpart_type;
+      if (!["ria", "investor"].includes(counterpartType)) {
+        return;
+      }
+
+      const counterpartKey = `${counterpartType}:${entry.counterpart_id}`;
+      try {
+        setDisconnectingCounterpartKey(counterpartKey);
+        const idToken = await user.getIdToken();
+        await ConsentCenterService.disconnectRelationship({
+          idToken,
+          investor_user_id:
+            counterpartType === "investor" ? String(entry.counterpart_id) : undefined,
+          ria_profile_id: counterpartType === "ria" ? String(entry.counterpart_id) : undefined,
+        });
+        toast.success("Relationship disconnected", {
+          description: "Access ended immediately. Consent history stays visible.",
+        });
+        await loadCenter({ force: true, silent: true });
+      } catch (disconnectError) {
+        toast.error(
+          disconnectError instanceof Error
+            ? disconnectError.message
+            : "Failed to disconnect relationship"
+        );
+      } finally {
+        setDisconnectingCounterpartKey(null);
+      }
+    },
+    [loadCenter, user]
+  );
 
   const renderBundleCard = (bundle: ConsentBundleGroup) => {
     const durationMode = bundleDurationMode[bundle.bundleId] || "shared";
     const sharedDuration = bundleSharedDuration[bundle.bundleId] || "168";
     const isExpanded = expandedBundles[bundle.bundleId] ?? false;
+    const bundleMetadata =
+      bundle.entries[0]?.metadata && typeof bundle.entries[0].metadata === "object"
+        ? bundle.entries[0].metadata
+        : {};
+    const requesterImage = resolveRequesterImage(
+      bundle.entries[0]?.counterpart_image_url,
+      bundle.entries[0]?.counterpart_website_url
+    );
+    const bundleReason =
+      bundle.entries[0]?.reason ||
+      (typeof bundleMetadata.reason === "string" ? bundleMetadata.reason : undefined);
+    const requestExpiry = formatRelativeCountdown(
+      bundle.entries[0]?.approval_timeout_at || bundle.entries[0]?.expires_at
+    );
+    const isFocused = Boolean(focusedBundleId && focusedBundleId === bundle.bundleId);
 
     return (
-      <div key={`bundle-${bundle.bundleId}`} className="space-y-4 rounded-[24px] border border-border/60 bg-background/70 px-5 py-5">
+      <SurfaceInset
+        key={`bundle-${bundle.bundleId}`}
+        className={cn(
+          "space-y-4 px-5 py-5",
+          isFocused ? "ring-2 ring-sky-500/50 bg-sky-500/5" : undefined
+        )}
+      >
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="min-w-0 space-y-2">
+          <div className="min-w-0 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-background text-xs font-semibold text-foreground">
+                {requesterImage ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={requesterImage}
+                    alt={bundle.counterpartLabel}
+                    className="size-full object-cover"
+                  />
+                ) : (
+                  requesterInitials(bundle.counterpartLabel)
+                )}
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">{bundle.counterpartLabel}</p>
+                <p className="text-xs text-muted-foreground">
+                  Portfolio access request
+                </p>
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-medium text-foreground">{bundle.bundleLabel}</p>
               <Badge className={statusTone("pending")}>pending review</Badge>
@@ -442,6 +652,9 @@ export function ConsentCenterView({
               {bundle.counterpartLabel} is requesting portfolio-related access. Choose one
               duration for the whole bundle or expand to set durations per scope.
             </p>
+            {bundleReason ? (
+              <p className="text-sm text-foreground/80">Reason: {bundleReason}</p>
+            ) : null}
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               {formatDate(bundle.issuedAt) ? (
                 <span>Issued: {formatDate(bundle.issuedAt)}</span>
@@ -449,6 +662,7 @@ export function ConsentCenterView({
               {formatDate(bundle.expiresAt) ? (
                 <span>Request expires: {formatDate(bundle.expiresAt)}</span>
               ) : null}
+              {requestExpiry ? <span>{requestExpiry}</span> : null}
             </div>
           </div>
 
@@ -469,7 +683,7 @@ export function ConsentCenterView({
           </div>
         </div>
 
-        <div className="space-y-4 rounded-[22px] border border-border/60 bg-background/75 p-4">
+        <SurfaceInset className="space-y-4 p-4">
           <div className="space-y-2">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
               Approval mode
@@ -620,30 +834,121 @@ export function ConsentCenterView({
               Deny bundle
             </Button>
           </div>
-        </div>
-      </div>
+        </SurfaceInset>
+      </SurfaceInset>
     );
   };
 
   const renderEntryRow = (entry: ConsentCenterEntry) => {
+    const metadata = entry.metadata && typeof entry.metadata === "object" ? entry.metadata : {};
     const canOpenWorkspace =
       actor === "ria" &&
       entry.counterpart_type === "investor" &&
       entry.allowed_next_action === "open_workspace" &&
       entry.counterpart_id;
+    const canDisconnectRelationship =
+      surfaceView !== "previous" &&
+      entry.counterpart_id &&
+      ((actor === "investor" && entry.counterpart_type === "ria") ||
+        (actor === "ria" && entry.counterpart_type === "investor"));
+    const disconnectKey =
+      canDisconnectRelationship && entry.counterpart_id
+        ? `${entry.counterpart_type}:${entry.counterpart_id}`
+        : null;
+    const requestId = entry.request_id || entry.id;
+    const isIncomingRequest = entry.kind === "incoming_request";
+    const selectedDuration = singleRequestDurations[requestId] || String(
+      typeof metadata.expiry_hours === "number" ? metadata.expiry_hours : 24
+    );
+    const isFocused = Boolean(
+      (focusedRequestId && focusedRequestId === requestId) ||
+        (focusedBundleId &&
+          typeof metadata.bundle_id === "string" &&
+          metadata.bundle_id === focusedBundleId)
+    );
+    const requesterImage = resolveRequesterImage(
+      entry.counterpart_image_url,
+      entry.counterpart_website_url
+    );
+    const requestCountdown = formatRelativeCountdown(
+      entry.approval_timeout_at || entry.expires_at
+    );
+    const requestedDurationLabel = formatDurationLabel(
+      typeof metadata.expiry_hours === "number" ? metadata.expiry_hours : undefined
+    );
+    const requestReason =
+      entry.reason || (typeof metadata.reason === "string" ? metadata.reason : undefined);
+    const additionalAccessSummary =
+      entry.additional_access_summary ||
+      (typeof metadata.additional_access_summary === "string"
+        ? metadata.additional_access_summary
+        : undefined);
+    const existingGrantedScopes =
+      entry.existing_granted_scopes ||
+      normalizeScopeList(metadata.existing_granted_scopes);
 
     return (
-      <div key={`${entry.kind}-${entry.id}`} className="space-y-4 px-5 py-5">
+      <div
+        key={`${entry.kind}-${entry.id}`}
+        className={cn(
+          "space-y-4 rounded-[24px] border px-5 py-5 transition-colors",
+          isFocused ? "border-sky-500/50 bg-sky-500/5" : "border-border/40"
+        )}
+      >
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="min-w-0 space-y-2">
+          <div className="min-w-0 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-background text-xs font-semibold text-foreground">
+                {requesterImage ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={requesterImage}
+                    alt={entryHeadline(entry)}
+                    className="size-full object-cover"
+                  />
+                ) : (
+                  requesterInitials(entry.counterpart_label)
+                )}
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">{entryHeadline(entry)}</p>
+                <p className="text-xs text-muted-foreground">
+                  {entry.counterpart_type === "developer"
+                    ? "External developer app"
+                    : entry.counterpart_type === "ria"
+                      ? "Advisor request"
+                      : "Consent request"}
+                </p>
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-medium text-foreground">{entryHeadline(entry)}</p>
               <Badge className={statusTone(entry.status)}>
                 {entry.status.replace(/_/g, " ")}
               </Badge>
               {entry.kind === "invite" ? <Badge variant="secondary">pre-consent</Badge> : null}
             </div>
             <p className="text-sm text-muted-foreground">{entrySupportingCopy(entry)}</p>
+            {entry.scope ? (
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                Scope code: {entry.scope}
+              </p>
+            ) : null}
+            {requestReason ? (
+              <p className="text-sm text-foreground/80">Reason: {requestReason}</p>
+            ) : null}
+            {additionalAccessSummary ? (
+              <p className="text-sm text-foreground/80">{additionalAccessSummary}</p>
+            ) : null}
+            {existingGrantedScopes.length > 0 ? (
+              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                <span>Already granted:</span>
+                {existingGrantedScopes.map((scope) => (
+                  <Badge key={scope} variant="secondary" className="font-normal">
+                    {scope}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span>Action: {entry.action}</span>
               {formatDate(entry.issued_at) ? (
@@ -655,20 +960,49 @@ export function ConsentCenterView({
               {entry.relationship_status ? (
                 <span>Relationship: {entry.relationship_status}</span>
               ) : null}
+              {isIncomingRequest ? <span>Requested duration: {requestedDurationLabel}</span> : null}
+              {isIncomingRequest && requestCountdown ? <span>{requestCountdown}</span> : null}
             </div>
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {entry.kind === "incoming_request" ? (
+            {isIncomingRequest ? (
               <>
-                <Button size="sm" onClick={() => void handleApprove(toPendingConsent(entry))}>
+                <Select
+                  value={selectedDuration}
+                  onValueChange={(value) =>
+                    setSingleRequestDurations((current) => ({
+                      ...current,
+                      [requestId]: value,
+                    }))
+                  }
+                >
+                  <SelectTrigger className="w-[150px]">
+                    <SelectValue placeholder="Duration" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DURATION_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    void handleApprove(
+                      toPendingConsent(entry, parseDurationHours(selectedDuration))
+                    )
+                  }
+                >
                   Approve
                 </Button>
                 <Button
                   variant="none"
                   effect="fade"
                   size="sm"
-                  onClick={() => void handleDeny(entry.request_id || entry.id)}
+                  onClick={() => void handleDeny(requestId)}
                 >
                   Deny
                 </Button>
@@ -683,6 +1017,21 @@ export function ConsentCenterView({
                 onClick={() => void handleRevoke(entry.scope || "")}
               >
                 Revoke
+              </Button>
+            ) : null}
+
+            {canDisconnectRelationship ? (
+              <Button
+                variant="none"
+                effect="fade"
+                size="sm"
+                onClick={() => void handleDisconnectRelationship(entry)}
+                disabled={disconnectKey === disconnectingCounterpartKey}
+              >
+                {disconnectKey === disconnectingCounterpartKey ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                Disconnect
               </Button>
             ) : null}
 
@@ -726,7 +1075,7 @@ export function ConsentCenterView({
       </div>
 
       {actor === "investor" && !isVaultUnlocked ? (
-        <ContentSurface className="space-y-3">
+        <ContentSurface className="space-y-3" accent="sky">
           <SectionHeader
             eyebrow="Vault"
             title="Unlock is required for investor decisions"
@@ -745,7 +1094,7 @@ export function ConsentCenterView({
       ) : null}
 
       {riaCapability === "setup" ? (
-        <ContentSurface className="space-y-3">
+        <ContentSurface className="space-y-3" accent="emerald">
           <SectionHeader
             eyebrow="RIA setup"
             title="The same account can activate RIA mode"
@@ -764,17 +1113,68 @@ export function ConsentCenterView({
       ) : null}
 
       {actor === "investor" && deliveryCopy ? (
-        <ContentSurface className="space-y-3">
+        <ContentSurface
+          className="space-y-3"
+          tone={notificationState.deliveryMode === "push_blocked" ? "warning" : "default"}
+          accent={notificationState.deliveryMode === "push_failed_fallback_active" ? "amber" : "none"}
+        >
           <SectionHeader
             eyebrow="Notifications"
             title={deliveryCopy.title}
             description={deliveryCopy.description}
             icon={BellRing}
+            actions={
+              notificationState.deliveryMode !== "push_active" ? (
+                <Button
+                  variant="none"
+                  effect="fade"
+                  size="sm"
+                  disabled={notificationState.isRetryingPushRegistration}
+                  onClick={() => notificationState.retryPushRegistration()}
+                >
+                  {notificationState.isRetryingPushRegistration ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-4" />
+                  )}
+                  Retry push registration
+                </Button>
+              ) : null
+            }
           />
           {notificationState.deliveryDetail ? (
             <p className="px-5 text-xs text-muted-foreground">
               Detail: {notificationState.deliveryDetail}
             </p>
+          ) : null}
+          {notificationState.deliveryMode !== "push_active" ? (
+            <div className="grid gap-3 px-5 pb-5 md:grid-cols-3">
+              <SurfaceInset className="p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                  Browser permission
+                </p>
+                <p className="mt-2 text-sm text-foreground">
+                  Confirm notifications are allowed for this origin before retrying.
+                </p>
+              </SurfaceInset>
+              <SurfaceInset className="p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                  Token registration
+                </p>
+                <p className="mt-2 text-sm text-foreground">
+                  A healthy retry should create a row in <code>user_push_tokens</code>.
+                </p>
+              </SurfaceInset>
+              <SurfaceInset className="p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                  Firebase Console
+                </p>
+                <p className="mt-2 text-sm text-foreground">
+                  Check the active project&apos;s Cloud Messaging web configuration and
+                  use the project-specific VAPID key.
+                </p>
+              </SurfaceInset>
+            </div>
           ) : null}
         </ContentSurface>
       ) : null}
@@ -783,7 +1183,7 @@ export function ConsentCenterView({
       center?.self_activity_summary &&
       (center.self_activity_summary.active_sessions > 0 ||
         center.self_activity_summary.recent.length > 0) ? (
-        <ContentSurface className="space-y-3">
+        <ContentSurface className="space-y-3" accent="violet">
           <SectionHeader
             eyebrow="Self activity"
             title="Your own vault activity stays separate"
@@ -791,30 +1191,30 @@ export function ConsentCenterView({
             icon={Activity}
           />
           <div className="grid gap-3 px-5 pb-5 md:grid-cols-3">
-            <div className="rounded-[20px] border border-border/60 bg-background/70 p-4">
+            <SurfaceInset className="p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 Active sessions
               </p>
               <p className="mt-2 text-2xl font-semibold text-foreground">
                 {center.self_activity_summary.active_sessions}
               </p>
-            </div>
-            <div className="rounded-[20px] border border-border/60 bg-background/70 p-4">
+            </SurfaceInset>
+            <SurfaceInset className="p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 Last 24 hours
               </p>
               <p className="mt-2 text-2xl font-semibold text-foreground">
                 {center.self_activity_summary.recent_operations_24h}
               </p>
-            </div>
-            <div className="rounded-[20px] border border-border/60 bg-background/70 p-4">
+            </SurfaceInset>
+            <SurfaceInset className="p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 Latest activity
               </p>
               <p className="mt-2 text-sm font-medium text-foreground">
                 {formatDate(center.self_activity_summary.last_activity_at) || "No recent activity"}
               </p>
-            </div>
+            </SurfaceInset>
           </div>
           {center.self_activity_summary.recent.length > 0 ? (
             <div className="divide-y divide-border/60">
@@ -913,9 +1313,9 @@ export function ConsentCenterView({
                         <div className="space-y-3">
                           {groupedBundles.map(renderBundleCard)}
                           {groupedEntries.length > 0 ? (
-                            <div className="divide-y divide-border/60 rounded-[24px] border border-border/60 bg-background/65">
+                            <SurfaceInset className="divide-y divide-border/60 p-0">
                               {groupedEntries.map(renderEntryRow)}
-                            </div>
+                            </SurfaceInset>
                           ) : null}
                         </div>
                       </div>
@@ -955,26 +1355,43 @@ export function ConsentCenterView({
   }
 
   return (
-    <div className={cn("mx-auto w-full max-w-4xl space-y-6 px-4 py-6 sm:px-6 md:py-8", className)}>
-      <PageHeader
-        eyebrow="Consent Center"
-        title="Pending, active, and previous Kai access"
-        description="One place to review pending approvals, active grants, and the full consent log for the current persona."
-        icon={ClipboardList}
-        actions={
-          <Button
-            variant="none"
-            effect="fade"
-            size="default"
-            onClick={() => void loadCenter({ force: true, silent: true })}
-            disabled={refreshing}
-          >
-            <Icon icon={RefreshCw} size="sm" className={refreshing ? "mr-2 animate-spin" : "mr-2"} />
-            Refresh
-          </Button>
-        }
-      />
-      {content}
-    </div>
+    <AppPageShell
+      as="div"
+      width="standard"
+      className={cn("pb-6 md:pb-8", className)}
+    >
+      <AppPageHeaderRegion>
+        <PageHeader
+          eyebrow={actor === "ria" ? "Consent Workspace" : "Consent Center"}
+          title={
+            actor === "ria"
+              ? "Outgoing requests, invites, and live advisor access"
+              : "Pending, active, and previous Kai access"
+          }
+          description={
+            actor === "ria"
+              ? "Use the shared consent workspace to send request bundles, track investor decisions, and open ready workspaces without leaving the main shell."
+              : "One place to review pending approvals, active grants, and the full consent log for the current persona."
+          }
+          icon={ClipboardList}
+          accent="consent"
+          actions={
+            <Button
+              variant="none"
+              effect="fade"
+              size="default"
+              onClick={() => void loadCenter({ force: true, silent: true })}
+              disabled={refreshing}
+            >
+              <Icon icon={RefreshCw} size="sm" className={refreshing ? "mr-2 animate-spin" : "mr-2"} />
+              Refresh
+            </Button>
+          }
+        />
+      </AppPageHeaderRegion>
+      <AppPageContentRegion>
+        <SurfaceStack>{content}</SurfaceStack>
+      </AppPageContentRegion>
+    </AppPageShell>
   );
 }

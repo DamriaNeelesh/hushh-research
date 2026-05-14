@@ -3,49 +3,18 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 WEB_DIR="$REPO_ROOT/hushh-webapp"
-CI_NATIVE_PARITY_REQUIRED="${CI_NATIVE_PARITY_REQUIRED:-0}"
-CI_DOCS_PARITY_REQUIRED="${CI_DOCS_PARITY_REQUIRED:-0}"
 
 bash "$REPO_ROOT/scripts/ci/no-ria-feature-flags.sh"
-
+bash "$REPO_ROOT/scripts/ci/runtime-contract-check.sh"
 cd "$WEB_DIR"
 
 npm --version
 
-if [ -f scripts/verify-route-contracts.cjs ]; then
-  npm run verify:routes
-else
-  echo "⚠ WARNING: verify-route-contracts.cjs not found, skipping"
+# The integration lane only owns cross-surface checks.
+# Frontend typecheck/test/build stay in the dedicated Web job.
+if [ ! -d node_modules/vitest ] || [ ! -x node_modules/.bin/vitest ]; then
+  npm ci --prefer-offline --no-audit --progress=false
 fi
 
-if [ "$CI_NATIVE_PARITY_REQUIRED" = "1" ]; then
-  if [ -f scripts/verify-native-parity.cjs ]; then
-    npm run verify:parity
-  else
-    echo "⚠ WARNING: verify-native-parity.cjs not found, skipping"
-  fi
-
-  if [ -f scripts/verify-capacitor-runtime-config.cjs ]; then
-    npm run verify:capacitor:config
-  else
-    echo "⚠ WARNING: verify-capacitor-runtime-config.cjs not found, skipping"
-  fi
-
-  if [ -f scripts/verify-capacitor-routes.cjs ]; then
-    npm run verify:capacitor:routes
-  else
-    echo "⚠ WARNING: verify-capacitor-routes.cjs not found, skipping"
-  fi
-else
-  echo "Skipping native parity checks in integration-check (CI_NATIVE_PARITY_REQUIRED=0)."
-fi
-
-if [ "$CI_DOCS_PARITY_REQUIRED" = "1" ]; then
-  if [ -f "$REPO_ROOT/scripts/verify-doc-links.cjs" ]; then
-    node "$REPO_ROOT/scripts/verify-doc-links.cjs"
-  else
-    echo "⚠ WARNING: scripts/verify-doc-links.cjs not found, skipping"
-  fi
-else
-  echo "Skipping docs link parity in integration-check (CI_DOCS_PARITY_REQUIRED=0)."
-fi
+cd "$REPO_ROOT"
+bash "$REPO_ROOT/scripts/ci/pkm-upgrade-gate.sh"

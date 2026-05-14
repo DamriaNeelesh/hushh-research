@@ -56,7 +56,7 @@ class HushhConsentPlugin : Plugin() {
     private val secretKey: String
         get() {
             // In production, this should come from secure storage
-            return System.getenv("SECRET_KEY") ?: "development_secret_key_32_chars!"
+            return System.getenv("APP_SIGNING_KEY") ?: "development_secret_key_32_chars!"
         }
 
     // ==================== Issue Token ====================
@@ -558,7 +558,15 @@ class HushhConsentPlugin : Plugin() {
         val encryptedData = call.getString("encryptedData")
         val encryptedIv = call.getString("encryptedIv")
         val encryptedTag = call.getString("encryptedTag")
-        val exportKey = call.getString("exportKey")
+        val wrappedExportKey = call.getString("wrappedExportKey")
+        val wrappedKeyIv = call.getString("wrappedKeyIv")
+        val wrappedKeyTag = call.getString("wrappedKeyTag")
+        val senderPublicKey = call.getString("senderPublicKey")
+        val wrappingAlg = call.getString("wrappingAlg")
+        val connectorKeyId = call.getString("connectorKeyId")
+        val sourceContentRevision = call.getInt("sourceContentRevision")
+        val sourceManifestRevision = call.getInt("sourceManifestRevision")
+        val durationHours = call.getInt("durationHours")
         val userId = call.getString("userId") // Optional, but good context
 
         val vaultOwnerToken = call.getString("vaultOwnerToken") ?: run {
@@ -578,7 +586,15 @@ class HushhConsentPlugin : Plugin() {
                     if (encryptedData != null) put("encryptedData", encryptedData)
                     if (encryptedIv != null) put("encryptedIv", encryptedIv)
                     if (encryptedTag != null) put("encryptedTag", encryptedTag)
-                    if (exportKey != null) put("exportKey", exportKey)
+                    if (wrappedExportKey != null) put("wrappedExportKey", wrappedExportKey)
+                    if (wrappedKeyIv != null) put("wrappedKeyIv", wrappedKeyIv)
+                    if (wrappedKeyTag != null) put("wrappedKeyTag", wrappedKeyTag)
+                    if (senderPublicKey != null) put("senderPublicKey", senderPublicKey)
+                    if (wrappingAlg != null) put("wrappingAlg", wrappingAlg)
+                    if (connectorKeyId != null) put("connectorKeyId", connectorKeyId)
+                    if (sourceContentRevision != null) put("sourceContentRevision", sourceContentRevision)
+                    if (sourceManifestRevision != null) put("sourceManifestRevision", sourceManifestRevision)
+                    if (durationHours != null) put("durationHours", durationHours)
                 }
                 
                 val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())

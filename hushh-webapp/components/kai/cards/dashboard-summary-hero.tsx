@@ -55,7 +55,7 @@ export function DashboardSummaryHero({
   const positive = netChange >= 0;
 
   return (
-    <Card variant="none" effect="glass" className="rounded-2xl p-0" glassAccent="soft">
+    <Card variant="none" effect="glass" preset="hero" glassAccent="soft">
       <CardContent className="space-y-4 p-5 sm:p-6">
         <div className="space-y-2 text-center">
           <p className="text-sm font-medium text-muted-foreground">Total portfolio value</p>

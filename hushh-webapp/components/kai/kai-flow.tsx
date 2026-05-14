@@ -4,7 +4,7 @@
  * Kai Flow - State-driven UI component flow for investment analysis
  *
  * Flow:
- * 1. Check World Model for financial data
+ * 1. Check PKM for financial data
  * 2. If no data -> Show portfolio import
  * 3. After import -> Show streaming progress -> Review screen -> Dashboard
  * 4. Dashboard shows KPIs, prime assets, and search bar for analysis
@@ -15,10 +15,10 @@
 
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
-import { WorldModelService } from "@/lib/services/world-model-service";
+import { SurfaceCard, SurfaceCardContent } from "@/components/app-ui/surfaces";
 import { normalizeStoredPortfolio } from "@/lib/utils/portfolio-normalize";
 import { useCache } from "@/lib/cache/cache-context";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
@@ -31,14 +31,13 @@ import { AnalysisView } from "./views/analysis-view";
 import { useVault } from "@/lib/vault/vault-context";
 import { toast } from "sonner";
 import { ApiService } from "@/lib/services/api-service";
-import { getStockContext } from "@/lib/services/kai-service";
 import { useKaiSession } from "@/lib/stores/kai-session-store";
 import type { KaiStreamEnvelope } from "@/lib/streaming/kai-stream-types";
 import { consumeCanonicalKaiStream } from "@/lib/streaming/kai-stream-client";
 import { KaiProfileSyncService } from "@/lib/services/kai-profile-sync-service";
 import { AppBackgroundTaskService } from "@/lib/services/app-background-task-service";
 import { setOnboardingFlowActiveCookie } from "@/lib/services/onboarding-route-cookie";
-import { ROUTES } from "@/lib/navigation/routes";
+import { buildKaiAnalysisPreviewRoute, ROUTES } from "@/lib/navigation/routes";
 import { useScrollReset } from "@/lib/navigation/use-scroll-reset";
 import { KAI_PORTFOLIO_IMPORT_IDLE_TIMEOUT_MS } from "@/lib/services/kai-import-stream-config";
 import { fetchDemoPortfolioTemplateAsset } from "@/lib/services/demo-mode-template-service";
@@ -48,7 +47,9 @@ import {
   clearPlaidOAuthResumeSession,
   savePlaidOAuthResumeSession,
 } from "@/lib/kai/brokerage/plaid-oauth-session";
+import { resolvePlaidRedirectUri } from "@/lib/kai/brokerage/plaid-redirect-uri";
 import { PlaidPortfolioService } from "@/lib/kai/brokerage/plaid-portfolio-service";
+import { useKaiFinancialResource } from "@/lib/kai/kai-financial-resource";
 import { useAuth } from "@/hooks/use-auth";
 import { VaultUnlockDialog } from "@/components/vault/vault-unlock-dialog";
 import { Capacitor } from "@capacitor/core";
@@ -58,6 +59,12 @@ import {
   setSessionItem,
 } from "@/lib/utils/session-storage";
 import { toInvestorLoading, toInvestorStreamText } from "@/lib/copy/investor-language";
+import { ensureKaiVaultOwnerToken } from "@/lib/services/kai-token-guard";
+import {
+  usePublishVoiceSurfaceMetadata,
+  useVoiceSurfaceControlTracking,
+} from "@/lib/voice/voice-surface-metadata";
+import { trackEvent } from "@/lib/observability/client";
 
 // =============================================================================
 // TYPES
@@ -620,19 +627,6 @@ function normalizePortfolioData(backendData: Record<string, unknown>): ReviewPor
   return result;
 }
 
-function hasValidFinancialDomainData(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  const portfolio = record.portfolio;
-  if (portfolio && typeof portfolio === "object" && !Array.isArray(portfolio)) {
-    const portfolioRecord = portfolio as Record<string, unknown>;
-    return Array.isArray(portfolioRecord.holdings);
-  }
-  return false;
-}
-
 /**
  * Normalize holdings array to ensure unrealized_gain_loss_pct is computed.
  * This helper can be used in multiple places (checkFinancialData, handleSaveComplete).
@@ -713,7 +707,12 @@ export function KaiFlow({
 }: KaiFlowProps) {
   const router = useRouter();
   const { user } = useAuth();
-  const { vaultKey, vaultOwnerToken: contextVaultOwnerToken } = useVault();
+  const {
+    vaultKey,
+    vaultOwnerToken: contextVaultOwnerToken,
+    tokenExpiresAt,
+    unlockVault,
+  } = useVault();
   const initialVaultOwnerToken = vaultOwnerToken.trim().length > 0 ? vaultOwnerToken : null;
   const effectiveVaultOwnerToken =
     contextVaultOwnerToken || initialVaultOwnerToken || undefined;
@@ -732,7 +731,23 @@ export function KaiFlow({
   const [resumePreloadAfterVault, setResumePreloadAfterVault] = useState(false);
   const [isPreloadingSchema, setIsPreloadingSchema] = useState(false);
   const [isConnectingPlaid, setIsConnectingPlaid] = useState(false);
+  const {
+    activeControlId: activeVoiceControlId,
+    lastInteractedControlId: lastVoiceControlId,
+  } = useVoiceSurfaceControlTracking();
   const [plaidStatus, setPlaidStatus] = useState<PlaidPortfolioStatusResponse | null>(null);
+  const {
+    data: financialResource,
+    loading: financialResourceLoading,
+    error: financialResourceError,
+    refresh: refreshFinancialResource,
+  } = useKaiFinancialResource({
+    userId,
+    vaultOwnerToken: effectiveVaultOwnerToken,
+    vaultKey,
+    enabled: Boolean(userId),
+    backgroundRefresh: true,
+  });
   
   // Streaming state for real-time progress
   const [streaming, setStreaming] = useState<StreamingState>(createInitialStreamingState);
@@ -744,6 +759,8 @@ export function KaiFlow({
   const activeImportRunIdRef = useRef<string | null>(null);
   const activeImportCursorRef = useRef<number>(0);
   const resumeImportStreamInFlightRef = useRef(false);
+  const importStartInFlightRef = useRef(false);
+  const userRequestedImportCancelRef = useRef(false);
   const setBusyOperation = useKaiSession((s) => s.setBusyOperation);
 
   useEffect(() => {
@@ -757,6 +774,226 @@ export function KaiFlow({
       ? plaidStatus.aggregate.portfolio_data
       : null;
   const plaidConfigured = plaidStatus?.configured ?? true;
+  const kaiFlowVoiceSurfaceMetadata = useMemo(() => {
+    const screenIdByState: Record<FlowState, string> = {
+      checking: "kai_portfolio_bootstrap",
+      import_required: "kai_portfolio_import",
+      importing: "kai_portfolio_import_progress",
+      import_complete: "kai_portfolio_import_complete",
+      reviewing: "kai_portfolio_review",
+      dashboard: "kai_portfolio_dashboard",
+      analysis: "kai_portfolio_analysis",
+    };
+    const parsedHoldingsCount = flowData.parsedPortfolio?.holdings?.length || 0;
+    const savedHoldingsCount = flowData.portfolioData?.holdings?.length || 0;
+    const plaidHoldingsCount = plaidPortfolioData?.holdings?.length || 0;
+
+    const sections =
+      state === "import_required"
+        ? [
+            {
+              id: "portfolio_import",
+              title: "Portfolio import",
+              purpose: "Starts a statement import or a Plaid brokerage connection.",
+            },
+          ]
+        : state === "importing"
+          ? [
+              {
+                id: "import_progress",
+                title: "Import progress",
+                purpose: "Shows live import progress, holdings extraction, and stream status.",
+              },
+            ]
+          : state === "import_complete"
+            ? [
+                {
+                  id: "import_ready",
+                  title: "Import ready for review",
+                  purpose: "Shows the completed import and lets you continue into review.",
+                },
+              ]
+            : state === "reviewing"
+              ? [
+                  {
+                    id: "portfolio_review",
+                    title: "Review imported portfolio",
+                    purpose: "Lets you inspect parsed holdings before saving them into Kai.",
+                  },
+                ]
+              : [
+                  {
+                    id: "portfolio_dashboard",
+                    title: "Portfolio dashboard",
+                    purpose: "Shows the saved or connected portfolio workspace.",
+                  },
+                ];
+
+    const actions = [
+      ...(state === "import_required"
+        ? [
+            {
+              id: "kai.portfolio.connect_plaid",
+              label: "Connect Plaid",
+              purpose: "Starts the Plaid brokerage connection flow.",
+              voiceAliases: ["connect plaid", "connect brokerage"],
+            },
+            {
+              id: "kai.portfolio.import_statement",
+              label: "Upload statement",
+              purpose: "Starts statement import for an editable portfolio source.",
+              voiceAliases: ["upload statement", "import portfolio"],
+            },
+            {
+              id: "kai.portfolio.preload_sample",
+              label: "Load sample portfolio",
+              purpose: "Loads sample portfolio data into the import flow.",
+              voiceAliases: ["load sample portfolio", "use sample portfolio"],
+            },
+          ]
+        : []),
+      ...(state === "importing"
+        ? [
+            {
+              id: "kai.portfolio.cancel_import",
+              label: "Cancel import",
+              purpose: "Stops the current statement import stream.",
+              voiceAliases: ["cancel import"],
+            },
+          ]
+        : []),
+      ...(state === "import_complete"
+        ? [
+            {
+              id: "kai.portfolio.review_import",
+              label: "Review imported portfolio",
+              purpose: "Opens the parsed portfolio review before save.",
+              voiceAliases: ["review portfolio", "continue to review"],
+            },
+          ]
+        : []),
+      ...(state === "reviewing"
+        ? [
+            {
+              id: "kai.portfolio.save_review",
+              label: "Save imported portfolio",
+              purpose: "Persists the reviewed portfolio into Kai.",
+              voiceAliases: ["save portfolio"],
+            },
+            {
+              id: "kai.portfolio.reimport",
+              label: "Reimport portfolio",
+              purpose: "Returns to portfolio import to restart the flow.",
+              voiceAliases: ["reimport portfolio", "start over"],
+            },
+          ]
+        : []),
+    ];
+
+    const visibleModules =
+      state === "import_required"
+        ? ["Portfolio import"]
+        : state === "importing"
+          ? ["Import progress", "Live holdings preview"]
+          : state === "import_complete"
+            ? ["Import ready for review"]
+            : state === "reviewing"
+              ? ["Review imported portfolio"]
+              : state === "dashboard"
+                ? ["Portfolio dashboard"]
+                : ["Analysis result"];
+
+    return {
+      screenId: screenIdByState[state],
+      title: "Portfolio",
+      purpose:
+        "This route manages portfolio import, review, and the transition into the portfolio workspace.",
+      sections,
+      actions,
+      controls: actions.map((action) => ({
+        id: action.id.replaceAll(".", "_"),
+        label: action.label,
+        purpose: action.purpose,
+        actionId: action.id,
+        role: "button",
+        voiceAliases: action.voiceAliases,
+      })),
+      concepts: [
+        {
+          id: "portfolio",
+          label: "Portfolio",
+          explanation:
+            "Portfolio is the workspace for import, review, holdings context, and optimization readiness.",
+          aliases: ["portfolio", "holdings", "portfolio import"],
+        },
+      ],
+      activeSection:
+        state === "import_required"
+          ? "Portfolio import"
+          : state === "importing"
+            ? "Import progress"
+            : state === "import_complete"
+              ? "Import ready for review"
+              : state === "reviewing"
+                ? "Review imported portfolio"
+                : state === "dashboard"
+                  ? "Portfolio dashboard"
+                  : "Analysis result",
+      visibleModules,
+      focusedWidget:
+        state === "importing"
+          ? "Import progress"
+          : state === "reviewing"
+            ? "Review imported portfolio"
+            : "Portfolio import",
+      availableActions: actions.map((action) => action.label),
+      activeControlId: activeVoiceControlId,
+      lastInteractedControlId: lastVoiceControlId,
+      busyOperations: [
+        ...(financialResourceLoading ? ["portfolio_bootstrap"] : []),
+        ...(isConnectingPlaid ? ["plaid_link"] : []),
+        ...(isPreloadingSchema ? ["sample_schema_preload"] : []),
+        ...(resumeImportAfterVault ? ["vault_resume_import"] : []),
+        ...(state === "importing" ? ["portfolio_import"] : []),
+      ],
+      screenMetadata: {
+        flow_state: state,
+        has_financial_data: flowData.hasFinancialData,
+        saved_holdings_count: savedHoldingsCount,
+        parsed_holdings_count: parsedHoldingsCount,
+        plaid_holdings_count: plaidHoldingsCount,
+        plaid_connected_institution_count: plaidStatus?.aggregate?.item_count || 0,
+        plaid_configured: plaidConfigured,
+        import_stage: streaming.stage,
+        import_progress_pct: streaming.progressPct,
+        import_status_message: streaming.statusMessage,
+        holdings_extracted: streaming.holdingsExtracted,
+        holdings_total: streaming.holdingsTotal,
+        import_error_message: streaming.errorMessage,
+      },
+    };
+  }, [
+    activeVoiceControlId,
+    financialResourceLoading,
+    flowData.hasFinancialData,
+    flowData.parsedPortfolio?.holdings?.length,
+    flowData.portfolioData?.holdings?.length,
+    isConnectingPlaid,
+    isPreloadingSchema,
+    lastVoiceControlId,
+    plaidConfigured,
+    plaidPortfolioData?.holdings?.length,
+    plaidStatus?.aggregate?.item_count,
+    resumeImportAfterVault,
+    state,
+    streaming.errorMessage,
+    streaming.holdingsExtracted,
+    streaming.holdingsTotal,
+    streaming.progressPct,
+    streaming.stage,
+    streaming.statusMessage,
+  ]);
+  usePublishVoiceSurfaceMetadata(kaiFlowVoiceSurfaceMetadata);
 
   useEffect(() => {
     if (mode !== "import") return;
@@ -1108,10 +1345,13 @@ export function KaiFlow({
               }
               case "aborted":
               case "error": {
-                const message = sanitizeInvestorCopy(
-                  readString(payload.message),
-                  "Import could not be completed."
-                );
+                const message =
+                  envelope.event === "aborted"
+                    ? "Import was interrupted before completion. Please retry."
+                    : sanitizeInvestorCopy(
+                        readString(payload.message),
+                        "Import could not be completed."
+                      );
                 applyStreaming((prev) => ({
                   ...prev,
                   stage: "error",
@@ -1267,10 +1507,8 @@ export function KaiFlow({
       return null;
     }
     try {
-      const status = await PlaidPortfolioService.getStatus({
-        userId,
-        vaultOwnerToken: effectiveVaultOwnerToken,
-      });
+      const resource = await refreshFinancialResource({ force: true });
+      const status = resource?.plaidStatus ?? null;
       setPlaidStatus(status);
       return status;
     } catch (plaidError) {
@@ -1278,323 +1516,132 @@ export function KaiFlow({
       setPlaidStatus(null);
       return null;
     }
-  }, [effectiveVaultOwnerToken, userId]);
+  }, [effectiveVaultOwnerToken, refreshFinancialResource]);
 
-  // Check World Model for financial data on mount
   useEffect(() => {
-    async function checkFinancialData() {
-      try {
-        // Import route should only perform this check during initial bootstrap.
-        // Re-running on vault token/key transitions can reset active import progress.
-        if (mode === "import" && importResumeAppliedRef.current) {
-          return;
-        }
-        if (mode === "import" && stateRef.current !== "checking") {
-          return;
-        }
+    setPlaidStatus(financialResource?.plaidStatus ?? null);
+  }, [financialResource?.plaidStatus]);
 
-        // Avoid resetting active import/review UI when vault state changes mid-flow.
-        if (
-          vaultDialogOpen ||
-          stateRef.current === "importing" ||
-          stateRef.current === "import_complete" ||
-          stateRef.current === "reviewing"
-        ) {
-          return;
-        }
-
-        setState("checking");
-
-        const cachedPortfolioData = getPortfolioData(userId) ?? undefined;
-        const hasCachedPortfolioData = Boolean(
-          cachedPortfolioData &&
-            Array.isArray(cachedPortfolioData.holdings) &&
-            cachedPortfolioData.holdings.length > 0
-        );
-
-        // Dashboard-first UX: use trusted in-memory cache immediately and avoid
-        // blocking on metadata/blob reads when holdings already exist locally.
-        if (isDashboardMode && hasCachedPortfolioData && cachedPortfolioData) {
-          const normalizedCachedHoldings = normalizeHoldingsWithPct(
-            cachedPortfolioData.holdings
-          );
-          const normalizedCachedPortfolio: PortfolioData = {
-            ...cachedPortfolioData,
-            holdings: normalizedCachedHoldings,
-          };
-          setPortfolioData(userId, normalizedCachedPortfolio);
-          setFlowData({
-            hasFinancialData: true,
-            holdingsCount: normalizedCachedPortfolio.holdings?.length || 0,
-            portfolioData: normalizedCachedPortfolio,
-            holdings: normalizedCachedPortfolio.holdings?.map((h) => h.symbol) || [],
-          });
-          setOnboardingFlowActiveCookie(false);
-          void loadPlaidStatusSnapshot();
-          setState("dashboard");
-          return;
-        }
-
-        let plaidSnapshot: PlaidPortfolioStatusResponse | null = null;
-        const getPlaidPortfolio = async (): Promise<PortfolioData | null> => {
-          if (!effectiveVaultOwnerToken) return null;
-          if (!plaidSnapshot) {
-            plaidSnapshot = await loadPlaidStatusSnapshot();
-          }
-          const portfolio = plaidSnapshot?.aggregate?.portfolio_data || null;
-          return hasPortfolioHoldings(portfolio) ? portfolio : null;
-        };
-
-        // Fetch user's World Model metadata
-        const metadata = await WorldModelService.getMetadata(userId, false, effectiveVaultOwnerToken);
-
-        // Check if financial domain exists and has data
-        const financialDomain = metadata.domains.find(
-          (d) => d.key === "financial"
-        );
-
-        const hasFinancialData =
-          financialDomain && financialDomain.attributeCount > 0;
-        if (hasFinancialData) {
-          // Prefer CacheProvider (in-memory) for reuse with Manage page
-          let portfolioData: PortfolioData | undefined = hasCachedPortfolioData
-            ? cachedPortfolioData
-            : undefined;
-
-          if (!portfolioData && vaultKey) {
-            // No cache - try to decrypt from World Model
-            console.log("[KaiFlow] No cache, attempting to decrypt from World Model...");
-            try {
-              const allData = await WorldModelService.loadFullBlob({
-                userId,
-                vaultKey,
-                vaultOwnerToken: effectiveVaultOwnerToken,
-              });
-              const rawFinancial = allData.financial;
-              if (!hasValidFinancialDomainData(rawFinancial)) {
-                console.warn(
-                  "[KaiFlow] Financial domain metadata exists but encrypted blob has no valid financial holdings shape."
-                );
-                portfolioData = undefined;
-              }
-
-              // Normalize Review-format → Dashboard-format field names
-              if (hasValidFinancialDomainData(rawFinancial)) {
-                portfolioData = normalizeStoredPortfolio(rawFinancial) as PortfolioData;
-                console.log("[KaiFlow] Successfully decrypted portfolio data from World Model");
-              }
-            } catch (decryptError) {
-              // Handle encryption key mismatch or corrupted data
-              console.error("[KaiFlow] Failed to decrypt from World Model:", decryptError);
-              
-              // Check if this is a decryption error (key mismatch)
-              const errorMessage = decryptError instanceof Error ? decryptError.message : "";
-              if (errorMessage.includes("decrypt") || errorMessage.includes("tag") || errorMessage.includes("authentication")) {
-                console.warn("[KaiFlow] Possible encryption key mismatch - clearing cache and prompting re-import");
-                invalidateDomain(userId, "financial");
-                portfolioData = undefined;
-              }
-              
-              // For other errors, continue without portfolio data - user can re-import
-            }
-          }
-          if (!portfolioData && !vaultKey) {
-            // Financial metadata exists, but we cannot decrypt without a vault key.
-          }
-
-          // Ensure holdings have unrealized_gain_loss_pct computed
-          // This handles data loaded from cache/World Model that may not have been normalized
-          if (portfolioData?.holdings) {
-            portfolioData.holdings = normalizeHoldingsWithPct(portfolioData.holdings);
-            console.log("[KaiFlow] Normalized holdings with unrealized_gain_loss_pct");
-          }
-
-          // Update cache with normalized data
-          if (portfolioData) {
-            setPortfolioData(userId, portfolioData);
-          }
-
-          const holdingsCount =
-            (Array.isArray(portfolioData?.holdings) && portfolioData?.holdings.length) || 0;
-
-          if (holdingsCount === 0) {
-            const plaidPortfolio = await getPlaidPortfolio();
-            if (plaidPortfolio) {
-              setFlowData({
-                hasFinancialData: true,
-                holdingsCount: plaidPortfolio.holdings?.length || 0,
-                portfolioData,
-                holdings: plaidPortfolio.holdings?.map((holding) => holding.symbol) || [],
-              });
-              if (isDashboardMode) {
-                setOnboardingFlowActiveCookie(false);
-                setState("dashboard");
-              } else {
-                setState("import_required");
-              }
-              return;
-            }
-            setFlowData({
-              hasFinancialData: false,
-              holdingsCount: 0,
-              portfolioData: undefined,
-              holdings: [],
-            });
-            if (isDashboardMode) {
-              setOnboardingFlowActiveCookie(false);
-              setState("dashboard");
-            } else {
-              setState("import_required");
-            }
-            return;
-          }
-
-          // User has financial data - show dashboard
-          setFlowData({
-            hasFinancialData: true,
-            holdingsCount,
-            portfolioData,
-            holdings: portfolioData?.holdings?.map(h => h.symbol) || [],
-          });
-          if (isDashboardMode) {
-            // Heal stale onboarding-flow cookies after a successful import/resume.
-            setOnboardingFlowActiveCookie(false);
-          }
-          setState(isDashboardMode ? "dashboard" : "import_required");
-        } else {
-          // Metadata can temporarily report an empty financial domain during startup/race conditions.
-          // If we already have a portfolio cached for this user, trust it instead of bouncing to import.
-          if (hasCachedPortfolioData && cachedPortfolioData) {
-            const normalizedCachedHoldings = normalizeHoldingsWithPct(
-              cachedPortfolioData.holdings
-            );
-            const normalizedCachedPortfolio: PortfolioData = {
-              ...cachedPortfolioData,
-              holdings: normalizedCachedHoldings,
-            };
-            setPortfolioData(userId, normalizedCachedPortfolio);
-            setFlowData({
-              hasFinancialData: true,
-              holdingsCount: normalizedCachedPortfolio.holdings?.length || 0,
-              portfolioData: normalizedCachedPortfolio,
-              holdings: normalizedCachedPortfolio.holdings?.map((h) => h.symbol) || [],
-            });
-            if (isDashboardMode) {
-              setOnboardingFlowActiveCookie(false);
-            }
-            void loadPlaidStatusSnapshot();
-            setState(isDashboardMode ? "dashboard" : "import_required");
-            return;
-          }
-
-          // Secondary fallback: metadata can lag while full blob already contains holdings.
-          if (vaultKey && effectiveVaultOwnerToken) {
-            try {
-              const allData = await WorldModelService.loadFullBlob({
-                userId,
-                vaultKey,
-                vaultOwnerToken: effectiveVaultOwnerToken,
-              });
-              const rawFinancial = allData.financial;
-              if (hasValidFinancialDomainData(rawFinancial)) {
-                let recoveredPortfolioData = normalizeStoredPortfolio(rawFinancial) as PortfolioData;
-                if (recoveredPortfolioData.holdings) {
-                  recoveredPortfolioData = {
-                    ...recoveredPortfolioData,
-                    holdings: normalizeHoldingsWithPct(recoveredPortfolioData.holdings),
-                  };
-                }
-                setPortfolioData(userId, recoveredPortfolioData);
-                setFlowData({
-                  hasFinancialData: true,
-                  holdingsCount: recoveredPortfolioData.holdings?.length || 0,
-                  portfolioData: recoveredPortfolioData,
-                  holdings: recoveredPortfolioData.holdings?.map((h) => h.symbol) || [],
-                });
-                if (isDashboardMode) {
-                  setOnboardingFlowActiveCookie(false);
-                }
-                void loadPlaidStatusSnapshot();
-                setState(isDashboardMode ? "dashboard" : "import_required");
-                return;
-              }
-            } catch (fallbackError) {
-              console.warn(
-                "[KaiFlow] Metadata reported no financial domain and full-blob fallback failed:",
-                fallbackError
-              );
-            }
-          }
-
-          const plaidPortfolio = await getPlaidPortfolio();
-          if (plaidPortfolio) {
-            setFlowData({
-              hasFinancialData: true,
-              holdingsCount: plaidPortfolio.holdings?.length || 0,
-              portfolioData: undefined,
-              holdings: plaidPortfolio.holdings?.map((holding) => holding.symbol) || [],
-            });
-            if (isDashboardMode) {
-              setOnboardingFlowActiveCookie(false);
-              setState("dashboard");
-              return;
-            }
-            setState("import_required");
-            return;
-          }
-
-          // No financial data.
-          // Ensure stale frontend cache never leaks into first-time user experience.
-          invalidateDomain(userId, "financial");
-          setFlowData({ hasFinancialData: false });
-          if (isDashboardMode) {
-            // Stay on dashboard route and show import CTA instead of hard-redirecting.
-            // This avoids navigation thrash during transient metadata issues.
-            setState("dashboard");
-            return;
-          }
-          setState("import_required");
-        }
-      } catch (err) {
-        console.warn("[KaiFlow] Error checking financial data:", err);
-        const plaidPortfolio = await loadPlaidStatusSnapshot()
-          .then((status) => {
-            const portfolio = status?.aggregate?.portfolio_data || null;
-            return hasPortfolioHoldings(portfolio) ? portfolio : null;
-          })
-          .catch(() => null);
-        if (plaidPortfolio) {
-          setFlowData({
-            hasFinancialData: true,
-            holdingsCount: plaidPortfolio.holdings?.length || 0,
-            portfolioData: undefined,
-            holdings: plaidPortfolio.holdings?.map((holding) => holding.symbol) || [],
-          });
-          setState("dashboard");
-          return;
-        }
-        // Keep dashboard stable on transient failures instead of forcing import redirect.
-        if (isDashboardMode) {
-          setState("dashboard");
-          return;
-        }
-        setFlowData({ hasFinancialData: false });
-        setState("import_required");
-      }
+  // Check PKM for financial data on mount
+  useEffect(() => {
+    if (mode === "import" && importResumeAppliedRef.current) {
+      return;
+    }
+    if (mode === "import" && stateRef.current !== "checking") {
+      return;
+    }
+    if (
+      vaultDialogOpen ||
+      stateRef.current === "importing" ||
+      stateRef.current === "import_complete" ||
+      stateRef.current === "reviewing"
+    ) {
+      return;
     }
 
-    checkFinancialData();
+    const cachedPortfolioData = getPortfolioData(userId) ?? undefined;
+    const normalizedCachedPortfolio =
+      cachedPortfolioData && Array.isArray(cachedPortfolioData.holdings)
+        ? ({
+            ...cachedPortfolioData,
+            holdings: normalizeHoldingsWithPct(cachedPortfolioData.holdings),
+          } as PortfolioData)
+        : null;
+    const statementPortfolio =
+      financialResource?.statementPortfolio ??
+      (normalizedCachedPortfolio && hasPortfolioHoldings(normalizedCachedPortfolio)
+        ? normalizedCachedPortfolio
+        : null);
+    const plaidPortfolio = financialResource?.plaidPortfolio ?? plaidPortfolioData ?? null;
+    const primaryPortfolio = financialResource?.activePortfolio ?? statementPortfolio ?? plaidPortfolio;
+    const fallbackPortfolio =
+      primaryPortfolio ?? statementPortfolio ?? plaidPortfolio ?? normalizedCachedPortfolio;
+
+    const optimisticPortfolio =
+      primaryPortfolio && hasPortfolioHoldings(primaryPortfolio)
+        ? primaryPortfolio
+        : statementPortfolio && hasPortfolioHoldings(statementPortfolio)
+          ? statementPortfolio
+          : plaidPortfolio && hasPortfolioHoldings(plaidPortfolio)
+            ? plaidPortfolio
+            : null;
+
+    if (financialResourceLoading) {
+      if (optimisticPortfolio) {
+        setFlowData({
+          hasFinancialData: true,
+          holdingsCount: optimisticPortfolio.holdings?.length || 0,
+          portfolioData: fallbackPortfolio ?? undefined,
+          holdings: optimisticPortfolio.holdings?.map((holding) => holding.symbol) || [],
+        });
+        if (isDashboardMode) {
+          setOnboardingFlowActiveCookie(false);
+        }
+        setState(isDashboardMode ? "dashboard" : "import_required");
+        return;
+      }
+      setState("checking");
+      return;
+    }
+
+    if (normalizedCachedPortfolio) {
+      setPortfolioData(userId, normalizedCachedPortfolio);
+    }
+    if (statementPortfolio) {
+      setPortfolioData(userId, statementPortfolio);
+    }
+
+    if (primaryPortfolio && hasPortfolioHoldings(primaryPortfolio)) {
+      setFlowData({
+        hasFinancialData: true,
+        holdingsCount: primaryPortfolio.holdings?.length || 0,
+        portfolioData: fallbackPortfolio ?? undefined,
+        holdings: primaryPortfolio.holdings?.map((holding) => holding.symbol) || [],
+      });
+      if (isDashboardMode) {
+        setOnboardingFlowActiveCookie(false);
+      }
+      setState(isDashboardMode ? "dashboard" : "import_required");
+      return;
+    }
+
+    if (financialResource?.hasFinancialData && plaidPortfolio) {
+      setFlowData({
+        hasFinancialData: true,
+        holdingsCount: plaidPortfolio.holdings?.length || 0,
+        portfolioData: fallbackPortfolio ?? undefined,
+        holdings: plaidPortfolio.holdings?.map((holding) => holding.symbol) || [],
+      });
+      if (isDashboardMode) {
+        setOnboardingFlowActiveCookie(false);
+      }
+      setState(isDashboardMode ? "dashboard" : "import_required");
+      return;
+    }
+
+    if (financialResourceError) {
+      console.warn("[KaiFlow] Shared financial resource failed:", financialResourceError);
+    }
+
+    invalidateDomain(userId, "financial");
+    setFlowData({ hasFinancialData: false });
+    if (isDashboardMode) {
+      setState("dashboard");
+      return;
+    }
+    setState("import_required");
   }, [
-    mode,
-    userId,
-    vaultKey,
-    effectiveVaultOwnerToken,
+    financialResource,
+    financialResourceError,
+    financialResourceLoading,
     getPortfolioData,
-    setPortfolioData,
     invalidateDomain,
     isDashboardMode,
+    mode,
+    plaidPortfolioData,
+    setPortfolioData,
+    userId,
     vaultDialogOpen,
-    loadPlaidStatusSnapshot,
   ]);
 
   // Notify parent of state changes
@@ -1638,7 +1685,33 @@ export function KaiFlow({
         return;
       }
 
-      const tokenForImport = effectiveVaultOwnerToken;
+      const forceRefreshVaultOwnerToken = async (
+        currentToken: string | null
+      ): Promise<string> => {
+        const token = await ensureKaiVaultOwnerToken({
+          userId,
+          currentToken,
+          currentExpiresAt: tokenExpiresAt,
+          forceRefresh: true,
+          onIssued: (issuedToken, expiresAt) => {
+            if (vaultKey) {
+              unlockVault(vaultKey, issuedToken, expiresAt);
+            }
+          },
+        });
+        return token;
+      };
+
+      let tokenForImport = effectiveVaultOwnerToken;
+      try {
+        tokenForImport = await forceRefreshVaultOwnerToken(tokenForImport);
+      } catch (tokenError) {
+        console.warn("[KaiFlow] Failed to refresh VAULT_OWNER token before import:", tokenError);
+        const message = "Your session needs refresh. Please sign in again.";
+        setError(message);
+        toast.error(message);
+        return;
+      }
       lastImportFileRef.current = file;
       // Hard reset visual import state before any snapshot/resume branching so
       // previous-run completion bars never bleed into a new upload attempt.
@@ -1811,6 +1884,32 @@ export function KaiFlow({
         return;
       }
 
+      if (importStartInFlightRef.current) {
+        toast.message("Portfolio import is already starting.", {
+          description: "Please wait a moment before starting another import.",
+        });
+        return;
+      }
+      importStartInFlightRef.current = true;
+      userRequestedImportCancelRef.current = false;
+      let importTerminalTelemetryRecorded = false;
+      const trackImportTerminalTelemetry = (result: "success" | "error") => {
+        if (importTerminalTelemetryRecorded) return;
+        importTerminalTelemetryRecorded = true;
+        trackEvent("import_parse_completed", {
+          result,
+        });
+        if (result === "success") {
+          trackEvent("import_quality_gate_passed", {
+            result: "success",
+          });
+        } else {
+          trackEvent("import_quality_gate_failed", {
+            result: "error",
+          });
+        }
+      };
+
       try {
         // Fresh import intent: proactively cancel any lingering active backend run.
         try {
@@ -1886,100 +1985,113 @@ export function KaiFlow({
         formData.append("file", file);
         formData.append("user_id", userId);
 
+        const runImportRequest = async (importToken: string): Promise<Response> => {
+          if (Capacitor.isNativePlatform()) {
+            return ApiService.importPortfolioStream({
+              formData,
+              vaultOwnerToken: importToken,
+              signal: abortControllerRef.current?.signal,
+            });
+          }
+
+          const startResponse = await ApiService.startPortfolioImportRun({
+            formData,
+            vaultOwnerToken: importToken,
+            signal: abortControllerRef.current?.signal,
+          });
+          if (startResponse.status === 409) {
+            const conflict = (await startResponse.json().catch(() => null)) as
+              | {
+                  detail?: {
+                    active_run?: { run_id?: unknown; latest_cursor?: unknown };
+                  };
+                }
+              | null;
+            const runIdFromConflict =
+              typeof conflict?.detail?.active_run?.run_id === "string"
+                ? conflict.detail.active_run.run_id.trim()
+                : "";
+            if (!runIdFromConflict) {
+              throw new Error(
+                "Another import is running, but its run id could not be resolved."
+              );
+            }
+            // Explicit upload action should always start a fresh run, not attach.
+            await ApiService.cancelPortfolioImportRun({
+              runId: runIdFromConflict,
+              userId,
+              vaultOwnerToken: importToken,
+            });
+            await new Promise((resolve) => window.setTimeout(resolve, 150));
+            const retryStart = await ApiService.startPortfolioImportRun({
+              formData,
+              vaultOwnerToken: importToken,
+              signal: abortControllerRef.current?.signal,
+            });
+            if (!retryStart.ok) {
+              return retryStart;
+            }
+            const retryPayload = (await retryStart.json()) as {
+              run?: { run_id?: unknown };
+            };
+            const retryRunId =
+              typeof retryPayload?.run?.run_id === "string"
+                ? retryPayload.run.run_id.trim()
+                : "";
+            if (!retryRunId) {
+              throw new Error("Import run started but no run id was returned.");
+            }
+            activeImportRunIdRef.current = retryRunId;
+            activeImportCursorRef.current = 0;
+            persistBackgroundSnapshot("running");
+            return ApiService.streamPortfolioImportRun({
+              runId: retryRunId,
+              userId,
+              vaultOwnerToken: importToken,
+              cursor: 0,
+              signal: abortControllerRef.current?.signal,
+            });
+          }
+          if (!startResponse.ok) {
+            return startResponse;
+          }
+          const startedPayload = (await startResponse.json()) as {
+            run?: { run_id?: unknown };
+          };
+          const runId =
+            typeof startedPayload?.run?.run_id === "string"
+              ? startedPayload.run.run_id.trim()
+              : "";
+          if (!runId) {
+            throw new Error("Import run started but no run id was returned.");
+          }
+          activeImportRunIdRef.current = runId;
+          activeImportCursorRef.current = 0;
+          persistBackgroundSnapshot("running");
+          return ApiService.streamPortfolioImportRun({
+            runId,
+            userId,
+            vaultOwnerToken: importToken,
+            cursor: 0,
+            signal: abortControllerRef.current?.signal,
+          });
+        };
+
         let response: Response;
         try {
-          if (Capacitor.isNativePlatform()) {
-            response = await ApiService.importPortfolioStream({
-              formData,
-              vaultOwnerToken: tokenForImport,
-              signal: abortControllerRef.current.signal,
-            });
-          } else {
-            const startResponse = await ApiService.startPortfolioImportRun({
-              formData,
-              vaultOwnerToken: tokenForImport,
-              signal: abortControllerRef.current.signal,
-            });
-            if (startResponse.status === 409) {
-              const conflict = (await startResponse.json().catch(() => null)) as
-                | {
-                    detail?: {
-                      active_run?: { run_id?: unknown; latest_cursor?: unknown };
-                    };
-                  }
-                | null;
-              const runIdFromConflict =
-                typeof conflict?.detail?.active_run?.run_id === "string"
-                  ? conflict.detail.active_run.run_id.trim()
-                  : "";
-              if (!runIdFromConflict) {
-                throw new Error(
-                  "Another import is running, but its run id could not be resolved."
-                );
-              }
-              // Explicit upload action should always start a fresh run, not attach.
-              await ApiService.cancelPortfolioImportRun({
-                runId: runIdFromConflict,
-                userId,
-                vaultOwnerToken: tokenForImport,
-              });
-              await new Promise((resolve) => window.setTimeout(resolve, 150));
-              const retryStart = await ApiService.startPortfolioImportRun({
-                formData,
-                vaultOwnerToken: tokenForImport,
-                signal: abortControllerRef.current.signal,
-              });
-              if (!retryStart.ok) {
-                response = retryStart;
-              } else {
-                const retryPayload = (await retryStart.json()) as {
-                  run?: { run_id?: unknown };
-                };
-                const retryRunId =
-                  typeof retryPayload?.run?.run_id === "string"
-                    ? retryPayload.run.run_id.trim()
-                    : "";
-                if (!retryRunId) {
-                  throw new Error("Import run started but no run id was returned.");
-                }
-                activeImportRunIdRef.current = retryRunId;
-                activeImportCursorRef.current = 0;
-                persistBackgroundSnapshot("running");
-                response = await ApiService.streamPortfolioImportRun({
-                  runId: retryRunId,
-                  userId,
-                  vaultOwnerToken: tokenForImport,
-                  cursor: 0,
-                  signal: abortControllerRef.current.signal,
-                });
-              }
-            } else if (!startResponse.ok) {
-              response = startResponse;
-            } else {
-              const startedPayload = (await startResponse.json()) as {
-                run?: { run_id?: unknown };
-              };
-              const runId =
-                typeof startedPayload?.run?.run_id === "string"
-                  ? startedPayload.run.run_id.trim()
-                  : "";
-              if (!runId) {
-                throw new Error("Import run started but no run id was returned.");
-              }
-              activeImportRunIdRef.current = runId;
-              activeImportCursorRef.current = 0;
-              persistBackgroundSnapshot("running");
-              response = await ApiService.streamPortfolioImportRun({
-                runId,
-                userId,
-                vaultOwnerToken: tokenForImport,
-                cursor: 0,
-                signal: abortControllerRef.current.signal,
-              });
-            }
+          response = await runImportRequest(tokenForImport);
+          if (response.status === 401) {
+            tokenForImport = await forceRefreshVaultOwnerToken(tokenForImport);
+            response = await runImportRequest(tokenForImport);
           }
         } catch (fetchError) {
           if (fetchError instanceof Error && fetchError.name === "AbortError") {
+            throw fetchError;
+          }
+          if (
+            fetchError instanceof Error &&
+            /session needs refresh|sign in again/i.test(fetchError.message)
+          ) {
             throw fetchError;
           }
           throw new Error("Connection issue. Please check your network and try again.");
@@ -2492,12 +2604,7 @@ export function KaiFlow({
                 break;
               }
               case "aborted": {
-                const message = sanitizeInvestorCopy(
-                  typeof payload.message === "string"
-                    ? payload.message
-                    : "Import was stopped before completion",
-                  "Import was stopped before completion"
-                );
+                const message = "Import was interrupted before completion. Please retry.";
                 terminalStreamFailureMessage = message;
                 terminalStreamFailureDetails =
                   formatQualityGateDetails(payload.quality_gate);
@@ -2549,6 +2656,7 @@ export function KaiFlow({
         );
 
         if (terminalStreamFailureMessage) {
+          trackImportTerminalTelemetry("error");
           persistBackgroundSnapshot("failed", {
             errorMessage: terminalStreamFailureMessage,
           });
@@ -2575,6 +2683,7 @@ export function KaiFlow({
           throw new Error("No portfolio data was detected in this file.");
         }
         const parsedPortfolioData: ReviewPortfolioData = parsedPortfolio;
+        trackImportTerminalTelemetry("success");
 
         console.log("[KaiFlow] Portfolio parsed via streaming:", {
           holdings: parsedPortfolioData.holdings?.length || 0,
@@ -2604,9 +2713,12 @@ export function KaiFlow({
         }
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
+          const userInitiatedCancel = userRequestedImportCancelRef.current;
+          userRequestedImportCancelRef.current = false;
           if (streamStallAbortTriggered) {
             const stalledMessage =
               "Import stalled with no backend updates. Please retry this statement.";
+            trackImportTerminalTelemetry("error");
             setError(stalledMessage);
             toast.error(stalledMessage);
             setStreaming((prev) => ({
@@ -2621,6 +2733,36 @@ export function KaiFlow({
               errorMessage: stalledMessage,
               statusMessage: stalledMessage,
             }));
+            setState("importing");
+            return;
+          }
+          if (!userInitiatedCancel) {
+            const interruptedMessage = "Import was interrupted before completion. Please retry.";
+            trackImportTerminalTelemetry("error");
+            setError(interruptedMessage);
+            toast.error(interruptedMessage);
+            setStreaming((prev) => ({
+              ...prev,
+              stage: "error",
+              stageTrail: prev.stageTrail.includes(`[ERROR] ${interruptedMessage}`)
+                ? prev.stageTrail
+                : [...prev.stageTrail, `[ERROR] ${interruptedMessage}`],
+              rawStreamLines: appendRawStreamLines(prev.rawStreamLines, [
+                `[ERROR] ${interruptedMessage}`,
+              ]),
+              errorMessage: interruptedMessage,
+              statusMessage: interruptedMessage,
+            }));
+            persistBackgroundSnapshot("failed", {
+              errorMessage: interruptedMessage,
+            });
+            if (importTaskId) {
+              AppBackgroundTaskService.failTask(
+                importTaskId,
+                interruptedMessage,
+                "Portfolio import was interrupted. Please retry."
+              );
+            }
             setState("importing");
             return;
           }
@@ -2653,6 +2795,7 @@ export function KaiFlow({
             : err instanceof Error
             ? sanitizeInvestorCopy(err.message, err.message)
             : "We could not import your portfolio. Please try again.";
+        trackImportTerminalTelemetry("error");
         setError(safeError);
         toast.error(
           safeError
@@ -2686,6 +2829,7 @@ export function KaiFlow({
         }
         setState("importing");
       } finally {
+        importStartInFlightRef.current = false;
         if (stallMonitorId !== null) {
           window.clearInterval(stallMonitorId);
         }
@@ -2693,7 +2837,14 @@ export function KaiFlow({
         setBusyOperation("portfolio_import_stream", false);
       }
     },
-    [userId, vaultKey, effectiveVaultOwnerToken, setBusyOperation]
+    [
+      userId,
+      vaultKey,
+      effectiveVaultOwnerToken,
+      tokenExpiresAt,
+      unlockVault,
+      setBusyOperation,
+    ]
   );
 
   useEffect(() => {
@@ -2741,6 +2892,7 @@ export function KaiFlow({
 
   // Handle cancel import
   const handleCancelImport = useCallback(() => {
+    userRequestedImportCancelRef.current = true;
     const runId = activeImportRunIdRef.current;
     if (runId && effectiveVaultOwnerToken) {
       void ApiService.cancelPortfolioImportRun({
@@ -2876,6 +3028,9 @@ export function KaiFlow({
       AppBackgroundTaskService.dismissTask(activeImportTaskIdRef.current);
       activeImportTaskIdRef.current = null;
     }
+    trackEvent("import_save_completed", {
+      result: "success",
+    });
 
     if (mode === "import") {
       setOnboardingFlowActiveCookie(false);
@@ -2910,10 +3065,7 @@ export function KaiFlow({
 
     setIsConnectingPlaid(true);
     try {
-      const redirectUri =
-        typeof window !== "undefined"
-          ? new URL(ROUTES.KAI_PLAID_OAUTH_RETURN, window.location.origin).toString()
-          : undefined;
+      const redirectUri = resolvePlaidRedirectUri();
       const linkToken = await PlaidPortfolioService.createLinkToken({
         userId,
         vaultOwnerToken: effectiveVaultOwnerToken,
@@ -3094,45 +3246,19 @@ export function KaiFlow({
     void handlePreloadSchema();
   }, [resumePreloadAfterVault, vaultKey, effectiveVaultOwnerToken, handlePreloadSchema]);
 
-  // Handle analyze stock - starts streaming analysis
-  const handleAnalyzeStock = useCallback((symbol: string, options?: AnalysisLaunchOptions) => {
-    console.log("[KaiFlow] handleAnalyzeStock called with:", symbol);
-    console.log("[KaiFlow] vaultOwnerToken present:", !!effectiveVaultOwnerToken);
-    
+  // Route new analysis starts through the comparison preview first.
+  const handleAnalyzeStock = useCallback((symbol: string, _options?: AnalysisLaunchOptions) => {
     if (!symbol || !effectiveVaultOwnerToken) {
       toast.error("Please unlock your Vault first.");
       return;
     }
-    
-    // Get context for confirmation dialog
-    getStockContext(symbol, effectiveVaultOwnerToken)
-      .then((context) => {
-        console.log("[KaiFlow] Context received:", context?.ticker || "no ticker");
-        
-        // Store analysis params in Zustand store for the analysis page
-        const params = {
-          ticker: symbol.toUpperCase(),
-          userId,
-          riskProfile: context.user_risk_profile || "balanced",
-          userContext: context,
-          portfolioSource: options?.portfolioSource,
-          portfolioContext: options?.portfolioContext ?? null,
-        };
-        console.log("[KaiFlow] Params to store:", JSON.stringify(params));
-        
-        useKaiSession.getState().setAnalysisParams(params);
-        
-        // Navigate to analysis view (DebateStreamView will read from Zustand store)
-        console.log("[KaiFlow] Navigating to /kai/analysis");
-        router.push(ROUTES.KAI_ANALYSIS);
+    useKaiSession.getState().setAnalysisParams(null);
+    router.push(
+      buildKaiAnalysisPreviewRoute({
+        ticker: symbol.toUpperCase(),
       })
-      .catch((error) => {
-        console.error("[KaiFlow] Error getting context:", error);
-        toast.error("Could not start analysis", {
-          description: error instanceof Error ? error.message : "Please try again.",
-        });
-      });
-  }, [effectiveVaultOwnerToken, userId, router]);
+    );
+  }, [effectiveVaultOwnerToken, router]);
 
   // Handle back to dashboard from analysis
   const handleBackToDashboard = useCallback(() => {
@@ -3152,33 +3278,35 @@ export function KaiFlow({
   }
 
   return (
-    <div className="flex w-full flex-col overflow-x-hidden">
+    <div className="flex w-full flex-col">
       {/* Error display */}
       {error && state !== "importing" && state !== "import_complete" && (
-        <div className="mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-lg text-red-600 dark:text-red-400">
-          <div className="flex items-center gap-2">
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
+        <SurfaceCard tone="critical" className="mb-4">
+          <SurfaceCardContent className="space-y-3 pt-5">
+            <div className="flex items-start gap-2 text-red-600 dark:text-red-400">
+              <svg
+                className="mt-0.5 h-5 w-5 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <span className="text-sm font-medium">{error}</span>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              className="text-left text-sm font-medium text-red-700 underline underline-offset-4 hover:no-underline dark:text-red-300"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
-            </svg>
-            <span>{error}</span>
-          </div>
-          <button
-            onClick={() => setError(null)}
-            className="mt-2 text-sm underline hover:no-underline"
-          >
-            Dismiss
-          </button>
-        </div>
+              Dismiss
+            </button>
+          </SurfaceCardContent>
+        </SurfaceCard>
       )}
 
       {/* State-based rendering */}
@@ -3275,7 +3403,9 @@ export function KaiFlow({
         <DashboardMasterView
           userId={userId}
           vaultOwnerToken={effectiveVaultOwnerToken ?? ""}
-          portfolioData={flowData.portfolioData ?? null}
+          portfolioData={
+            (flowData.portfolioData ?? plaidPortfolioData ?? { holdings: [] }) as PortfolioData
+          }
           onAnalyzeStock={handleAnalyzeStock}
           onReupload={handleReimport}
         />

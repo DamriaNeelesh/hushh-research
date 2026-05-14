@@ -16,6 +16,7 @@ import type {
   ObservabilityPlatform,
   StatusBucket,
 } from "@/lib/observability/events";
+import { resolveObservabilityEventCategory } from "@/lib/observability/events";
 import { nativeFirebaseAdapter } from "@/lib/observability/adapters/native-firebase";
 import { webGtmAdapter } from "@/lib/observability/adapters/web-gtm";
 import {
@@ -34,6 +35,7 @@ const ADAPTERS: ObservabilityAdapter[] = [webGtmAdapter, nativeFirebaseAdapter];
 const lastEventAtByKey = new Map<string, number>();
 
 const DEFAULT_DEDUPE_WINDOW_MS = 750;
+const CLIENT_VERSION_FALLBACK = "unknown";
 
 function resolvePlatform(): ObservabilityPlatform {
   if (!Capacitor.isNativePlatform()) {
@@ -45,6 +47,11 @@ function resolvePlatform(): ObservabilityPlatform {
 
 function nowMs(): number {
   return Date.now();
+}
+
+function resolveClientVersion(): string {
+  const version = String(process.env.NEXT_PUBLIC_CLIENT_VERSION || "").trim();
+  return version || CLIENT_VERSION_FALLBACK;
 }
 
 function shouldDropByDedupe(key: string, dedupeWindowMs: number): boolean {
@@ -89,6 +96,8 @@ export function trackEvent<T extends ObservabilityEventName>(
     ...payload,
     env: resolveObservabilityEnvironment(),
     platform: resolvePlatform(),
+    event_category: resolveObservabilityEventCategory(eventName),
+    app_version: resolveClientVersion(),
   };
 
   const validation = validateAndSanitizeEvent(eventName, fullPayload);
@@ -129,7 +138,8 @@ export function trackPageView(pathname: string, navType: "route_change" | "initi
 const EXPECTED_STATUS_BY_ENDPOINT: Record<string, Set<number>> = {
   "GET /api/kai/analyze/run/active": new Set([404]),
   "POST /api/kai/analyze/run/start": new Set([409]),
-  "GET /api/world-model/metadata/{user_id}": new Set([401, 404]),
+  "GET /api/pkm/metadata/{user_id}": new Set([401, 404]),
+  "GET /api/kai/market/insights/baseline/{user_id}": new Set([401]),
   "GET /api/kai/market/insights/{user_id}": new Set([401]),
   "POST /db/vault/get": new Set([404]),
   "POST /db/vault/bootstrap-state": new Set([404]),

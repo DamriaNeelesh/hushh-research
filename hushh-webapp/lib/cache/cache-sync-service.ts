@@ -1,7 +1,6 @@
 import type { PortfolioData } from "@/lib/cache/cache-context";
 import { CacheService, CACHE_KEYS, CACHE_TTL } from "@/lib/services/cache-service";
-import type { WorldModelMetadata } from "@/lib/services/world-model-service";
-import { removeSessionItemsByPrefix } from "@/lib/utils/session-storage";
+import type { PersonalKnowledgeModelMetadata } from "@/lib/services/personal-knowledge-model-service";
 
 type DomainSummaryPatch = Record<string, unknown>;
 
@@ -35,26 +34,84 @@ function deriveAttributeCount(
 }
 
 function sanitizeDomainSummary(summary: DomainSummaryPatch): Record<string, unknown> {
-  const blocked = new Set(["holdings", "vault_key", "password"]);
+  const blocked = new Set([
+    "holdings",
+    "vault_key",
+    "password",
+    "risk_profile",
+    "risk_bucket",
+    "risk_score",
+    "recent_decisions",
+    "analysis_recent_decisions",
+    "analysis_decisions",
+    "decisions",
+    "portfolio_total_value",
+    "total_value",
+  ]);
   const sanitized: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(summary)) {
-    if (key.toLowerCase() === "total_value") {
+    const normalized = key.toLowerCase();
+    if (blocked.has(normalized)) continue;
+    if (
+      [
+        "attribute_count",
+        "holdings_count",
+        "item_count",
+        "path_count",
+        "externalizable_path_count",
+        "manifest_version",
+        "top_level_scope_count",
+        "domain_contract_version",
+        "readable_summary_version",
+      ].includes(
+        normalized
+      )
+    ) {
       const parsed = toNumber(value);
       if (parsed !== null) {
-        sanitized.portfolio_total_value = parsed;
+        sanitized[normalized] = parsed;
       }
       continue;
     }
-    if (blocked.has(key.toLowerCase())) continue;
-    sanitized[key] = value;
+    if (
+      typeof value === "boolean" &&
+      (normalized.startsWith("has_") ||
+        normalized.endsWith("_enabled") ||
+        normalized.endsWith("_available"))
+    ) {
+      sanitized[normalized] = value;
+      continue;
+    }
+    if (
+      typeof value === "string" &&
+      [
+        "last_structured_at",
+        "last_content_at",
+        "storage_mode",
+        "upgraded_at",
+        "readable_summary",
+        "readable_updated_at",
+        "readable_source_label",
+        "readable_event_summary",
+      ].includes(normalized)
+    ) {
+      sanitized[normalized] = value;
+      continue;
+    }
+    if (normalized === "readable_highlights" && Array.isArray(value)) {
+      sanitized[normalized] = value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean)
+        .slice(0, 5);
+    }
   }
 
   return sanitized;
 }
 
 function patchMetadataDomain(
-  cachedMetadata: WorldModelMetadata,
+  cachedMetadata: PersonalKnowledgeModelMetadata,
   userId: string,
   domain: string,
   options?: {
@@ -62,7 +119,7 @@ function patchMetadataDomain(
     portfolioData?: PortfolioData;
     metadataTimestamp?: string;
   }
-): WorldModelMetadata {
+): PersonalKnowledgeModelMetadata {
   const sanitizedSummary = sanitizeDomainSummary(options?.domainSummary ?? {});
   const metadataTimestamp =
     options?.metadataTimestamp ??
@@ -86,9 +143,53 @@ function patchMetadataDomain(
       (typeof options?.domainSummary?.color === "string" ? options.domainSummary.color : existing?.color) ||
       "var(--brand-500)",
     attributeCount: deriveAttributeCount(options?.domainSummary, options?.portfolioData),
-    summary: sanitizedSummary as Record<string, string | number>,
+    summary: sanitizedSummary,
     availableScopes: existing?.availableScopes ?? [],
     lastUpdated: metadataTimestamp,
+    readableSummary:
+      (typeof options?.domainSummary?.readable_summary === "string"
+        ? options.domainSummary.readable_summary
+        : typeof options?.domainSummary?.readableSummary === "string"
+          ? options.domainSummary.readableSummary
+          : existing?.readableSummary) || null,
+    readableHighlights:
+      (Array.isArray(options?.domainSummary?.readable_highlights)
+        ? options?.domainSummary?.readable_highlights
+        : Array.isArray(options?.domainSummary?.readableHighlights)
+          ? options?.domainSummary?.readableHighlights
+          : existing?.readableHighlights) || [],
+    readableUpdatedAt:
+      (typeof options?.domainSummary?.readable_updated_at === "string"
+        ? options.domainSummary.readable_updated_at
+        : typeof options?.domainSummary?.readableUpdatedAt === "string"
+          ? options.domainSummary.readableUpdatedAt
+          : existing?.readableUpdatedAt) || metadataTimestamp,
+    readableSourceLabel:
+      (typeof options?.domainSummary?.readable_source_label === "string"
+        ? options.domainSummary.readable_source_label
+        : typeof options?.domainSummary?.readableSourceLabel === "string"
+          ? options.domainSummary.readableSourceLabel
+          : existing?.readableSourceLabel) || null,
+    domainContractVersion:
+      Number(
+        options?.domainSummary?.domain_contract_version ??
+          options?.domainSummary?.domainContractVersion ??
+          existing?.domainContractVersion ??
+          1
+      ) || 1,
+    readableSummaryVersion:
+      Number(
+        options?.domainSummary?.readable_summary_version ??
+          options?.domainSummary?.readableSummaryVersion ??
+          existing?.readableSummaryVersion ??
+          0
+      ) || 0,
+    upgradedAt:
+      (typeof options?.domainSummary?.upgraded_at === "string"
+        ? options.domainSummary.upgraded_at
+        : typeof options?.domainSummary?.upgradedAt === "string"
+          ? options.domainSummary.upgradedAt
+          : existing?.upgradedAt) || metadataTimestamp,
   };
 
   const domains = [...cachedMetadata.domains];
@@ -108,6 +209,11 @@ function patchMetadataDomain(
     userId,
     domains,
     totalAttributes,
+    modelVersion: cachedMetadata.modelVersion,
+    targetModelVersion: cachedMetadata.targetModelVersion,
+    upgradeStatus: cachedMetadata.upgradeStatus,
+    upgradableDomains: cachedMetadata.upgradableDomains,
+    lastUpgradedAt: cachedMetadata.lastUpgradedAt,
     lastUpdated: metadataTimestamp,
   };
 }
@@ -117,12 +223,32 @@ function patchMetadataDomain(
  * Services/components should call this instead of ad-hoc invalidation logic.
  */
 export class CacheSyncService {
+  private static invalidateKaiFinancialResource(userId: string): void {
+    const cache = CacheService.getInstance();
+    cache.invalidate(CACHE_KEYS.KAI_FINANCIAL_RESOURCE(userId));
+    void import("@/lib/kai/kai-financial-resource")
+      .then(({ KaiFinancialResourceService }) => {
+        KaiFinancialResourceService.invalidate(userId, { includeDevice: false });
+      })
+      .catch(() => undefined);
+    void import("@/lib/pkm/pkm-domain-resource")
+      .then(({ PkmDomainResourceService }) => {
+        PkmDomainResourceService.invalidateDomain(userId, "financial", {
+          includeDevice: false,
+        });
+      })
+      .catch(() => undefined);
+  }
+
   private static onKaiMarketContextChanged(userId: string): void {
     const cache = CacheService.getInstance();
     cache.invalidatePattern(`kai_market_home_${userId}_`);
     cache.invalidatePattern(`kai_dashboard_profile_picks_${userId}_`);
-    removeSessionItemsByPrefix(`kai_market_home_session_${userId}_`);
-    removeSessionItemsByPrefix(`kai_market_home_last_known_${userId}_`);
+    void import("@/lib/kai/kai-market-home-resource")
+      .then(({ KaiMarketHomeResourceService }) => {
+        KaiMarketHomeResourceService.invalidateUser(userId, { includeDevice: false });
+      })
+      .catch(() => undefined);
     void import("@/lib/services/unlock-warm-orchestrator")
       .then(({ UnlockWarmOrchestrator }) => {
         UnlockWarmOrchestrator.invalidateForUser(userId);
@@ -130,7 +256,7 @@ export class CacheSyncService {
       .catch(() => undefined);
   }
 
-  static onWorldModelDomainStored(
+  static onPkmDomainStored(
     userId: string,
     domain: string,
     options?: {
@@ -148,9 +274,23 @@ export class CacheSyncService {
       writeThroughMetadata?: boolean;
     }
   ): void {
+    const emitDomainStoredEvent = () => {
+      if (typeof window === "undefined") return;
+      window.dispatchEvent(
+        new CustomEvent("pkm-domain-stored", {
+          detail: {
+            userId,
+            domain,
+            dataVersion: options?.encryptedBlob?.dataVersion ?? null,
+            updatedAt: options?.encryptedBlob?.updatedAt ?? options?.metadataTimestamp ?? null,
+          },
+        })
+      );
+    };
     const cache = CacheService.getInstance();
     const writeThroughMetadata = options?.writeThroughMetadata !== false;
-    cache.invalidate(CACHE_KEYS.WORLD_MODEL_DECRYPTED_BLOB(userId));
+    cache.invalidate(CACHE_KEYS.PKM_DECRYPTED_BLOB(userId));
+    cache.invalidate(CACHE_KEYS.DOMAIN_MANIFEST(userId, domain));
 
     if (domain === "financial") {
       if (options?.portfolioData) {
@@ -161,32 +301,43 @@ export class CacheSyncService {
           CACHE_TTL.SESSION
         );
       }
+      this.invalidateKaiFinancialResource(userId);
+      this.onKaiMarketContextChanged(userId);
       // IMPORTANT: Preserve existing financial portfolio cache on profile-only
       // writes (e.g. onboarding/nav-tour sync). Invalidating here causes
       // transient "import portfolio" gating despite a successful save.
     } else {
       cache.invalidate(CACHE_KEYS.DOMAIN_DATA(userId, domain));
     }
+    void import("@/lib/pkm/pkm-domain-resource")
+      .then(({ PkmDomainResourceService }) => {
+        PkmDomainResourceService.invalidateDomain(userId, domain, {
+          includeDevice: false,
+        });
+      })
+      .catch(() => undefined);
 
     if (options?.encryptedBlob) {
-      cache.set(CACHE_KEYS.WORLD_MODEL_BLOB(userId), options.encryptedBlob, CACHE_TTL.SESSION);
       cache.set(
         CACHE_KEYS.ENCRYPTED_DOMAIN_BLOB(userId, domain),
         options.encryptedBlob,
         CACHE_TTL.SESSION
       );
+      cache.invalidate(CACHE_KEYS.PKM_BLOB(userId));
     } else {
       cache.invalidate(CACHE_KEYS.ENCRYPTED_DOMAIN_BLOB(userId, domain));
-      cache.invalidate(CACHE_KEYS.WORLD_MODEL_BLOB(userId));
+      cache.invalidate(CACHE_KEYS.PKM_BLOB(userId));
     }
 
     if (!writeThroughMetadata) {
+      emitDomainStoredEvent();
       return;
     }
 
-    const cachedMetadata = cache.get<WorldModelMetadata>(CACHE_KEYS.WORLD_MODEL_METADATA(userId));
+    const cachedMetadata = cache.get<PersonalKnowledgeModelMetadata>(CACHE_KEYS.PKM_METADATA(userId));
     if (!cachedMetadata || !options?.domainSummary) {
-      cache.invalidate(CACHE_KEYS.WORLD_MODEL_METADATA(userId));
+      cache.invalidate(CACHE_KEYS.PKM_METADATA(userId));
+      emitDomainStoredEvent();
       return;
     }
 
@@ -195,18 +346,28 @@ export class CacheSyncService {
       portfolioData: options.portfolioData,
       metadataTimestamp: options.metadataTimestamp,
     });
-    cache.set(CACHE_KEYS.WORLD_MODEL_METADATA(userId), patched, CACHE_TTL.MEDIUM);
+    cache.set(CACHE_KEYS.PKM_METADATA(userId), patched, CACHE_TTL.MEDIUM);
+    emitDomainStoredEvent();
   }
 
-  static onWorldModelDomainCleared(userId: string, domain: string): void {
+  static onPkmDomainCleared(userId: string, domain: string): void {
     const cache = CacheService.getInstance();
+    cache.invalidate(CACHE_KEYS.DOMAIN_MANIFEST(userId, domain));
     cache.invalidate(CACHE_KEYS.DOMAIN_DATA(userId, domain));
     cache.invalidate(CACHE_KEYS.ENCRYPTED_DOMAIN_BLOB(userId, domain));
-    cache.invalidate(CACHE_KEYS.WORLD_MODEL_BLOB(userId));
-    cache.invalidate(CACHE_KEYS.WORLD_MODEL_DECRYPTED_BLOB(userId));
-    cache.invalidate(CACHE_KEYS.WORLD_MODEL_METADATA(userId));
+    cache.invalidate(CACHE_KEYS.PKM_BLOB(userId));
+    cache.invalidate(CACHE_KEYS.PKM_DECRYPTED_BLOB(userId));
+    cache.invalidate(CACHE_KEYS.PKM_METADATA(userId));
+    void import("@/lib/pkm/pkm-domain-resource")
+      .then(({ PkmDomainResourceService }) => {
+        PkmDomainResourceService.invalidateDomain(userId, domain, {
+          includeDevice: true,
+        });
+      })
+      .catch(() => undefined);
     if (domain === "financial") {
       cache.invalidate(CACHE_KEYS.PORTFOLIO_DATA(userId));
+      this.invalidateKaiFinancialResource(userId);
     }
   }
 
@@ -220,13 +381,15 @@ export class CacheSyncService {
     const cache = CacheService.getInstance();
     cache.set(CACHE_KEYS.PORTFOLIO_DATA(userId), portfolioData, CACHE_TTL.SESSION);
     cache.set(CACHE_KEYS.DOMAIN_DATA(userId, "financial"), portfolioData, CACHE_TTL.SESSION);
+    this.invalidateKaiFinancialResource(userId);
     this.onKaiMarketContextChanged(userId);
     if (options?.invalidateMetadata !== false) {
-      cache.invalidate(CACHE_KEYS.WORLD_MODEL_METADATA(userId));
+      cache.invalidate(CACHE_KEYS.PKM_METADATA(userId));
     }
   }
 
   static onPlaidSourceProjected(userId: string): void {
+    this.invalidateKaiFinancialResource(userId);
     this.onKaiMarketContextChanged(userId);
   }
 
@@ -243,6 +406,9 @@ export class CacheSyncService {
       cache.invalidate(CACHE_KEYS.VAULT_CHECK(userId));
     }
     cache.invalidate(CACHE_KEYS.VAULT_STATUS(userId));
+    if (options?.hasVault === false) {
+      this.invalidateKaiFinancialResource(userId);
+    }
   }
 
   static onConsentMutated(userId: string): void {
@@ -251,7 +417,15 @@ export class CacheSyncService {
     cache.invalidate(CACHE_KEYS.PENDING_CONSENTS(userId));
     cache.invalidate(CACHE_KEYS.CONSENT_AUDIT_LOG(userId));
     cache.invalidate(CACHE_KEYS.CONSENT_CENTER(userId, "all"));
+    cache.invalidate(CACHE_KEYS.CONSENT_CENTER_SUMMARY(userId, "investor"));
+    cache.invalidate(CACHE_KEYS.CONSENT_CENTER_SUMMARY(userId, "ria"));
+    cache.invalidatePattern(`consent_center_preview_${userId}_`);
+    cache.invalidate(CACHE_KEYS.RIA_HOME(userId));
     cache.invalidate(CACHE_KEYS.RIA_ROSTER_SUMMARY(userId));
+    cache.invalidatePattern(`consent_center_list_${userId}_`);
+    cache.invalidatePattern(`ria_clients_${userId}_`);
+    cache.invalidatePattern(`ria_client_detail_${userId}_`);
+    cache.invalidatePattern(`ria_workspace_${userId}_`);
     cache.invalidate(CACHE_KEYS.VAULT_STATUS(userId));
     this.onKaiMarketContextChanged(userId);
   }
@@ -268,7 +442,15 @@ export class CacheSyncService {
     }
     cache.invalidate(CACHE_KEYS.RIA_ONBOARDING_STATUS(userId));
     cache.invalidate(CACHE_KEYS.CONSENT_CENTER(userId, "all"));
+    cache.invalidate(CACHE_KEYS.CONSENT_CENTER_SUMMARY(userId, "investor"));
+    cache.invalidate(CACHE_KEYS.CONSENT_CENTER_SUMMARY(userId, "ria"));
+    cache.invalidatePattern(`consent_center_preview_${userId}_`);
+    cache.invalidate(CACHE_KEYS.RIA_HOME(userId));
     cache.invalidate(CACHE_KEYS.RIA_ROSTER_SUMMARY(userId));
+    cache.invalidatePattern(`consent_center_list_${userId}_`);
+    cache.invalidatePattern(`ria_clients_${userId}_`);
+    cache.invalidatePattern(`ria_client_detail_${userId}_`);
+    cache.invalidatePattern(`ria_workspace_${userId}_`);
     this.onKaiMarketContextChanged(userId);
   }
 
@@ -276,6 +458,7 @@ export class CacheSyncService {
     const cache = CacheService.getInstance();
     cache.invalidate(CACHE_KEYS.PERSONA_STATE(userId));
     cache.invalidate(CACHE_KEYS.RIA_ONBOARDING_STATUS(userId));
+    cache.invalidate(CACHE_KEYS.RIA_HOME(userId));
     cache.invalidatePattern("marketplace_rias_");
     cache.invalidatePattern("marketplace_investors_");
   }
@@ -293,14 +476,22 @@ export class CacheSyncService {
     if (!options?.preserveHistoryCache) {
       cache.invalidate(CACHE_KEYS.ANALYSIS_HISTORY(userId));
     }
-    cache.invalidate(CACHE_KEYS.WORLD_MODEL_BLOB(userId));
-    cache.invalidate(CACHE_KEYS.WORLD_MODEL_DECRYPTED_BLOB(userId));
+    cache.invalidate(CACHE_KEYS.PKM_BLOB(userId));
+    cache.invalidate(CACHE_KEYS.PKM_DECRYPTED_BLOB(userId));
     cache.invalidate(CACHE_KEYS.ENCRYPTED_DOMAIN_BLOB(userId, "financial"));
     cache.invalidate(CACHE_KEYS.DOMAIN_DATA(userId, "financial"));
-    cache.invalidate(CACHE_KEYS.WORLD_MODEL_METADATA(userId));
+    cache.invalidate(CACHE_KEYS.PKM_METADATA(userId));
+    this.invalidateKaiFinancialResource(userId);
     if (ticker) {
       cache.invalidate(CACHE_KEYS.STOCK_CONTEXT(userId, ticker.toUpperCase()));
     }
+  }
+
+  static getAnalysisHistorySnapshot(
+    userId: string
+  ): Record<string, unknown[]> | null {
+    const cache = CacheService.getInstance();
+    return cache.get<Record<string, unknown[]>>(CACHE_KEYS.ANALYSIS_HISTORY(userId)) ?? null;
   }
 
   static onAnalysisHistoryStored(

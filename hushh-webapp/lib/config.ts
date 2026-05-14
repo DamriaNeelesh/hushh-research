@@ -1,6 +1,7 @@
 // lib/config.ts
 
 import { resolveAppEnvironment } from "./app-env";
+import { resolveRuntimeBackendUrl, resolveRuntimeFrontendUrl } from "./runtime/settings";
 
 /**
  * Environment Configuration
@@ -14,6 +15,14 @@ import { resolveAppEnvironment } from "./app-env";
 
 const getEnvironmentMode = () => resolveAppEnvironment();
 
+function normalizeUrl(value: string | undefined | null): string {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function resolveBrowserDefaultBackendUrl(): string {
+  return getEnvironmentMode() === "development" ? "http://127.0.0.1:8000" : "";
+}
+
 export const ENVIRONMENT_MODE = getEnvironmentMode();
 
 export const isDevelopment = () => getEnvironmentMode() === "development";
@@ -21,13 +30,13 @@ export const isProduction = () => getEnvironmentMode() === "production";
 
 // Backend URL for Python consent-protocol server
 export const BACKEND_URL =
-  process.env.BACKEND_URL ||
-  process.env.NEXT_PUBLIC_BACKEND_URL ||
-  "http://127.0.0.1:8000";
+  normalizeUrl(resolveRuntimeBackendUrl()) ||
+  resolveBrowserDefaultBackendUrl();
 
-// Frontend URL
-export const FRONTEND_URL =
-  process.env.NEXT_PUBLIC_FRONTEND_URL || "http://localhost:3000";
+// Frontend origin
+export const APP_FRONTEND_ORIGIN =
+  normalizeUrl(resolveRuntimeFrontendUrl()) ||
+  (getEnvironmentMode() === "development" ? "http://localhost:3000" : "");
 
 // ============================================================================
 // SECURITY EVENT TYPES

@@ -1,129 +1,47 @@
-// hushh-webapp/app/api/world-model/metadata/[userId]/route.ts
-/**
- * World Model Metadata API Proxy
- *
- * Dedicated route for fetching user's world model metadata.
- * Used by frontend to determine if user has existing data.
- *
- * This is a critical endpoint for the Kai flow:
- * - Returns 404 for new users (no data) -> shows import prompt
- * - Returns metadata for existing users -> shows dashboard
- *
- * Production-grade with:
- * - Proper error handling
- * - Request timeout
- * - Detailed logging
- */
+import { NextRequest } from "next/server";
 
-import { NextRequest, NextResponse } from "next/server";
+import { getPythonApiUrl } from "@/app/api/_utils/backend";
+import {
+  createUpstreamHeaders,
+  resolveRequestId,
+  withRequestIdJson,
+} from "@/app/api/_utils/request-id";
 
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-
-// Request timeout in milliseconds
-const REQUEST_TIMEOUT = 10000;
+export const dynamic = "force-dynamic";
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ userId: string }> }
 ) {
-  const startTime = Date.now();
+  const requestId = resolveRequestId(request);
 
   try {
     const { userId } = await params;
+    const authHeader = request.headers.get("Authorization") || "";
+    const backendUrl = `${getPythonApiUrl()}/api/world-model/metadata/${userId}${request.nextUrl.search}`;
 
-    if (!userId) {
-      return NextResponse.json(
-        { error: "User ID is required" },
-        { status: 400 }
-      );
-    }
+    const response = await fetch(backendUrl, {
+      method: "GET",
+      headers: createUpstreamHeaders(requestId, {
+        ...(authHeader ? { Authorization: authHeader } : {}),
+      }),
+    });
 
-    // Validate userId format (basic sanitization)
-    if (!/^[a-zA-Z0-9_-]+$/.test(userId)) {
-      return NextResponse.json(
-        { error: "Invalid user ID format" },
-        { status: 400 }
-      );
-    }
+    const payload = await response
+      .json()
+      .catch(async () => ({ detail: await response.text().catch(() => "") }));
 
-    // Forward authorization header if present
-    const authHeader = request.headers.get("authorization");
-
-    // Create abort controller for timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-
-    try {
-      const response = await fetch(
-        `${BACKEND_URL}/api/world-model/metadata/${userId}`,
-        {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            ...(authHeader ? { Authorization: authHeader } : {}),
-          },
-          signal: controller.signal,
-        }
-      );
-
-      clearTimeout(timeoutId);
-
-      // Handle different response statuses
-      if (response.status === 404) {
-        // New user - no data found (expected case)
-        return NextResponse.json(
-          { error: "No world model data found for user" },
-          { status: 404 }
-        );
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => "Unknown error");
-        console.error(
-          `[world-model/metadata] Backend error for ${userId}: ${response.status} - ${errorText}`
-        );
-        return NextResponse.json(
-          { error: `Backend returned ${response.status}` },
-          { status: response.status }
-        );
-      }
-
-      const data = await response.json();
-
-      // Log successful request timing
-      const duration = Date.now() - startTime;
-      if (duration > 1000) {
-        console.warn(
-          `[world-model/metadata] Slow request for ${userId}: ${duration}ms`
-        );
-      }
-
-      return NextResponse.json(data);
-    } catch (fetchError) {
-      clearTimeout(timeoutId);
-
-      if (fetchError instanceof Error && fetchError.name === "AbortError") {
-        console.error(
-          `[world-model/metadata] Request timeout for ${userId} after ${REQUEST_TIMEOUT}ms`
-        );
-        return NextResponse.json(
-          { error: "Request timeout - backend did not respond in time" },
-          { status: 504 }
-        );
-      }
-
-      throw fetchError;
-    }
+    return withRequestIdJson(requestId, payload, {
+      status: response.status,
+    });
   } catch (error) {
-    const duration = Date.now() - startTime;
     console.error(
-      `[world-model/metadata] Error after ${duration}ms:`,
-      error instanceof Error ? error.message : error
+      `[WorldModel Metadata API] request_id=${requestId} proxy_error`,
+      error
     );
-
-    return NextResponse.json(
-      { error: "Failed to fetch world model metadata" },
+    return withRequestIdJson(
+      requestId,
+      { error: "Failed to proxy world model metadata request" },
       { status: 500 }
     );
   }

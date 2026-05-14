@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Bell,
+  ChevronDown,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -12,9 +13,15 @@ import {
   X,
   RotateCw,
 } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 import { Icon } from "@/lib/morphy-ux/ui";
 import { Button } from "@/lib/morphy-ux/button";
+import {
+  TOP_SHELL_DROPDOWN_BODY_CLASSNAME,
+  TOP_SHELL_DROPDOWN_CONTENT_CLASSNAME,
+  TOP_SHELL_DROPDOWN_HEADER_CLASSNAME,
+} from "@/components/app-ui/top-shell-dropdown";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,6 +34,7 @@ import {
 import {
   AppBackgroundTaskService,
   type AppBackgroundTask,
+  isAppBackgroundTaskVisible,
 } from "@/lib/services/app-background-task-service";
 import { ApiService } from "@/lib/services/api-service";
 import { PlaidPortfolioService } from "@/lib/kai/brokerage/plaid-portfolio-service";
@@ -74,12 +82,68 @@ function appTaskStatusIcon(task: AppBackgroundTask) {
   return <Icon icon={XCircle} size="sm" className="text-rose-500" />;
 }
 
+function appTaskStatusItems(task: AppBackgroundTask): string[] {
+  const metadata =
+    task.metadata && typeof task.metadata === "object"
+      ? (task.metadata as Record<string, unknown>)
+      : null;
+  const rawItems = metadata?.statusItems;
+  if (!Array.isArray(rawItems)) {
+    return [];
+  }
+  return rawItems
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function appTaskTimingSummary(task: AppBackgroundTask): string | null {
+  const metadata =
+    task.metadata && typeof task.metadata === "object"
+      ? (task.metadata as Record<string, unknown>)
+      : null;
+  const timings =
+    metadata?.timings && typeof metadata.timings === "object"
+      ? (metadata.timings as Record<string, unknown>)
+      : null;
+  if (!timings) {
+    return null;
+  }
+  const totalMs = typeof timings.totalMs === "number" ? Math.round(timings.totalMs) : null;
+  const manifestMs =
+    typeof timings.manifestReadMs === "number" ? Math.round(timings.manifestReadMs) : null;
+  const decryptMs =
+    typeof timings.decryptLoadMs === "number" ? Math.round(timings.decryptLoadMs) : null;
+  const transformMs =
+    typeof timings.transformMs === "number" ? Math.round(timings.transformMs) : null;
+  const validationMs =
+    typeof timings.validationMs === "number" ? Math.round(timings.validationMs) : null;
+  if (
+    totalMs === null &&
+    manifestMs === null &&
+    decryptMs === null &&
+    transformMs === null &&
+    validationMs === null
+  ) {
+    return null;
+  }
+  const parts = [
+    totalMs !== null ? `Total ${totalMs}ms` : null,
+    manifestMs !== null ? `manifest ${manifestMs}ms` : null,
+    decryptMs !== null ? `unlock ${decryptMs}ms` : null,
+    transformMs !== null ? `rebuild ${transformMs}ms` : null,
+    validationMs !== null ? `dummy save ${validationMs}ms` : null,
+  ].filter((item): item is string => typeof item === "string");
+  return parts.join(" • ");
+}
+
 interface DebateTaskCenterProps {
   triggerClassName?: string;
+  renderTrigger?: (state: { activeCount: number; badgeCount: number }) => ReactElement;
 }
 
 const DEFAULT_TRIGGER_CLASSNAME =
-  "relative grid h-10 w-10 place-items-center rounded-full border border-border/60 bg-background/70 shadow-sm backdrop-blur-sm transition-colors hover:bg-muted/50 active:bg-muted/80";
+  "relative grid h-10 w-10 place-items-center rounded-full";
 const IMPORT_BACKGROUND_SNAPSHOT_KEY = "kai_portfolio_import_background_v1";
 
 interface ImportBackgroundSnapshot {
@@ -89,13 +153,29 @@ interface ImportBackgroundSnapshot {
   userId?: string;
 }
 
-export function DebateTaskCenter({ triggerClassName }: DebateTaskCenterProps = {}) {
+type NotificationItem =
+  | {
+      kind: "debate";
+      id: string;
+      sortAt: number;
+      task: DebateRunTask;
+    }
+  | {
+      kind: "app";
+      id: string;
+      sortAt: number;
+      task: AppBackgroundTask;
+    };
+
+export function DebateTaskCenter({ triggerClassName, renderTrigger }: DebateTaskCenterProps = {}) {
   const router = useRouter();
   const { userId } = useAuth();
   const { vaultOwnerToken } = useVault();
   const [debateState, setDebateState] = useState(DebateRunManagerService.getState());
   const [appTaskState, setAppTaskState] = useState(AppBackgroundTaskService.getState());
   const [isBusy, setIsBusy] = useState<Record<string, boolean>>({});
+  const [open, setOpen] = useState(false);
+  const [showPassiveActivity, setShowPassiveActivity] = useState(false);
 
   useEffect(() => {
     return DebateRunManagerService.subscribe(setDebateState);
@@ -114,13 +194,41 @@ export function DebateTaskCenter({ triggerClassName }: DebateTaskCenterProps = {
     if (!userId) return [];
     return appTaskState.tasks.filter((task) => task.userId === userId && !task.dismissedAt);
   }, [appTaskState.tasks, userId]);
+  const visibleAppTasks = useMemo(
+    () => appTasks.filter((task) => isAppBackgroundTaskVisible(task)),
+    [appTasks]
+  );
+  const primaryAppTasks = useMemo(
+    () => visibleAppTasks.filter((task) => task.visibility !== "passive"),
+    [visibleAppTasks]
+  );
+  const passiveAppTasks = useMemo(
+    () => visibleAppTasks.filter((task) => task.visibility === "passive"),
+    [visibleAppTasks]
+  );
+
+  const notifications = useMemo<NotificationItem[]>(() => {
+    const debateNotifications = debateTasks.map((task) => ({
+      kind: "debate" as const,
+      id: task.runId,
+      sortAt: Date.parse(task.updatedAt || task.startedAt),
+      task,
+    }));
+    const appNotifications = primaryAppTasks.map((task) => ({
+      kind: "app" as const,
+      id: task.taskId,
+      sortAt: Date.parse(task.updatedAt || task.startedAt),
+      task,
+    }));
+    return [...debateNotifications, ...appNotifications].sort((a, b) => b.sortAt - a.sortAt);
+  }, [primaryAppTasks, debateTasks]);
 
   const activeCount =
     debateTasks.filter((task) => task.status === "running").length +
-    appTasks.filter((task) => task.status === "running").length;
+    visibleAppTasks.filter((task) => task.status === "running").length;
   const completedCount =
     debateTasks.filter((task) => task.status !== "running").length +
-    appTasks.filter((task) => task.status !== "running").length;
+    visibleAppTasks.filter((task) => task.status !== "running").length;
   const badgeCount = activeCount + completedCount;
   const latestActiveTask = useMemo(() => {
     return debateTasks
@@ -207,219 +315,263 @@ export function DebateTaskCenter({ triggerClassName }: DebateTaskCenterProps = {
     AppBackgroundTaskService.cancelTask(task.taskId, "Plaid refresh canceled.");
   };
 
+  const renderAppTask = (task: AppBackgroundTask) => (
+    <div key={task.taskId} className="px-3 py-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            {appTaskStatusIcon(task)}
+            <span className="text-sm font-semibold">{task.title}</span>
+            <span className="text-xs text-muted-foreground">
+              {appTaskStatusLabel(task)}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {task.description}
+          </p>
+          {appTaskStatusItems(task).length > 0 ? (
+            <div className="mt-2 space-y-1">
+              {appTaskStatusItems(task).map((item) => (
+                <p key={item} className="text-[11px] text-muted-foreground">
+                  {item}
+                </p>
+              ))}
+            </div>
+          ) : null}
+          {appTaskTimingSummary(task) ? (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              {appTaskTimingSummary(task)}
+            </p>
+          ) : null}
+          <p className="mt-1 text-xs text-muted-foreground">
+            Started {new Date(task.startedAt).toLocaleTimeString()}
+          </p>
+          {task.error ? (
+            <p className="mt-1 text-xs text-rose-500">{task.error}</p>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-1">
+          {task.routeHref ? (
+            <Button
+              variant="none"
+              effect="fade"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => {
+                const routeHref = task.routeHref;
+                if (!routeHref) return;
+                router.push(routeHref);
+              }}
+              aria-label="Open related screen"
+            >
+              <Icon icon={ExternalLink} size="xs" />
+            </Button>
+          ) : null}
+          {task.status === "running" &&
+          (task.kind === "portfolio_import_stream" ||
+            task.kind === "plaid_refresh") ? (
+            <Button
+              variant="none"
+              effect="fade"
+              size="icon"
+              className="h-8 w-8"
+              disabled={!vaultOwnerToken || Boolean(isBusy[task.taskId])}
+              onClick={() =>
+                runAction(task.taskId, async () => {
+                  if (task.kind === "portfolio_import_stream") {
+                    await cancelPortfolioImportTask(task);
+                    return;
+                  }
+                  await cancelPlaidRefreshTask(task);
+                })
+              }
+              aria-label={
+                task.kind === "plaid_refresh" ? "Cancel refresh" : "Cancel import"
+              }
+            >
+              <Icon icon={X} size="xs" />
+            </Button>
+          ) : null}
+          {task.status !== "running" ? (
+            <Button
+              variant="none"
+              effect="fade"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => AppBackgroundTaskService.dismissTask(task.taskId)}
+              aria-label="Dismiss task"
+            >
+              <Icon icon={X} size="xs" />
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+
   if (!userId) return null;
 
   return (
-    <DropdownMenu modal={false}>
+    <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
       <DropdownMenuTrigger asChild>
-        <button
-          className={cn(DEFAULT_TRIGGER_CLASSNAME, triggerClassName)}
-          aria-label="Background tasks"
-        >
-          {activeCount > 0 ? (
-            <Icon icon={Loader2} size="sm" className="animate-spin text-sky-500" />
-          ) : (
-            <Icon icon={Bell} size="sm" />
-          )}
-          {badgeCount > 0 ? (
-            <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-white">
-              {badgeCount}
-            </span>
-          ) : null}
-        </button>
+        {renderTrigger ? (
+          renderTrigger({ activeCount, badgeCount })
+        ) : (
+          <button
+            className={cn(DEFAULT_TRIGGER_CLASSNAME, triggerClassName)}
+            aria-label="Notifications"
+          >
+            {activeCount > 0 ? (
+              <Loader2 className="h-5 w-5 animate-spin text-sky-500" />
+            ) : (
+              <Bell className="h-5 w-5" />
+            )}
+            {badgeCount > 0 ? (
+              <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-white">
+                {badgeCount}
+              </span>
+            ) : null}
+          </button>
+        )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        className="w-[360px] max-w-[calc(100vw-1rem)] p-0"
-      >
-        <div className="border-b border-border/50 px-3 py-2">
-          <p className="text-sm font-semibold">Background tasks</p>
+      <DropdownMenuContent align="end" className={TOP_SHELL_DROPDOWN_CONTENT_CLASSNAME}>
+        <div className={TOP_SHELL_DROPDOWN_HEADER_CLASSNAME}>
+          <p className="text-sm font-semibold text-foreground">Notifications</p>
         </div>
-        <div className="max-h-[360px] overflow-y-auto">
-          {debateTasks.length === 0 && appTasks.length === 0 ? (
-            <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-              No background tasks yet.
+
+        <div className={TOP_SHELL_DROPDOWN_BODY_CLASSNAME}>
+          {notifications.length === 0 && passiveAppTasks.length === 0 ? (
+            <div className="px-2 py-6 text-sm text-muted-foreground">
+              No notifications yet.
             </div>
           ) : (
-            <>
-              {debateTasks.map((task) => (
-              <div
-                key={task.runId}
-                className="border-b border-border/40 px-3 py-3 last:border-b-0"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      {statusIcon(task)}
-                      <span className="text-sm font-semibold">{task.ticker}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {statusLabel(task)}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Started {new Date(task.startedAt).toLocaleTimeString()}
-                    </p>
-                    {task.persistenceState === "pending" ? (
-                      <p className="mt-1 text-xs text-amber-500">Saving to history…</p>
-                    ) : null}
-                    {task.persistenceState === "failed" ? (
-                      <p className="mt-1 text-xs text-rose-500">
-                        {task.persistenceError || "History save failed."}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="none"
-                      effect="fade"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={() => openAnalysis(task.runId)}
-                      aria-label="Open analysis"
-                    >
-                      <Icon icon={ExternalLink} size="xs" />
-                    </Button>
-                    {task.status === "running" ? (
-                      <Button
-                        variant="none"
-                        effect="fade"
-                        size="icon"
-                        className="h-8 w-8"
-                        disabled={!vaultOwnerToken || Boolean(isBusy[task.runId])}
-                        onClick={() =>
-                          runAction(task.runId, async () => {
-                            if (!vaultOwnerToken) return;
-                            await DebateRunManagerService.cancelRun({
-                              runId: task.runId,
-                              userId: task.userId,
-                              vaultOwnerToken,
-                            });
-                          })
-                        }
-                        aria-label="Cancel run"
-                      >
-                        <Icon icon={X} size="xs" />
-                      </Button>
-                    ) : task.persistenceState === "failed" ? (
-                      <Button
-                        variant="none"
-                        effect="fade"
-                        size="icon"
-                        className="h-8 w-8"
-                        disabled={Boolean(isBusy[task.runId])}
-                        onClick={() =>
-                          runAction(task.runId, async () => {
-                            await DebateRunManagerService.retryTaskPersistence(task.runId);
-                          })
-                        }
-                        aria-label="Retry save"
-                      >
-                        <Icon icon={RotateCw} size="xs" />
-                      </Button>
-                    ) : null}
-                    {task.status !== "running" ? (
-                      <Button
-                        variant="none"
-                        effect="fade"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => DebateRunManagerService.dismissTask(task.runId)}
-                        aria-label="Dismiss task"
-                      >
-                        <Icon icon={X} size="xs" />
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            ))}
-
-              {appTasks.map((task) => (
-                <div
-                  key={task.taskId}
-                  className="border-b border-border/40 px-3 py-3 last:border-b-0"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        {appTaskStatusIcon(task)}
-                        <span className="text-sm font-semibold">{task.title}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {appTaskStatusLabel(task)}
-                        </span>
+            <div className="divide-y divide-border/45">
+              {notifications.map((item) =>
+                item.kind === "debate" ? (
+                  <div key={item.id} className="px-3 py-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          {statusIcon(item.task)}
+                          <span className="text-sm font-semibold">{item.task.ticker}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {statusLabel(item.task)}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Started {new Date(item.task.startedAt).toLocaleTimeString()}
+                        </p>
+                        {item.task.persistenceState === "pending" ? (
+                          <p className="mt-1 text-xs text-amber-500">Saving to history…</p>
+                        ) : null}
+                        {item.task.persistenceState === "failed" ? (
+                          <p className="mt-1 text-xs text-rose-500">
+                            {item.task.persistenceError || "History save failed."}
+                          </p>
+                        ) : null}
                       </div>
-                      <p className="mt-1 text-xs text-muted-foreground">{task.description}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Started {new Date(task.startedAt).toLocaleTimeString()}
-                      </p>
-                      {task.error ? (
-                        <p className="mt-1 text-xs text-rose-500">{task.error}</p>
-                      ) : null}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {task.routeHref ? (
+                      <div className="flex items-center gap-1">
                         <Button
                           variant="none"
                           effect="fade"
                           size="icon"
                           className="h-8 w-8"
-                          onClick={() => router.push(task.routeHref!)}
-                          aria-label="Open related screen"
+                          onClick={() => openAnalysis(item.task.runId)}
+                          aria-label="Open analysis"
                         >
                           <Icon icon={ExternalLink} size="xs" />
                         </Button>
-                      ) : null}
-                      {task.status === "running" &&
-                      (task.kind === "portfolio_import_stream" || task.kind === "plaid_refresh") ? (
-                        <Button
-                          variant="none"
-                          effect="fade"
-                          size="icon"
-                          className="h-8 w-8"
-                          disabled={!vaultOwnerToken || Boolean(isBusy[task.taskId])}
-                          onClick={() =>
-                            runAction(task.taskId, async () => {
-                              if (task.kind === "portfolio_import_stream") {
-                                await cancelPortfolioImportTask(task);
-                                return;
-                              }
-                              await cancelPlaidRefreshTask(task);
-                            })
-                          }
-                          aria-label={task.kind === "plaid_refresh" ? "Cancel refresh" : "Cancel import"}
-                        >
-                          <Icon icon={X} size="xs" />
-                        </Button>
-                      ) : null}
-                      {task.status !== "running" ? (
-                        <Button
-                          variant="none"
-                          effect="fade"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => AppBackgroundTaskService.dismissTask(task.taskId)}
-                          aria-label="Dismiss task"
-                        >
-                          <Icon icon={X} size="xs" />
-                        </Button>
-                      ) : null}
+                        {item.task.status === "running" ? (
+                          <Button
+                            variant="none"
+                            effect="fade"
+                            size="icon"
+                            className="h-8 w-8"
+                            disabled={!vaultOwnerToken || Boolean(isBusy[item.task.runId])}
+                            onClick={() =>
+                              runAction(item.task.runId, async () => {
+                                if (!vaultOwnerToken) return;
+                                await DebateRunManagerService.cancelRun({
+                                  runId: item.task.runId,
+                                  userId: item.task.userId,
+                                  vaultOwnerToken,
+                                });
+                              })
+                            }
+                            aria-label="Cancel run"
+                          >
+                            <Icon icon={X} size="xs" />
+                          </Button>
+                        ) : item.task.persistenceState === "failed" ? (
+                          <Button
+                            variant="none"
+                            effect="fade"
+                            size="icon"
+                            className="h-8 w-8"
+                            disabled={Boolean(isBusy[item.task.runId])}
+                            onClick={() =>
+                              runAction(item.task.runId, async () => {
+                                await DebateRunManagerService.retryTaskPersistence(item.task.runId);
+                              })
+                            }
+                            aria-label="Retry save"
+                          >
+                            <Icon icon={RotateCw} size="xs" />
+                          </Button>
+                        ) : null}
+                        {item.task.status !== "running" ? (
+                          <Button
+                            variant="none"
+                            effect="fade"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => DebateRunManagerService.dismissTask(item.task.runId)}
+                            aria-label="Dismiss task"
+                          >
+                            <Icon icon={X} size="xs" />
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
+                ) : (
+                  renderAppTask(item.task)
+                )
+              )}
+              {passiveAppTasks.length > 0 ? (
+                <div className="px-3 py-2.5">
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-border/50 bg-muted/24 px-3 py-2 text-left"
+                    onClick={() => setShowPassiveActivity((value) => !value)}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-foreground">Background activity</p>
+                      <p className="text-xs text-muted-foreground">
+                        Small refreshes stay here unless something needs your attention.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <span className="rounded-full border border-border/60 px-2 py-0.5 text-[11px] font-medium">
+                        {passiveAppTasks.length}
+                      </span>
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 transition-transform",
+                          showPassiveActivity && "rotate-180"
+                        )}
+                      />
+                    </div>
+                  </button>
+                  {showPassiveActivity ? (
+                    <div className="mt-2 divide-y divide-border/45 rounded-2xl border border-border/45 bg-background/55">
+                      {passiveAppTasks.map((task) => renderAppTask(task))}
+                    </div>
+                  ) : null}
                 </div>
-              ))}
-            </>
+              ) : null}
+            </div>
           )}
-        </div>
-        <div className="border-t border-border/40 px-3 py-2">
-          <button
-            type="button"
-            className={cn(
-              "text-xs text-muted-foreground transition-colors hover:text-foreground"
-            )}
-            onClick={() => openAnalysis(latestActiveTask?.runId)}
-          >
-            Open analysis workspace
-          </button>
         </div>
       </DropdownMenuContent>
     </DropdownMenu>

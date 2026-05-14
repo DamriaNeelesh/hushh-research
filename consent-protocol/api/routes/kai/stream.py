@@ -30,7 +30,7 @@ from hushh_mcp.agents.kai.debate_engine import DebateEngine
 from hushh_mcp.agents.kai.fundamental_agent import FundamentalAgent, FundamentalInsight
 from hushh_mcp.agents.kai.sentiment_agent import SentimentAgent, SentimentInsight
 from hushh_mcp.agents.kai.valuation_agent import ValuationAgent, ValuationInsight
-from hushh_mcp.consent.token import validate_token
+from hushh_mcp.consent.token import validate_token_with_db
 from hushh_mcp.constants import ConsentScope
 from hushh_mcp.operons.kai.llm import (
     get_gemini_unavailable_reason,
@@ -39,9 +39,10 @@ from hushh_mcp.operons.kai.llm import (
     synthesize_debate_recommendation_card,
 )
 from hushh_mcp.services.consent_db import ConsentDBService
+from hushh_mcp.services.personal_knowledge_model_service import get_pkm_service
 from hushh_mcp.services.renaissance_service import get_renaissance_service
+from hushh_mcp.services.ria_iam_service import RIAIAMService
 from hushh_mcp.services.symbol_master_service import get_symbol_master_service
-from hushh_mcp.services.world_model_service import get_world_model_service
 
 logger = logging.getLogger(__name__)
 
@@ -50,22 +51,45 @@ _TICKER_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,5}$")
 _RUN_MANAGER = KaiAnalyzeRunManager()
 
 
+def _normalize_ticker_or_422(raw_ticker: str) -> str:
+    """Normalize ticker input and reject malformed symbols early."""
+    ticker = str(raw_ticker or "").strip().upper()
+    if not _TICKER_SYMBOL_RE.match(ticker):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid ticker format. Expected 1-6 chars (A-Z, 0-9, . or -), starting with a letter.",
+        )
+    return ticker
+
+
 async def _require_vault_owner_token(
     *,
     user_id: str,
-    authorization: Optional[str],
+    authorization: str | None,
 ) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=401,
             detail="Missing consent token. Call /api/consent/owner-token first.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    consent_token = authorization.replace("Bearer ", "")
-    valid, reason, payload = validate_token(consent_token, ConsentScope.VAULT_OWNER)
+    # Use removeprefix (not replace) so "Bearer " is stripped only from the start,
+    # preventing accidental token corruption when the token value itself contains
+    # the substring "Bearer ".
+    consent_token = authorization.removeprefix("Bearer ").strip()
+
+    # validate_token_with_db performs both the offline JWT check AND a DB-backed
+    # revocation lookup, matching the canonical pattern in api/middleware.py.
+    # validate_token (offline-only) was the previous, weaker check.
+    valid, reason, payload = await validate_token_with_db(consent_token, ConsentScope.VAULT_OWNER)
 
     if not valid or not payload:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {reason}")
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid token: {reason}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     if payload.user_id != user_id:
         raise HTTPException(status_code=403, detail="Token user mismatch")
@@ -97,6 +121,9 @@ class StartAnalyzeRunRequest(BaseModel):
     ticker: str
     risk_profile: str = "balanced"
     context: Optional[Dict[str, Any]] = None
+    pick_source: Optional[str] = None
+    pick_source_label: Optional[str] = None
+    pick_source_kind: Optional[str] = None
 
 
 # ============================================================================
@@ -240,6 +267,128 @@ def _build_short_recommendation(
         suffix = f" Fallback used: {', '.join(sorted(set(degraded_agents)))}."
     text = f"{decision.upper()} ({confidence_pct}% confidence). {first_sentence}.{suffix}".strip()
     return text[:320]
+
+
+def _normalize_advisor_screening_criteria(
+    sections: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(sections, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        section_key = str(section.get("section") or "").strip()
+        rows = section.get("rows")
+        if not section_key or not isinstance(rows, list):
+            continue
+        normalized.append(
+            {
+                "section": section_key,
+                "rows": [
+                    {
+                        "title": str(row.get("title") or "").strip(),
+                        "detail": str(row.get("detail") or "").strip(),
+                        "value_text": str(row.get("value_text") or "").strip() or None,
+                    }
+                    for row in rows
+                    if isinstance(row, dict)
+                ],
+            }
+        )
+    return normalized
+
+
+def _recommendation_bias_from_advisor_tier(tier: str | None) -> str | None:
+    normalized = str(tier or "").strip().upper()
+    if normalized == "ACE":
+        return "STRONG_BUY"
+    if normalized == "KING":
+        return "BUY"
+    if normalized == "QUEEN":
+        return "HOLD_TO_BUY"
+    if normalized == "JACK":
+        return "HOLD"
+    return None
+
+
+async def _merge_ria_pick_package_context(
+    *,
+    user_id: str,
+    ticker: str,
+    pick_source: str | None,
+    renaissance_context: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_source = str(pick_source or "").strip()
+    if not normalized_source.startswith("ria:"):
+        return renaissance_context
+    try:
+        package = await RIAIAMService().get_pick_package_for_source(user_id, normalized_source)
+    except Exception as exc:
+        logger.warning(
+            "[Kai Stream] advisor pick package unavailable for %s source %s: %s",
+            user_id,
+            normalized_source,
+            exc,
+        )
+        return renaissance_context
+
+    normalized_ticker = str(ticker or "").strip().upper()
+    top_rows = package.get("top_picks") if isinstance(package, dict) else []
+    avoid_rows = package.get("avoid_rows") if isinstance(package, dict) else []
+    screening_sections = package.get("screening_sections") if isinstance(package, dict) else []
+    advisor_top_row = next(
+        (
+            row
+            for row in top_rows
+            if isinstance(row, dict)
+            and str(row.get("ticker") or "").strip().upper() == normalized_ticker
+        ),
+        None,
+    )
+    advisor_avoid_row = next(
+        (
+            row
+            for row in avoid_rows
+            if isinstance(row, dict)
+            and str(row.get("ticker") or "").strip().upper() == normalized_ticker
+        ),
+        None,
+    )
+    merged_context = dict(renaissance_context)
+    if advisor_top_row:
+        merged_context["tier"] = advisor_top_row.get("tier") or merged_context.get("tier")
+        merged_context["conviction_weight"] = (
+            advisor_top_row.get("conviction_weight")
+            if advisor_top_row.get("conviction_weight") is not None
+            else merged_context.get("conviction_weight")
+        )
+        merged_context["investment_thesis"] = advisor_top_row.get(
+            "investment_thesis"
+        ) or merged_context.get("investment_thesis")
+        merged_context["sector"] = advisor_top_row.get("sector") or merged_context.get("sector")
+        merged_context["recommendation_bias"] = (
+            advisor_top_row.get("recommendation_bias")
+            or _recommendation_bias_from_advisor_tier(advisor_top_row.get("tier"))
+            or merged_context.get("recommendation_bias")
+        )
+        merged_context["is_investable"] = True
+    if advisor_avoid_row:
+        merged_context["is_avoid"] = True
+        merged_context["avoid_reason"] = advisor_avoid_row.get(
+            "why_avoid"
+        ) or advisor_avoid_row.get("reason")
+    normalized_screening = _normalize_advisor_screening_criteria(screening_sections)
+    if normalized_screening:
+        merged_context["screening_criteria"] = normalized_screening
+    merged_context["advisor_pick_package"] = {
+        "source": normalized_source,
+        "top_picks_count": len(top_rows) if isinstance(top_rows, list) else 0,
+        "avoid_count": len(avoid_rows) if isinstance(avoid_rows, list) else 0,
+        "screening_section_count": len(normalized_screening),
+        "package_note": package.get("package_note") if isinstance(package, dict) else None,
+    }
+    return merged_context
 
 
 def _extract_summary_count(summary: dict[str, Any] | None) -> int:
@@ -629,7 +778,7 @@ def _derive_market_snapshot(
     }
 
 
-def _validate_world_model_context_requirements(
+def _validate_pkm_context_requirements(
     full_user_context: dict[str, Any],
 ) -> list[str]:
     missing: list[str] = []
@@ -639,22 +788,43 @@ def _validate_world_model_context_requirements(
         else {}
     )
 
-    holdings = request_context.get("holdings")
-    if not isinstance(holdings, list) or len(holdings) == 0:
-        missing.append("world_model_holdings")
+    request_holdings = request_context.get("holdings")
+    canonical_holdings = full_user_context.get("holdings")
+    holdings_summary = full_user_context.get("holdings_summary")
+    holdings_count = _safe_int(full_user_context.get("holdings_count"))
+    has_holdings = (
+        (isinstance(request_holdings, list) and len(request_holdings) > 0)
+        or (isinstance(canonical_holdings, list) and len(canonical_holdings) > 0)
+        or (isinstance(holdings_summary, list) and len(holdings_summary) > 0)
+        or (holdings_count is not None and holdings_count > 0)
+    )
+    if not has_holdings:
+        missing.append("pkm_holdings")
 
     debate_context = request_context.get("debate_context")
     if not isinstance(debate_context, dict):
-        missing.append("world_model_debate_context")
+        debate_context = (
+            full_user_context.get("debate_context")
+            if isinstance(full_user_context.get("debate_context"), dict)
+            else {}
+        )
+    if not isinstance(debate_context, dict):
+        missing.append("pkm_debate_context")
         return missing
 
     portfolio_snapshot = debate_context.get("portfolio_snapshot")
+    if not isinstance(portfolio_snapshot, dict):
+        portfolio_snapshot = (
+            full_user_context.get("portfolio_snapshot")
+            if isinstance(full_user_context.get("portfolio_snapshot"), dict)
+            else {}
+        )
     if not isinstance(portfolio_snapshot, dict) or len(portfolio_snapshot) == 0:
-        missing.append("world_model_portfolio_snapshot")
+        missing.append("pkm_portfolio_snapshot")
 
     coverage = debate_context.get("coverage")
     if not isinstance(coverage, dict) or len(coverage) == 0:
-        missing.append("world_model_coverage")
+        missing.append("pkm_coverage")
 
     return missing
 
@@ -867,7 +1037,7 @@ async def analyze_stream_generator(
             {
                 "phase": "analysis",
                 "round": 1,
-                "message": "Preparing world model context and Renaissance universe signals...",
+                "message": "Preparing PKM context and Renaissance universe signals...",
                 "tokens": ["Connecting", "to", "context", "layers", "and", "screening", "data."],
             },
         )
@@ -913,13 +1083,13 @@ async def analyze_stream_generator(
         # 1. FETCH FULL CONTEXT (The Omniscient Backend)
         # =========================================================================
 
-        # A + B. Pull Renaissance + world model context in parallel.
+        # A + B. Pull Renaissance + PKM context in parallel.
         renaissance_service = get_renaissance_service()
-        world_model = get_world_model_service()
+        pkm_service = get_pkm_service()
         context_results = await asyncio.wait_for(
             asyncio.gather(
                 renaissance_service.get_analysis_context(ticker),
-                world_model.get_index_v2(user_id),
+                pkm_service.get_index_v2(user_id),
                 return_exceptions=True,
             ),
             timeout=remaining_timeout(),
@@ -940,10 +1110,19 @@ async def analyze_stream_generator(
             renaissance_context = renaissance_result if isinstance(renaissance_result, dict) else {}
 
         if isinstance(wm_result, Exception):
-            logger.warning("[Kai Stream] World model fetch failed for %s: %s", user_id, wm_result)
+            logger.warning("[Kai Stream] PKM fetch failed for %s: %s", user_id, wm_result)
             wm_index = None
         else:
             wm_index = wm_result
+
+        request_pick_source = str(request_context.get("pick_source") or "").strip() or None
+        if request_pick_source:
+            renaissance_context = await _merge_ria_pick_package_context(
+                user_id=user_id,
+                ticker=ticker,
+                pick_source=request_pick_source,
+                renaissance_context=renaissance_context,
+            )
 
         full_user_context: Dict[str, Any] = {
             "risk_profile": risk_profile,
@@ -962,6 +1141,7 @@ async def analyze_stream_generator(
         request_holdings = request_context.get("holdings")
         if isinstance(request_holdings, list):
             canonical_portfolio_context = _build_canonical_portfolio_context(request_holdings)
+            full_user_context["holdings"] = request_holdings
             full_user_context["holdings_summary"] = canonical_portfolio_context["holdings_summary"]
             full_user_context["holdings_count"] = canonical_portfolio_context["holdings_count"]
             full_user_context["portfolio_snapshot"] = {
@@ -1081,7 +1261,7 @@ async def analyze_stream_generator(
 
         missing_requirements = sorted(
             set(
-                _validate_world_model_context_requirements(full_user_context)
+                _validate_pkm_context_requirements(full_user_context)
                 + _validate_renaissance_context_requirements(
                     renaissance_context,
                     renaissance_lookup_error,
@@ -1089,8 +1269,8 @@ async def analyze_stream_generator(
             )
         )
         context_integrity = {
-            "world_model_context_present": not any(
-                item.startswith("world_model_") for item in missing_requirements
+            "pkm_context_present": not any(
+                item.startswith("pkm_") for item in missing_requirements
             ),
             "renaissance_context_present": not any(
                 item.startswith("renaissance_") for item in missing_requirements
@@ -1103,7 +1283,7 @@ async def analyze_stream_generator(
                 {
                     "code": "ANALYZE_CONTEXT_REQUIRED",
                     "message": (
-                        "Analysis requires both world-model portfolio context "
+                        "Analysis requires both PKM portfolio context "
                         "and Renaissance screening context."
                     ),
                     "ticker": ticker,
@@ -1198,7 +1378,8 @@ async def analyze_stream_generator(
         )
         await asyncio.sleep(0.05)
 
-        # Signal start of fundamental analysis
+        # Emit agent starts before the concurrent provider work begins so the stream
+        # contract still reflects real analysis start, not work that already completed.
         yield create_event(
             "agent_start",
             {
@@ -1210,6 +1391,61 @@ async def analyze_stream_generator(
                 "phase": "analysis",
             },
         )
+        yield create_event(
+            "agent_start",
+            {
+                "agent": "sentiment",
+                "agent_name": "Sentiment Agent",
+                "color": "#8b5cf6",
+                "message": f"Analyzing market sentiment for {ticker}...",
+                "round": 1,
+                "phase": "analysis",
+            },
+        )
+        yield create_event(
+            "agent_start",
+            {
+                "agent": "valuation",
+                "agent_name": "Valuation Agent",
+                "color": "#10b981",
+                "message": f"Calculating valuation metrics for {ticker}...",
+                "round": 1,
+                "phase": "analysis",
+            },
+        )
+
+        # Parallelize the sequential agent calls to reduce 'Time-To-First-Token' for the debate engine.
+        concurrent_results = await asyncio.gather(
+            asyncio.wait_for(
+                fundamental_agent.analyze(
+                    ticker=ticker,
+                    user_id=user_id,
+                    consent_token=consent_token,
+                    context=context,
+                ),
+                timeout=remaining_timeout(),
+            ),
+            asyncio.wait_for(
+                sentiment_agent.analyze(
+                    ticker=ticker,
+                    user_id=user_id,
+                    consent_token=consent_token,
+                    context=context,
+                ),
+                timeout=remaining_timeout(),
+            ),
+            asyncio.wait_for(
+                valuation_agent.analyze(
+                    ticker=ticker,
+                    user_id=user_id,
+                    consent_token=consent_token,
+                    context=context,
+                ),
+                timeout=remaining_timeout(),
+            ),
+            return_exceptions=True,
+        )
+        fundamental_first_res, sentiment_first_res, valuation_first_res = concurrent_results
 
         if pre_agent_thinking_enabled:
             llm_calls_count += 1
@@ -1240,15 +1476,20 @@ async def analyze_stream_generator(
             for attempt in range(1, max_agent_attempts + 1):
                 try:
                     provider_calls_count += 1
-                    fundamental_insight = await asyncio.wait_for(
-                        fundamental_agent.analyze(
-                            ticker=ticker,
-                            user_id=user_id,
-                            consent_token=consent_token,
-                            context=context,
-                        ),
-                        timeout=remaining_timeout(),
-                    )
+                    if attempt == 1:
+                        if isinstance(fundamental_first_res, Exception):
+                            raise fundamental_first_res
+                        fundamental_insight = fundamental_first_res
+                    else:
+                        fundamental_insight = await asyncio.wait_for(
+                            fundamental_agent.analyze(
+                                ticker=ticker,
+                                user_id=user_id,
+                                consent_token=consent_token,
+                                context=context,
+                            ),
+                            timeout=remaining_timeout(),
+                        )
                     fundamental_last_error = None
                     break
                 except Exception as agent_err:
@@ -1351,19 +1592,6 @@ async def analyze_stream_generator(
         if await request.is_disconnected():
             return
 
-        # Signal start of sentiment analysis
-        yield create_event(
-            "agent_start",
-            {
-                "agent": "sentiment",
-                "agent_name": "Sentiment Agent",
-                "color": "#8b5cf6",
-                "message": f"Analyzing market sentiment for {ticker}...",
-                "round": 1,
-                "phase": "analysis",
-            },
-        )
-
         if pre_agent_thinking_enabled:
             llm_calls_count += 1
             # Optional pre-analysis thinking stream for debug visibility.
@@ -1393,15 +1621,20 @@ async def analyze_stream_generator(
             for attempt in range(1, max_agent_attempts + 1):
                 try:
                     provider_calls_count += 1
-                    sentiment_insight = await asyncio.wait_for(
-                        sentiment_agent.analyze(
-                            ticker=ticker,
-                            user_id=user_id,
-                            consent_token=consent_token,
-                            context=context,
-                        ),
-                        timeout=remaining_timeout(),
-                    )
+                    if attempt == 1:
+                        if isinstance(sentiment_first_res, Exception):
+                            raise sentiment_first_res
+                        sentiment_insight = sentiment_first_res
+                    else:
+                        sentiment_insight = await asyncio.wait_for(
+                            sentiment_agent.analyze(
+                                ticker=ticker,
+                                user_id=user_id,
+                                consent_token=consent_token,
+                                context=context,
+                            ),
+                            timeout=remaining_timeout(),
+                        )
                     sentiment_last_error = None
                     break
                 except Exception as agent_err:
@@ -1493,19 +1726,6 @@ async def analyze_stream_generator(
         if await request.is_disconnected():
             return
 
-        # Signal start of valuation analysis
-        yield create_event(
-            "agent_start",
-            {
-                "agent": "valuation",
-                "agent_name": "Valuation Agent",
-                "color": "#10b981",
-                "message": f"Calculating valuation metrics for {ticker}...",
-                "round": 1,
-                "phase": "analysis",
-            },
-        )
-
         if pre_agent_thinking_enabled:
             llm_calls_count += 1
             # Optional pre-analysis thinking stream for debug visibility.
@@ -1535,15 +1755,20 @@ async def analyze_stream_generator(
             for attempt in range(1, max_agent_attempts + 1):
                 try:
                     provider_calls_count += 1
-                    valuation_insight = await asyncio.wait_for(
-                        valuation_agent.analyze(
-                            ticker=ticker,
-                            user_id=user_id,
-                            consent_token=consent_token,
-                            context=context,
-                        ),
-                        timeout=remaining_timeout(),
-                    )
+                    if attempt == 1:
+                        if isinstance(valuation_first_res, Exception):
+                            raise valuation_first_res
+                        valuation_insight = valuation_first_res
+                    else:
+                        valuation_insight = await asyncio.wait_for(
+                            valuation_agent.analyze(
+                                ticker=ticker,
+                                user_id=user_id,
+                                consent_token=consent_token,
+                                context=context,
+                            ),
+                            timeout=remaining_timeout(),
+                        )
                     valuation_last_error = None
                     break
                 except Exception as agent_err:
@@ -1907,7 +2132,7 @@ async def analyze_stream_generator(
             analysis_updated_at=analysis_updated_at,
         )
 
-        world_model_context = {
+        pkm_context = {
             "risk_profile": full_user_context.get("risk_profile"),
             "preferences": full_user_context.get("preferences", {}),
             "holdings_count": int(
@@ -1917,6 +2142,33 @@ async def analyze_stream_generator(
             "portfolio_allocation": full_user_context.get("portfolio_allocation", {}),
             "has_domain_summaries": bool(full_user_context.get("domain_summaries")),
         }
+
+        pick_source = str(full_user_context.get("pick_source") or "").strip() or None
+        pick_source_label = str(full_user_context.get("pick_source_label") or "").strip() or None
+        pick_source_kind = str(full_user_context.get("pick_source_kind") or "").strip() or None
+        structured_sources = [
+            {
+                "label": source,
+                "url": None,
+                "kind": "provider",
+            }
+            for source in list(
+                set(
+                    fundamental_insight.sources
+                    + sentiment_insight.sources
+                    + valuation_insight.sources
+                )
+            )
+            if isinstance(source, str) and source.strip()
+        ]
+        structured_sources.append(
+            {
+                "label": "AlphaAgents paper",
+                "paper_title": "AlphaAgents",
+                "url": "https://arxiv.org/pdf/2508.11152",
+                "kind": "paper",
+            }
+        )
 
         # Build raw_card structure
         raw_card = {
@@ -1947,12 +2199,13 @@ async def analyze_stream_generator(
                     + valuation_insight.sources
                 )
             ),
+            "structured_sources": structured_sources,
             "risk_persona_alignment": f"This {debate_result.decision.upper()} recommendation aligns with your {risk_profile} risk profile.",
             "debate_digest": debate_result.final_statement,
             "consensus_reached": debate_result.consensus_reached,
             "dissenting_opinions": debate_result.dissenting_opinions,
             "debate_highlights": debate_highlights[:20],
-            "world_model_context": world_model_context,
+            "pkm_context": pkm_context,
             "context_integrity": context_integrity,
             "renaissance_comparison": renaissance_comparison,
             "renaissance_tier": renaissance_context.get("tier"),
@@ -1974,6 +2227,8 @@ async def analyze_stream_generator(
             },
             "alphaagents_trace": {
                 "paper": "arXiv:2508.11152v1",
+                "paper_title": "AlphaAgents",
+                "paper_url": "https://arxiv.org/pdf/2508.11152",
                 "protocol": "round_robin_adversarial_debate",
                 "rounds_executed": len(debate_engine.rounds),
                 "turns_per_agent": 2,
@@ -2003,6 +2258,9 @@ async def analyze_stream_generator(
             "symbol_eligibility": symbol_eligibility,
             "eligibility_reason": eligibility_reason,
             "eligibility_source": eligibility_source,
+            "pick_source": pick_source,
+            "pick_source_label": pick_source_label,
+            "pick_source_kind": pick_source_kind,
         }
 
         yield create_event(
@@ -2037,6 +2295,9 @@ async def analyze_stream_generator(
                 "symbol_eligibility": symbol_eligibility,
                 "eligibility_reason": eligibility_reason,
                 "eligibility_source": eligibility_source,
+                "pick_source": pick_source,
+                "pick_source_label": pick_source_label,
+                "pick_source_kind": pick_source_kind,
                 "context_integrity": context_integrity,
                 "renaissance_comparison": renaissance_comparison,
                 "raw_card": raw_card,
@@ -2171,7 +2432,9 @@ async def analyze_stream(
     - decision: Final decision card
     - error: Fatal error
     """
-    # Auth path includes validate_token() inside _require_vault_owner_token().
+    ticker = _normalize_ticker_or_422(ticker)
+
+    # Auth uses validate_token_with_db inside _require_vault_owner_token().
     consent_token = await _require_vault_owner_token(user_id=user_id, authorization=authorization)
 
     # Log operation for audit trail (shows what vault.owner token was used for)
@@ -2207,7 +2470,9 @@ async def analyze_stream_post(
     POST version of streaming analysis (allows context in body).
     Also supports streaming an existing resumable run via run_id.
     """
-    # Auth path includes validate_token() inside _require_vault_owner_token().
+    ticker = _normalize_ticker_or_422(body.ticker)
+
+    # Auth uses validate_token_with_db inside _require_vault_owner_token().
     consent_token = await _require_vault_owner_token(
         user_id=body.user_id,
         authorization=authorization,
@@ -2251,7 +2516,7 @@ async def analyze_stream_post(
     await consent_service.log_operation(
         user_id=body.user_id,
         operation="kai.analyze",
-        target=body.ticker,
+        target=ticker,
         metadata={
             "risk_profile": body.risk_profile,
             "endpoint": "stream/analyze",
@@ -2261,7 +2526,7 @@ async def analyze_stream_post(
 
     return _create_sse_response(
         analyze_stream_generator(
-            ticker=body.ticker,
+            ticker=ticker,
             user_id=body.user_id,
             consent_token=consent_token,
             risk_profile=body.risk_profile,
@@ -2277,27 +2542,38 @@ async def analyze_run_start(
     authorization: Optional[str] = Header(None, description="Bearer VAULT_OWNER consent token"),
 ):
     """Start or attach to a session-locked background analyze run."""
+    ticker = _normalize_ticker_or_422(body.ticker)
+
     consent_token = await _require_vault_owner_token(
         user_id=body.user_id,
         authorization=authorization,
     )
     consent_service = ConsentDBService()
+    next_context = dict(body.context or {})
+    if body.pick_source:
+        next_context["pick_source"] = str(body.pick_source).strip()
+    if body.pick_source_label:
+        next_context["pick_source_label"] = str(body.pick_source_label).strip()
+    if body.pick_source_kind:
+        next_context["pick_source_kind"] = str(body.pick_source_kind).strip()
     await consent_service.log_operation(
         user_id=body.user_id,
         operation="kai.analyze.run.start",
-        target=body.ticker,
+        target=ticker,
         metadata={
             "risk_profile": body.risk_profile,
             "debate_session_id": body.debate_session_id,
-            "has_context": body.context is not None,
+            "has_context": bool(next_context),
+            "pick_source": body.pick_source,
+            "pick_source_kind": body.pick_source_kind,
         },
     )
     state, run = await _RUN_MANAGER.start_or_get_active(
         user_id=body.user_id,
         debate_session_id=body.debate_session_id,
-        ticker=body.ticker,
+        ticker=ticker,
         risk_profile=body.risk_profile,
-        context=body.context,
+        context=next_context or None,
         consent_token=consent_token,
         generator_factory=_stream_factory,
     )

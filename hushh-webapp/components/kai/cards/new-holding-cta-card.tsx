@@ -13,7 +13,7 @@ interface NewHoldingCtaCardProps {
 
 export function NewHoldingCtaCard({ onAddHolding, onImportStatement }: NewHoldingCtaCardProps) {
   return (
-    <Card variant="none" effect="glass" className="rounded-2xl p-0">
+    <Card variant="none" effect="glass" preset="default">
       <CardContent className="space-y-4 p-5">
         <div className="space-y-1">
           <h4 className="text-sm font-black">New Holding Entry</h4>

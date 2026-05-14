@@ -16,7 +16,7 @@ function formatCurrency(value: number | null | undefined): string {
 export function WatchlistStrip({ items }: WatchlistStripProps) {
   if (!items.length) {
     return (
-      <Card variant="muted" effect="fill" className="rounded-xl p-0">
+      <Card variant="muted" effect="fill" preset="compact">
         <CardContent className="p-4 text-sm text-muted-foreground">
           No watchlist/holdings data available yet.
         </CardContent>
@@ -34,7 +34,8 @@ export function WatchlistStrip({ items }: WatchlistStripProps) {
               key={item.symbol}
               variant="none"
               effect="glass"
-              className="w-[182px] shrink-0 rounded-xl p-0 shadow-[0_10px_24px_rgba(15,23,42,0.06)]"
+              preset="compact"
+              className="w-[182px] shrink-0"
             >
               <CardContent className="space-y-2 p-3">
                 <div className="flex items-start justify-between gap-2">

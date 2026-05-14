@@ -1,6 +1,6 @@
 # Apple App ID Capabilities for Hushh
 
-**App Name**: Hushh  
+**App Name**: Kai
 **Bundle ID**: `com.hushh.app`  
 **Date**: January 12, 2026
 
@@ -19,20 +19,20 @@ When registering your App ID at [developer.apple.com/account](https://developer.
 - **Configuration**: Enable this capability
 - **Domain setup**: Configure in Xcode later with your Firebase domains
 
-### 📱 2. **Push Notifications** (RECOMMENDED)
-- **Why**: Future feature for consent requests, agent notifications, vault updates
+### 📱 2. **Push Notifications** (REQUIRED)
+- **Why**: Current native build config already enables remote notifications
 - **Used for**:
   - Real-time consent request notifications
   - Agent Kai analysis completion alerts
   - Security alerts for vault access
 - **Configuration**: Enable this capability
-- **Note**: Not actively used yet, but better to enable now to avoid update delays
+- **Current state**: `aps-environment` entitlement is present
 
-### 🔑 3. **Sign In with Apple** (OPTIONAL - Future)
-- **Why**: Provides additional authentication method beyond Google
-- **Used for**: Alternative login method
-- **Configuration**: Enable if you plan to add Apple Sign-In
-- **Note**: Currently only Google Sign-In is implemented
+### 🔑 3. **Sign In with Apple** (REQUIRED)
+- **Why**: Apple Sign-In is already implemented and enabled in the current iOS entitlements
+- **Used for**: Native sign-in flow alongside Google
+- **Configuration**: Enable this capability
+- **Current state**: `com.apple.developer.applesignin` entitlement is present
 
 ### 🌐 4. **App Groups** (OPTIONAL - Future)
 - **Why**: Share data between app and potential app extensions
@@ -107,11 +107,11 @@ Check these boxes:
 ##### ✅ REQUIRED:
 - [x] **Associated Domains**
 
-##### ✅ RECOMMENDED:
+##### ✅ REQUIRED:
 - [x] **Push Notifications**
+- [x] **Sign In with Apple**
 
 ##### ⭕ OPTIONAL (Enable if planning to use):
-- [ ] **Sign In with Apple**
 - [ ] **App Groups** (if planning extensions/widgets)
 
 ##### ❌ Leave everything else unchecked
@@ -130,7 +130,8 @@ After registering the App ID, configure capabilities in Xcode:
 
 ### 1. Open Xcode
 ```bash
-open /Users/kushals/Downloads/GitHub/hushh-research/hushh-webapp/ios/App/App.xcodeproj
+cd <repo-root>/hushh-webapp
+open ios/App/App.xcodeproj
 ```
 
 ### 2. Select App Target
@@ -166,6 +167,9 @@ open /Users/kushals/Downloads/GitHub/hushh-research/hushh-webapp/ios/App/App.xco
   - Uses `@capacitor-firebase/authentication`
   - Requires Firebase configuration
   - Uses Universal Links (Associated Domains)
+- **Sign in with Apple** (Native iOS)
+  - Enabled in current entitlements
+  - Shares the same bundle/App ID capability setup
 
 ### Data Storage
 - **Local Encrypted Storage**

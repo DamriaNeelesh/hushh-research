@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR/../.." rev-parse --show-toplevel)"
+source "$SCRIPT_DIR/runtime_profile_lib.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/env/doctor.sh <local|uat|prod> [--json]
+
+Description:
+  Verify that a runtime mode is coherent and runnable.
+  Reports:
+  - profile identity
+  - backend/frontend source and active files
+  - effective backend/frontend targets
+  - missing tools/secrets/placeholders
+  - hosted/local drift risks
+USAGE
+}
+
+if [ "$#" -lt 1 ]; then
+  usage
+  exit 1
+fi
+
+RAW_PROFILE="${1:-}"
+shift || true
+JSON_OUTPUT=false
+for arg in "$@"; do
+  case "$arg" in
+    --json)
+      JSON_OUTPUT=true
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if ! PROFILE="$(normalize_runtime_profile "$RAW_PROFILE")"; then
+  echo "Invalid runtime mode: $RAW_PROFILE" >&2
+  echo "Expected one of: $(runtime_profiles_csv)" >&2
+  exit 1
+fi
+
+read_env_value() {
+  local file="$1"
+  local key="$2"
+  python3 - "$file" "$key" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+key = sys.argv[2]
+needle = f"{key}="
+
+if not path.exists():
+    print("")
+    raise SystemExit(0)
+
+for line in path.read_text(encoding="utf-8").splitlines():
+    if line.startswith(needle):
+        print(line.split("=", 1)[1])
+        break
+else:
+    print("")
+PY
+}
+
+read_json_env_field() {
+  local file="$1"
+  local key="$2"
+  local field="$3"
+  python3 - "$file" "$key" "$field" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+key = sys.argv[2]
+field = sys.argv[3]
+needle = f"{key}="
+if not path.exists():
+    print("")
+    raise SystemExit(0)
+
+value = ""
+for line in path.read_text(encoding="utf-8").splitlines():
+    if line.startswith(needle):
+        value = line.split("=", 1)[1]
+        break
+
+if not value:
+    print("")
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(value)
+except json.JSONDecodeError:
+    print("")
+    raise SystemExit(0)
+
+resolved = payload.get(field)
+if isinstance(resolved, list):
+    print(",".join(str(item).strip() for item in resolved if str(item).strip()))
+elif resolved is None:
+    print("")
+else:
+    print(str(resolved))
+PY
+}
+
+is_placeholder() {
+  local value="${1:-}"
+  case "$value" in
+    ""|replace_with_*|__SET_*|__FIREBASE_*|*"<"*">"*|*dummy-project*|*api.example.com*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+REPORT_FILE="$(mktemp)"
+trap 'rm -f "$REPORT_FILE"' EXIT
+
+add_check() {
+  local key="$1"
+  local status="$2"
+  local detail="$3"
+  printf '%s|%s|%s\n' "$key" "$status" "$detail" >>"$REPORT_FILE"
+}
+
+EXPECTED_BACKEND_ENV="$(runtime_profile_backend_environment "$PROFILE")"
+EXPECTED_FRONTEND_ENV="$(runtime_profile_frontend_environment "$PROFILE")"
+EXPECTED_BACKEND_MODE="local"
+EXPECTED_FRONTEND_MODE="$(runtime_profile_frontend_mode "$PROFILE")"
+
+BACKEND_SOURCE="$REPO_ROOT/consent-protocol/.env"
+FRONTEND_SOURCE="$REPO_ROOT/hushh-webapp/$(runtime_profile_frontend_source "$PROFILE")"
+BACKEND_ACTIVE="$REPO_ROOT/consent-protocol/.env"
+FRONTEND_ACTIVE="$REPO_ROOT/hushh-webapp/.env.local"
+
+SOURCE_READY=true
+ACTIVE_PROFILE_MATCH=true
+
+if [ -f "$BACKEND_SOURCE" ]; then
+  add_check "backend_source_file" "pass" "${BACKEND_SOURCE#$REPO_ROOT/}"
+else
+  if [ "$PROFILE" = "local" ]; then
+    add_check "backend_source_file" "fail" "Missing ${BACKEND_SOURCE#$REPO_ROOT/}"
+    SOURCE_READY=false
+  else
+    add_check "backend_source_file" "warn" "Missing ${BACKEND_SOURCE#$REPO_ROOT/}; local backend is not required for $PROFILE"
+  fi
+fi
+
+if [ -f "$FRONTEND_SOURCE" ]; then
+  add_check "frontend_source_file" "pass" "${FRONTEND_SOURCE#$REPO_ROOT/}"
+else
+  add_check "frontend_source_file" "fail" "Missing ${FRONTEND_SOURCE#$REPO_ROOT/}"
+  SOURCE_READY=false
+fi
+
+BACKEND_SOURCE_ENV="$(read_env_value "$BACKEND_SOURCE" "ENVIRONMENT")"
+FRONTEND_SOURCE_ENV="$(read_env_value "$FRONTEND_SOURCE" "NEXT_PUBLIC_APP_ENV")"
+BACKEND_SOURCE_PROFILE="$(read_env_value "$BACKEND_SOURCE" "APP_RUNTIME_PROFILE")"
+FRONTEND_SOURCE_PROFILE="$(read_env_value "$FRONTEND_SOURCE" "APP_RUNTIME_PROFILE")"
+FRONTEND_BACKEND_TARGET="$(read_env_value "$FRONTEND_SOURCE" "NEXT_PUBLIC_BACKEND_URL")"
+FRONTEND_FRONTEND_TARGET="$(read_env_value "$FRONTEND_SOURCE" "NEXT_PUBLIC_APP_URL")"
+BACKEND_FRONTEND_TARGET="$(read_env_value "$BACKEND_SOURCE" "APP_FRONTEND_ORIGIN")"
+BACKEND_DB_HOST="$(read_env_value "$BACKEND_SOURCE" "DB_HOST")"
+BACKEND_CLOUDSQL_INSTANCE="$(read_env_value "$BACKEND_SOURCE" "CLOUDSQL_INSTANCE_CONNECTION_NAME")"
+BACKEND_FIREBASE_JSON="$(read_env_value "$BACKEND_SOURCE" "FIREBASE_ADMIN_CREDENTIALS_JSON")"
+BACKEND_GMAIL_CLIENT_ID="$(read_env_value "$BACKEND_SOURCE" "GMAIL_OAUTH_CLIENT_ID")"
+BACKEND_GMAIL_CLIENT_SECRET="$(read_env_value "$BACKEND_SOURCE" "GMAIL_OAUTH_CLIENT_SECRET")"
+BACKEND_GMAIL_REDIRECT_URI="$(read_env_value "$BACKEND_SOURCE" "GMAIL_OAUTH_REDIRECT_URI")"
+BACKEND_GMAIL_TOKEN_KEY="$(read_env_value "$BACKEND_SOURCE" "GMAIL_OAUTH_TOKEN_KEY")"
+BACKEND_ONE_EMAIL_ADDRESS="$(read_env_value "$BACKEND_SOURCE" "ONE_EMAIL_ADDRESS")"
+BACKEND_ONE_EMAIL_DELEGATED_USER="$(read_env_value "$BACKEND_SOURCE" "ONE_EMAIL_DELEGATED_USER")"
+BACKEND_ONE_EMAIL_PUBSUB_TOPIC="$(read_env_value "$BACKEND_SOURCE" "ONE_EMAIL_PUBSUB_TOPIC")"
+BACKEND_ONE_EMAIL_WEBHOOK_AUDIENCE="$(read_env_value "$BACKEND_SOURCE" "ONE_EMAIL_WEBHOOK_AUDIENCE")"
+BACKEND_ONE_EMAIL_WEBHOOK_SERVICE_ACCOUNT_EMAIL="$(read_env_value "$BACKEND_SOURCE" "ONE_EMAIL_WEBHOOK_SERVICE_ACCOUNT_EMAIL")"
+BACKEND_ONE_EMAIL_WATCH_RENEW_TOKEN="$(read_env_value "$BACKEND_SOURCE" "ONE_EMAIL_WATCH_RENEW_TOKEN")"
+BACKEND_ONE_EMAIL_KYC_DEFAULT_SCOPE="$(read_env_value "$BACKEND_SOURCE" "ONE_EMAIL_KYC_DEFAULT_SCOPE")"
+BACKEND_ONE_EMAIL_KYC_STRICT_CLIENT_ZK_ENABLED="$(read_env_value "$BACKEND_SOURCE" "ONE_EMAIL_KYC_STRICT_CLIENT_ZK_ENABLED")"
+BACKEND_OPENAI_API_KEY="$(read_env_value "$BACKEND_SOURCE" "OPENAI_API_KEY")"
+BACKEND_VOICE_REALTIME_ENABLED="$(read_json_env_field "$BACKEND_SOURCE" "VOICE_RUNTIME_CONFIG_JSON" "realtime_enabled")"
+BACKEND_VOICE_V1_ENABLED="$(read_json_env_field "$BACKEND_SOURCE" "VOICE_RUNTIME_CONFIG_JSON" "hosted_voice_enabled")"
+BACKEND_FORCE_REALTIME_VOICE="$(read_json_env_field "$BACKEND_SOURCE" "VOICE_RUNTIME_CONFIG_JSON" "force_realtime")"
+BACKEND_FAIL_FAST_VOICE="$(read_json_env_field "$BACKEND_SOURCE" "VOICE_RUNTIME_CONFIG_JSON" "fail_fast")"
+BACKEND_DISABLE_VOICE_FALLBACKS="$(read_json_env_field "$BACKEND_SOURCE" "VOICE_RUNTIME_CONFIG_JSON" "disable_fallbacks")"
+
+if [ "$BACKEND_SOURCE_PROFILE" = "local" ]; then
+  add_check "backend_source_profile" "pass" "backend local runtime mode preserved"
+else
+  if [ "$PROFILE" = "local" ]; then
+    add_check "backend_source_profile" "fail" "Expected backend runtime mode local but found ${BACKEND_SOURCE_PROFILE:-"(unset)"}"
+    SOURCE_READY=false
+  else
+    add_check "backend_source_profile" "warn" "Backend local runtime mode is ${BACKEND_SOURCE_PROFILE:-"(unset)"}; $PROFILE only requires the frontend target"
+  fi
+fi
+
+if [ "$FRONTEND_SOURCE_PROFILE" = "$PROFILE" ]; then
+  add_check "frontend_source_profile" "pass" "APP_RUNTIME_PROFILE=$FRONTEND_SOURCE_PROFILE"
+else
+  add_check "frontend_source_profile" "fail" "Expected APP_RUNTIME_PROFILE=$PROFILE but found ${FRONTEND_SOURCE_PROFILE:-"(unset)"}"
+  SOURCE_READY=false
+fi
+
+EXPECTED_BACKEND_SOURCE_ENV="development"
+if [ "$BACKEND_SOURCE_ENV" = "$EXPECTED_BACKEND_SOURCE_ENV" ]; then
+  add_check "backend_environment" "pass" "ENVIRONMENT=$BACKEND_SOURCE_ENV"
+else
+  if [ "$PROFILE" = "local" ]; then
+    add_check "backend_environment" "fail" "Expected ENVIRONMENT=$EXPECTED_BACKEND_SOURCE_ENV but found ${BACKEND_SOURCE_ENV:-"(unset)"}"
+    SOURCE_READY=false
+  else
+    add_check "backend_environment" "warn" "Backend local ENVIRONMENT is ${BACKEND_SOURCE_ENV:-"(unset)"}; $PROFILE only requires the frontend target"
+  fi
+fi
+
+if [ "$FRONTEND_SOURCE_ENV" = "$EXPECTED_FRONTEND_ENV" ]; then
+  add_check "frontend_environment" "pass" "NEXT_PUBLIC_APP_ENV=$FRONTEND_SOURCE_ENV"
+else
+  add_check "frontend_environment" "fail" "Expected NEXT_PUBLIC_APP_ENV=$EXPECTED_FRONTEND_ENV but found ${FRONTEND_SOURCE_ENV:-"(unset)"}"
+  SOURCE_READY=false
+fi
+
+ACTIVE_BACKEND_MODE="$(read_env_value "$BACKEND_ACTIVE" "APP_RUNTIME_PROFILE")"
+if [ -f "$BACKEND_ACTIVE" ] && [ "$ACTIVE_BACKEND_MODE" = "local" ]; then
+  add_check "backend_active_file" "pass" "${BACKEND_ACTIVE#$REPO_ROOT/} is ready for the local backend contract"
+else
+  if [ "$PROFILE" = "local" ]; then
+    add_check "backend_active_file" "fail" "Active backend file is not ready for local runtime. Run: ./bin/hushh env bootstrap"
+    ACTIVE_PROFILE_MATCH=false
+  else
+    add_check "backend_active_file" "warn" "Active backend file is not configured for the local backend contract. This does not block $PROFILE frontend simulation."
+  fi
+fi
+
+ACTIVE_FRONTEND_MODE="$(read_env_value "$FRONTEND_ACTIVE" "APP_RUNTIME_PROFILE")"
+if [ -f "$FRONTEND_ACTIVE" ] && [ "$ACTIVE_FRONTEND_MODE" = "$PROFILE" ]; then
+  add_check "frontend_active_file" "pass" "${FRONTEND_ACTIVE#$REPO_ROOT/} currently matches $PROFILE"
+else
+  add_check "frontend_active_file" "warn" "Active frontend file is not using $PROFILE. Run: ./bin/hushh env use --mode $PROFILE"
+  ACTIVE_PROFILE_MATCH=false
+fi
+
+if [ -n "$FRONTEND_BACKEND_TARGET" ] && ! is_placeholder "$FRONTEND_BACKEND_TARGET"; then
+  add_check "effective_backend_target" "pass" "$FRONTEND_BACKEND_TARGET"
+else
+  add_check "effective_backend_target" "fail" "NEXT_PUBLIC_BACKEND_URL is missing or still a template placeholder"
+  SOURCE_READY=false
+fi
+
+if [ -n "$FRONTEND_FRONTEND_TARGET" ] && ! is_placeholder "$FRONTEND_FRONTEND_TARGET"; then
+  add_check "effective_frontend_target" "pass" "$FRONTEND_FRONTEND_TARGET"
+else
+  add_check "effective_frontend_target" "fail" "NEXT_PUBLIC_APP_URL is missing or still a template placeholder"
+  SOURCE_READY=false
+fi
+
+if [ -n "$BACKEND_FRONTEND_TARGET" ] && ! is_placeholder "$BACKEND_FRONTEND_TARGET"; then
+  add_check "backend_frontend_allowlist" "pass" "$BACKEND_FRONTEND_TARGET"
+else
+  add_check "backend_frontend_allowlist" "fail" "APP_FRONTEND_ORIGIN is missing or still a template placeholder"
+  SOURCE_READY=false
+fi
+
+case "$PROFILE" in
+  local)
+    if [[ "$FRONTEND_BACKEND_TARGET" == http://localhost:* || "$FRONTEND_BACKEND_TARGET" == http://127.0.0.1:* ]]; then
+      add_check "backend_target_shape" "pass" "local profile points at local backend"
+    else
+      add_check "backend_target_shape" "fail" "local must point NEXT_PUBLIC_BACKEND_URL at localhost/127.0.0.1"
+      SOURCE_READY=false
+    fi
+    if [ -n "$BACKEND_CLOUDSQL_INSTANCE" ] || [[ "$BACKEND_DB_HOST" == "127.0.0.1" || "$BACKEND_DB_HOST" == "localhost" ]]; then
+      if command -v cloud-sql-proxy >/dev/null 2>&1; then
+        add_check "cloudsql_proxy_binary" "pass" "cloud-sql-proxy is installed"
+      else
+        add_check "cloudsql_proxy_binary" "fail" "cloud-sql-proxy is required for local when DB_HOST is local"
+        SOURCE_READY=false
+      fi
+
+      if [ -n "$BACKEND_FIREBASE_JSON" ] && ! is_placeholder "$BACKEND_FIREBASE_JSON"; then
+        add_check "cloudsql_proxy_credentials" "pass" "FIREBASE_ADMIN_CREDENTIALS_JSON is present for proxy auth"
+      else
+        add_check "cloudsql_proxy_credentials" "fail" "FIREBASE_ADMIN_CREDENTIALS_JSON is missing or still a template placeholder"
+        SOURCE_READY=false
+      fi
+    else
+      add_check "cloudsql_proxy_binary" "warn" "local is not configured for local DB proxying"
+    fi
+
+    missing_gmail_keys=()
+    if is_placeholder "$BACKEND_GMAIL_CLIENT_ID"; then missing_gmail_keys+=("GMAIL_OAUTH_CLIENT_ID"); fi
+    if is_placeholder "$BACKEND_GMAIL_CLIENT_SECRET"; then missing_gmail_keys+=("GMAIL_OAUTH_CLIENT_SECRET"); fi
+    if is_placeholder "$BACKEND_GMAIL_REDIRECT_URI"; then missing_gmail_keys+=("GMAIL_OAUTH_REDIRECT_URI"); fi
+    if is_placeholder "$BACKEND_GMAIL_TOKEN_KEY"; then missing_gmail_keys+=("GMAIL_OAUTH_TOKEN_KEY"); fi
+    if [ "${#missing_gmail_keys[@]}" -eq 0 ]; then
+      add_check "gmail_runtime_readiness" "pass" "Gmail backend runtime keys are present"
+    else
+      add_check "gmail_runtime_readiness" "warn" "Missing Gmail backend keys: ${missing_gmail_keys[*]}. Run: bash scripts/env/bootstrap_profiles.sh"
+    fi
+
+    missing_one_email_keys=()
+    if is_placeholder "$BACKEND_ONE_EMAIL_ADDRESS"; then missing_one_email_keys+=("ONE_EMAIL_ADDRESS"); fi
+    if is_placeholder "$BACKEND_ONE_EMAIL_DELEGATED_USER"; then missing_one_email_keys+=("ONE_EMAIL_DELEGATED_USER"); fi
+    if is_placeholder "$BACKEND_ONE_EMAIL_PUBSUB_TOPIC"; then missing_one_email_keys+=("ONE_EMAIL_PUBSUB_TOPIC"); fi
+    if is_placeholder "$BACKEND_ONE_EMAIL_WEBHOOK_AUDIENCE"; then missing_one_email_keys+=("ONE_EMAIL_WEBHOOK_AUDIENCE"); fi
+    if is_placeholder "$BACKEND_ONE_EMAIL_WEBHOOK_SERVICE_ACCOUNT_EMAIL"; then missing_one_email_keys+=("ONE_EMAIL_WEBHOOK_SERVICE_ACCOUNT_EMAIL"); fi
+    if is_placeholder "$BACKEND_ONE_EMAIL_WATCH_RENEW_TOKEN"; then missing_one_email_keys+=("ONE_EMAIL_WATCH_RENEW_TOKEN"); fi
+    if is_placeholder "$BACKEND_ONE_EMAIL_KYC_DEFAULT_SCOPE"; then missing_one_email_keys+=("ONE_EMAIL_KYC_DEFAULT_SCOPE"); fi
+    if [ "$BACKEND_ONE_EMAIL_KYC_STRICT_CLIENT_ZK_ENABLED" != "true" ]; then missing_one_email_keys+=("ONE_EMAIL_KYC_STRICT_CLIENT_ZK_ENABLED=true"); fi
+    if [ "${#missing_one_email_keys[@]}" -eq 0 ]; then
+      add_check "one_email_kyc_readiness" "pass" "One Email KYC strict client-side ZK runtime keys are present"
+    else
+      add_check "one_email_kyc_readiness" "warn" "Missing One Email KYC runtime keys: ${missing_one_email_keys[*]}"
+    fi
+
+    missing_voice_keys=()
+    if is_placeholder "$BACKEND_OPENAI_API_KEY"; then missing_voice_keys+=("OPENAI_API_KEY"); fi
+    if is_placeholder "$BACKEND_VOICE_REALTIME_ENABLED"; then missing_voice_keys+=("VOICE_RUNTIME_CONFIG_JSON.realtime_enabled"); fi
+    if is_placeholder "$BACKEND_VOICE_V1_ENABLED"; then missing_voice_keys+=("VOICE_RUNTIME_CONFIG_JSON.hosted_voice_enabled"); fi
+    if is_placeholder "$BACKEND_FORCE_REALTIME_VOICE"; then missing_voice_keys+=("VOICE_RUNTIME_CONFIG_JSON.force_realtime"); fi
+    if is_placeholder "$BACKEND_FAIL_FAST_VOICE"; then missing_voice_keys+=("VOICE_RUNTIME_CONFIG_JSON.fail_fast"); fi
+    if is_placeholder "$BACKEND_DISABLE_VOICE_FALLBACKS"; then missing_voice_keys+=("VOICE_RUNTIME_CONFIG_JSON.disable_fallbacks"); fi
+    if [ "${#missing_voice_keys[@]}" -eq 0 ]; then
+      add_check "voice_runtime_readiness" "pass" "Voice backend runtime keys are present"
+    else
+      add_check "voice_runtime_readiness" "warn" "Missing voice backend keys: ${missing_voice_keys[*]}. Run: bash scripts/env/bootstrap_profiles.sh"
+    fi
+    ;;
+  uat)
+    if [[ "$FRONTEND_BACKEND_TARGET" == http://localhost:* || "$FRONTEND_BACKEND_TARGET" == http://127.0.0.1:* ]]; then
+      add_check "backend_target_shape" "fail" "uat must not point at localhost"
+      SOURCE_READY=false
+    else
+      add_check "backend_target_shape" "pass" "uat points at a remote backend"
+    fi
+    ;;
+  prod)
+    if [[ "$FRONTEND_BACKEND_TARGET" == http://localhost:* || "$FRONTEND_BACKEND_TARGET" == http://127.0.0.1:* ]]; then
+      add_check "backend_target_shape" "fail" "prod must not point at localhost"
+      SOURCE_READY=false
+    else
+      add_check "backend_target_shape" "pass" "prod points at a remote backend"
+    fi
+    ;;
+esac
+
+LEGACY_ENV_FOUND=0
+for path in \
+  "$REPO_ROOT/consent-protocol/.env.dev.local" \
+  "$REPO_ROOT/consent-protocol/.env.uat.local" \
+  "$REPO_ROOT/consent-protocol/.env.prod.local" \
+  "$REPO_ROOT/consent-protocol/.env.local-uatdb.local" \
+  "$REPO_ROOT/consent-protocol/.env.uat-remote.local" \
+  "$REPO_ROOT/consent-protocol/.env.prod-remote.local" \
+  "$REPO_ROOT/hushh-webapp/.env.dev.local" \
+  "$REPO_ROOT/hushh-webapp/.env.local-uatdb.local" \
+  "$REPO_ROOT/hushh-webapp/.env.uat-remote.local" \
+  "$REPO_ROOT/hushh-webapp/.env.prod-remote.local"
+do
+  if [ -f "$path" ]; then
+    LEGACY_ENV_FOUND=1
+  fi
+done
+
+if [ "$LEGACY_ENV_FOUND" -eq 1 ]; then
+  add_check "legacy_env_files" "warn" "Legacy runtime env files still exist locally"
+else
+  add_check "legacy_env_files" "pass" "Only canonical runtime-mode files are present"
+fi
+
+SOURCE_STATUS="ready"
+if [ "$SOURCE_READY" != "true" ]; then
+  SOURCE_STATUS="blocked"
+fi
+
+ACTIVATION_STATUS="ready"
+if [ "$ACTIVE_PROFILE_MATCH" != "true" ]; then
+  ACTIVATION_STATUS="action_required"
+fi
+
+STATUS_TEXT="ready"
+APP_READY="true"
+if [ "$SOURCE_READY" != "true" ]; then
+  STATUS_TEXT="blocked"
+  APP_READY="false"
+elif [ "$ACTIVE_PROFILE_MATCH" != "true" ]; then
+  STATUS_TEXT="activation_required"
+  APP_READY="false"
+fi
+
+if [ "$JSON_OUTPUT" = "true" ]; then
+  python3 - "$PROFILE" "$STATUS_TEXT" "$SOURCE_STATUS" "$ACTIVATION_STATUS" "$APP_READY" "$EXPECTED_BACKEND_MODE" "$EXPECTED_FRONTEND_MODE" "$REPORT_FILE" <<'PY'
+import json
+import pathlib
+import sys
+
+profile, status_text, source_status, activation_status, app_ready, backend_mode, frontend_mode, report_path = sys.argv[1:]
+checks = []
+for line in pathlib.Path(report_path).read_text(encoding="utf-8").splitlines():
+    key, status, detail = line.split("|", 2)
+    checks.append({"key": key, "status": status, "detail": detail})
+
+payload = {
+    "profile": profile,
+    "status": status_text,
+    "source_status": source_status,
+    "activation_status": activation_status,
+    "app_ready": app_ready == "true",
+    "backend_mode": backend_mode,
+    "frontend_mode": frontend_mode,
+    "checks": checks,
+}
+print(json.dumps(payload, indent=2))
+PY
+  exit 0
+fi
+
+echo "Runtime mode doctor: $PROFILE"
+echo "Description: $(runtime_profile_description "$PROFILE")"
+echo "Backend mode: $EXPECTED_BACKEND_MODE"
+echo "Frontend mode: $EXPECTED_FRONTEND_MODE"
+echo "Status: $STATUS_TEXT"
+echo "Source contract: $SOURCE_STATUS"
+echo "Active profile: $ACTIVATION_STATUS"
+echo "App ready now: $APP_READY"
+echo ""
+
+while IFS='|' read -r key status detail; do
+  case "$status" in
+    pass) icon="PASS" ;;
+    warn) icon="WARN" ;;
+    fail) icon="FAIL" ;;
+    *) icon="$status" ;;
+  esac
+  printf '  %-28s %-5s %s\n' "$key" "$icon" "$detail"
+done <"$REPORT_FILE"
+
+if [ "$SOURCE_READY" != "true" ]; then
+  exit 1
+fi

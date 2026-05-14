@@ -4,7 +4,10 @@ import { useMemo } from "react";
 import { BarChart3 } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, XAxis, YAxis } from "recharts";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/lib/morphy-ux/card";
+import {
+  ChartSurfaceCard,
+  SurfaceInset,
+} from "@/components/app-ui/surfaces";
 import {
   ChartContainer,
   ChartTooltip,
@@ -52,14 +55,17 @@ export function HoldingsConcentrationChart({
   }
 
   return (
-    <Card variant="none" effect="glass" className={className}>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
+    <ChartSurfaceCard
+      title={
+        <span className="flex items-center gap-2">
           <BarChart3 className="h-4 w-4 text-primary" />
           Holdings Concentration
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="pt-0 min-w-0 overflow-hidden">
+        </span>
+      }
+      className={className}
+      contentClassName="space-y-0"
+    >
+      <SurfaceInset className="min-w-0 overflow-hidden">
         <ChartContainer config={chartConfig} className="h-[192px] w-full min-w-0 sm:h-[204px]">
           <BarChart
             data={chartData}
@@ -127,7 +133,7 @@ export function HoldingsConcentrationChart({
             </Bar>
           </BarChart>
         </ChartContainer>
-      </CardContent>
-    </Card>
+      </SurfaceInset>
+    </ChartSurfaceCard>
   );
 }

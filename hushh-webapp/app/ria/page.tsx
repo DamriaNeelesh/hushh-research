@@ -1,394 +1,398 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Clock3, MailPlus, UserRound } from "lucide-react";
-
 import {
-  MetricTile,
-  RiaCompatibilityState,
-  RiaPageShell,
-  RiaStatusPanel,
-} from "@/components/ria/ria-page-shell";
-import { SectionHeader } from "@/components/app-ui/page-sections";
-import { SettingsGroup, SettingsRow } from "@/components/profile/settings-ui";
+  BriefcaseBusiness,
+  CircleAlert,
+  Loader2,
+} from "lucide-react";
+
+import { RiaCompatibilityState, RiaPageShell, RiaSurface } from "@/components/ria/ria-page-shell";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/hooks/use-auth";
-import { Button } from "@/lib/morphy-ux/button";
 import { usePersonaState } from "@/lib/persona/persona-context";
+import { useStaleResource } from "@/lib/cache/use-stale-resource";
+import { RiaService, type RiaHomeResponse } from "@/lib/services/ria-service";
+import { usePublishVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
 import { ROUTES } from "@/lib/navigation/routes";
-import {
-  isIAMSchemaNotReadyError,
-  RiaService,
-  type RiaClientAccess,
-  type RiaInviteRecord,
-  type RiaOnboardingStatus,
-  type RiaRequestRecord,
-} from "@/lib/services/ria-service";
+import { cn } from "@/lib/utils";
 
-function describeRequestAction(action: string) {
-  switch (action) {
-    case "REQUESTED":
-      return "Awaiting investor review";
-    case "CONSENT_GRANTED":
-      return "Consent granted";
-    case "CONSENT_DENIED":
-      return "Consent denied";
-    case "CANCELLED":
-      return "Request cancelled";
-    case "REVOKED":
-      return "Consent revoked";
-    case "TIMEOUT":
-      return "Request expired";
+type HeroTone = "neutral" | "warning" | "success" | "critical";
+
+const EMPTY_QUEUE_ITEMS: RiaHomeResponse["needs_attention"] = [];
+
+function verificationState(status?: string | null) {
+  switch (status) {
+    case "active":
+    case "verified":
+      return {
+        label: "Ready",
+        title: "Your advisor workspace is ready.",
+        description: "Relationships, picks, and investor requests can move without extra setup.",
+        tone: "success" as HeroTone,
+      };
+    case "submitted":
+      return {
+        label: "In review",
+        title: "Verification is still moving.",
+        description: "The workflow stays readable while trust checks finish in the background.",
+        tone: "warning" as HeroTone,
+      };
+    case "rejected":
+      return {
+        label: "Needs update",
+        title: "A few trust details need another pass.",
+        description: "Refresh the profile so investor access and advisor sharing can continue cleanly.",
+        tone: "critical" as HeroTone,
+      };
     default:
-      return action;
+      return {
+        label: "Draft",
+        title: "Finish the advisor setup once.",
+        description: "After that, the rest of the RIA workflow stays in the background.",
+        tone: "neutral" as HeroTone,
+      };
   }
 }
 
-function formatVerificationStatus(status?: string | null, loading?: boolean) {
-  if (loading) return "Loading";
-  switch (status) {
-    case "finra_verified":
-      return "FINRA verified";
-    case "active":
-      return "Active";
-    case "submitted":
-      return "Submitted";
-    case "rejected":
-      return "Rejected";
-    case "draft":
+function heroToneClass(tone: HeroTone) {
+  switch (tone) {
+    case "success":
+      return "border-emerald-500/20 bg-emerald-500/[0.08]";
+    case "warning":
+      return "border-amber-500/20 bg-amber-500/[0.09]";
+    case "critical":
+      return "border-rose-500/20 bg-rose-500/[0.08]";
+    case "neutral":
     default:
-      return "Draft";
+      return "border-border/65 bg-background/78";
   }
 }
 
-function verificationTone(status?: string | null): "neutral" | "warning" | "success" | "critical" {
-  switch (status) {
-    case "active":
-    case "finra_verified":
-      return "success";
-    case "submitted":
-      return "warning";
-    case "rejected":
-      return "critical";
-    case "draft":
+function badgeToneClass(tone: HeroTone) {
+  switch (tone) {
+    case "success":
+      return "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    case "warning":
+      return "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    case "critical":
+      return "border-rose-500/20 bg-rose-500/10 text-rose-700 dark:text-rose-300";
+    case "neutral":
     default:
-      return "neutral";
+      return "border-border/70 bg-background/80 text-muted-foreground";
   }
+}
+
+function queueToneClass(status?: string | null) {
+  switch (status) {
+    case "approved":
+      return "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    case "request_pending":
+    case "submitted":
+      return "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    case "rejected":
+    case "revoked":
+    case "expired":
+    case "disconnected":
+      return "border-rose-500/20 bg-rose-500/10 text-rose-700 dark:text-rose-300";
+    default:
+      return "border-border/65 bg-background/80 text-muted-foreground";
+  }
+}
+
+function formatStatusLabel(status?: string | null) {
+  return String(status || "pending").replaceAll("_", " ");
+}
+
+function SummaryCell({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string;
+  helper: string;
+}) {
+  return (
+    <div className="space-y-1 bg-background/58 px-4 py-4 sm:px-5">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+        {label}
+      </p>
+      <p className="text-lg font-semibold tracking-tight text-foreground">{value}</p>
+      <p className="text-xs leading-5 text-muted-foreground">{helper}</p>
+    </div>
+  );
 }
 
 export default function RiaHomePage() {
   const router = useRouter();
   const { user } = useAuth();
-  const { riaCapability, riaOnboardingStatus } = usePersonaState();
-  const [status, setStatus] = useState<RiaOnboardingStatus | null>(null);
-  const [clients, setClients] = useState<RiaClientAccess[]>([]);
-  const [requests, setRequests] = useState<RiaRequestRecord[]>([]);
-  const [invites, setInvites] = useState<RiaInviteRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [iamUnavailable, setIamUnavailable] = useState(false);
+  const {
+    riaCapability,
+    loading: personaLoading,
+    refreshing: personaRefreshing,
+  } = usePersonaState();
 
   useEffect(() => {
-    if (riaCapability === "setup") {
+    if (!personaLoading && !personaRefreshing && riaCapability === "setup") {
       router.replace(ROUTES.RIA_ONBOARDING);
-      return;
     }
-  }, [riaCapability, router]);
+  }, [personaLoading, personaRefreshing, riaCapability, router]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      if (riaCapability === "setup") {
-        setLoading(false);
-        return;
+  const homeResource = useStaleResource<RiaHomeResponse>({
+    cacheKey: user?.uid ? `ria_home_${user.uid}` : "ria_home_guest",
+    enabled: Boolean(user?.uid && (riaCapability !== "setup" || personaRefreshing)),
+    load: async () => {
+      if (!user?.uid) {
+        throw new Error("Sign in to access the RIA workspace");
       }
-      if (!user) {
-        setLoading(false);
-        return;
-      }
+      const idToken = await user.getIdToken();
+      return RiaService.getHome(idToken, {
+        userId: user.uid,
+      });
+    },
+  });
 
-      try {
-        setLoading(true);
-        setIamUnavailable(false);
-        const idToken = await user.getIdToken();
-        const [nextStatus, nextClients, nextRequests, nextInvites] = await Promise.all([
-          RiaService.getOnboardingStatus(idToken),
-          RiaService.listClients(idToken),
-          RiaService.listRequests(idToken),
-          RiaService.listInvites(idToken),
-        ]);
-        if (cancelled) return;
-        setStatus(nextStatus);
-        setClients(nextClients);
-        setRequests(nextRequests);
-        setInvites(nextInvites);
-      } catch (error) {
-        if (!cancelled) {
-          setStatus(null);
-          setClients([]);
-          setRequests([]);
-          setInvites([]);
-          setIamUnavailable(isIAMSchemaNotReadyError(error));
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
+  const verification = verificationState(homeResource.data?.verification_status);
+  const iamUnavailable = Boolean(homeResource.error?.includes("IAM schema"));
+  const activeClients = homeResource.data?.counts.active_clients ?? 0;
+  const needsAttention = homeResource.data?.counts.needs_attention ?? 0;
+  const inviteCount = homeResource.data?.counts.invites ?? 0;
+  const queueItems = homeResource.data?.needs_attention ?? EMPTY_QUEUE_ITEMS;
+  const leadItem = queueItems[0] ?? null;
+  const heroTitle =
+    leadItem?.title ||
+    (activeClients > 0
+      ? `You have ${activeClients} active client relationship${activeClients === 1 ? "" : "s"}.`
+      : verification.title);
+  const heroDescription = leadItem?.subtitle || leadItem?.next_action || verification.description;
+  const voiceControls = useMemo(
+    () => [
+      {
+        id: "ria_route_tab_home",
+        label: "Home",
+        type: "tab",
+        state: "active",
+        actionId: "route.ria_home",
+      },
+      {
+        id: "ria_route_tab_clients",
+        label: "Clients",
+        type: "tab",
+        actionId: "route.ria_clients",
+      },
+      {
+        id: "ria_route_tab_connect",
+        label: "Connect",
+        type: "tab",
+        actionId: "route.ria_marketplace_connect",
+      },
+      {
+        id: "ria_route_tab_picks",
+        label: "Picks",
+        type: "tab",
+        actionId: "route.ria_picks",
+      },
+      ...queueItems.slice(0, 5).map((item, index) => ({
+        id: `ria_home_priority_item_open_${index + 1}`,
+        label: item.title || `Priority item ${index + 1}`,
+        type: "button",
+        actionId: "ria.home.open_priority_item",
+        description: item.next_action || item.subtitle || null,
+      })),
+    ],
+    [queueItems]
+  );
 
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [riaCapability, user]);
-
-  const metrics = useMemo(() => {
-    const activeClients = clients.filter((item) => item.status === "approved").length;
-    const pendingRequests = requests.filter((item) => item.action === "REQUESTED").length;
-    const openInvites = invites.filter((item) => item.status === "sent").length;
-    return {
+  const voiceSurfaceMetadata = useMemo(
+    () => ({
+      screenId: "ria_home",
+      title: "RIA Home",
+      purpose: "Advisor workspace home with readiness, relationship counts, and priority queue.",
+      sections: [
+        {
+          id: "ria_home_readiness",
+          title: "Readiness",
+        },
+        {
+          id: "ria_home_priority_queue",
+          title: "Priority queue",
+        },
+      ],
+      controls: voiceControls,
+      activeTab: "home",
+      visibleModules: ["Readiness", "Priority queue", "Relationships"],
+      availableActions: ["Open RIA Clients", "Open RIA Picks", "Open RIA Connect Marketplace"],
+      screenMetadata: {
+        verification_status: homeResource.data?.verification_status || null,
+        active_clients: activeClients,
+        needs_attention: needsAttention,
+        invite_count: inviteCount,
+        priority_items_visible: queueItems.length,
+      },
+    }),
+    [
       activeClients,
-      pendingRequests,
-      openInvites,
-      totalRelationships: clients.length.toString(),
-    };
-  }, [clients, invites, requests]);
+      homeResource.data?.verification_status,
+      inviteCount,
+      needsAttention,
+      queueItems.length,
+      voiceControls,
+    ]
+  );
+  usePublishVoiceSurfaceMetadata(voiceSurfaceMetadata);
 
   return (
     <RiaPageShell
-      eyebrow="Advisor Workspace"
-      title="A consent-first operating system for client relationships"
-      description="Verification, requests, client workspace access, and marketplace discovery live in one RIA shell. Private data stays gated until consent is active."
+      width="expanded"
+      eyebrow="RIA Home"
+      title="Trusted advisor ops"
+      description="See readiness, what needs attention, and where to go next without scanning a settings wall."
+      icon={BriefcaseBusiness}
+      nativeTest={{
+        routeId: "/ria",
+        marker: "native-route-ria-home",
+        authState: user ? "authenticated" : "pending",
+        dataState: homeResource.loading && !homeResource.data
+          ? "loading"
+          : iamUnavailable
+            ? "unavailable-valid"
+            : "loaded",
+        errorCode: homeResource.error ? "ria_home" : null,
+        errorMessage: homeResource.error,
+      }}
       statusPanel={
         iamUnavailable ? null : (
-          <RiaStatusPanel
-            title="Verification and access state"
-            description="Keep the trust posture visible before the user scans metrics or workflow modules."
-            items={[
-              {
-                label: "Verification",
-                value: formatVerificationStatus(
-                  (status || riaOnboardingStatus)?.verification_status,
-                  loading
-                ),
-                helper:
-                  (status || riaOnboardingStatus)?.verification_status === "active" ||
-                  (status || riaOnboardingStatus)?.verification_status === "finra_verified"
-                    ? "Requests and workspace access are available"
-                    : "Consent requests remain gated until trusted status is reached",
-                tone: verificationTone((status || riaOnboardingStatus)?.verification_status),
-              },
-              {
-                label: "Active clients",
-                value: loading ? "..." : String(metrics.activeClients),
-                helper: "Approved relationships",
-                tone: metrics.activeClients > 0 ? "success" : "neutral",
-              },
-              {
-                label: "Pending requests",
-                value: loading ? "..." : String(metrics.pendingRequests),
-                helper: "Awaiting investor review",
-                tone: metrics.pendingRequests > 0 ? "warning" : "neutral",
-              },
-              {
-                label: "Open invites",
-                value: loading ? "..." : String(metrics.openInvites),
-                helper: "Shared but not yet accepted",
-                tone: metrics.openInvites > 0 ? "warning" : "neutral",
-              },
-            ]}
-          />
+          <RiaSurface
+            accent="ria"
+            className={cn("space-y-5 p-5 sm:p-6", heroToneClass(verification.tone))}
+            data-testid="ria-home-primary"
+          >
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0 space-y-3">
+                <Badge className={cn("w-fit", badgeToneClass(verification.tone))}>
+                  {verification.label}
+                </Badge>
+                <div className="space-y-2">
+                  <h2 className="text-[clamp(1.25rem,3vw,1.85rem)] font-semibold tracking-tight text-foreground">
+                    {heroTitle}
+                  </h2>
+                  <p className="max-w-2xl text-sm leading-6 text-muted-foreground sm:text-[15px]">
+                    {heroDescription}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-px overflow-hidden rounded-[22px] bg-border/60 md:grid-cols-3">
+              <SummaryCell
+                label="Relationships"
+                value={String(activeClients)}
+                helper={
+                  activeClients > 0
+                    ? "Investor connections with an active relationship."
+                    : "No client relationships are active yet."
+                }
+              />
+              <SummaryCell
+                label="Priority queue"
+                value={String(needsAttention)}
+                helper={
+                  needsAttention > 0
+                    ? "Only the next real decisions stay visible here."
+                    : "Home stays quiet until something truly needs action."
+                }
+              />
+              <SummaryCell
+                label="Open invites"
+                value={String(inviteCount)}
+                helper={
+                  inviteCount > 0
+                    ? "Private links still waiting for investor response."
+                    : "No invites are currently hanging in flight."
+                }
+              />
+            </div>
+          </RiaSurface>
         )
-      }
-      actions={
-        <>
-          <Button asChild variant="blue-gradient" effect="fill">
-            <Link href={ROUTES.RIA_REQUESTS}>Open request center</Link>
-          </Button>
-          <Button asChild variant="none" effect="fade">
-            <Link href={ROUTES.RIA_PICKS}>Manage picks</Link>
-          </Button>
-        </>
       }
     >
       {iamUnavailable ? (
         <RiaCompatibilityState
-          title="RIA mode is not active in this environment yet"
-          description="The connected database is still in investor compatibility mode. The shell is in place, but onboarding, marketplace, and client workspaces stay unavailable until IAM migrations pass."
+          title="RIA home is waiting on the IAM rollout"
+          description="This environment still needs the IAM schema before advisor readiness and relationship data can load cleanly."
         />
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <MetricTile
-          label="Active Clients"
-          value={loading ? "..." : String(metrics.activeClients)}
-          helper="Approved relationships"
-        />
-        <MetricTile
-          label="Pending Requests"
-          value={loading ? "..." : String(metrics.pendingRequests)}
-          helper="Awaiting investor decision"
-        />
-        <MetricTile
-          label="Open Invites"
-          value={loading ? "..." : String(metrics.openInvites)}
-          helper="Shared but not yet accepted"
-        />
-        <MetricTile
-          label="Relationships"
-          value={loading ? "..." : metrics.totalRelationships}
-          helper="Total tracked connections"
-        />
-      </div>
+      {!iamUnavailable ? (
+        <div className="grid gap-4">
+          <RiaSurface className="space-y-4 p-4 sm:p-5" data-testid="ria-home-queue">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <p className="text-sm font-semibold tracking-tight text-foreground">
+                  Priority queue
+                </p>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  Relationships, approvals, and invites only appear here when they still need a
+                  real move from you.
+                </p>
+              </div>
+              <span className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-border/55 bg-background/70 text-muted-foreground">
+                <CircleAlert className="h-4.5 w-4.5" />
+              </span>
+            </div>
 
-      <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
-        <section className="space-y-3">
-          <SectionHeader
-            eyebrow="Next Best Action"
-            title={
-              (status || riaOnboardingStatus)?.verification_status === "active" ||
-              (status || riaOnboardingStatus)?.verification_status === "finra_verified"
-                ? "Start the next client conversation"
-                : "Complete verification and profile setup"
-            }
-            description={
-              (status || riaOnboardingStatus)?.verification_status === "active" ||
-              (status || riaOnboardingStatus)?.verification_status === "finra_verified"
-                ? "Use the client roster to send invites, move pending relationships forward, and reopen revoked or expired access."
-                : "RIA access requests remain blocked until verification reaches a trusted state. Finish onboarding, confirm your firm data, and enable marketplace discoverability from the RIA dashboard."
-            }
-            actions={
-              <Link
-                href={
-                  (status || riaOnboardingStatus)?.verification_status === "active" ||
-                  (status || riaOnboardingStatus)?.verification_status === "finra_verified"
-                    ? ROUTES.RIA_CLIENTS
-                    : ROUTES.RIA_ONBOARDING
-                }
-                className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-full border border-primary/25 bg-primary/10 px-4 text-sm font-medium text-primary"
-              >
-                {(status || riaOnboardingStatus)?.verification_status === "active" ||
-                (status || riaOnboardingStatus)?.verification_status === "finra_verified"
-                  ? "Open clients"
-                  : "Resume onboarding"}
-              </Link>
-            }
-          />
-        </section>
+            <div className="overflow-hidden rounded-[20px] border border-border/60 bg-background/70">
+              {homeResource.loading && !homeResource.data ? (
+                <div className="flex items-center gap-2 px-4 py-5 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Pulling readiness, relationships, and picks state.
+                </div>
+              ) : null}
 
-        <section className="space-y-3">
-          <SectionHeader
-            eyebrow="Activity"
-            title="Recent request movement"
-            description="Keep the latest consent and request outcomes visible without burying them inside the roster."
-            icon={Clock3}
-          />
-          <SettingsGroup>
-              {requests.slice(0, 4).map((item) => (
-                <SettingsRow
-                  key={item.request_id}
-                  icon={Clock3}
-                  title={
+              {!homeResource.loading && queueItems.length === 0 ? (
+                <div className="px-4 py-5 text-sm text-muted-foreground">
+                  Nothing urgent right now. When a relationship, consent request, or invite needs
+                  the next move, it will land here.
+                </div>
+              ) : null}
+
+              {queueItems.slice(0, 4).map((item, index) => (
+                <div
+                  key={item.id}
+                  className={cn(
+                    "flex items-start justify-between gap-3 px-4 py-4",
+                    index > 0 && "border-t border-border/55"
+                  )}
+                >
+                  <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span>{item.subject_display_name || "Investor"}</span>
-                      <Badge variant="outline" className="border-border/70 bg-background/80 text-[10px] font-semibold text-muted-foreground">
-                        {describeRequestAction(item.action)}
+                      <span className="text-sm font-semibold tracking-tight text-foreground">
+                        {item.title}
+                      </span>
+                      <Badge className={cn("capitalize", queueToneClass(item.status))}>
+                        {formatStatusLabel(item.status)}
                       </Badge>
                     </div>
-                  }
-                  description={item.subject_headline || item.scope}
-                />
+                    <p className="text-sm leading-6 text-muted-foreground">
+                      {item.subtitle || item.next_action || "Review the next step."}
+                    </p>
+                  </div>
+                  <Link
+                    href={item.href}
+                    data-voice-control-id={`ria_home_priority_item_open_${index + 1}`}
+                    className="shrink-0 text-sm font-medium text-foreground/82 transition-colors hover:text-foreground"
+                  >
+                    Open
+                  </Link>
+                </div>
               ))}
-              {!loading && requests.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No request activity yet. Start from clients or marketplace.
-                </p>
-              ) : null}
-          </SettingsGroup>
-        </section>
-      </div>
-
-      <div className="grid gap-5 lg:grid-cols-2">
-        <section className="space-y-3">
-          <SectionHeader
-            eyebrow="Client roster"
-            title="Latest relationship states"
-            icon={UserRound}
-            actions={
-              <Button asChild variant="none" effect="fade" size="sm">
-                <Link href={ROUTES.RIA_CLIENTS}>View all</Link>
-              </Button>
-            }
-          />
-          <SettingsGroup>
-              {clients.slice(0, 4).map((client) => (
-                <SettingsRow
-                  key={client.id}
-                  icon={UserRound}
-                  title={
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span>{client.investor_display_name || client.investor_user_id || "Invited investor"}</span>
-                      <Badge variant="outline" className="border-border/70 bg-background/80 text-[10px] font-semibold uppercase text-muted-foreground">
-                        {client.status.replace("_", " ")}
-                      </Badge>
-                    </div>
-                  }
-                  description={client.next_action || "request_access"}
-                  trailing={
-                    client.investor_user_id ? (
-                      <Button asChild variant="none" effect="fade" size="sm">
-                        <Link href={`/ria/workspace/${encodeURIComponent(client.investor_user_id)}`}>
-                          Workspace
-                        </Link>
-                      </Button>
-                    ) : undefined
-                  }
-                />
-              ))}
-              {!loading && clients.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No active client relationships yet.
-                </p>
-              ) : null}
-          </SettingsGroup>
-        </section>
-
-        <section className="space-y-3">
-          <SectionHeader
-            eyebrow="Invite pipeline"
-            title="Shared, accepted, and pending"
-            icon={MailPlus}
-            actions={
-              <Button asChild variant="none" effect="fade" size="sm">
-                <Link href={ROUTES.RIA_REQUESTS}>View activity</Link>
-              </Button>
-            }
-          />
-          <SettingsGroup>
-              {invites.slice(0, 4).map((invite) => (
-                <SettingsRow
-                  key={invite.invite_id}
-                  icon={MailPlus}
-                  title={invite.target_display_name || invite.target_email || invite.target_phone || "Share link"}
-                  description={invite.delivery_channel || "share_link"}
-                  trailing={
-                    <Badge variant="outline" className="border-border/70 bg-background/80 text-[10px] font-semibold uppercase text-muted-foreground">
-                      {invite.status}
-                    </Badge>
-                  }
-                />
-              ))}
-              {!loading && invites.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No invites sent yet.
-                </p>
-              ) : null}
-          </SettingsGroup>
-        </section>
-      </div>
+            </div>
+          </RiaSurface>
+        </div>
+      ) : null}
     </RiaPageShell>
   );
 }

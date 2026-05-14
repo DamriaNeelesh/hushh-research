@@ -1,10 +1,11 @@
-import { ROUTES } from "@/lib/navigation/routes";
+import { resolveAppRouteLayoutMode } from "@/lib/navigation/app-route-layout";
 
 export type TopContentOffsetMode = "normal" | "fullscreen-flow";
 export type TopShellRouteProfileId =
   | "hidden"
-  | "kai-fullscreen-flow"
-  | "default-no-tabs";
+  | "fullscreen-flow"
+  | "redirect"
+  | "standard";
 
 export interface TopShellMetrics {
   shellVisible: boolean;
@@ -14,12 +15,7 @@ export interface TopShellMetrics {
 
 interface TopShellRouteProfile {
   id: TopShellRouteProfileId;
-  matches: (pathname: string) => boolean;
   metrics: TopShellMetrics;
-}
-
-function routeMatches(pathname: string, route: string): boolean {
-  return pathname === route || pathname.startsWith(`${route}/`);
 }
 
 const HIDDEN_METRICS: TopShellMetrics = {
@@ -40,29 +36,12 @@ const DEFAULT_VISIBLE_METRICS: TopShellMetrics = {
   contentOffsetMode: "normal",
 };
 
-const TOP_SHELL_ROUTE_PROFILES: readonly TopShellRouteProfile[] = [
-  {
-    id: "hidden",
-    matches: (pathname) =>
-      pathname === ROUTES.HOME ||
-      routeMatches(pathname, ROUTES.LOGIN) ||
-      routeMatches(pathname, ROUTES.LOGOUT) ||
-      routeMatches(pathname, ROUTES.LABS_PROFILE_APPEARANCE),
-    metrics: HIDDEN_METRICS,
-  },
-  {
-    id: "kai-fullscreen-flow",
-    matches: (pathname) => routeMatches(pathname, ROUTES.KAI_ONBOARDING),
-    metrics: FULLSCREEN_METRICS,
-  },
-] as const;
-
 export function shouldHideTopShell(pathname: string): boolean {
   return resolveTopShellRouteProfile(pathname).id === "hidden";
 }
 
 export function isTopShellFullscreenFlowRoute(pathname: string): boolean {
-  return resolveTopShellRouteProfile(pathname).id === "kai-fullscreen-flow";
+  return resolveTopShellRouteProfile(pathname).id === "fullscreen-flow";
 }
 
 export function shouldShowKaiTabsInTopShell(_pathname: string): boolean {
@@ -70,10 +49,19 @@ export function shouldShowKaiTabsInTopShell(_pathname: string): boolean {
 }
 
 export function resolveTopShellRouteProfile(pathname: string): TopShellRouteProfile {
-  const profile = TOP_SHELL_ROUTE_PROFILES.find((candidate) =>
-    candidate.matches(pathname)
-  );
-  return profile ?? { id: "default-no-tabs", metrics: DEFAULT_VISIBLE_METRICS, matches: () => true };
+  const mode = resolveAppRouteLayoutMode(pathname);
+
+  switch (mode) {
+    case "hidden":
+      return { id: "hidden", metrics: HIDDEN_METRICS };
+    case "flow":
+      return { id: "fullscreen-flow", metrics: FULLSCREEN_METRICS };
+    case "redirect":
+      return { id: "redirect", metrics: DEFAULT_VISIBLE_METRICS };
+    case "standard":
+    default:
+      return { id: "standard", metrics: DEFAULT_VISIBLE_METRICS };
+  }
 }
 
 export function resolveTopShellMetrics(pathname: string): TopShellMetrics {

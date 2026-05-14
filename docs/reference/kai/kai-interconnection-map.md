@@ -1,6 +1,61 @@
 # Kai Interconnection Map
 
-Single source map for how Kai surfaces are connected across routes, service layer, cache, world model, providers, and mobile parity paths.
+
+## Visual Map
+
+```mermaid
+flowchart TB
+  subgraph routes["Kai route surfaces"]
+    import["/kai/import"]
+    home["/kai"]
+    portfolio["/kai/portfolio"]
+    analysis["/kai/analysis"]
+    optimize["/kai/optimize"]
+  end
+
+  subgraph frontend["Frontend runtime"]
+    flow["Import + review flows"]
+    financial["KaiFinancialResource"]
+    market["KaiMarketHomeResource"]
+    source["Portfolio source selection<br/>statement vs Plaid"]
+    stream["Debate stream + decision UI"]
+  end
+
+  subgraph backend["Backend routes and services"]
+    pkm["PKM routes / financial domain"]
+    plaid["Plaid routes + refresh services"]
+    insights["Market insights routes + cache"]
+    debate["Kai analysis stream / decision services"]
+  end
+
+  subgraph data["Persistence and providers"]
+    encrypted["Encrypted financial PKM"]
+    prefs["Source preferences + refresh runs"]
+    marketcache["Market cache tiers"]
+    providers["Plaid + market providers"]
+  end
+
+  import --> flow --> pkm --> encrypted
+  home --> market --> insights --> marketcache --> providers
+  home --> financial
+  portfolio --> financial --> pkm
+  analysis --> stream --> debate
+  analysis --> financial
+  optimize --> financial
+  source --> plaid --> prefs
+  source --> pkm
+  plaid --> providers
+  debate --> encrypted
+  financial --> encrypted
+```
+
+Single source map for how Kai surfaces are connected across routes, service layer, cache, PKM, providers, and mobile parity paths.
+
+Founder-language lens:
+
+- this map is one slice of the platform's `Separation of Duties`
+- Kai route surfaces consume `Capability Tokens` and encrypted PKM rather than owning an independent trust model
+- developer and delegated access flows join this same map through `PCHP` and `TrustLink / A2A delegation`, not through a separate Kai-only authority plane
 
 ## Core Flows
 
@@ -8,8 +63,8 @@ Single source map for how Kai surfaces are connected across routes, service laye
 
 | Step | Route/UI | Web Service Layer | Backend Route | Persistence | Cache / Sync |
 | --- | --- | --- | --- | --- | --- |
-| Persona/preferences capture | `/kai/onboarding`, `/profile` | `KaiProfileService`, `WorldModelService` | `/api/world-model/store-domain` | `world_model_data.financial.profile` + `world_model_index_v2.domain_summaries.financial` | `CacheSyncService.onWorldModelDomainStored(...)` patches metadata and domain blob cache |
-| Completion + nav tour state | onboarding components + nav tour | `KaiNavTourSyncService` / profile sync | `/api/world-model/store-domain` | encrypted `financial.profile` fields | cache write-through + metadata reconciliation |
+| Persona/preferences capture | `/kai/onboarding`, `/profile` | `KaiProfileService`, `PersonalKnowledgeModelService` | `/api/pkm/store-domain` | `pkm_blobs(financial/profile)` + `pkm_index.summary_projection.financial` | `CacheSyncService.onPkmDomainStored(...)` patches PKM metadata and the encrypted domain cache |
+| Completion + nav tour state | onboarding components + nav tour | `KaiNavTourSyncService` / profile sync | `/api/pkm/store-domain` | encrypted `financial.profile` fields | cache write-through + metadata reconciliation |
 
 Notes:
 - `financial.profile` is the canonical encrypted source for onboarding state.
@@ -20,9 +75,9 @@ Notes:
 | Step | Route/UI | Web Service Layer | Backend Route | Persistence | Cache / Sync |
 | --- | --- | --- | --- | --- | --- |
 | Statement upload/stream | `/kai/import` | `ApiService.streamPortfolioImport`, `kai-flow` | `/api/kai/portfolio/import/stream` | stream output only until commit | stage timeline + extracted holdings state in UI |
-| Save validated holdings | portfolio review / save CTA | `WorldModelService.storeDomainData`, `CacheSyncService.onPortfolioUpserted` | `/api/world-model/store-domain` | encrypted `financial` domain + summary in index | `portfolio_data_*`, `world_model_metadata_*`, `domain_blob_*` write-through |
+| Save validated holdings | portfolio review / save CTA | `PersonalKnowledgeModelService.storeDomainData`, `CacheSyncService.onPortfolioUpserted` | `/api/pkm/store-domain` | encrypted `financial` PKM domain + summary in index | portfolio summary cache + PKM metadata cache + domain blob cache write-through |
 | Import quality gate | import stream terminal | canonical SSE envelope | `/api/kai/portfolio/import/stream` | terminal `quality_gate` + `quality_report_v2` diagnostics | emits terminal `aborted` on strict validation failure (no silent success) |
-| Dashboard render + holdings manage fusion | `/kai/portfolio?tab=overview|holdings` | `DashboardDataMapper`, `ManagePortfolioView`, `CacheService` | optional refresh via `/api/world-model/*` and market APIs | reads encrypted domain via vault key | cache-first with metadata/domain reconciliation |
+| Dashboard render + holdings manage fusion | `/kai/portfolio?tab=overview|holdings` | `DashboardDataMapper`, `ManagePortfolioView`, `CacheService` | optional refresh via `/api/pkm/*` and market APIs | reads encrypted domain via vault key | cache-first with metadata/domain reconciliation |
 | Dashboard profile picks | `/kai/portfolio` profile picks card | `ApiService.getDashboardProfilePicks` | `/api/kai/dashboard/profile-picks/{user_id}` | no new persistence (derived response) | quote-backed, risk-profile aware additive payload |
 | Debate context usage | `/kai/analysis` + stream views | `ApiService.streamKaiAnalysis` | `/api/kai/analyze/stream` | decision persisted under `financial.analysis.decisions` | context derived from index summaries + optional decrypted domain fields |
 
@@ -59,7 +114,7 @@ Notes:
 - UI: `hushh-webapp/components/kai/kai-flow.tsx`
 - API service: `hushh-webapp/lib/services/api-service.ts`
 - Backend route: `consent-protocol/api/routes/kai/portfolio.py`
-- World model persistence: `consent-protocol/hushh_mcp/services/world_model_service.py`
+- PKM persistence: PKM service layer
 - Cache sync: `hushh-webapp/lib/cache/cache-sync-service.ts`
 
 ### `/kai`
@@ -96,22 +151,22 @@ Notes:
 
 | Change Surface | Immediate Impact | Downstream Risk | Required Validation |
 | --- | --- | --- | --- |
-| Route or payload schema change | API service parse and UI render paths | Silent undefined fields in cards/charts | `verify:routes`, stream contract checks, manual `/kai` + dashboard smoke |
+| Route or payload schema change | API service parse and UI render paths | Silent undefined fields in cards/charts | `cd hushh-webapp && npm run typecheck`, stream contract checks, manual `/kai` + dashboard smoke |
 | Cache key/TTL change | stale/fresh behavior in home/dashboard | hidden over-fetch or stale UI claims | `verify:cache`, `scripts/verify-pre-launch.sh`, cache logs |
 | Unlock warm orchestration change | initial route readiness after vault unlock | duplicate warm calls, repeated `/db/vault/get`, delayed first paint | unlock-to-ready smoke + cache-hit logs |
-| World-model summary change | context counters and dashboard hero values | false-zero context or missing counts | world-model audit script + debate context smoke |
+| PKM summary change | context counters and dashboard hero values | false-zero context or missing counts | PKM audit script + debate context smoke |
 | Provider fallback/cooldown change | market home and debate data completeness | rate-limit loops, noisy degraded states | provider status telemetry + `/kai` refresh behavior |
 | Onboarding/chrome gating change | navbar/topbar/command bar visibility | onboarding regressions, broken tour sequencing | route-level smoke and mobile parity checklist |
 | Streaming event contract change | debate/import progress rendering | terminal event loss or parser mismatch | canonical stream contract verification + UI stream smoke |
 
 ## Mobile/Plugin Parity Touchpoints
 
-- Route parity guard: `hushh-webapp/scripts/verify-capacitor-routes.cjs`
-- Plugin parity guard: `hushh-webapp/scripts/verify-native-parity.cjs`
+- Route parity guard: `bash scripts/ci/docs-parity-check.sh`
+- Plugin/native parity reference: `docs/reference/mobile/capacitor-parity-audit.md`
 - Canonical app routes: `hushh-webapp/lib/navigation/routes.ts`
 - Runtime audit entrypoint: `scripts/verify-pre-launch.sh`
 
 See also:
 - `docs/reference/kai/mobile-kai-parity-map.md`
 - `docs/reference/kai/kai-change-impact-matrix.md`
-- `docs/reference/architecture/world-model-compatibility-playbook.md`
+- `docs/reference/architecture/pkm-cutover-runbook.md`

@@ -13,34 +13,12 @@
 import * as admin from "firebase-admin";
 import * as fs from "fs";
 import * as path from "path";
+import {
+  FIREBASE_ADMIN_CREDENTIALS_JSON_ENV,
+  resolveServerFirebaseAdminCredentialsJson,
+} from "@/lib/runtime/settings";
 
-const AUTH_APP_NAME = "hushh-auth";
-const AUTH_SERVICE_ACCOUNT_ENV = "FIREBASE_AUTH_SERVICE_ACCOUNT_JSON";
-const DEFAULT_SERVICE_ACCOUNT_ENV = "FIREBASE_SERVICE_ACCOUNT_JSON";
-
-type ServiceAccountLike = {
-  project_id?: string;
-  [key: string]: unknown;
-};
-
-function getExistingAppByName(name: string) {
-  return admin.apps.find((candidate) => candidate?.name === name) ?? null;
-}
-
-function parseServiceAccountFromEnv(
-  envVarName: string
-): ServiceAccountLike | null {
-  const raw = process.env[envVarName];
-  if (!raw) {
-    return null;
-  }
-  try {
-    return JSON.parse(raw) as ServiceAccountLike;
-  } catch (error) {
-    console.warn(`Failed to parse ${envVarName}:`, error);
-    return null;
-  }
-}
+const DEFAULT_SERVICE_ACCOUNT_ENV = FIREBASE_ADMIN_CREDENTIALS_JSON_ENV;
 
 // Initialize Firebase Admin (only once)
 function initializeFirebaseAdmin() {
@@ -82,7 +60,7 @@ function initializeFirebaseAdmin() {
   }
 
   // Fallback: Check for service account JSON in environment
-  const serviceAccountEnv = process.env[DEFAULT_SERVICE_ACCOUNT_ENV];
+  const serviceAccountEnv = resolveServerFirebaseAdminCredentialsJson();
 
   if (serviceAccountEnv) {
     try {
@@ -92,7 +70,7 @@ function initializeFirebaseAdmin() {
         credential: admin.credential.cert(parsedServiceAccount),
       });
     } catch (e) {
-      console.warn("Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:", e);
+      console.warn(`Failed to parse ${DEFAULT_SERVICE_ACCOUNT_ENV}:`, e);
     }
   }
 

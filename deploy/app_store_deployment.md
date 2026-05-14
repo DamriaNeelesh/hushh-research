@@ -1,7 +1,7 @@
 # App Store & Play Store Deployment Guide for Hushh
 
 **Status**: ✅ App configured and ready for store submission  
-**App Name**: Hushh  
+**App Name**: Kai
 **Bundle ID**: com.hushh.app  
 **Version**: 1.0.0  
 **Build**: 1  
@@ -13,7 +13,7 @@
 ### iOS Configuration
 - [x] Bundle ID updated to `com.hushh.app` in capacitor.config.ts
 - [x] App name changed to "Hushh" in capacitor.config.ts and Info.plist
-- [x] Version updated to 1.0.0 in package.json
+- [x] Version updated to 1.0.0 in `hushh-webapp/package.json`
 - [x] App icons generated for all required iOS sizes
 - [x] Project synced with Capacitor
 
@@ -43,7 +43,7 @@
    - **Capabilities**: Enable these
      - ☑️ Associated Domains (for Firebase)
      - ☑️ Push Notifications
-     - ☑️ Sign In with Apple (optional)
+     - ☑️ Sign In with Apple
 5. Click **Continue** → **Register**
 
 #### Step 2: Create Distribution Certificate
@@ -87,11 +87,19 @@
 
 #### Step 1: Open Project
 ```bash
-cd /Users/kushals/Downloads/GitHub/hushh-research/hushh-webapp
+cd <repo-root>/hushh-webapp
 open ios/App/App.xcodeproj
 ```
 
 #### Step 2: Update Project Settings
+Recommended team path:
+1. Bootstrap local signing assets first:
+   ```bash
+   cd <repo-root>
+   ./bin/hushh bootstrap
+   ```
+2. Open Xcode after bootstrap so the active `.env.local.d/ios/` sidecar and installed profiles are already present.
+
 In Xcode:
 1. Select **App** project in navigator
 2. Select **App** target
@@ -117,7 +125,11 @@ If Firebase bundle ID needs updating:
 2. **Project Settings** → **Your apps** → iOS app
 3. Update **Bundle ID** to `com.hushh.app`
 4. Download new `GoogleService-Info.plist`
-5. Replace in `ios/App/App/`
+5. Refresh your active local profile instead of committing the artifact:
+   ```bash
+   cd <repo-root>
+   ./bin/hushh bootstrap
+   ```
 6. Update `Info.plist` reversed client ID if changed
 
 ### Phase 3: Build & Archive
@@ -249,64 +261,20 @@ In **Organizer** (opens automatically):
 
 ### Phase 2: Build Release APK/AAB
 
-#### Step 1: Generate Keystore (First Time Only)
+#### Step 1: Bootstrap Local Signing State
 ```bash
-cd /Users/kushals/Downloads/GitHub/hushh-research/hushh-webapp/android
-
-# Generate release keystore
-keytool -genkey -v -keystore hushh-release-key.keystore \
-  -alias hushh-key \
-  -keyalg RSA \
-  -keysize 2048 \
-  -validity 10000
-
-# Save keystore password securely!
+cd <repo-root>
+./bin/hushh bootstrap
 ```
 
-#### Step 2: Configure Signing
-Create `android/key.properties`:
-```properties
-storePassword=YOUR_KEYSTORE_PASSWORD
-keyPassword=YOUR_KEY_PASSWORD
-keyAlias=hushh-key
-storeFile=hushh-release-key.keystore
-```
+Android release signing now comes from the active runtime profile and generated sidecar under `hushh-webapp/.env.local.d/android/`. Do not create ad hoc `key.properties` files in the repo.
 
-Update `android/app/build.gradle`:
-```gradle
-def keystoreProperties = new Properties()
-def keystorePropertiesFile = rootProject.file('key.properties')
-if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
-}
-
-android {
-    ...
-    signingConfigs {
-        release {
-            keyAlias keystoreProperties['keyAlias']
-            keyPassword keystoreProperties['keyPassword']
-            storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
-            storePassword keystoreProperties['storePassword']
-        }
-    }
-    buildTypes {
-        release {
-            signingConfig signingConfigs.release
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-        }
-    }
-}
-```
-
-#### Step 3: Build Release AAB
+#### Step 2: Build Release AAB
 ```bash
-cd /Users/kushals/Downloads/GitHub/hushh-research/hushh-webapp
+cd <repo-root>/hushh-webapp
 
-# Build and sync
-npm run cap:build
-npx cap sync android
+# Build and sync with the active profile materialized
+npm run cap:android:sync -- --profile prod-remote
 
 # Build release AAB
 cd android
@@ -375,25 +343,25 @@ cd android
 
 ### Version Bump
 ```bash
-# Update version in package.json
+# Update version in hushh-webapp/package.json
 # Update versionCode and versionName in android/app/build.gradle
 # Update version and build in Xcode
 ```
 
 ### iOS Update
 ```bash
-cd /Users/kushals/Downloads/GitHub/hushh-research/hushh-webapp
+cd <repo-root>/hushh-webapp
 npm run cap:build
-npx cap sync ios
+npm run cap:sync:ios
 open ios/App/App.xcodeproj
 # Archive → Validate → Upload
 ```
 
 ### Android Update
 ```bash
-cd /Users/kushals/Downloads/GitHub/hushh-research/hushh-webapp
+cd <repo-root>/hushh-webapp
 npm run cap:build
-npx cap sync android
+npm run cap:sync:android
 cd android
 ./gradlew bundleRelease
 # Upload AAB to Play Console
@@ -419,7 +387,7 @@ cd android
 
 ### Shared
 - **Capacitor Config**: `capacitor.config.ts`
-- **Package**: `package.json`
+- **Package**: `hushh-webapp/package.json`
 - **Assets**: `assets/` (source icons)
 
 ---

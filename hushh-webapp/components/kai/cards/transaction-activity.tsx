@@ -22,7 +22,13 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Card, CardContent, CardHeader, CardTitle } from "@/lib/morphy-ux/card";
+import {
+  SurfaceCard,
+  SurfaceCardContent,
+  SurfaceCardHeader,
+  SurfaceCardTitle,
+  SurfaceInset,
+} from "@/components/app-ui/surfaces";
 import { Icon } from "@/lib/morphy-ux/ui";
 
 // =============================================================================
@@ -188,22 +194,26 @@ export function TransactionActivity({
   }
 
   return (
-    <Card variant="none" effect="glass" showRipple={false} className={className}>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
+    <SurfaceCard className={className}>
+      <SurfaceCardHeader>
+        <SurfaceCardTitle className="flex items-center gap-2">
           <Icon icon={Activity} size="sm" />
           Recent Activity
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="p-0 divide-y divide-border">
-        {validTransactions.map((tx, index) => (
-          <TransactionRow 
-            key={`${tx.symbol}-${tx.trade_date || tx.date}-${index}`} 
-            transaction={tx} 
-          />
-        ))}
-      </CardContent>
-    </Card>
+        </SurfaceCardTitle>
+      </SurfaceCardHeader>
+      <SurfaceCardContent className="space-y-0">
+        <SurfaceInset className="overflow-hidden p-0">
+          <div className="divide-y divide-border/70">
+            {validTransactions.map((tx, index) => (
+              <TransactionRow
+                key={`${tx.symbol}-${tx.trade_date || tx.date}-${index}`}
+                transaction={tx}
+              />
+            ))}
+          </div>
+        </SurfaceInset>
+      </SurfaceCardContent>
+    </SurfaceCard>
   );
 }
 

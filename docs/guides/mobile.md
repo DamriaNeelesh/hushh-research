@@ -1,13 +1,63 @@
 # Mobile Development (iOS & Android)
 
 > Native mobile deployment with Capacitor 8 and local-first architecture.
-> Last verified: January 2026.
+> Last verified: March 2026.
+
+
+## Visual Map
+
+```mermaid
+flowchart TB
+  subgraph client["Mobile client"]
+    webview["Next.js UI inside WebView"]
+    routes["Visible route contract"]
+    wrappers["Browser-safe wrappers"]
+  end
+
+  subgraph ts["TypeScript runtime"]
+    services["Service layer"]
+    cache["Auth, vault, PKM, cache contexts"]
+    parity["Route contracts + parity registry"]
+  end
+
+  subgraph native["Native platform layer"]
+    plugins["Capacitor plugins<br/>auth, vault, consent, PKM, notifications"]
+    os["iOS / Android secure capabilities"]
+  end
+
+  subgraph backend["Remote services"]
+    proxy["Web proxy routes when running on web"]
+    api["FastAPI backend"]
+  end
+
+  webview --> routes
+  routes --> wrappers --> services
+  cache --> services
+  parity --> routes
+  services --> plugins --> os
+  services --> proxy --> api
+  plugins --> api
+```
 
 ---
 
 ## Overview
 
-The Hushh mobile app uses **Next.js static export** in a native WebView, with **native plugins** handling security-critical operations. Both iOS and Android achieve feature parity through aligned plugin implementations.
+The Hussh mobile app uses **Next.js static export** in a native WebView, with **native plugins** handling security-critical operations. Both iOS and Android achieve feature parity through aligned plugin implementations.
+
+Founder-language mapping:
+
+- `Separation of Duties` is implemented on mobile through the split between shared React runtime, native plugin boundary, and backend policy enforcement
+- `Cryptographic Primitives` are implemented through client-held vault control, secure native storage, and ciphertext-only backend persistence
+- `Capability Tokens` remain explicit in this guide as `VAULT_OWNER`, Firebase tokens, and consent tokens where the runtime contract requires them
+
+Program parity is enforced against the **entire visible route tree**, not only Kai core pages. The current source of truth is:
+
+- `hushh-webapp/lib/navigation/routes.ts`
+- `docs/reference/architecture/route-contracts.md`
+- `docs/reference/mobile/capacitor-parity-audit.md`
+
+Every visible page route must be documented as either native-supported or explicitly web-only, and browser-sensitive behavior must either run through shared wrappers or be documented as an accepted exception.
 
 ### Dev mode (hot reload) vs plugin parity
 
@@ -17,16 +67,16 @@ The Hushh mobile app uses **Next.js static export** in a native WebView, with **
 
 Recommended commands:
 
-- Terminal A (repo root): `make local-backend`
+- Terminal A (repo root): `./bin/hushh terminal backend --mode local --reload`
 - Terminal B (repo root):
-  - Android: `cd hushh-webapp && npm run cap:android:run -- --profile local-uatdb --fresh`
-  - iOS: `cd hushh-webapp && npm run cap:ios:run -- --profile local-uatdb --fresh`
+  - Android: `./bin/hushh native android --mode local --fresh`
+  - iOS: `./bin/hushh native ios --mode local --fresh`
 
 Required env:
 
 - `NEXT_PUBLIC_BACKEND_URL` must point to your dev/staging Python backend.
   - If you use a local backend on your host machine, remember Android emulator needs `10.0.2.2` instead of `localhost`.
-  - The runtime profile launcher handles that rewrite automatically in `capacitor.config.ts` for Android when the active profile uses localhost.
+  - The runtime mode launcher handles that rewrite automatically in `capacitor.config.ts` for Android when the active mode uses localhost.
 
 ### Passkey domain association (production)
 
@@ -48,6 +98,8 @@ Required configuration:
 - `NEXT_PUBLIC_ANDROID_APP_ID` (default `com.hushh.app`)
 - Backend allowlist: `PASSKEY_ALLOWED_RP_IDS` in `consent-protocol/.env`
 
+These are deploy/native configuration inputs, not part of the canonical frontend runtime profile files under `hushh-webapp/.env.local*`.
+
 Notes:
 
 - For dual-domain migration, keep both production hosts in `PASSKEY_ALLOWED_RP_IDS`.
@@ -55,14 +107,42 @@ Notes:
 - `localhost` is valid for web dev passkeys, but not for iOS associated domains.
 - Native PRF passkey status:
   - iOS: implemented via `HushhVault.registerPasskeyPrf/authenticatePasskeyPrf` (requires iOS 18+).
-  - Android: PRF native passkey methods are still pending; biometric/passphrase fallback remains active.
+  - Android: implemented via the native `HushhVault` passkey PRF bridge on supported devices.
+- Vault preference/native fallback status:
+  - `storePreferencesToCloud()` is the canonical shipped cross-platform path for encrypted preference writes.
+  - Legacy local preference CRUD methods remain compatibility-only and are not part of the parity-critical product contract.
+
+### Full parity audit lane
+
+Before calling iOS/Android parity complete, run:
+
+- `cd hushh-webapp && npm run verify:capacitor:audit`
+
+That release gate includes:
+
+- native microphone permission metadata verification
+- full route-contract verification
+- native plugin parity verification
+- Capacitor route classification verification
+- Capacitor runtime config verification
+- mobile Firebase artifact verification
+- docs/runtime parity verification
+- browser-API/native compatibility audit
+- iOS project sanity (`xcodebuild -list`)
+- Android project sanity (`./gradlew tasks --all`)
+
+Accepted parity exceptions currently documented in the registry:
+
+- None. Full parity requires the registry and runtime to stay exception-free for visible route behavior.
+- Accepted direct browser-API usage that remains intentional must stay documented in this guide and the parity audit docs, especially for route recovery/navigation mutation and IndexedDB-backed cache services.
 
 ### Firebase artifact safety (no secret leak in git)
 
-- `hushh-webapp/android/app/google-services.json` is committed as a template placeholder.
-- Real artifacts should be injected at build time with:
-  - `npm run inject:mobile-firebase`
-- Root-level local files like `google-services.json` are ignored and must remain untracked.
+- `hushh-webapp/ios/App/App/GoogleService-Info-README.md` documents the untracked iOS Firebase plist workflow.
+- Android Firebase config is treated as generated build input, not a committed source artifact.
+- `./bin/hushh bootstrap` only hydrates the runtime profiles. It does not materialize native Firebase artifacts into the active frontend env files.
+- Native build/release flows should handle platform Firebase artifacts explicitly and keep them out of git.
+- Root-level local Firebase artifacts must remain untracked.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -77,7 +157,7 @@ Notes:
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │       Native Plugins (10 per platform)                    │  │
 │  │  HushhAuth · HushhVault · HushhConsent · Kai             │  │
-│  │  HushhSync · HushhSettings · HushhKeystore · WorldModel  │  │
+│  │  HushhSync · HushhSettings · HushhKeystore · PKM         │  │
 │  │  HushhAccount · HushhNotifications                       │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                          ↓ Native HTTP                          │
@@ -103,11 +183,27 @@ All 10 plugins exist on both platforms with matching methods:
 | **HushhSync**     | `HushhSync`     | Cloud synchronization          | `HushhSyncPlugin.swift`     | `HushhSyncPlugin.kt`     |
 | **HushhSettings** | `HushhSettings` | App preferences                | `HushhSettingsPlugin.swift` | `HushhSettingsPlugin.kt` |
 | **HushhKeystore** | `HushhKeychain` | Secure key storage             | `HushhKeystorePlugin.swift` | `HushhKeystorePlugin.kt` |
-| **WorldModel**    | `WorldModel`    | Domain metadata/index access   | `WorldModelPlugin.swift`    | `WorldModelPlugin.kt`    |
+| **PKM**           | `PersonalKnowledgeModel` | Domain metadata/index access | `PersonalKnowledgeModelPlugin.swift` | `PersonalKnowledgeModelPlugin.kt` |
 | **HushhAccount**  | `HushhAccount`  | Account lifecycle actions      | `HushhAccountPlugin.swift`  | `HushhAccountPlugin.kt`  |
 | **HushhNotifications** | `HushhNotifications` | Push token registration | `HushhNotificationsPlugin.swift` | `HushhNotificationsPlugin.kt` |
 
 > Note: HushhKeystore uses jsName `HushhKeychain` for historical compatibility.
+
+## Route Coverage
+
+Visible page routes are governed through `hushh-webapp/lib/navigation/routes.ts` together with the architecture/mobile parity docs. That coverage includes:
+
+- product routes (`/kai`, `/consents`, `/profile`, `/one/kyc`, `/marketplace`, `/ria`)
+- `/developers`
+- public/auth content pages (`/`, `/login`, `/logout`)
+- visible lab routes
+- redirect-only compatibility pages that still ship in the app shell
+
+Do not add a visible route without:
+
+1. adding it to `hushh-webapp/lib/navigation/routes.ts` when it is part of the app navigation contract
+2. updating `docs/reference/architecture/route-contracts.md` when route governance changes
+3. ensuring its route-facing browser APIs are wrapped or explicitly exempted
 
 ---
 
@@ -124,6 +220,11 @@ All 10 plugins exist on both platforms with matching methods:
 | `getCurrentUser()`   | Get user profile                                      |
 | `isSignedIn()`       | Check auth state                                      |
 
+Native auth persistence note:
+
+- Native auth tokens are stored through secure platform storage (`Keychain` on iOS, `Keystore`-backed secure storage on Android), not general app defaults or browser storage.
+- Web continues to rely on the browser/Firebase session model; native must preserve the same product semantics through the plugin boundary.
+
 ### HushhVault
 
 | Method                   | Description                      |
@@ -136,6 +237,11 @@ All 10 plugins exist on both platforms with matching methods:
 | `getFoodPreferences()`   | Get encrypted food preferences   |
 | `storeFoodPreferences()` | Store encrypted food preferences |
 | `getProfessionalData()`  | Get encrypted professional data  |
+
+Session-storage semantics note:
+
+- On native cold start, browser session storage semantics are restored by `lib/utils/session-storage.ts`.
+- When the native WebView falls back to persistent storage, `_session_` keys are purged on boot so session-only state does not leak across fresh app launches.
 
 ### HushhConsent
 
@@ -206,7 +312,7 @@ ios/App/App/
     ├── HushhSyncPlugin.swift
     ├── HushhVaultPlugin.swift
     ├── KaiPlugin.swift
-    └── WorldModelPlugin.swift
+    └── PersonalKnowledgeModelPlugin.swift
 ```
 
 ### Android
@@ -224,7 +330,7 @@ android/app/src/main/java/com/hushh/app/
     ├── HushhSync/HushhSyncPlugin.kt
     ├── HushhVault/HushhVaultPlugin.kt
     ├── Kai/KaiPlugin.kt
-    ├── WorldModel/WorldModelPlugin.kt
+    ├── PersonalKnowledgeModel/PersonalKnowledgeModelPlugin.kt
     └── shared/BackendUrl.kt
 ```
 
@@ -246,7 +352,7 @@ lib/
 │       ├── sync-web.ts
 │       ├── settings-web.ts
 │       ├── vault-web.ts
-│       └── world-model-web.ts
+│       └── pkm web compatibility bridge
 └── services/
     ├── api-service.ts    # Platform-aware API routing
     ├── auth-service.ts   # Native auth abstraction
@@ -274,7 +380,7 @@ class MyViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(HushhSyncPlugin())
         bridge?.registerPluginInstance(HushhSettingsPlugin())
         bridge?.registerPluginInstance(HushhKeystorePlugin())
-        bridge?.registerPluginInstance(WorldModelPlugin())
+        bridge?.registerPluginInstance(PersonalKnowledgeModelPlugin())
         bridge?.registerPluginInstance(HushhAccountPlugin())
         bridge?.registerPluginInstance(HushhNotificationsPlugin())
     }
@@ -304,7 +410,7 @@ class MainActivity : BridgeActivity() {
         registerPlugin(HushhKeystorePlugin::class.java)
         registerPlugin(HushhNotificationsPlugin::class.java)
         registerPlugin(KaiPlugin::class.java)
-        registerPlugin(WorldModelPlugin::class.java)
+        registerPlugin(PersonalKnowledgeModelPlugin::class.java)
         registerPlugin(HushhAccountPlugin::class.java)
         super.onCreate(savedInstanceState)
     }
@@ -380,7 +486,7 @@ if (Capacitor.isNativePlatform()) {
 
 | Plugin     | Methods                                                                     | Status                    |
 | ---------- | --------------------------------------------------------------------------- | ------------------------- |
-| WorldModel | getMetadata, getAttributes, getUserDomains, listDomains, getAvailableScopes | Required                  |
+| PersonalKnowledgeModel | getMetadata, getAttributes, getUserDomains, listDomains, getAvailableScopes | Required |
 | Kai        | getInitialChatState, chat                                                   | Required                  |
 | Identity   | autoDetect, getIdentityStatus, getEncryptedProfile                          | Required                  |
 | Vault      | All crypto methods                                                          | Not needed (simple types) |
@@ -536,7 +642,7 @@ const DEV_MODE = false; // Must be false for production builds
 
 const config: CapacitorConfig = {
   appId: "com.hushh.app",
-  appName: "Hushh",
+  appName: "Kai",
   webDir: "out",
   server: {
     cleartext: true,
@@ -619,7 +725,7 @@ const { vaultOwnerToken } = useVault();
 />
 
 // Service call includes token
-await WorldModelService.storeDomainData({
+await PersonalKnowledgeModelService.storeDomainData({
   userId,
   domain: "financial",
   encryptedBlob: { ... },
@@ -667,27 +773,26 @@ Required rule:
 
 ---
 
-## Capacitor E2E Verification (Hard-Fail)
+## Native Verification Surface
 
 Run from `hushh-webapp`:
 
 ```bash
-npm run verify:capacitor:e2e
+npm run cap:build
+npm run cap:sync:ios
+npm run cap:sync:android
+npm run ios:test
 ```
 
-This runs:
-1. `verify:routes`
-2. `verify:parity`
-3. `verify:mobile-firebase`
-4. `cap:build:mobile`
-5. `verify:capacitor:routes`
+Repo-level wrappers remain the canonical contributor path:
 
-Expected outcome:
-- All commands pass with exit code `0`.
-- Any missing fallback route page, plugin method parity drift, or mobile artifact issue fails the gate immediately.
+```bash
+./bin/hushh native ios --mode uat
+./bin/hushh native android --mode uat
+```
 
-Manual smoke on device/simulator is still required after this CI gate.
+Manual smoke on a simulator/device is still required after the build/sync checks.
 
 ---
 
-_Last verified: February 2026 | Capacitor 8_
+_Last verified: March 2026 | Capacitor 8_

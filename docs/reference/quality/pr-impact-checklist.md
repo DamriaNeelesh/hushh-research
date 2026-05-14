@@ -1,13 +1,19 @@
 # PR Impact Checklist
 
-Mandatory impact mapping for any change touching Kai, world model, routes, or mobile parity.
+
+## Visual Context
+
+Canonical visual owner: [Quality and Design System Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
+Mandatory impact mapping for any change touching Kai, PKM, routes, or mobile parity.
 
 ## Required PR Fields
 
 - Routes touched
 - API/schema/type changes
+- Runtime DB data-plane changes
 - Cache keys touched
-- World-model domain summary effects
+- PKM domain summary effects
 - Mobile parity impacts
 - Docs updated (exact file list)
 - Verification commands executed
@@ -23,10 +29,15 @@ Mandatory impact mapping for any change touching Kai, world model, routes, or mo
 - API/schema/type changes:
   - ...
 
+- Runtime DB data-plane changes:
+  - Table families changed: ...
+  - Data class / retention / deletion policy updated: yes/no
+  - `./bin/hushh codex data-model-audit` run: yes/no
+
 - Cache keys touched:
   - ...
 
-- World-model effects:
+- PKM effects:
   - Domain(s): ...
   - Summary fields changed: ...
   - Reconciliation required: yes/no
@@ -40,9 +51,8 @@ Mandatory impact mapping for any change touching Kai, world model, routes, or mo
   - ...
 
 - Verification run:
-  - [ ] `npm run verify:routes`
-  - [ ] `npm run verify:parity`
-  - [ ] `npm run verify:capacitor:routes`
+  - [ ] `cd hushh-webapp && npm run typecheck`
+  - [ ] `./bin/hushh native ios --mode uat` and/or `./bin/hushh native android --mode uat` when mobile behavior changes
   - [ ] `npm run verify:cache`
   - [ ] `npm run verify:docs`
 ```

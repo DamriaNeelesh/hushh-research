@@ -67,6 +67,7 @@ const QUESTIONS = [
 export function KaiPreferencesWizard(props: {
   mode: "onboarding" | "edit";
   layout?: "page" | "sheet";
+  isSubmitting?: boolean;
   initialStep?: number;
   initialAnswers?: Partial<WizardAnswers>;
   onAnswersChange?: (answers: WizardAnswers) => void | Promise<void>;
@@ -90,15 +91,22 @@ export function KaiPreferencesWizard(props: {
   const [horizonDialogOpen, setHorizonDialogOpen] = useState(false);
   const [horizonAnchorChoice, setHorizonAnchorChoice] = useState<HorizonAnchorChoice>("from_now");
 
+  const answeredCount = useMemo(() => {
+    return QUESTIONS.reduce((count, question) => {
+      return answers[question.id] ? count + 1 : count;
+    }, 0);
+  }, [answers]);
+
   const progressValue = useMemo(() => {
-    return Math.round(((step + 1) / total) * 100);
-  }, [step, total]);
+    return Math.round((answeredCount / total) * 100);
+  }, [answeredCount, total]);
   const currentStep = step + 1;
 
   const isLast = step === total - 1;
 
   const activeQuestion = QUESTIONS[step]!;
   const activeValue = answers[activeQuestion.id];
+  const isSubmitting = props.isSubmitting === true;
 
   const canContinue = Boolean(activeValue);
 
@@ -112,7 +120,11 @@ export function KaiPreferencesWizard(props: {
 
   function handleSelect(value: string) {
     if (activeQuestion.id !== "investment_horizon") {
-      setAnswer(activeQuestion.id, value as any);
+      if (activeQuestion.id === "drawdown_response") {
+        setAnswer("drawdown_response", value as DrawdownResponse);
+      } else {
+        setAnswer("volatility_preference", value as VolatilityPreference);
+      }
       return;
     }
 
@@ -135,7 +147,7 @@ export function KaiPreferencesWizard(props: {
   }
 
   async function handlePrimary() {
-    if (!canContinue) return;
+    if (!canContinue || isSubmitting) return;
     if (!isLast) {
       setStep((s) => Math.min(total - 1, s + 1));
       return;
@@ -163,6 +175,7 @@ export function KaiPreferencesWizard(props: {
   const canGoPrevious = step > 0;
 
   function handleBack() {
+    if (isSubmitting) return;
     if (canGoPrevious) {
       setStep((s) => Math.max(0, s - 1));
       return;
@@ -173,10 +186,11 @@ export function KaiPreferencesWizard(props: {
 
   return (
     <main
+      data-top-content-anchor={layout === "page" ? "true" : undefined}
       className={cn(
         "w-full bg-transparent flex flex-col",
         layout === "page"
-          ? "min-h-[100dvh] px-6 pt-[calc(var(--top-shell-reserved-height,0px)+16px)] pb-[var(--app-screen-footer-pad)]"
+          ? "min-h-[100dvh] px-6 pt-[var(--app-fullscreen-flow-content-offset)] pb-[var(--app-screen-footer-pad)]"
           : "min-h-0 px-4 pt-4 pb-4"
       )}
     >
@@ -190,10 +204,12 @@ export function KaiPreferencesWizard(props: {
           {reserveBackSlot && (
             <div className="flex justify-start">
               <Button
+                type="button"
                 variant="link"
                 effect="fade"
                 size="sm"
                 onClick={handleBack}
+                disabled={isSubmitting}
                 className={cn(
                   "h-auto p-0",
                   !showBack && "invisible pointer-events-none"
@@ -224,16 +240,18 @@ export function KaiPreferencesWizard(props: {
             Help us tailor your investment plan.
           </p>
 
-          <h1
+          <p
+            role="heading"
+            aria-level={1}
             className={cn(
-              "font-extrabold tracking-tight whitespace-pre-line",
+              "whitespace-pre-line tracking-[-0.015em] text-balance",
               layout === "page"
-                ? "text-[clamp(1.55rem,6.2vw,2rem)] leading-[1.14]"
-                : "text-[clamp(1.45rem,4.8vw,1.85rem)] leading-[1.16]"
+                ? "text-[clamp(0.98rem,3.2vw,1.35rem)] leading-[1.3] font-semibold"
+                : "text-[clamp(0.95rem,2.8vw,1.2rem)] leading-[1.3] font-semibold"
             )}
           >
             {activeQuestion.prompt}
-          </h1>
+          </p>
         </div>
 
         <div className="pt-5">
@@ -246,26 +264,31 @@ export function KaiPreferencesWizard(props: {
 
         <div className="mt-auto pt-6 space-y-4">
           <Button
+            type="button"
             size="lg"
             fullWidth
             onClick={handlePrimary}
-            disabled={!canContinue}
+            disabled={!canContinue || isSubmitting}
+            loading={isSubmitting}
             showRipple
           >
-            {primaryLabel}
-            <ArrowRight className="ml-2 h-5 w-5" />
+            {isSubmitting ? "Saving..." : primaryLabel}
+            {!isSubmitting && <ArrowRight className="ml-2 h-5 w-5" />}
           </Button>
 
           {props.mode === "onboarding" && props.onSkip && (
             <Button
+              type="button"
               variant="blue-gradient"
               effect="fade"
               size="lg"
               fullWidth
               onClick={props.onSkip}
+              disabled={isSubmitting}
+              loading={isSubmitting}
               showRipple={false}
             >
-              Skip
+              {isSubmitting ? "Saving..." : "Skip"}
             </Button>
           )}
         </div>
@@ -283,6 +306,7 @@ export function KaiPreferencesWizard(props: {
 
           <div className="grid gap-2 pt-2">
             <Button
+              type="button"
               variant="none"
               effect="fill"
               size="sm"
@@ -305,6 +329,7 @@ export function KaiPreferencesWizard(props: {
             </Button>
 
             <Button
+              type="button"
               variant="none"
               effect="fill"
               size="sm"
@@ -332,6 +357,7 @@ export function KaiPreferencesWizard(props: {
               Cancel
             </AlertDialogCancel>
             <Button
+              type="button"
               variant="blue-gradient"
               effect="fill"
               size="sm"

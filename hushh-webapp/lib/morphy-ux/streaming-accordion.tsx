@@ -448,7 +448,7 @@ export function StreamingAccordion({
           </AccordionPrimitive.Trigger>
         </AccordionPrimitive.Header>
 
-        <AccordionPrimitive.Content className="data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down overflow-hidden">
+        <AccordionPrimitive.Content className="app-accordion-content">
           <div className="relative">
             <div
               ref={contentRef}

@@ -1,8 +1,15 @@
 # Profile Settings Design System
 
-This document is the canonical contract for Apple-like settings surfaces in Hushh. The current reference implementation is the Profile page and its shared primitives in `hushh-webapp/components/profile/settings-ui.tsx`.
+
+## Visual Context
+
+Canonical visual owner: [Quality and Design System Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
+This document is the canonical contract for Apple-like settings surfaces in Hussh. The current reference implementation is the Profile page, backed by shared primitives in `hushh-webapp/components/app-ui/settings-ui.tsx` and a compatibility re-export at `hushh-webapp/components/profile/settings-ui.tsx`.
 
 For broader page-shell, header, and content-surface rules beyond settings, use [App Surface Design System](./app-surface-design-system.md).
+
+Signed-in settings surfaces inherit the app-wide compact density contract by default. That means grouped settings, privacy managers, and audit lists should feel efficient above the fold while auth, onboarding, and form-first overlays remain readable.
 
 ## Design Intent
 
@@ -38,6 +45,7 @@ Rules:
 3. Rounded outer shell with subtle background and blur only at the group level.
 4. Optional eyebrow, title, and short supporting description above the group.
 5. Description must stay compact; do not write paragraph-length helper text.
+6. Group spacing should come from the shared density variables, not ad-hoc `space-y-*` tuning inside route files.
 
 ### `SettingsRow`
 
@@ -51,7 +59,12 @@ Rules:
 4. The whole row owns hover, press, and ripple behavior.
 5. Ripple appears only when the row is actionable.
 6. Do not nest buttons inside the text column.
-7. Avoid long text in trailing slots.
+7. If trailing content is interactive, split the row into:
+   - primary action zone for navigation/open-detail
+   - trailing controls zone for switches/buttons
+8. A clickable settings row must never render nested interactive DOM.
+9. Avoid long text in trailing slots.
+10. Row padding and gaps should inherit from the shared compact density variables so Profile, Consent, and similar row-based managers stay visually aligned.
 
 ### `SettingsDetailPanel`
 
@@ -87,6 +100,7 @@ Rules:
 2. Supporting text is smaller and tighter than titles.
 3. Avoid oversized subtitles.
 4. Supporting text should explain action or state in one short sentence.
+5. Dense settings managers should prefer many scannable rows over stacked mini-cards when the user is browsing or triaging state.
 
 ### Interaction
 
@@ -104,6 +118,18 @@ Rules:
 3. Trailing chevrons and toggles stay aligned right.
 4. Dense content opens in `SettingsDetailPanel`, not inline expansions that stretch the root page.
 5. Safe-area spacing must be respected at the bottom of mobile drawers.
+
+## Vault Access Rules
+
+1. Basic profile functionality must remain usable without unlocking the vault:
+   - account/session actions
+   - support flows
+   - consent manager entry
+   - marketplace visibility
+   - navigation into the broader Kai or RIA workspace
+2. Only rows that read or mutate encrypted vault-backed state should prompt unlock on demand.
+3. If a vault does not exist yet, route the user to the creation/import flow instead of showing an unlock prompt.
+4. Locked vault state should change row copy and badges, not make the whole profile surface unavailable.
 
 ## Approved shadcn primitives for settings surfaces
 
@@ -136,6 +162,7 @@ Rules:
 5. Keep row actions visually balanced with the left icon block.
 6. Center the left icon against the full title-plus-subtitle block so it spans the whole heading unit, not just the first line.
 7. Add `MaterialRipple` to every actionable card surface, not only buttons.
+8. When a settings surface becomes list-heavy, stay with `SettingsGroup` / `SettingsRow` or another shared compact browse primitive instead of designing a new card grid.
 
 ### Don’t
 
@@ -150,8 +177,9 @@ Rules:
 
 Primary files:
 
-1. `hushh-webapp/components/profile/settings-ui.tsx`
+1. `hushh-webapp/components/app-ui/settings-ui.tsx`
 2. `hushh-webapp/app/profile/page.tsx`
-3. `hushh-webapp/components/ui/switch.tsx`
+3. `hushh-webapp/components/profile/settings-ui.tsx`
+4. `hushh-webapp/components/ui/switch.tsx`
 
 Any new settings-like surface should match these patterns before introducing a new abstraction.

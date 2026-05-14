@@ -14,16 +14,15 @@ import {
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { type MorphyCardBaseProps } from "@/lib/morphy-ux/types";
-import {
-  getVariantStyles,
-  getVariantStylesNoHover,
-} from "@/lib/morphy-ux/utils";
 import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
+
+export type CardType = "apple" | "legacy";
 
 export interface CardProps
   extends React.HTMLAttributes<HTMLDivElement>,
     MorphyCardBaseProps {
   asChild?: boolean;
+  type?: CardType;
   icon?: {
     icon: React.ComponentType<{ className?: string; weight?: IconWeight }>;
     title?: string;
@@ -34,6 +33,37 @@ export interface CardProps
 
 type IconPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
+const CARD_PRESET_SHELL_CLASSES: Record<
+  NonNullable<CardProps["preset"]>,
+  { shell: string; spacing: string }
+> = {
+  compact: {
+    shell:
+      "!rounded-[var(--app-card-radius-compact)] !border-transparent !bg-[color:var(--app-card-surface-compact)] !shadow-[var(--app-card-shadow-standard)]",
+    spacing: "p-0",
+  },
+  default: {
+    shell:
+      "!rounded-[var(--app-card-radius-standard)] !border-transparent !bg-[color:var(--app-card-surface-default-solid)] !shadow-[var(--app-card-shadow-standard)]",
+    spacing: "p-4 sm:p-6",
+  },
+  hero: {
+    shell:
+      "!rounded-[var(--app-card-radius-feature)] !border-transparent !bg-[color:var(--app-card-surface-hero)] !shadow-[var(--app-card-shadow-feature)]",
+    spacing: "p-0",
+  },
+  surface: {
+    shell:
+      "!rounded-[var(--app-card-radius-feature)] !border-transparent !bg-[color:var(--app-card-surface-surface)] !shadow-[var(--app-card-shadow-standard)]",
+    spacing: "min-w-0 p-0",
+  },
+  "surface-feature": {
+    shell:
+      "!rounded-[var(--app-card-radius-feature)] !border-transparent !bg-[color:var(--app-card-surface-hero)] !shadow-[var(--app-card-shadow-feature)]",
+    spacing: "min-w-0 p-0",
+  },
+};
+
 const Card = React.forwardRef<HTMLDivElement, CardProps>(
   (
     {
@@ -41,6 +71,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
       variant = "none",
       effect = "glass",
       preset = "default",
+      type,
       asChild = false,
       showRipple = false,
       icon,
@@ -53,10 +84,9 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
     },
     ref
   ) => {
+    const isApple = type === "apple";
     const Comp = asChild ? Slot : StockCard;
-    const variantStyles = showRipple
-      ? getVariantStyles(variant, effect)
-      : getVariantStylesNoHover(variant, effect);
+    const presetConfig = CARD_PRESET_SHELL_CLASSES[preset];
 
     const IconComponent = icon?.icon;
     const iconPosition = icon?.position || "top-left";
@@ -79,7 +109,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
       if (isGradient) {
         return "text-white dark:text-black";
       }
-      return "text-[var(--morphy-primary-start)]";
+      return "text-muted-foreground";
     };
 
     const renderIconBlock = () => {
@@ -109,41 +139,38 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
     };
 
     return (
-      <Comp
+        <Comp
         ref={ref}
         className={cn(
-          "relative rounded-lg border border-solid text-card-foreground p-4 sm:p-6 transition-[border-color,box-shadow,background-color] duration-200",
-          "shadow-[0_1px_3px_0_rgb(0_0_0_/_0.3),_0_1px_2px_-1px_rgb(0_0_0_/_0.2)]",
-          preset === "hero" &&
-            "p-0 rounded-3xl shadow-[0_18px_60px_rgba(0,0,0,0.10)]",
-          variant === "muted"
-            ? "bg-white/60 dark:bg-background/40 border-border/30"
-            : effect === "glass"
+          "relative !overflow-visible transition-[box-shadow,background-color] duration-200",
+          isApple
+            ? "!rounded-[var(--app-card-radius-standard)] !border-0 !bg-[color:var(--app-card-surface-default-solid)] !shadow-[var(--app-card-shadow-standard)]"
+            : cn("border border-solid border-transparent", presetConfig.shell),
+          "!text-card-foreground",
+          isApple
             ? ""
-            : "bg-white/80 dark:bg-gray-900/40",
-          effect === "fade" ? "!backdrop-blur-none" : "backdrop-blur-[6px]",
-          variantStyles,
-          showRipple ? "overflow-hidden" : "",
-          showRipple
-            ? "!border-transparent hover:!border-[var(--morphy-primary-start)]"
-            : variant === "muted"
-            ? ""
-            : "!border-transparent",
+            : effect === "fade"
+              ? "!backdrop-blur-none"
+              : "backdrop-blur-[22px] backdrop-saturate-[155%] backdrop-contrast-[1.02]",
+          isApple ? "min-w-0 p-0" : presetConfig.spacing,
           interactive ? "cursor-pointer" : "",
           fullHeight ? "h-full" : "",
-          selected ? "border-[var(--morphy-primary-start)]" : "",
+          selected ? "ring-1 ring-foreground/10 dark:ring-white/10" : "",
           className
         )}
         {...props}
       >
-        {effect === "glass" && glassAccent !== "none" ? (
+        {!isApple && effect === "glass" ? (
           <div
             aria-hidden
             className={cn(
               "pointer-events-none absolute inset-0",
-              glassAccent === "soft"
-                ? "bg-[radial-gradient(95%_75%_at_15%_82%,var(--morphy-glass-accent-a)_0%,transparent_70%),radial-gradient(88%_70%_at_84%_16%,var(--morphy-glass-accent-b)_0%,transparent_68%)] opacity-70"
-                : "bg-[radial-gradient(95%_75%_at_15%_82%,var(--morphy-glass-accent-a)_0%,transparent_66%),radial-gradient(88%_70%_at_84%_16%,var(--morphy-glass-accent-b)_0%,transparent_64%)] opacity-95"
+              glassAccent === "none" &&
+                "bg-[linear-gradient(180deg,rgba(255,255,255,0.22)_0%,rgba(255,255,255,0.12)_16%,rgba(255,255,255,0.04)_32%,transparent_48%),radial-gradient(135%_92%_at_50%_0%,rgba(255,255,255,0.28)_0%,transparent_54%),radial-gradient(135%_92%_at_50%_100%,rgba(148,163,184,0.09)_0%,transparent_60%)] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.045)_0%,rgba(255,255,255,0.018)_16%,transparent_30%),radial-gradient(135%_92%_at_50%_0%,rgba(255,255,255,0.05)_0%,transparent_56%),radial-gradient(135%_92%_at_50%_100%,rgba(0,0,0,0.18)_0%,transparent_62%)]",
+              glassAccent === "soft" &&
+                "bg-[linear-gradient(180deg,rgba(255,255,255,0.26)_0%,rgba(255,255,255,0.14)_16%,rgba(255,255,255,0.05)_34%,transparent_52%),radial-gradient(135%_96%_at_50%_0%,rgba(255,255,255,0.32)_0%,transparent_54%),radial-gradient(135%_96%_at_50%_100%,rgba(148,163,184,0.11)_0%,transparent_62%)] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.055)_0%,rgba(255,255,255,0.022)_16%,transparent_32%),radial-gradient(135%_96%_at_50%_0%,rgba(255,255,255,0.06)_0%,transparent_56%),radial-gradient(135%_96%_at_50%_100%,rgba(0,0,0,0.22)_0%,transparent_64%)]",
+              glassAccent === "balanced" &&
+                "bg-[linear-gradient(180deg,rgba(255,255,255,0.3)_0%,rgba(255,255,255,0.16)_16%,rgba(255,255,255,0.06)_36%,transparent_54%),radial-gradient(140%_100%_at_50%_0%,rgba(255,255,255,0.36)_0%,transparent_54%),radial-gradient(140%_100%_at_50%_100%,rgba(148,163,184,0.13)_0%,transparent_64%)] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.065)_0%,rgba(255,255,255,0.026)_16%,transparent_34%),radial-gradient(140%_100%_at_50%_0%,rgba(255,255,255,0.075)_0%,transparent_56%),radial-gradient(140%_100%_at_50%_100%,rgba(0,0,0,0.24)_0%,transparent_66%)]"
             )}
             style={{ borderRadius: "inherit" }}
           />
@@ -161,7 +188,15 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
             : null}
         </div>
 
-        {showRipple ? <MaterialRipple variant={variant} effect={effect} /> : null}
+        {showRipple ? (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 overflow-hidden"
+            style={{ borderRadius: "inherit" }}
+          >
+            <MaterialRipple variant={variant} effect={effect} />
+          </div>
+        ) : null}
       </Comp>
     );
   }
@@ -173,7 +208,7 @@ const CardHeader = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<typeof StockCardHeader>
 >(({ className, ...props }, ref) => (
-  <StockCardHeader ref={ref} className={cn("px-0 space-y-4 pb-2", className)} {...props} />
+  <StockCardHeader ref={ref} className={cn("px-0 space-y-4 pb-2.5", className)} {...props} />
 ));
 CardHeader.displayName = "CardHeader";
 
@@ -195,7 +230,7 @@ const CardDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <StockCardDescription
     ref={ref}
-    className={cn("text-sm text-muted-foreground leading-relaxed", className)}
+    className={cn("text-sm leading-6 text-muted-foreground", className)}
     {...props}
   />
 ));

@@ -5,7 +5,7 @@ import { toast } from "sonner";
  * Cross-platform file download utility
  *
  * Platform behavior:
- * - iOS: Saves to app's Documents folder, visible in Files app under "On My iPhone" > "Hushh"
+ * - iOS: Saves to app's Documents folder, visible in Files app under "On My iPhone" > "Hussh"
  *        (Requires UIFileSharingEnabled=true in Info.plist)
  * - Android: Saves to app's Documents folder, visible in file manager
  * - Web: Standard browser download to Downloads folder
@@ -45,7 +45,7 @@ export async function downloadTextFile(
       // Show platform-specific success message
       if (platform === "ios") {
         toast.success("Saved to Files app", {
-          description: `Check "On My iPhone" → "Hushh" → ${filename}`,
+          description: `Check "On My iPhone" → "Hussh" → ${filename}`,
           duration: 5000,
         });
       } else {
@@ -83,6 +83,66 @@ export async function downloadTextFile(
   } catch (error) {
     console.error("[Download] All download methods failed:", error);
     toast.error("Failed to download file");
+    return false;
+  }
+}
+
+export async function blobToBase64String(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("Failed to encode file"));
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("Unexpected file reader result"));
+        return;
+      }
+      const parts = result.split(",");
+      resolve(parts[1] || "");
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+export async function downloadBlobFile(
+  blob: Blob,
+  filename: string,
+  mimeType = "application/octet-stream"
+): Promise<boolean> {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const { Filesystem, Directory } = (await import(
+        "@capacitor/filesystem"
+      )) as typeof import("@capacitor/filesystem");
+
+      const base64 = await blobToBase64String(blob);
+      await Filesystem.writeFile({
+        path: filename,
+        data: base64,
+        directory: Directory.Documents,
+        recursive: true,
+      });
+      return true;
+    } catch (error) {
+      console.error("[Download] Native blob save failed:", error);
+      return false;
+    }
+  }
+
+  try {
+    const typedBlob =
+      blob.type === mimeType || !mimeType ? blob : new Blob([blob], { type: mimeType });
+    const url = URL.createObjectURL(typedBlob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    return true;
+  } catch (error) {
+    console.error("[Download] Browser blob download failed:", error);
     return false;
   }
 }

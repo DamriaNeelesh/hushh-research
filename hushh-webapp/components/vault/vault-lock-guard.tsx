@@ -21,7 +21,6 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { useVault } from "@/lib/vault/vault-context";
 import { VaultService } from "@/lib/services/vault-service";
@@ -37,13 +36,30 @@ interface VaultLockGuardProps {
   children: React.ReactNode;
 }
 
+const vaultPresenceCache = new Map<string, boolean>();
+
+/**
+ * Module-level flag: once the vault has been unlocked in this JS session,
+ * never show the unlock dialog again — even if React state briefly flickers
+ * during route transitions or layout re-mounts.
+ */
+let sessionUnlockedOnce = false;
+
 // ============================================================================
 // Component
 // ============================================================================
 
+function markSessionUnlocked() {
+  sessionUnlockedOnce = true;
+}
+
 export function VaultLockGuard({ children }: VaultLockGuardProps) {
-  const router = useRouter();
   const { isVaultUnlocked } = useVault();
+
+  // Latch: once unlocked, remember for the rest of this JS session
+  if (isVaultUnlocked && !sessionUnlockedOnce) {
+    markSessionUnlocked();
+  }
   const { user, loading: authLoading } = useAuth();
   const userId = user?.uid ?? null;
   const { beginTask, completeTaskStep, endTask } = useStepProgress();
@@ -52,6 +68,22 @@ export function VaultLockGuard({ children }: VaultLockGuardProps) {
   const vaultStepDoneRef = useRef(false);
   const PROGRESS_SCOPE = "vault-lock-guard";
 
+  useEffect(() => {
+    if (!userId) {
+      setHasVault(null);
+      return;
+    }
+    if (isVaultUnlocked) {
+      setHasVault(true);
+      return;
+    }
+    if (vaultPresenceCache.has(userId)) {
+      setHasVault(vaultPresenceCache.get(userId) ?? null);
+      return;
+    }
+    setHasVault(null);
+  }, [isVaultUnlocked, userId]);
+
   // Redirect unauthenticated users (side-effect outside render)
   useEffect(() => {
     if (authLoading) return;
@@ -59,9 +91,9 @@ export function VaultLockGuard({ children }: VaultLockGuardProps) {
 
     if (typeof window !== "undefined") {
       const currentPath = window.location.pathname;
-      router.push(`/login?redirect=${encodeURIComponent(currentPath)}`);
+      window.location.assign(`/login?redirect=${encodeURIComponent(currentPath)}`);
     }
-  }, [authLoading, router, userId]);
+  }, [authLoading, userId]);
 
   useEffect(() => {
     if (isVaultUnlocked) {
@@ -92,18 +124,21 @@ export function VaultLockGuard({ children }: VaultLockGuardProps) {
 
     async function checkVaultPresence() {
       if (authLoading || !userId || isVaultUnlocked) return;
+      if (vaultPresenceCache.has(userId)) return;
 
       vaultStepDoneRef.current = false;
       setHasVault(null);
       try {
         const exists = await VaultService.checkVault(userId);
         if (!cancelled) {
+          vaultPresenceCache.set(userId, exists);
           setHasVault(exists);
         }
       } catch (error) {
         console.warn("[VaultLockGuard] Failed to check vault existence:", error);
         if (!cancelled) {
           // Fail closed on transient check failures to preserve existing secure behavior.
+          vaultPresenceCache.set(userId, true);
           setHasVault(true);
         }
       }
@@ -126,10 +161,11 @@ export function VaultLockGuard({ children }: VaultLockGuardProps) {
   }, [authLoading, completeTaskStep, endTask, hasVault, isVaultUnlocked, userId]);
 
   // ============================================================================
-  // FAST PATH: If vault is unlocked (in memory), render children immediately
-  // This eliminates flicker on route changes - no state, no effects, just render
+  // FAST PATH: If vault is unlocked (in memory) OR was unlocked earlier in this
+  // session, render children immediately. The latch prevents the dialog from
+  // flashing during route transitions where React state briefly resets.
   // ============================================================================
-  if (isVaultUnlocked) {
+  if (isVaultUnlocked || sessionUnlockedOnce) {
     return <>{children}</>;
   }
 
@@ -164,9 +200,7 @@ export function VaultLockGuard({ children }: VaultLockGuardProps) {
       enableGeneratedDefault
       title="Unlock Vault"
       description="Unlock your Vault to continue."
-      onSuccess={() => {
-        router.refresh();
-      }}
+      onSuccess={() => undefined}
     />
   );
 }

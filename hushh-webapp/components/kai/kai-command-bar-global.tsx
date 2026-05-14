@@ -1,21 +1,102 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { useAuth } from "@/hooks/use-auth";
 import { KaiSearchBar } from "@/components/kai/kai-search-bar";
-import { StockComparisonPreview } from "@/components/kai/cards/stock-comparison-preview";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { usePersonaState } from "@/lib/persona/persona-context";
 import { useKaiSession } from "@/lib/stores/kai-session-store";
 import { CacheService, CACHE_KEYS } from "@/lib/services/cache-service";
-import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
-import { ROUTES } from "@/lib/navigation/routes";
 import { useVault } from "@/lib/vault/vault-context";
 import { getKaiChromeState } from "@/lib/navigation/kai-chrome-state";
-import { WorldModelService } from "@/lib/services/world-model-service";
-import { ApiService, type KaiStockPreviewResponse } from "@/lib/services/api-service";
-import { getKaiActivePickSource } from "@/lib/kai/pick-source-selection";
+import { executeKaiCommand } from "@/lib/kai/command-executor";
+import type { KaiCommandAction } from "@/lib/kai/kai-command-types";
+import { DebateRunManagerService } from "@/lib/services/debate-run-manager";
+import { AppBackgroundTaskService } from "@/lib/services/app-background-task-service";
+import { executeVoiceResponse } from "@/lib/voice/voice-response-executor";
+import { resolveGroundedVoicePlan } from "@/lib/voice/voice-grounding";
+import { useVoiceSession } from "@/lib/voice/voice-session-store";
+import type { GroundedVoicePlan } from "@/lib/voice/voice-grounding";
+import { deriveVoiceRouteScreen } from "@/lib/voice/route-screen-derivation";
+import { isVoiceEligibleRouteScreen } from "@/lib/voice/voice-route-eligibility";
+import { waitForVoiceActionSettlement } from "@/lib/voice/voice-action-settlement";
+import { buildStructuredScreenContext } from "@/lib/voice/screen-context-builder";
+import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
+import { getVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
+import type {
+  AppRuntimeState,
+  VoiceActionResult,
+  VoiceMemoryHint,
+  VoicePlanPayload,
+  VoiceResponse,
+  VoiceToolCall,
+} from "@/lib/voice/voice-types";
+import { ApiService } from "@/lib/services/api-service";
+
+function getNullableString(
+  record: Record<string, unknown>,
+  snakeKey: string,
+  camelKey: string
+): string | null {
+  const value = record[snakeKey] ?? record[camelKey];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function normalizeActionStatus(raw: unknown): VoiceActionResult["status"] | null {
+  if (raw === "succeeded" || raw === "started" || raw === "blocked" || raw === "failed" || raw === "noop") {
+    return raw;
+  }
+  if (raw === "invalid") {
+    return "failed";
+  }
+  return null;
+}
+
+function normalizeSettledBy(raw: unknown): VoiceActionResult["settled_by"] | undefined {
+  if (
+    raw === "none" ||
+    raw === "route" ||
+    raw === "screen" ||
+    raw === "background_start" ||
+    raw === "timeout"
+  ) {
+    return raw;
+  }
+  return undefined;
+}
+
+function normalizeVoiceActionResult(raw: unknown): VoiceActionResult | null {
+  if (!raw || typeof raw !== "object") return null;
+  const envelope = raw as Record<string, unknown>;
+  const candidate =
+    envelope.actionResult && typeof envelope.actionResult === "object"
+      ? (envelope.actionResult as Record<string, unknown>)
+      : envelope;
+  const status = normalizeActionStatus(candidate.status);
+  const resultSummary = getNullableString(candidate, "result_summary", "resultSummary");
+  if (!status || !resultSummary) return null;
+  const data =
+    candidate.data && typeof candidate.data === "object" && !Array.isArray(candidate.data)
+      ? (candidate.data as Record<string, unknown>)
+      : undefined;
+  return {
+    status,
+    action_id: getNullableString(candidate, "action_id", "actionId"),
+    route_before: getNullableString(candidate, "route_before", "routeBefore"),
+    route_after: getNullableString(candidate, "route_after", "routeAfter"),
+    screen_before: getNullableString(candidate, "screen_before", "screenBefore"),
+    screen_after: getNullableString(candidate, "screen_after", "screenAfter"),
+    settled_by: normalizeSettledBy(candidate.settled_by),
+    result_summary: resultSummary,
+    data,
+    error_code: getNullableString(candidate, "error_code", "errorCode"),
+    tool_name: getNullableString(candidate, "tool_name", "toolName"),
+    ticker: getNullableString(candidate, "ticker", "ticker"),
+  };
+}
 
 function toBoolean(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
@@ -48,18 +129,51 @@ function computeAnalyzeEligibilityFromHolding(holding: Record<string, unknown>):
 export function KaiCommandBarGlobal() {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { user, loading } = useAuth();
-  const { isVaultUnlocked, vaultOwnerToken } = useVault();
+  const {
+    activePersona,
+    primaryNavPersona,
+    personaState,
+    personaTransitionTarget,
+    riaSetupAvailable,
+    riaSwitchAvailable,
+    switchPersona,
+  } = usePersonaState();
+  const { isVaultUnlocked, vaultOwnerToken, vaultKey, tokenExpiresAt } = useVault();
+  const handleBack = useCallback(() => {
+    router.back();
+  }, [router]);
   const setAnalysisParams = useKaiSession((s) => s.setAnalysisParams);
   const busyOperations = useKaiSession((s) => s.busyOperations);
+  const analysisParams = useKaiSession((s) => s.analysisParams);
+  const appendVoiceDebugEvent = useVoiceSession((s) => s.appendDebugEvent);
+  const setPendingConfirmation = useVoiceSession((s) => s.setPendingConfirmation);
+  const { lastToolName, lastTicker, setLastVoiceTurn } = useVoiceSession();
   const cache = useMemo(() => CacheService.getInstance(), []);
   const [hasPortfolioData, setHasPortfolioData] = useState(false);
-  const [previewSymbol, setPreviewSymbol] = useState<string | null>(null);
-  const [previewData, setPreviewData] = useState<KaiStockPreviewResponse | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [ttsPlaying, setTtsPlaying] = useState(false);
+  const [backgroundTaskState, setBackgroundTaskState] = useState(() =>
+    AppBackgroundTaskService.getState()
+  );
   const chromeState = useMemo(() => getKaiChromeState(pathname), [pathname]);
   const userId = user?.uid ?? "";
+  const [voiceCapabilityState, setVoiceCapabilityState] = useState<{
+    status: "idle" | "loading" | "ready" | "error";
+    enabled: boolean;
+    reason: string | null;
+  }>({
+    status: "idle",
+    enabled: false,
+    reason: null,
+  });
+
+  useEffect(() => {
+    const unsubscribe = AppBackgroundTaskService.subscribe((state) => {
+      setBackgroundTaskState(state);
+    });
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     if (!user?.uid) {
@@ -90,7 +204,7 @@ export function KaiCommandBarGlobal() {
 
     let cancelled = false;
 
-    const computeHasPortfolio = async () => {
+    const computeHasPortfolio = () => {
       const cachedHasPortfolio = computeHasPortfolioFromCache();
       if (cachedHasPortfolio !== null) {
         if (!cancelled) {
@@ -99,44 +213,22 @@ export function KaiCommandBarGlobal() {
         return;
       }
 
-      if (!isVaultUnlocked || !vaultOwnerToken) {
-        if (!cancelled) {
-          setHasPortfolioData(false);
-        }
-        return;
-      }
-
-      try {
-        const metadata = await WorldModelService.getMetadata(
-          user.uid,
-          false,
-          vaultOwnerToken
-        );
-        if (cancelled) return;
-        const financialDomain = metadata.domains.find((domain) => domain.key === "financial");
-        const hasPortfolioFromMetadata = Boolean(
-          financialDomain && Number(financialDomain.attributeCount || 0) > 0
-        );
-
-        setHasPortfolioData(hasPortfolioFromMetadata);
-      } catch {
-        if (!cancelled) {
-          setHasPortfolioData(false);
-        }
+      if (!cancelled) {
+        setHasPortfolioData(false);
       }
     };
 
-    void computeHasPortfolio();
+    computeHasPortfolio();
     const unsubscribe = cache.subscribe((event) => {
       if (event.type === "set" || event.type === "invalidate" || event.type === "invalidate_user" || event.type === "clear") {
-        void computeHasPortfolio();
+        computeHasPortfolio();
       }
     });
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [cache, isVaultUnlocked, user?.uid, vaultOwnerToken]);
+  }, [cache, user?.uid]);
 
   const reviewScreenActive = Boolean(
     busyOperations["portfolio_review_active"] || busyOperations["portfolio_save"]
@@ -197,50 +289,431 @@ export function KaiCommandBarGlobal() {
     return Array.from(deduped.values());
   }, [cache, user?.uid]);
 
+  const signedIn = Boolean(user?.uid);
+  const tokenAvailable = Boolean(vaultOwnerToken);
+  const tokenValid = Boolean(vaultOwnerToken) && (!tokenExpiresAt || tokenExpiresAt > Date.now());
+  const localVoiceReady = signedIn && isVaultUnlocked && tokenAvailable && tokenValid;
+  const routeQuery = searchParams?.toString() || "";
+  const pathnameWithQuery = routeQuery ? `${pathname || ""}?${routeQuery}` : pathname || "";
+  const routeInfo = useMemo(
+    () => deriveVoiceRouteScreen(pathname || "", routeQuery),
+    [pathname, routeQuery]
+  );
+  const voiceEligibleRoute = isVoiceEligibleRouteScreen(routeInfo.screen, chromeState.hideCommandBar);
+
   useEffect(() => {
-    if (!previewSymbol || !vaultOwnerToken || !userId) {
-      setPreviewData(null);
-      setPreviewLoading(false);
-      setPreviewError(null);
+    if (!voiceEligibleRoute) {
+      setVoiceCapabilityState({
+        status: "idle",
+        enabled: false,
+        reason: null,
+      });
+      return;
+    }
+    if (!localVoiceReady || !userId || !vaultOwnerToken) {
+      setVoiceCapabilityState({
+        status: "idle",
+        enabled: false,
+        reason: null,
+      });
       return;
     }
 
     let cancelled = false;
-    setPreviewLoading(true);
-    setPreviewError(null);
+    setVoiceCapabilityState((current) => ({
+      status: "loading",
+      enabled: current.enabled,
+      reason: current.reason,
+    }));
 
-    void (async () => {
-      try {
-        const payload = await ApiService.getKaiStockPreview({
-          userId,
-          symbol: previewSymbol,
-          vaultOwnerToken,
-          pickSource: getKaiActivePickSource(userId),
+    void ApiService.getKaiVoiceCapabilityJson({
+      userId,
+      vaultOwnerToken,
+    })
+      .then((capability) => {
+        if (cancelled) return;
+        setVoiceCapabilityState({
+          status: "ready",
+          enabled: capability.enabled,
+          reason: capability.reason,
         });
-        if (!cancelled) {
-          setPreviewData(payload);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setPreviewData(null);
-          setPreviewError(
-            error instanceof Error ? error.message : "Failed to load stock preview"
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setPreviewLoading(false);
-        }
-      }
-    })();
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message =
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : "Voice is temporarily unavailable.";
+        setVoiceCapabilityState({
+          status: "error",
+          enabled: false,
+          reason: message,
+        });
+      });
 
     return () => {
       cancelled = true;
     };
-  }, [previewSymbol, userId, vaultOwnerToken]);
+  }, [localVoiceReady, userId, vaultOwnerToken, voiceEligibleRoute]);
 
-  // Command palette is hidden only during loading/review overlays.
-  if (loading || !user || reviewScreenActive || !isVaultUnlocked) {
+  const voiceCapabilityReady = voiceCapabilityState.status === "ready";
+  const voiceCapabilityEnabled = !localVoiceReady ? false : voiceCapabilityState.enabled;
+  const voiceAvailable = localVoiceReady && voiceCapabilityReady && voiceCapabilityEnabled;
+  const voiceVisibilityMode: "enabled" | "disabled" | "hidden" = voiceAvailable
+    ? "enabled"
+    : voiceEligibleRoute
+      ? "disabled"
+      : "hidden";
+  const voiceUnavailableReason = voiceAvailable
+    ? undefined
+    : !signedIn
+      ? "Sign in to use voice"
+      : !isVaultUnlocked || !tokenAvailable || !tokenValid
+        ? "Unlock your vault to use voice"
+        : voiceCapabilityState.status === "loading"
+          ? "Checking voice availability..."
+          : voiceCapabilityState.reason || "Voice is not enabled for this account yet.";
+
+  const activeAnalysisTask = useMemo(() => {
+    if (!userId) return null;
+    return DebateRunManagerService.getActiveTaskForUser(userId);
+  }, [userId]);
+
+  const runningImportTask = useMemo(() => {
+    if (!userId) return null;
+    return (
+      backgroundTaskState.tasks.find(
+        (task) =>
+          task.userId === userId &&
+          task.kind === "portfolio_import_stream" &&
+          task.status === "running" &&
+          !task.dismissedAt
+      ) || null
+    );
+  }, [backgroundTaskState.tasks, userId]);
+
+  const appRuntimeState = useMemo<AppRuntimeState>(
+    () => ({
+      auth: {
+        signed_in: signedIn,
+        user_id: userId || null,
+      },
+      vault: {
+        unlocked: isVaultUnlocked,
+        token_available: tokenAvailable,
+        token_valid: tokenValid,
+      },
+      route: {
+        pathname: pathnameWithQuery,
+        screen: routeInfo.screen,
+        subview: routeInfo.subview ?? null,
+      },
+      runtime: {
+        analysis_active:
+          Boolean(busyOperations["stock_analysis_active"]) ||
+          Boolean(activeAnalysisTask && activeAnalysisTask.status === "running"),
+        analysis_ticker: activeAnalysisTask?.ticker || analysisParams?.ticker || null,
+        analysis_run_id: activeAnalysisTask?.runId || null,
+        import_active:
+          Boolean(busyOperations["portfolio_import_stream"]) || Boolean(runningImportTask),
+        import_run_id: runningImportTask?.taskId || null,
+        busy_operations: Object.keys(busyOperations).filter((name) => busyOperations[name] === true),
+      },
+      portfolio: {
+        has_portfolio_data: hasPortfolioData,
+      },
+      persona: {
+        active: activePersona,
+        primary_nav: primaryNavPersona,
+        available: Array.isArray(personaState?.personas) && personaState.personas.length > 0
+          ? [...personaState.personas]
+          : [activePersona],
+        transition_target: personaTransitionTarget || null,
+        ria_switch_available: riaSwitchAvailable,
+        ria_setup_available: riaSetupAvailable,
+      },
+      voice: {
+        available: voiceAvailable,
+        tts_playing: ttsPlaying,
+        last_tool_name: lastToolName,
+        last_ticker: lastTicker,
+      },
+    }),
+    [
+      activeAnalysisTask,
+      analysisParams?.ticker,
+      busyOperations,
+      hasPortfolioData,
+      isVaultUnlocked,
+      lastTicker,
+      lastToolName,
+      pathnameWithQuery,
+      routeInfo.screen,
+      routeInfo.subview,
+      runningImportTask,
+      activePersona,
+      signedIn,
+      tokenAvailable,
+      tokenValid,
+      ttsPlaying,
+      userId,
+      voiceAvailable,
+      personaState?.personas,
+      personaTransitionTarget,
+      primaryNavPersona,
+      riaSetupAvailable,
+      riaSwitchAvailable,
+    ]
+  );
+
+  const voiceContext = useMemo(
+    () => ({
+      route: pathname,
+      route_query: routeQuery || null,
+      stock_analysis_active: appRuntimeState.runtime.analysis_active,
+      last_tool_name: lastToolName,
+      last_ticker: lastTicker,
+      current_ticker: appRuntimeState.runtime.analysis_ticker || null,
+      has_portfolio_data: hasPortfolioData,
+    }),
+    [
+      appRuntimeState.runtime.analysis_active,
+      appRuntimeState.runtime.analysis_ticker,
+      hasPortfolioData,
+      lastTicker,
+      lastToolName,
+      pathname,
+      routeQuery,
+    ]
+  );
+
+  const appRuntimeStateRef = useRef(appRuntimeState);
+
+  useEffect(() => {
+    appRuntimeStateRef.current = appRuntimeState;
+  }, [appRuntimeState]);
+
+  const runKaiCommand = useCallback(
+    (command: KaiCommandAction, params?: Record<string, unknown>) => {
+      const currentRoute = appRuntimeStateRef.current.route;
+      const result = executeKaiCommand({
+        command,
+        params,
+        router,
+        userId,
+        hasPortfolioData,
+        reviewDirty,
+        busyOperations,
+        setAnalysisParams,
+        currentRoute: currentRoute.pathname,
+        currentScreen: currentRoute.screen,
+      });
+      console.info(
+        `[VOICE_UI] execute_kai_command command=${command} status=${result.status}${result.reason ? ` reason=${result.reason}` : ""}`
+      );
+      return result;
+    },
+    [busyOperations, hasPortfolioData, reviewDirty, router, setAnalysisParams, userId]
+  );
+
+  const finalizeActionSettlement = useCallback(
+    async (args: {
+      turnId?: string | null;
+      actionId?: string | null;
+      planMode: VoicePlanPayload["mode"];
+      groundedPlan?: GroundedVoicePlan;
+      outcome: Awaited<ReturnType<typeof executeVoiceResponse>>;
+      routeBefore: AppRuntimeState["route"];
+    }) => {
+      const normalizedActionResult = normalizeVoiceActionResult(args.outcome);
+      const expectedRoute =
+        normalizedActionResult?.route_after ||
+        args.groundedPlan?.execution.steps.find((step) => step.type === "navigate")?.href ||
+        null;
+      const shouldWaitForSettlement =
+        normalizedActionResult &&
+        (normalizedActionResult.status === "succeeded" ||
+          normalizedActionResult.status === "started") &&
+        (args.planMode === "start_background_and_ack" ||
+          (args.planMode === "execute_and_wait" &&
+            Boolean(expectedRoute || normalizedActionResult.screen_after)));
+
+      let settledActionResult = normalizedActionResult;
+      if (shouldWaitForSettlement && normalizedActionResult) {
+        const settlement = await waitForVoiceActionSettlement({
+          actionId:
+            args.actionId ||
+            normalizedActionResult.action_id ||
+            args.groundedPlan?.actionId ||
+            null,
+          actionStatus: normalizedActionResult.status,
+          mode: args.planMode,
+          routeBefore: args.routeBefore,
+          expectedRoute,
+          expectedScreen: normalizedActionResult.screen_after,
+          getCurrentRoute: () => appRuntimeStateRef.current.route,
+          getCurrentSurfaceMetadata: () => getVoiceSurfaceMetadata(),
+          emitTelemetry: (event, telemetryPayload) => {
+            appendVoiceDebugEvent({
+              turnId: args.turnId || "no_turn",
+              sessionId: null,
+              stage: "dispatch",
+              event,
+              payload: telemetryPayload,
+            });
+          },
+        });
+        settledActionResult = {
+          ...normalizedActionResult,
+          route_after: settlement.route_after ?? normalizedActionResult.route_after,
+          screen_after: settlement.screen_after ?? normalizedActionResult.screen_after,
+          settled_by: settlement.settled_by ?? normalizedActionResult.settled_by,
+          data:
+            normalizedActionResult.data || settlement.data
+              ? {
+                  ...(normalizedActionResult.data || {}),
+                  ...(settlement.data || {}),
+                }
+              : undefined,
+        };
+      }
+
+      if (args.outcome.shortTermMemoryWrite) {
+        setLastVoiceTurn({
+          transcript: args.groundedPlan?.actionId || args.actionId || "palette_action",
+          toolName: args.outcome.toolName ?? settledActionResult?.tool_name ?? null,
+          ticker: args.outcome.ticker ?? settledActionResult?.ticker ?? null,
+          responseKind: args.outcome.responseKind,
+          turnId: args.turnId || null,
+        });
+      }
+
+      return {
+        ...args.outcome,
+        actionResult: settledActionResult || args.outcome.actionResult,
+      };
+    },
+    [appendVoiceDebugEvent, setLastVoiceTurn]
+  );
+
+  const runGatewayAction = useCallback(
+    async (actionId: string, slots?: Record<string, unknown>) => {
+      const action = getKaiActionById(actionId);
+      if (!action) {
+        return;
+      }
+      const routeBefore = appRuntimeStateRef.current.route;
+      const voiceToolCall: VoiceToolCall | null =
+        action.execution_target.status === "wired" && action.execution_target.path === "voice_tool"
+          ? ({
+              tool_name: action.execution_target.target,
+              args: action.execution_target.params || {},
+            } as VoiceToolCall)
+          : action.execution_target.status === "wired" &&
+              action.execution_target.path === "kai_command"
+            ? ({
+                tool_name: "execute_kai_command",
+                args: {
+                  command: action.execution_target.target as KaiCommandAction,
+                  params:
+                    action.execution_target.target === "analyze"
+                      ? {
+                          ...(typeof slots?.symbol === "string"
+                            ? { symbol: slots.symbol.trim().toUpperCase() }
+                            : {}),
+                        }
+                      : (action.execution_target.params as Record<string, unknown> | undefined),
+                },
+              } as VoiceToolCall)
+            : null;
+      const response: VoiceResponse =
+        voiceToolCall
+          ? {
+              kind: "execute",
+              message: `Executing ${action.label}.`,
+              speak: true,
+              tool_call: voiceToolCall,
+            }
+          : {
+              kind: "speak_only",
+              message: `Opening ${action.label}.`,
+              speak: true,
+            };
+
+      const groundedPlan = resolveGroundedVoicePlan({
+        transcript:
+          typeof slots?.symbol === "string"
+            ? `${action.label} ${slots.symbol}`
+            : action.label,
+        response,
+        structuredContext: buildStructuredScreenContext({
+          appRuntimeState: appRuntimeStateRef.current,
+          voiceContext,
+        }),
+        appRuntimeState: appRuntimeStateRef.current,
+        canonicalActionId: actionId,
+        allowCompatibilityFallback: false,
+      });
+
+      const outcome = await executeVoiceResponse({
+        response,
+        groundedPlan,
+        executionAllowed: true,
+        needsConfirmation: false,
+        suppressNotifications: false,
+        currentRoute: routeBefore.pathname,
+        currentScreen: routeBefore.screen,
+        userId,
+        vaultOwnerToken: vaultOwnerToken || undefined,
+        vaultKey: vaultKey || undefined,
+        router,
+        handleBack,
+        switchPersona,
+        executeKaiCommand: (toolCall) =>
+          runKaiCommand(toolCall.args.command, toolCall.args.params),
+        setAnalysisParams,
+        emitTelemetry: (event, telemetryPayload) => {
+          appendVoiceDebugEvent({
+            turnId: "palette_action",
+            sessionId: null,
+            stage: "dispatch",
+            event,
+            payload: telemetryPayload,
+          });
+        },
+        setPendingConfirmation,
+        getCurrentRoute: () => appRuntimeStateRef.current.route,
+        getCurrentSurfaceMetadata: () => getVoiceSurfaceMetadata(),
+        activePersona,
+      });
+
+      await finalizeActionSettlement({
+        turnId: "palette_action",
+        actionId,
+        planMode: "execute_and_wait",
+        groundedPlan,
+        outcome,
+        routeBefore,
+      });
+    },
+    [
+      activePersona,
+      appendVoiceDebugEvent,
+      finalizeActionSettlement,
+      handleBack,
+      router,
+      runKaiCommand,
+      setAnalysisParams,
+      setPendingConfirmation,
+      switchPersona,
+      userId,
+      vaultKey,
+      vaultOwnerToken,
+      voiceContext,
+    ]
+  );
+
+  if (loading || !user || reviewScreenActive) {
     return null;
   }
 
@@ -248,104 +721,77 @@ export function KaiCommandBarGlobal() {
     return null;
   }
 
-  const openFullAnalysisForSymbol = (symbol: string) => {
-    setPreviewSymbol(null);
-    router.push(`${ROUTES.KAI_ANALYSIS}?ticker=${encodeURIComponent(symbol)}`);
-  };
-
-  const startDebateForSymbol = (symbol: string) => {
-    setPreviewSymbol(null);
-    setAnalysisParams({
-      ticker: symbol,
-      userId,
-      riskProfile: "balanced",
-    });
-    router.push(`${ROUTES.KAI_ANALYSIS}?ticker=${encodeURIComponent(symbol)}`);
-  };
-
   return (
-    <>
-      <KaiSearchBar
-        onCommand={(command, params) => {
-          if (
-            reviewDirty &&
-            !window.confirm(
-              "You have unsaved portfolio changes. Leaving now will discard them."
-            )
-          ) {
-            return;
-          }
-
-          if (
-            !hasPortfolioData &&
-            (command === "analyze" || command === "history")
-          ) {
-            toast.info("Import your portfolio to unlock this command.");
-            router.push(ROUTES.KAI_IMPORT);
-            return;
-          }
-
-          if (command === "analyze" && params?.symbol) {
-            if (busyOperations["stock_analysis_active"]) {
-              toast.error("A debate is already running.", {
-                description: "Open analysis to continue with the active run.",
-              });
-              router.push(ROUTES.KAI_ANALYSIS);
-              return;
-            }
-            setPreviewSymbol(String(params.symbol).toUpperCase());
-            return;
-          }
-
-          if (command === "optimize") {
-            toast.info("Optimize Portfolio is coming soon.");
-            return;
-          }
-
-          if (command === "history") {
-            router.push(ROUTES.KAI_ANALYSIS);
-            return;
-          }
-
-          if (command === "dashboard") {
-            router.push(ROUTES.KAI_DASHBOARD);
-            return;
-          }
-
-          if (command === "home") {
-            router.push(ROUTES.KAI_HOME);
-            return;
-          }
-
-          if (command === "consent") {
-            router.push(ROUTES.CONSENTS);
-            return;
-          }
-
-          if (command === "profile") {
-            router.push(ROUTES.PROFILE);
-          }
-        }}
-        hasPortfolioData={hasPortfolioData}
-        portfolioTickers={portfolioTickers}
-      />
-
-      <Dialog open={Boolean(previewSymbol)} onOpenChange={(open) => !open && setPreviewSymbol(null)}>
-        <DialogContent className="w-[calc(100vw-1rem)] max-w-3xl overflow-y-auto p-0">
-          <DialogTitle className="sr-only">Stock comparison preview</DialogTitle>
-          <div className="p-1">
-            <StockComparisonPreview
-              preview={previewData}
-              loading={previewLoading}
-              error={previewError}
-              onStartDebate={() => previewSymbol && startDebateForSymbol(previewSymbol)}
-              onOpenFullAnalysis={() =>
-                previewSymbol && openFullAnalysisForSymbol(previewSymbol)
-              }
-            />
-          </div>
-        </DialogContent>
-      </Dialog>
-    </>
+    <KaiSearchBar
+      onSelectAction={(selection) => {
+        void runGatewayAction(selection.actionId, selection.slots);
+      }}
+      onVoiceResponse={async (payload: {
+        turnId: string;
+        responseId: string;
+        transcript: string;
+        response: VoiceResponse;
+        plan: VoicePlanPayload;
+        groundedPlan?: GroundedVoicePlan;
+        memory?: VoiceMemoryHint;
+        executionAllowed?: boolean;
+        needsConfirmation?: boolean;
+      }) => {
+        const routeBefore = appRuntimeStateRef.current.route;
+        const outcome = await executeVoiceResponse({
+          response: payload.response,
+          groundedPlan: payload.groundedPlan,
+          executionAllowed: payload.executionAllowed,
+          needsConfirmation: payload.needsConfirmation,
+          suppressNotifications: true,
+          turnId: payload.turnId,
+          responseId: payload.responseId,
+          currentRoute: routeBefore.pathname,
+          currentScreen: routeBefore.screen,
+          userId,
+          vaultOwnerToken: vaultOwnerToken || undefined,
+          vaultKey: vaultKey || undefined,
+          router,
+          handleBack,
+          switchPersona,
+          executeKaiCommand: (toolCall) =>
+            runKaiCommand(
+              toolCall.args.command,
+              toolCall.args.params
+            ),
+          setAnalysisParams,
+          emitTelemetry: (event, telemetryPayload) => {
+            appendVoiceDebugEvent({
+              turnId: payload.turnId || "no_turn",
+              sessionId: null,
+              stage: "dispatch",
+              event,
+              payload: telemetryPayload,
+            });
+          },
+          setPendingConfirmation,
+          getCurrentRoute: () => appRuntimeStateRef.current.route,
+          getCurrentSurfaceMetadata: () => getVoiceSurfaceMetadata(),
+          activePersona,
+        });
+        return finalizeActionSettlement({
+          turnId: payload.turnId,
+          actionId: payload.plan.action_id || payload.groundedPlan?.actionId || null,
+          planMode: payload.plan.mode,
+          groundedPlan: payload.groundedPlan,
+          outcome,
+          routeBefore,
+        });
+      }}
+      userId={userId}
+      vaultOwnerToken={vaultOwnerToken || undefined}
+      voiceAvailable={voiceAvailable}
+      voiceVisibilityMode={voiceVisibilityMode}
+      voiceUnavailableReason={voiceUnavailableReason}
+      onTtsPlayingChange={setTtsPlaying}
+      appRuntimeState={appRuntimeState}
+      voiceContext={voiceContext}
+      portfolioTickers={portfolioTickers}
+    />
   );
 }

@@ -4,7 +4,10 @@ import { useMemo } from "react";
 import { TrendingUpDown } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, XAxis, YAxis } from "recharts";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/lib/morphy-ux/card";
+import {
+  ChartSurfaceCard,
+  SurfaceInset,
+} from "@/components/app-ui/surfaces";
 import {
   ChartContainer,
   ChartTooltip,
@@ -59,14 +62,17 @@ export function GainLossDistributionChart({
   }
 
   return (
-    <Card variant="none" effect="glass" className={className}>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
+    <ChartSurfaceCard
+      title={
+        <span className="flex items-center gap-2">
           <TrendingUpDown className="h-4 w-4 text-primary" />
           Gain/Loss Distribution
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="pt-0 min-w-0 overflow-hidden">
+        </span>
+      }
+      className={className}
+      contentClassName="space-y-0"
+    >
+      <SurfaceInset className="min-w-0 overflow-hidden">
         <ChartContainer config={chartConfig} className="h-[192px] w-full min-w-0">
           <BarChart data={chartData} margin={{ top: 22, right: 6, left: 0, bottom: 0 }}>
             <CartesianGrid
@@ -126,7 +132,7 @@ export function GainLossDistributionChart({
             </Bar>
           </BarChart>
         </ChartContainer>
-      </CardContent>
-    </Card>
+      </SurfaceInset>
+    </ChartSurfaceCard>
   );
 }

@@ -1,6 +1,11 @@
 "use client";
 
 import { Preferences } from "@capacitor/preferences";
+import {
+  getLocalItem,
+  removeLocalItem,
+  setLocalItem,
+} from "@/lib/utils/session-storage";
 
 const KEY_PREFIX = "kai_nav_tour_v1";
 const VERSION = 1 as const;
@@ -67,13 +72,11 @@ async function persist(userId: string, state: KaiNavTourLocalState): Promise<voi
       key: keyForUser(userId),
       value: serialized,
     });
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(fallbackKeyForUser(userId), serialized);
-    }
+    setLocalItem(fallbackKeyForUser(userId), serialized);
     return;
   } catch (error) {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(fallbackKeyForUser(userId), serialized);
+      setLocalItem(fallbackKeyForUser(userId), serialized);
       return;
     }
     throw error;
@@ -92,7 +95,7 @@ export class KaiNavTourLocalService {
 
     if (typeof window !== "undefined") {
       try {
-        const fallback = window.localStorage.getItem(fallbackKeyForUser(userId));
+        const fallback = getLocalItem(fallbackKeyForUser(userId));
         if (!fallback) return null;
         return normalizeState(JSON.parse(fallback));
       } catch {
@@ -154,9 +157,7 @@ export class KaiNavTourLocalService {
     try {
       await Preferences.remove({ key: keyForUser(userId) });
     } finally {
-      if (typeof window !== "undefined") {
-        window.localStorage.removeItem(fallbackKeyForUser(userId));
-      }
+      removeLocalItem(fallbackKeyForUser(userId));
     }
   }
 }

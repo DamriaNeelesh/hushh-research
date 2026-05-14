@@ -1,5 +1,10 @@
 # Rollout and Environments
 
+
+## Visual Context
+
+Canonical visual owner: [IAM Reference](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
 ## Purpose
 
 Define environment policy for IAM changes without risking production behavior.
@@ -9,7 +14,7 @@ Define environment policy for IAM changes without risking production behavior.
 | Environment | Purpose | IAM Change Policy |
 | --- | --- | --- |
 | local | Developer iteration and contract validation | Local-only tests; no production resources |
-| uat | Integration validation for actor flows and verification gates | Environment-owned deployment lane (`deploy_uat`) |
+| uat | Integration validation for actor flows and verification gates | Auto-deploy from the latest green `main` SHA |
 | production | Live user traffic | No IAM contract change without explicit promotion gate |
 
 ## Promotion Rules
@@ -19,8 +24,8 @@ Define environment policy for IAM changes without risking production behavior.
 3. Production promotion requires explicit approval and rollback plan.
 4. Runtime behavior is environment-owned (`ENVIRONMENT` and `NEXT_PUBLIC_APP_ENV`), not RIA feature-flag-driven.
 5. IAM table activation requires explicit migration gate:
-   `python db/migrate.py --iam` and `python scripts/verify_iam_schema.py`.
-6. Any UAT-backed local runtime (`local-uatdb`) must fail fast on IAM verification before starting the backend or full stack.
+   `python db/migrate.py --iam` and `python db/verify/verify_iam_schema.py`.
+6. Any UAT-backed local runtime (`local`) must fail fast on IAM verification before starting the backend or full stack.
 
 ## Branch and CI Rules
 

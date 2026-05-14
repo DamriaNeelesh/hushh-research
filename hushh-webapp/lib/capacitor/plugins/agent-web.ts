@@ -1,5 +1,5 @@
 /**
- * Hushh Local Agent - Web Implementation
+ * Hussh Local Agent - Web Implementation
  * 
  * DEV: Routes to remote API by default (useRemoteLLM: true).
  * When set to local, uses on-device intent classification and agents.
@@ -52,7 +52,7 @@ export class HushhAgentWeb implements HushhAgentPlugin {
     }
     
     return {
-      response: `👋 Hi! I can help with investment analysis (Kai) and world-model domains. What would you like to do?`,
+      response: `👋 Hi! I can help with investment analysis (Kai) and PKM domains. What would you like to do?`,
       isComplete: false,
       needsConsent: false,
     };

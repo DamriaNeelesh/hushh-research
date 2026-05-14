@@ -58,7 +58,7 @@ export function MoversTabs({ movers }: MoversTabsProps) {
   }, [movers, tab]);
 
   return (
-    <Card variant="none" effect="glass" className="rounded-xl p-0">
+    <Card variant="none" effect="glass" preset="compact">
       <CardContent className="space-y-3 p-4">
         <p className="text-sm font-black tracking-tight">Market Movers</p>
 

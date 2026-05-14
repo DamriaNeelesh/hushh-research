@@ -1,5 +1,10 @@
 # Production DB Backup and Recovery (Supabase, Cost-Optimized)
 
+
+## Visual Context
+
+Canonical visual owner: [Operations Index](README.md). Use that map for the top-down system view; this page is the narrower detail beneath it.
+
 This runbook defines production recovery readiness with daily logical backups
 instead of PITR-gated deployment.
 
@@ -33,7 +38,8 @@ Scope:
 
 3. Migration governance gate before production backend deploy:
 - enforces monotonic numbered migration files in `consent-protocol/db/migrations`
-- enforces contract version alignment with `consent-protocol/db/schema_contract/prod_core_schema.json`
+- enforces the production-pinned contract in `consent-protocol/db/contracts/prod_core_schema.json`
+- allows the local repo to be ahead of production while production remains pinned to its approved migration floor
 - runs read-only live schema drift checks for production-critical tables/columns
 
 4. Release evidence artifact:
@@ -113,8 +119,19 @@ Note: the freshness checker uses `google-cloud-storage` and requires ADC-capable
 Migration guard (read-only):
 
 ```bash
-python3 scripts/ops/db_migration_release_guard.py \
-  --report-path /tmp/db-migration-guard-report.json
+./bin/hushh db report-prod-posture
+```
+
+UAT uses a different contract because it is the latest integration lane:
+
+```bash
+./bin/hushh db verify-uat-schema
+```
+
+Local contract alignment check:
+
+```bash
+./bin/hushh db verify-release-contract
 ```
 
 Generate release manifest:
@@ -137,8 +154,8 @@ Weekly integrity verification:
 Monthly restore drill:
 1. Restore latest logical dump into isolated non-prod Postgres/Supabase target.
 2. Run sanity checks:
-- key table counts (`consent_audit`, `vault_keys`, `world_model_data`, `world_model_index_v2`, `kai_market_cache_entries`, `tickers`)
-- coherence checks (world-model data/index integrity)
+- key table counts (`consent_audit`, `vault_keys`, `pkm_index`, `pkm_blobs`, `kai_market_cache_entries`, `tickers`)
+- coherence checks (PKM blob/index integrity)
 3. Record:
 - drill start/end time
 - observed restore duration (RTO)

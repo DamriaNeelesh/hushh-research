@@ -1,56 +1,139 @@
-# Contributing
+# Contributing to Hussh Research
 
-This file is a repo-root contribution entrypoint. Detailed workflow rules live in the canonical docs tree.
+Thanks for building with us.
 
-## Non-Negotiable Engineering Rules
-
-- Tri-flow: cross-boundary product features must stay aligned across web, iOS, and Android.
-- Consent-first: do not add hidden bypasses around token-gated access paths.
-- BYOK: private user data stays encrypted client-side; the server should not depend on plaintext user secrets.
-- Canonical docs: update the maintained docs and verification artifacts when contracts change.
-
-## Read Before Changing Code
-
-- feature workflow: [`docs/guides/new-feature.md`](./docs/guides/new-feature.md)
-- subtree workflow for `consent-protocol/`: [`docs/guides/subtree-sync.md`](./docs/guides/subtree-sync.md)
-- architecture and runtime map: [`docs/reference/architecture/architecture.md`](./docs/reference/architecture/architecture.md)
-- route governance and tri-flow contracts: [`docs/reference/architecture/route-contracts.md`](./docs/reference/architecture/route-contracts.md)
-- branch policy and release lanes: [`docs/reference/operations/branch-governance.md`](./docs/reference/operations/branch-governance.md)
-- CI policy: [`docs/reference/operations/ci.md`](./docs/reference/operations/ci.md)
-- coding-agent MCP tooling: [`docs/reference/operations/coding-agent-mcp.md`](./docs/reference/operations/coding-agent-mcp.md)
-- profile/settings design language: [`docs/reference/quality/profile-settings-design-system.md`](./docs/reference/quality/profile-settings-design-system.md)
-- package docs:
-  - backend: [`consent-protocol/docs/README.md`](./consent-protocol/docs/README.md)
-  - frontend/native: [`hushh-webapp/docs/README.md`](./hushh-webapp/docs/README.md)
-
-## Local Contributor Bootstrap
+The public contributor model is intentionally small:
 
 ```bash
-make setup
-make verify-setup
-./scripts/test-ci-local.sh
+git clone https://github.com/hushh-labs/hushh-research.git
+cd hushh-research
+./bin/hushh bootstrap
+./bin/hushh terminal backend --mode local --reload
+./bin/hushh web
 ```
 
-## Subtree Workflow Summary
+If you can run that flow and understand the trust model below, you have enough context to contribute.
 
-If you touch `consent-protocol/`, treat the subtree sync flow as part of the change:
+Choose the narrowest lane that matches the work:
 
-- sync before backend work: `make sync-protocol`
-- keep hooks healthy: `make verify-setup`
-- push back upstream after merge when appropriate: `make push-protocol`
+- app contributor: stay in the monorepo root and use `./bin/hushh web` with `./bin/hushh terminal backend --mode local --reload`
+- backend contributor: stay in the monorepo root and use `./bin/hushh terminal backend --mode local --reload`
+- standalone backend contributor: use the aligned path in [consent-protocol/README.md](./consent-protocol/README.md)
+- maintainer/operator: use [docs/reference/operations/README.md](./docs/reference/operations/README.md)
 
-## Contribution Rules
+## The Product Contract
 
-- Branch from `main` and target pull requests back to `main`.
-- Keep `deploy_uat` and `deploy` as release lanes that are promoted from `main`, not feature-development branches.
-- Keep runtime truth in canonical docs, not root markdown.
-- Maintain web, iOS, and Android parity for tri-flow features.
-- Treat consent boundaries and world-model contracts as hard constraints.
-- Do not introduce new routes, env vars, or runtime surfaces without updating their canonical references and verification gates.
+Hussh is built around four invariants:
 
-## Pull Request Expectations
+1. **Consent + scoped access**
+   - sensitive access is never implicit
+   - scope defines what an agent or app may do
+   - auditability matters as much as capability
+2. **BYOK**
+   - the user holds the key boundary
+   - vault keys do not become ordinary backend runtime state
+3. **Zero-knowledge**
+   - the server stores ciphertext and metadata, not plaintext user memory
+4. **Tri-flow**
+   - web, iOS, and Android stay contract-aligned for shared product capabilities
 
-- explain what changed and why
-- note any route, plugin, or contract surface changes
-- mention local verification you ran
-- include screenshots or recordings for user-facing UI changes when useful
+## Public Contributor Commands
+
+Use these first:
+
+```bash
+./bin/hushh bootstrap
+./bin/hushh doctor --mode local
+./bin/hushh web
+./bin/hushh web --mode uat
+./bin/hushh native ios --mode uat
+./bin/hushh native android --mode uat
+```
+
+`./bin/hushh web` defaults to `local`. Use `--mode uat` only when you explicitly want the local frontend against the deployed UAT backend.
+`./bin/hushh bootstrap` also defaults to `local`.
+
+Repo-level workflows should go through `./bin/hushh`. Do not teach alternate root task surfaces in contributor docs.
+
+The only setup truth surfaces are:
+
+- `./bin/hushh bootstrap`
+- `./bin/hushh doctor --mode <mode>`
+
+## Contributor Contract
+
+- First-party code in this repo is Apache-2.0.
+- Every PR commit must be signed off with `git commit -s`.
+- `uv` is the canonical Python toolchain for `consent-protocol`.
+- `consent-protocol/requirements*.txt` remain generated runtime artifacts only; do not teach them as the install path.
+- release migrations are authoritative only from `consent-protocol/db/migrations` + `consent-protocol/db/release_migration_manifest.json`
+
+If you want a zero-setup editor path, use `.devcontainer/devcontainer.json`.
+
+## Branch and Release Model
+
+- All feature and fix work targets `main`.
+- UAT deploys automatically from the exact green `main` SHA.
+- Production deploys manually from an approved green `main` SHA.
+- There are no contributor-facing release branches.
+
+See [docs/reference/operations/branch-governance.md](./docs/reference/operations/branch-governance.md) for the canonical delivery rules.
+
+## Docs You Actually Need
+
+- [README.md](./README.md)
+- [docs/guides/getting-started.md](./docs/guides/getting-started.md)
+- [docs/guides/environment-model.md](./docs/guides/environment-model.md)
+- [docs/reference/architecture/architecture.md](./docs/reference/architecture/architecture.md)
+
+Everything else is either deeper reference or maintainer/operator material.
+
+## Maintainer-Only Complexity
+
+The repo still contains maintainer concerns such as:
+
+- subtree synchronization for `consent-protocol/`
+- release/migration governance
+- deep operator scripts
+
+Those are real, but they are not part of the normal first-PR path. If you need them, use the maintainer docs under `docs/reference/operations/`.
+
+## PR Expectations
+
+- keep changes small and explainable
+- update docs when public behavior or contracts change
+- do not add a second setup path when the existing one can be simplified instead
+- prefer self-contained scripts and small modules over coupled one-off flows
+- run the local verification surface before pushing when your change affects docs, routes, CI, native parity, or backend contracts
+
+Common checks:
+
+```bash
+./bin/hushh codex pre-pr
+./bin/hushh docs verify
+cd hushh-webapp && npm run verify:docs
+```
+
+Commit signoff:
+
+```bash
+git commit -s
+```
+
+## Naming Policy
+
+Public product/docs language should use **Hussh**.
+
+Selective Secure / Scoped / Handled-by-the-user framing is fine when it clarifies the trust boundary, but it should stay explanatory rather than replacing the product name.
+
+Legacy `Hussh` identifiers may still exist in:
+
+- repo and package names
+- bundle IDs
+- cloud services
+- env keys
+- native plugin/class names
+
+Treat those as compatibility details, not public branding.
+
+See [docs/reference/operations/naming-policy.md](./docs/reference/operations/naming-policy.md) for the current rename boundary.
