@@ -1505,7 +1505,13 @@ function ProfilePageContent() {
         "[ProfilePage] Failed to update marketplace opt-in:",
         error,
       );
-      toast.error("Couldn't update marketplace visibility.");
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Please try again after refreshing this page.";
+      toast.error("Couldn't update marketplace visibility.", {
+        description: message,
+      });
     } finally {
       setSavingMarketplaceOptIn(false);
     }

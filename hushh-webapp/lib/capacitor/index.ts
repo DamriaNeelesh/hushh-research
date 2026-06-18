@@ -772,6 +772,7 @@ export type HushhLocationPermissionState = {
 
 export interface HushhLocationPlugin {
   getPermissionState(): Promise<HushhLocationPermissionState>;
+  openLocationSettings?(): Promise<{ opened: boolean }>;
   getCurrentPosition(options?: {
     enableHighAccuracy?: boolean;
     timeoutMs?: number;
@@ -799,6 +800,7 @@ export type HushhContactRecord = {
   id?: string | null;
   displayName?: string | null;
   phoneNumbers: string[];
+  emailAddresses?: string[];
 };
 
 export interface HushhContactsPlugin {
