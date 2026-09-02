@@ -12,9 +12,9 @@ export const LOCATION_SUGGESTION_CHIPS: SuggestionChip[] = [
   { label: "Who can see me?", mode: "send", value: "Who can see me right now?" },
   { label: "Stop sharing with…", mode: "prefill", value: "Stop sharing with " },
   {
-    label: "Request location",
+    label: "Ask for location",
     mode: "prefill",
-    value: "Request location from ",
+    value: "Ask for location from ",
   },
   {
     label: "Deny a request",

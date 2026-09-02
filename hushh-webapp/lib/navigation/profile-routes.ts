@@ -52,8 +52,9 @@ const TRANSIENT_PROFILE_QUERY_KEYS = [
   "from",
 ] as const;
 
-
-export function normalizeProfilePanel(value: string | null): ProfilePanel | null {
+export function normalizeProfilePanel(
+  value: string | null,
+): ProfilePanel | null {
   if (
     value === "account" ||
     value === "my-data" ||
@@ -70,7 +71,9 @@ export function normalizeProfilePanel(value: string | null): ProfilePanel | null
   return null;
 }
 
-function normalizeSupportMessageKind(value: string | null): SupportMessageKind | null {
+function normalizeSupportMessageKind(
+  value: string | null,
+): SupportMessageKind | null {
   if (
     value === "bug_report" ||
     value === "support_request" ||
@@ -206,16 +209,32 @@ export function buildProfileRoute(params?: {
 
   if (panel === "preferences") {
     if (detail === "kai-preferences") {
-      return appendQuery(ROUTES.PROFILE_PREFERENCES_KAI, {}, params?.searchParams);
+      return appendQuery(
+        ROUTES.PROFILE_PREFERENCES_KAI,
+        {},
+        params?.searchParams,
+      );
     }
     if (detail === "gemini") {
-      return appendQuery(ROUTES.PROFILE_PREFERENCES_GEMINI, {}, params?.searchParams);
+      return appendQuery(
+        ROUTES.PROFILE_PREFERENCES_GEMINI,
+        {},
+        params?.searchParams,
+      );
     }
     if (detail === "device") {
-      return appendQuery(ROUTES.PROFILE_PREFERENCES_DEVICE, {}, params?.searchParams);
+      return appendQuery(
+        ROUTES.PROFILE_PREFERENCES_DEVICE,
+        {},
+        params?.searchParams,
+      );
     }
     if (detail === "voice") {
-      return appendQuery(ROUTES.PROFILE_PREFERENCES_VOICE, {}, params?.searchParams);
+      return appendQuery(
+        ROUTES.PROFILE_PREFERENCES_VOICE,
+        {},
+        params?.searchParams,
+      );
     }
     if (detail === "voice-changelog") {
       return appendQuery(
@@ -236,10 +255,18 @@ export function buildProfileRoute(params?: {
 
   if (panel === "security") {
     if (detail === "vault") {
-      return appendQuery(ROUTES.PROFILE_SECURITY_VAULT, {}, params?.searchParams);
+      return appendQuery(
+        ROUTES.PROFILE_SECURITY_VAULT,
+        {},
+        params?.searchParams,
+      );
     }
     if (detail === "session") {
-      return appendQuery(ROUTES.PROFILE_SECURITY_SESSION, {}, params?.searchParams);
+      return appendQuery(
+        ROUTES.PROFILE_SECURITY_SESSION,
+        {},
+        params?.searchParams,
+      );
     }
     return appendQuery(ROUTES.PROFILE_SECURITY, {}, params?.searchParams);
   }
@@ -267,7 +294,11 @@ export function buildProfileRoute(params?: {
   }
 
   if (panel === "connected-systems") {
-    return appendQuery(ROUTES.PROFILE_CONNECTED_SYSTEMS, {}, params?.searchParams);
+    return appendQuery(
+      ROUTES.PROFILE_CONNECTED_SYSTEMS,
+      {},
+      params?.searchParams,
+    );
   }
 
   if (panel === "gmail") {
@@ -280,11 +311,11 @@ export function buildProfileRoute(params?: {
 
   if (panel === "support") {
     if (detail === "support-routing") {
-      return appendQuery(ROUTES.PROFILE_SUPPORT_ROUTING, {}, params?.searchParams);
+      return appendQuery(ROUTES.PROFILE_SUPPORT, {}, params?.searchParams);
     }
     if (detail?.startsWith("support-compose:")) {
       return appendQuery(
-        ROUTES.PROFILE_SUPPORT_COMPOSE,
+        ROUTES.PROFILE_SUPPORT,
         { kind: detail.slice("support-compose:".length) },
         params?.searchParams,
       );

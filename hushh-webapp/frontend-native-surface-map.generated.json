@@ -4255,6 +4255,59 @@
       "thread_and_consent_contract": null
     },
     {
+      "route": "/one/location/check-in/hotel",
+      "page_file": "app/one/location/check-in/hotel/page.tsx",
+      "physical_page_exists": true,
+      "route_contract": {
+        "mode": "hidden",
+        "exemption_reason": null,
+        "shell_verification_file": null,
+        "shell_verification_includes": [],
+        "interaction_layer_policy": {
+          "allowed_families": []
+        },
+        "voice_playbook": {
+          "playbook_id": "route.one.location.check-in.hotel",
+          "purpose": "Fail closed unless a supported hotel stay is explicitly eligible for online check-in.",
+          "screen": "one_location_check_in",
+          "entry_cue": "",
+          "proactivity": "ambient",
+          "primary_action_id": null,
+          "happy_path_action_ids": [],
+          "required_inputs": [],
+          "recoveries": {
+            "blocked": "Return to nearby check-in without exposing unsupported stay details.",
+            "cancelled": "Return to nearby check-in.",
+            "failed": "Keep hotel check-in unavailable unless eligibility is verified.",
+            "timeout": "Keep hotel check-in unavailable unless eligibility is verified.",
+            "callback_error": "Return to nearby check-in.",
+            "route_mismatch": "Use the verified current route."
+          },
+          "completion_boundary": "No hotel check-in completes until a real provider verifies an opaque eligible stay.",
+          "next_route": "/one/location/check-in",
+          "return_policy": "return_to_hub",
+          "out_of_scope_behavior": "Answer naturally without inventing a hotel check-in control."
+        }
+      },
+      "native": {
+        "route": "/one/location/check-in/hotel",
+        "classification": "excluded-web-only",
+        "reason": "Fail-closed hotel partner route. It remains invisible until a supported stay provider exists."
+      },
+      "shell": {
+        "app_page_shell": false,
+        "page_header": false,
+        "settings_ui": false,
+        "shared_loader": false,
+        "back_button_pattern": "shared-shell"
+      },
+      "voice_action_contract_file": null,
+      "voice_action_contract_ids": [],
+      "api_dependencies": [],
+      "native_plugin_dependencies": [],
+      "thread_and_consent_contract": null
+    },
+    {
       "route": "/one/location/invite/[token]",
       "page_file": "app/one/location/invite/[token]/page.tsx",
       "physical_page_exists": true,
@@ -9170,5 +9223,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "84159309469abf98274ff381a7c670c6f35f31509c7374ef66e0840804c6bbe3"
+  "content_sha256": "1bab638cdbd131a6fe529f749992107593add02f1c7a45d539bb09929a63a052"
 }

@@ -79,7 +79,8 @@ export function TopShellTabs({
   const tabWidth = `${100 / tabSet.tabs.length}%`;
   const tabSwipeState = useTopShellTabSwipeState(tabSet.id);
   const indicatorTransform = `translate3d(calc(var(${topShellTabSwipePositionVariable(tabSet.id)}, ${activeIndex}) * 100%), 0, 0)`;
-  const isLocationTabs = tabSet.id === "location";
+  const usesModuleSegmentedTabs =
+    tabSet.id === "location" || tabSet.id === "connect";
   const shouldResetScrollOnSelection = tabSet.id === "finance";
 
   const textRefs = useRef<Array<HTMLSpanElement | null>>([]);
@@ -167,7 +168,7 @@ export function TopShellTabs({
     <div
       className={cn(
         "top-shell-ambient-ink relative flex h-[var(--top-tabs-h)] w-full items-center text-current",
-        isLocationTabs && "justify-center",
+        usesModuleSegmentedTabs && "justify-center",
       )}
       data-ui-role="agent-tab-bar"
       data-top-shell-tab-set={tabSet.id}
@@ -181,7 +182,7 @@ export function TopShellTabs({
         aria-label={`${tabSet.label} navigation`}
         className={cn(
           "relative flex",
-          isLocationTabs
+          usesModuleSegmentedTabs
             ? // Same edges as the cards under it, at every width.
               //
               // This carried `mx-5` on top of the frame's own
@@ -193,10 +194,11 @@ export function TopShellTabs({
               //
               // The cap is now the page column's own content width, so the two
               // cannot drift apart again. Both tokens already exist. Scoped to
-              // Location by the `isLocationTabs` branch above — the other four
+              // Location and Connect by the module branch above — the other
               // tab sets take the underline arm and do not move. Do NOT
-              // generalise this: the RIA workspace runs a 96rem shell, and an
-              // 880px cap would leave its strip ~600px short per side.
+              // generalise this past module hubs: the RIA workspace runs a
+              // 96rem shell, and an 880px cap would leave its strip ~600px
+              // short per side.
               "h-9 w-full max-w-[calc(var(--app-shell-agent)-2*var(--page-inline-gutter-standard))] rounded-[10px] bg-[color:var(--app-neutral-fill)] p-0.5"
             : "h-full w-full",
         )}
@@ -249,9 +251,9 @@ export function TopShellTabs({
                 data-ui-role="agent-tab-label"
                 className={cn(
                   "ui-text-agent-tab-label relative truncate transition-colors duration-150",
-                  isLocationTabs
+                  usesModuleSegmentedTabs
                     ? isActive
-                      ? "font-semibold text-[color:var(--app-label)]"
+                      ? "font-semibold text-[color:var(--app-accent)]"
                       : "font-medium text-[color:var(--app-secondary-label)] hover:text-[color:var(--app-label)]"
                     : isActive
                       ? "text-[color:var(--app-accent)]"
@@ -269,7 +271,7 @@ export function TopShellTabs({
             data-testid="top-shell-tab-indicator"
             className={cn(
               "pointer-events-none absolute left-0 flex justify-center motion-reduce:transition-none",
-              isLocationTabs
+              usesModuleSegmentedTabs
                 ? "inset-y-0.5 z-0"
                 : "bottom-0 z-20",
               // While the pager owns the variable -- a finger on it, or a
@@ -288,12 +290,12 @@ export function TopShellTabs({
             <span
               className={cn(
                 "transition-[width] duration-150",
-                isLocationTabs
+                usesModuleSegmentedTabs
                   ? "h-full w-[calc(100%-4px)] rounded-[8px] bg-[color:var(--app-card-surface-default-solid)] shadow-[0_1px_2px_rgba(0,0,0,0.10)]"
                   : "h-[3px] rounded-full bg-[var(--app-accent)]",
               )}
               style={{
-                width: isLocationTabs
+                width: usesModuleSegmentedTabs
                   ? undefined
                   : activeTextWidth
                     ? `${Math.max(28, activeTextWidth)}px`

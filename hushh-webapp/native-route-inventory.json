@@ -1,8 +1,8 @@
 {
   "generated_at": "2026-08-27",
-  "total_routes": 118,
+  "total_routes": 119,
   "native_required_routes": 103,
-  "excluded_routes": 10,
+  "excluded_routes": 11,
   "routes": [
     {
       "route": "/",
@@ -626,6 +626,11 @@
         "empty-valid",
         "unavailable-valid"
       ]
+    },
+    {
+      "route": "/one/location/check-in/hotel",
+      "classification": "excluded-web-only",
+      "reason": "Fail-closed hotel partner route. It remains invisible until a supported stay provider exists."
     },
     {
       "route": "/one/location/map",

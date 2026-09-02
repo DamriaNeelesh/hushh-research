@@ -18,11 +18,11 @@ import {
 
 import {
   AppPageContentRegion,
-  AppPageHeaderRegion,
   AppPageShell,
 } from "@/components/app-ui/app-page-shell";
 import { NearbyDirectories } from "@/components/connect/nearby-directories";
 import { PageHeader } from "@/components/app-ui/page-sections";
+import { TopShellTabs } from "@/components/app-ui/top-shell-tabs";
 import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
 import { ConnectCirclesTab } from "@/components/connect/circles/connect-circles-tab";
 import { SurfaceStack } from "@/components/app-ui/surfaces";
@@ -51,10 +51,20 @@ import { useContactSync } from "@/lib/contacts/use-contact-sync";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { buildConsentCenterHref } from "@/lib/consent/consent-sheet-route";
 import { buildPersonProfileRoute, ROUTES } from "@/lib/navigation/routes";
+import {
+  CONNECT_CIRCLE_ACTION_PARAM,
+  CONNECT_CIRCLE_ID_PARAM,
+  CONNECT_SEARCH_QUERY_PARAM,
+  CONNECT_SURFACE_PARAM,
+  connectCircleTaskTitle,
+  isFocusedConnectCircleTask,
+  readConnectCircleAction,
+  readConnectSurface,
+  type ConnectSurface,
+} from "@/lib/navigation/connect-routes";
 import { CONSENT_STATE_CHANGED_EVENT } from "@/lib/consent/consent-events";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
 import { Button } from "@/lib/morphy-ux/button";
-import { SegmentedTabs } from "@/lib/morphy-ux/ui";
 import {
   ConnectionsService,
   type ConnectionAudience,
@@ -66,6 +76,7 @@ import {
   type DirectoryPerson,
 } from "@/lib/services/connections-service";
 import { relationshipCta } from "@/lib/connections/relationship-label";
+import { TOP_SHELL_TAB_REGISTRY } from "@/lib/navigation/top-shell-tabs";
 import {
   VOICE_CONFIRM_DATA_KEY,
   VOICE_DISAMBIGUATION_DATA_KEY,
@@ -79,7 +90,6 @@ import {
   CONNECT_SEARCH_INPUT_CLEARABLE_CLASSNAME,
   CONNECT_SEARCH_INPUT_PLAIN_CLASSNAME,
   CONNECT_SEARCH_PLACEHOLDER,
-  CONNECT_SELECT_TOGGLE_CLASSNAME,
 } from "./connect-search-layout";
 import { cn } from "@/lib/utils";
 import { ContactSourceBadge } from "@/components/connections/contact-source-badge";
@@ -102,10 +112,6 @@ type ConnectTab = "people" | "advisors" | "nearby";
  * Carried in `?tab=` because a circle detail is a place you can be sent, and a
  * hub tab that only exists in `useState` cannot be linked to or returned to.
  */
-type ConnectSurface = "all" | "circles";
-
-const CONNECT_SURFACE_PARAM = "tab";
-
 const CONNECT_SEARCH_QUERY_STORAGE_KEY = "hushh:connect:people-search-query";
 
 // The People search box is local state, not URL state (unlike surface/
@@ -202,12 +208,7 @@ const CONNECT_TAB_LABEL: Record<ConnectTab, string> = {
   nearby: "Around you",
 };
 
-type ConnectPrimaryTab = "connections" | "circles";
-
-const CONNECT_PRIMARY_TABS = [
-  { value: "connections", label: "Connections" },
-  { value: "circles", label: "Circles" },
-] as const;
+const CONNECT_SURFACE_TAB_DEFINITION = TOP_SHELL_TAB_REGISTRY.connect;
 
 const CONNECT_DIRECTORY_TABS = (["people", "advisors", "nearby"] as const).map(
   (value) => ({ value, label: CONNECT_TAB_LABEL[value] }),
@@ -480,12 +481,19 @@ export default function ConnectPageClient() {
    * somebody who mistyped a link, and the default is not written to the URL on
    * mount -- that would eat one `router.back()` step for every arrival.
    */
-  const surface: ConnectSurface =
-    searchParams.get(CONNECT_SURFACE_PARAM) === "circles" ? "circles" : "all";
+  const surface: ConnectSurface = readConnectSurface(
+    searchParams.get(CONNECT_SURFACE_PARAM),
+  );
   /** Which Circle flow, if any, the URL is asking for. Part of the scroll key
    *  below, because opening one is a new screen even though the path is not. */
-  const circleFlowAction = searchParams.get("action") ?? "";
-  const circleFlowId = searchParams.get("circleId") ?? "";
+  const circleFlowAction = readConnectCircleAction(
+    searchParams.get(CONNECT_CIRCLE_ACTION_PARAM),
+  );
+  const circleFlowId = searchParams.get(CONNECT_CIRCLE_ID_PARAM) ?? "";
+  const isFocusedCircleTask = isFocusedConnectCircleTask(
+    surface,
+    circleFlowAction,
+  );
 
   // Every navigation on this page passes `scroll: false`, because the surface
   // strip and the Circle flows are query-only states that must not jump the
@@ -494,13 +502,11 @@ export default function ConnectPageClient() {
   // scrolled halfway down handed that offset to the circles list, and to every
   // Circle flow opened after it. The Location hub hit this and fixed it the
   // same way.
-  useScrollReset(`${surface}:${circleFlowAction}:${circleFlowId}`, {
+  useScrollReset(`${surface}:${circleFlowAction ?? ""}:${circleFlowId}`, {
     behavior: "auto",
   });
 
   const [tab, setTab] = useState<ConnectTab>("people");
-  const primaryTab: ConnectPrimaryTab =
-    surface === "circles" ? "circles" : "connections";
   /**
    * What the Circles tab is doing, reported up.
    *
@@ -526,7 +532,22 @@ export default function ConnectPageClient() {
   const directoryMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const loadMoreDirectoryRef = useRef<HTMLDivElement | null>(null);
   const [directoryMenuOpen, setDirectoryMenuOpen] = useState(false);
-  const [query, setQuery] = useState<string>(readStoredConnectSearchQuery);
+  const searchQueryParam = (searchParams.get(CONNECT_SEARCH_QUERY_PARAM) ?? "")
+    .trim()
+    .slice(0, 160);
+  const [query, setQuery] = useState<string>(
+    () => searchQueryParam || readStoredConnectSearchQuery(),
+  );
+  const appliedSearchQueryParamRef = useRef(searchQueryParam || null);
+  useEffect(() => {
+    if (
+      searchQueryParam &&
+      appliedSearchQueryParamRef.current !== searchQueryParam
+    ) {
+      appliedSearchQueryParamRef.current = searchQueryParam;
+      setQuery(searchQueryParam);
+    }
+  }, [searchQueryParam]);
   useEffect(() => {
     writeStoredConnectSearchQuery(query);
   }, [query]);
@@ -552,12 +573,6 @@ export default function ConnectPageClient() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
-  const [scopeDraft, setScopeDraft] = useState<{
-    person: DirectoryPerson;
-    catalog: ConnectionScopeCatalog;
-    requestedHandles: string[];
-    offeredHandles: string[];
-  } | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   /**
    * Publish the pinned header's height so the search row can sit under it.
@@ -1067,19 +1082,6 @@ export default function ConnectPageClient() {
     [router, searchParams, surface],
   );
 
-  const selectPrimaryTab = useCallback(
-    (next: ConnectPrimaryTab) => {
-      if (next === "circles") {
-        selectSurface("circles");
-        return;
-      }
-      if (surface !== "all") {
-        selectSurface("all");
-      }
-    },
-    [selectSurface, surface],
-  );
-
   const loadNextDirectoryBatch = useCallback(() => {
     if (surface === "circles" || tab === "nearby" || loading || !hasMore)
       return;
@@ -1140,7 +1142,6 @@ export default function ConnectPageClient() {
           ...current,
           [person.userId]: request.id,
         }));
-        setScopeDraft(null);
         CacheSyncService.onConnectionCapabilityMutated(user.uid);
         // A Circle roster open behind this sheet is now stale: the row that
         // said "Connect" should say "Requested". Re-read rather than patch.
@@ -1163,54 +1164,14 @@ export default function ConnectPageClient() {
 
   const sendConnectRequest = useCallback(
     async (person: DirectoryPerson) => {
-      if (!user) return;
-      try {
-        setBusyId(person.userId);
-        const idToken = await user.getIdToken();
-        const catalog = await ConnectionsService.getScopeCatalog({
-          idToken,
-          counterpartUserId: person.userId,
-        });
-        // Always shown, including when there is nothing to grant. Sending
-        // straight through on an empty catalog made the two outcomes look
-        // identical from the outside: a request that carried access and a
-        // request that carried none both appeared as one tap and a toast, so
-        // "no dialog" read as a broken sheet rather than as an answer. A
-        // request that grants nothing is worth saying out loud.
-        setScopeDraft({
-          person,
-          catalog,
-          requestedHandles: [],
-          offeredHandles: [],
-        });
-      } catch (catalogError) {
-        toast.error(
-          catalogError instanceof Error
-            ? catalogError.message
-            : "Could not prepare this connection request",
-        );
-      } finally {
-        setBusyId((current) => (current === person.userId ? null : current));
-      }
+      await sendConnectionRequest(person);
     },
-    [user],
+    [sendConnectionRequest],
   );
 
   /**
-   * A match from the results sheet goes through this page's own review, not
-   * straight to the server.
-   *
-   * `config/protected-behaviors.json` locks
-   * `connect-request-asks-before-it-shares`: on Connect a request opens the
-   * capability review pre-granting nothing, and the only permitted bypass is a
-   * catalog empty on both sides. The hook's own `requestConnection` calls
-   * `ConnectionsService.sendRequest` outright -- harmless while the sheet lived
-   * only on Location, a second unreviewed path the moment it renders here. So
-   * the sheet hands the person over and this page asks, exactly as a directory
-   * row does.
-   *
-   * The sheet closes first, deliberately: the review is a dialog, and leaving
-   * the sheet underneath it would stack two layers over one decision.
+   * A match from the results sheet follows the same one-tap request path as a
+   * directory row. Connect no longer opens an extra capability dialog here.
    */
   const requestConnectionFromContactMatch = useCallback(
     async (matchUserId: string) => {
@@ -1240,23 +1201,6 @@ export default function ConnectPageClient() {
       if (cta.action === "connect") void sendConnectRequest(person);
     },
     [isSelectionMode, router, sendConnectRequest, user],
-  );
-
-  const toggleDraftHandle = useCallback(
-    (
-      direction: "requestedHandles" | "offeredHandles",
-      handle: string,
-      checked: boolean,
-    ) => {
-      setScopeDraft((current) => {
-        if (!current) return current;
-        const nextHandles = checked
-          ? [...new Set([...current[direction], handle])]
-          : current[direction].filter((candidate) => candidate !== handle);
-        return { ...current, [direction]: nextHandles };
-      });
-    },
-    [],
   );
 
   const handleRemove = useCallback(
@@ -1679,8 +1623,72 @@ export default function ConnectPageClient() {
   // generic "app" screen, so One knew a person was somewhere in the app and
   // nothing more -- and Connect could not be named as a destination, which is
   // why an empty people list elsewhere had nowhere to send anyone.
-  const connectVoiceSurfaceMetadata = useMemo(
-    () => ({
+  const connectVoiceSurfaceMetadata = useMemo(() => {
+    const circleTaskTitle = connectCircleTaskTitle(circleFlowAction);
+    if (isFocusedCircleTask && circleTaskTitle) {
+      return {
+        screenId: "connect.circle_task",
+        title: circleTaskTitle,
+        purpose:
+          circleFlowAction === "create-circle"
+            ? "This screen names a Circle and chooses its type."
+            : "This screen reviews a Circle invite code before joining.",
+        primaryEntity: null,
+        selectedEntity: null,
+        spokenSubject: circleTaskTitle,
+        sections: [
+          {
+            id: "circle_task",
+            title: circleTaskTitle,
+            purpose:
+              circleFlowAction === "create-circle"
+                ? "Create one Circle, then add people after it exists."
+                : "Enter a 12-character invite code and review the Circle before joining.",
+          },
+        ],
+        actions: [
+          {
+            id:
+              circleFlowAction === "create-circle"
+                ? "connect.circle_create"
+                : "connect.circle_review",
+            actionId:
+              circleFlowAction === "create-circle"
+                ? "connect.circle_create"
+                : "connect.circle_review",
+            label:
+              circleFlowAction === "create-circle"
+                ? "Create Circle"
+                : "Review Circle",
+            purpose:
+              circleFlowAction === "create-circle"
+                ? "Create the named Circle."
+                : "Review the invite code.",
+          },
+        ],
+        controls: [],
+        concepts: [],
+        activeSection: circleTaskTitle,
+        activeTab: "circles",
+        visibleModules: [circleTaskTitle],
+        focusedWidget: circleTaskTitle,
+        availableActions: [
+          circleFlowAction === "create-circle"
+            ? "Create Circle"
+            : "Review Circle",
+        ],
+        activeControlId: null,
+        lastInteractedControlId: null,
+        busyOperations: loading ? ["connect_circle_task_load"] : [],
+        screenMetadata: {
+          connect_surface: surface,
+          circle_action: circleFlowAction,
+          searching: false,
+        },
+      };
+    }
+
+    return {
       screenId: "connect",
       title: "Connect",
       purpose:
@@ -1747,7 +1755,7 @@ export default function ConnectPageClient() {
         },
       ],
       // Only the search box carries a `data-voice-control-id` anchor. The tab
-      // strip is the shared SegmentedTabs, which has no per-option control id,
+      // strip is the shared TopShellTabs, which has no per-option control id,
       // so claiming one here would describe a hook that does not exist.
       controls: [
         {
@@ -1802,11 +1810,14 @@ export default function ConnectPageClient() {
         has_load_error: Boolean(error),
         searching: query.trim().length > 0,
       },
-    }),
+    };
+  },
     [
+      circleFlowAction,
       circlesState.count,
       connectionsTotalCount,
       error,
+      isFocusedCircleTask,
       loading,
       query,
       surface,
@@ -2237,7 +2248,7 @@ export default function ConnectPageClient() {
     <AppPageShell
       as="main"
       fitContent
-      width="standard"
+      width="agent"
       className="relative isolate"
       nativeTest={{
         routeId: "/one/connect",
@@ -2270,11 +2281,26 @@ export default function ConnectPageClient() {
         errorMessage: surface === "circles" ? circlesState.error : error,
       }}
     >
-      <AppPageHeaderRegion className="mx-auto w-full max-w-[720px]">
-        <PageHeader title="Connect" />
-      </AppPageHeaderRegion>
+      {isFocusedCircleTask ? (
+        <AppPageContentRegion className="min-w-0 overflow-x-hidden pb-6 sm:pb-8">
+          <div className="mx-auto w-full max-w-[560px] pt-5 sm:pt-6">
+            <ConnectCirclesTab
+              onStateChange={setCirclesState}
+              currentUserId={user?.uid ?? null}
+              onRequestConnection={sendConnectRequest}
+              onCancelConnectionRequest={cancelConnectionRequest}
+              refreshToken={circleRefreshToken}
+            />
+          </div>
+        </AppPageContentRegion>
+      ) : (
+      <AppPageContentRegion className="min-w-0 space-y-4 overflow-x-hidden pb-[var(--app-bottom-content-clearance)]">
+        <PageHeader
+          title="Connect"
+          titleRole="agent"
+          className="[&_[data-slot=page-header-row]]:!items-center"
+        />
 
-      <AppPageContentRegion className="mx-auto w-full max-w-[720px] pb-[var(--app-bottom-content-clearance)]">
         <SurfaceStack compact>
           <div
             ref={connectStackRef}
@@ -2302,24 +2328,16 @@ export default function ConnectPageClient() {
               data-pinned="false"
               className={CONNECT_STICKY_HEADER_CLASSNAME}
             >
-              <SegmentedTabs
-                value={primaryTab}
-                onValueChange={(value) =>
-                  selectPrimaryTab(value as ConnectPrimaryTab)
-                }
-                options={[...CONNECT_PRIMARY_TABS]}
+              <TopShellTabs
+                tabSet={{
+                  ...CONNECT_SURFACE_TAB_DEFINITION,
+                  activeValue: surface,
+                }}
+                navigationMode="push"
               />
               {surface !== "circles" ? (
                 <div className="flex min-h-11 items-center justify-between gap-3">
-                  {isSelectionMode ? (
-                    <span
-                      className="type-callout font-semibold text-[color:var(--app-primary-label)]"
-                      aria-live="polite"
-                    >
-                      {selectedPeople.size} of {MAX_BULK_CONNECTION_REQUESTS}{" "}
-                      selected
-                    </span>
-                  ) : (
+                  <div className="min-w-0 flex-1">
                     <div ref={directoryMenuRef} className="relative">
                       <button
                         ref={directoryMenuButtonRef}
@@ -2378,30 +2396,7 @@ export default function ConnectPageClient() {
                         </div>
                       ) : null}
                     </div>
-                  )}
-                  {tab !== "nearby" ? (
-                    <Button
-                      type="button"
-                      variant="none"
-                      effect="fill"
-                      size="sm"
-                      showRipple={false}
-                      className={CONNECT_SELECT_TOGGLE_CLASSNAME}
-                      disabled={loading || people.length === 0}
-                      aria-label={
-                        isSelectionMode
-                          ? "Cancel selecting people"
-                          : "Select people"
-                      }
-                      onClick={() => {
-                        setIsSelectionMode((current) => !current);
-                        setSelectedPeople(new Map());
-                        setShowLimitBanner(false);
-                      }}
-                    >
-                      {isSelectionMode ? "Cancel" : "Select"}
-                    </Button>
-                  ) : null}
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -3094,137 +3089,7 @@ export default function ConnectPageClient() {
           </div>
         </SurfaceStack>
       </AppPageContentRegion>
-
-      <Dialog
-        open={scopeDraft !== null}
-        onOpenChange={(open) => {
-          if (!open && busyId === null) setScopeDraft(null);
-        }}
-      >
-        <DialogContent
-          showCloseButton={false}
-          className="gap-5 bg-[color:var(--app-card-surface-default-solid)]"
-        >
-          <DialogHeader className="text-left">
-            <DialogTitle>Send connection request</DialogTitle>
-            <DialogDescription>
-              Start safe. Add sharing only if you choose.
-            </DialogDescription>
-          </DialogHeader>
-
-          {scopeDraft ? (
-            <div className="space-y-4">
-              {scopeDraft.catalog.items.length > 0 ? (
-                <SettingsGroup
-                  title="Ask from them"
-                  description="Optional. They can decline."
-                  separatorInset
-                >
-                  {scopeDraft.catalog.items.map((item) => (
-                    <SettingsRow
-                      key={`request-${item.handle}`}
-                      title={item.label}
-                      description={item.description}
-                      density="compact"
-                      trailing={
-                        <Checkbox
-                          checked={scopeDraft.requestedHandles.includes(
-                            item.handle,
-                          )}
-                          onCheckedChange={(checked) =>
-                            toggleDraftHandle(
-                              "requestedHandles",
-                              item.handle,
-                              checked === true,
-                            )
-                          }
-                          aria-label={`Request ${item.label}`}
-                        />
-                      }
-                    />
-                  ))}
-                </SettingsGroup>
-              ) : null}
-              {scopeDraft.catalog.offerableItems.length > 0 ? (
-                <SettingsGroup
-                  title="Offer now"
-                  description="Optional. They approve before access."
-                  separatorInset
-                >
-                  {scopeDraft.catalog.offerableItems.map((item) => (
-                    <SettingsRow
-                      key={`offer-${item.handle}`}
-                      title={item.label}
-                      description={item.description}
-                      density="compact"
-                      trailing={
-                        <Checkbox
-                          checked={scopeDraft.offeredHandles.includes(
-                            item.handle,
-                          )}
-                          onCheckedChange={(checked) =>
-                            toggleDraftHandle(
-                              "offeredHandles",
-                              item.handle,
-                              checked === true,
-                            )
-                          }
-                          aria-label={`Offer ${item.label}`}
-                        />
-                      }
-                    />
-                  ))}
-                </SettingsGroup>
-              ) : null}
-              {scopeDraft.catalog.items.length === 0 &&
-              scopeDraft.catalog.offerableItems.length === 0 ? (
-                <SettingsGroup title="Connection access" separatorInset>
-                  <SettingsRow
-                    icon={Lock}
-                    iconTone="gray"
-                    title="No access yet"
-                    description="This only sends a request."
-                    density="compact"
-                    disabled
-                  />
-                </SettingsGroup>
-              ) : null}
-            </div>
-          ) : null}
-
-          <DialogFooter className="w-full flex-row items-center justify-between gap-3 sm:justify-between">
-            <Button
-              type="button"
-              variant="none"
-              effect="fade"
-              className="min-w-[96px]"
-              disabled={busyId !== null}
-              onClick={() => setScopeDraft(null)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="blue"
-              effect="fill"
-              className="min-w-[148px]"
-              disabled={!scopeDraft || busyId === scopeDraft.person.userId}
-              onClick={() => {
-                if (!scopeDraft) return;
-                void sendConnectionRequest(
-                  scopeDraft.person,
-                  scopeDraft.requestedHandles,
-                  scopeDraft.offeredHandles,
-                );
-              }}
-            >
-              {scopeDraft && busyId === scopeDraft.person.userId
-                ? "Sending…"
-                : "Send request"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      )}
 
       <Dialog
         open={batchConnectDraft !== null}

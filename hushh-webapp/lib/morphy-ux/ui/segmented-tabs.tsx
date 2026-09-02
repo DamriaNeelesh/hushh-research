@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 export interface SegmentedTabOption {
   value: string;
   label: string;
+  accessibleLabel?: string;
 }
 
 export function SegmentedTabs({
@@ -26,14 +27,17 @@ export function SegmentedTabs({
   className?: string;
 }) {
   const resolvedDesktopColumns = Math.max(options.length, 1);
-  const resolvedMobileColumns = Math.max(mobileColumns ?? resolvedDesktopColumns, 1);
+  const resolvedMobileColumns = Math.max(
+    mobileColumns ?? resolvedDesktopColumns,
+    1,
+  );
 
   return (
     <div
       className={cn(
         "relative grid min-h-11 w-full rounded-[14px] p-0.5 backdrop-blur-xl [grid-template-columns:repeat(var(--segmented-mobile-cols),minmax(0,1fr))] sm:[grid-template-columns:repeat(var(--segmented-desktop-cols),minmax(0,1fr))]",
         "border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-compact)] shadow-none",
-        className
+        className,
       )}
       style={
         {
@@ -49,6 +53,7 @@ export function SegmentedTabs({
           <button
             key={option.value}
             type="button"
+            aria-label={option.accessibleLabel}
             aria-pressed={isActive}
             disabled={disabled}
             data-state={isActive ? "active" : "inactive"}
@@ -60,7 +65,7 @@ export function SegmentedTabs({
               isActive
                 ? "z-10 border-[color:var(--app-segmented-active-border)] bg-[color:var(--app-segmented-active-surface)] text-[color:var(--app-segmented-active-foreground)] font-normal shadow-[var(--app-segmented-active-shadow)]"
                 : "border-transparent bg-transparent text-[color:var(--app-secondary-label)] [@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
-              disabled && "cursor-not-allowed opacity-60"
+              disabled && "cursor-not-allowed opacity-60",
             )}
           >
             {/*

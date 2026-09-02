@@ -193,8 +193,8 @@ for (const repoPath of [
 
 expectIncludes(
   "components/dashboard/one-agent-roster.tsx",
-  "Agents ({modes.length})",
-  "agents heading is the page title and must use title casing",
+  'aria-label="One agents"',
+  "root launcher must keep a semantic One agents label without painting a dashboard heading",
 );
 
 expectNotIncludes(

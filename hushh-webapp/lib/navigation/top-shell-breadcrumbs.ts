@@ -14,6 +14,11 @@ import {
   type ProfilePanel,
 } from "@/lib/navigation/profile-routes";
 import {
+  CONNECT_CIRCLES_LIST_HREF,
+  connectCircleTaskTitle,
+  readConnectCircleAction,
+} from "@/lib/navigation/connect-routes";
+import {
   buildNearbyCheckInResumeHref,
   isNearbyPrivateReturnToken,
   NEARBY_PRIVATE_RETURN_TOKEN_PARAM,
@@ -26,6 +31,7 @@ export type TopShellBreadcrumbItem = {
 
 export type TopShellBreadcrumbConfig = {
   backHref: string;
+  backLabel?: string;
   items: TopShellBreadcrumbItem[];
   width?: "content" | "profile";
   align?: "start" | "center";
@@ -59,7 +65,7 @@ function oneLocationActionLabel(action: string): string {
     // shares", "Public link") and the screen's own TaskFlowHeader title. The
     // crumb and the title must read as the same words or the trail and the
     // screen stop agreeing.
-    ask: "Request location",
+    ask: "Ask for location",
     invite: "Invite to Circle",
     "temp-link": "Public link",
     "check-in": "Check-In",
@@ -171,8 +177,8 @@ function profileDetailLabel(detail: string | null): string | null {
   if (detail === "danger") return "Danger zone";
   if (detail === "gmail-connection") return "Connection";
   if (detail === "gmail-actions") return "Actions";
-  if (detail === "support-routing") return "Routing";
-  if (detail.startsWith("support-compose:")) return "Compose";
+  if (detail === "support-routing") return "Help & feedback";
+  if (detail.startsWith("support-compose:")) return "Help & feedback";
   return null;
 }
 
@@ -323,7 +329,9 @@ function resolveTopShellBreadcrumbInner(
   }
 
   if (pathname === KAI_MARKET_PATH && searchParams?.get("tab") === "analysis") {
-    const analysisEntryId = String(searchParams?.get("analysis_id") || "").trim();
+    const analysisEntryId = String(
+      searchParams?.get("analysis_id") || "",
+    ).trim();
     const debateId = String(searchParams?.get("debate_id") || "").trim();
     const focus = String(searchParams?.get("focus") || "").trim();
     const runId = String(searchParams?.get("run_id") || "").trim();
@@ -519,10 +527,7 @@ function resolveTopShellBreadcrumbInner(
       width: "content",
       align: "center",
       hideBack: false,
-      items: [
-        { label: "RIA", href: returnHref },
-        { label: "Claim profile" },
-      ],
+      items: [{ label: "RIA", href: returnHref }, { label: "Claim profile" }],
     };
   }
 
@@ -958,26 +963,29 @@ function resolveTopShellBreadcrumbInner(
   // closing the flow. #5458 moved these here from the Location agent, where
   // they had their own crumb.
   if (pathname === ROUTES.CONNECT && searchParams?.get("tab") === "circles") {
-    const circleFlowLabels: Record<string, string> = {
-      "create-circle": "New circle",
-      "join-circle": "Join with code",
-      "circle-detail": "Circle",
-    };
-    const label = circleFlowLabels[String(searchParams?.get("action") ?? "")];
+    const action = readConnectCircleAction(
+      searchParams?.get("action") ?? null,
+    );
+    const label = connectCircleTaskTitle(action);
     if (label) {
+      const isFocusedTask =
+        action === "create-circle" || action === "join-circle";
       return {
         // Back closes the flow and returns to the list, naming the tab
         // explicitly -- the App Router refuses a navigation whose only change
         // is the whole query string disappearing.
-        backHref: `${ROUTES.CONNECT}?tab=circles`,
+        backHref: CONNECT_CIRCLES_LIST_HREF,
+        backLabel: isFocusedTask ? "Back to Circles" : undefined,
         width: "profile",
         align: "center",
         hideBack: false,
-        items: [
-          { label: "One", href: ROUTES.ONE_HOME },
-          { label: "Connect", href: `${ROUTES.CONNECT}?tab=circles` },
-          { label },
-        ],
+        items: isFocusedTask
+          ? [{ label }]
+          : [
+              { label: "One", href: ROUTES.ONE_HOME },
+              { label: "Connect", href: CONNECT_CIRCLES_LIST_HREF },
+              { label },
+            ],
       };
     }
   }

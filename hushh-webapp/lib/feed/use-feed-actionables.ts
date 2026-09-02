@@ -92,6 +92,11 @@ export interface FeedActionable {
   id: string;
   icon: LucideIcon;
   iconTone: FeedIconTone;
+  /** Person identity to render before falling back to the domain icon. */
+  person?: {
+    displayName: string;
+    photoUrl: string | null;
+  } | null;
   /** Running work animates its leading glyph. */
   spinning?: boolean;
   title: string;
@@ -576,6 +581,13 @@ export function useFeedActionables(): UseFeedActionablesResult {
         id: `sms-emergency:${grant.id}`,
         icon: Siren,
         iconTone: "red",
+        person:
+          label !== "A contact"
+            ? {
+                displayName: label,
+                photoUrl: grant.ownerPhotoUrl ?? null,
+              }
+            : null,
         // Only a still-live alert gets the pinned "Live" emergency treatment.
         // A revoked/expired one renders as a plain "Needs you" row (see
         // feed-page.tsx) — Siren icon + red icon-well tint are all that's
@@ -616,6 +628,13 @@ export function useFeedActionables(): UseFeedActionablesResult {
         id: `location:${request.id}`,
         icon: MapPin,
         iconTone: "blue",
+        person:
+          label !== "Someone"
+            ? {
+                displayName: label,
+                photoUrl: request.requesterPhotoUrl ?? null,
+              }
+            : null,
         title: label,
         // Names the amount, and says when it is extra time on a live share.
         description:
@@ -681,6 +700,13 @@ export function useFeedActionables(): UseFeedActionablesResult {
         id: `circle-invite:${invite.id}`,
         icon: Users,
         iconTone: "blue",
+        person:
+          label !== "Someone"
+            ? {
+                displayName: label,
+                photoUrl: null,
+              }
+            : null,
         title: label,
         description: `Invited you to join ${circleName}.`,
         actions: [
@@ -741,6 +767,13 @@ export function useFeedActionables(): UseFeedActionablesResult {
         id: `connection:${request.id}`,
         icon: UserRound,
         iconTone: "green",
+        person:
+          label !== "Someone"
+            ? {
+                displayName: label,
+                photoUrl: null,
+              }
+            : null,
         title: label,
         description: request.message?.trim() || "Wants to connect with you.",
         href: requiresScopeReview ? reviewHref : null,

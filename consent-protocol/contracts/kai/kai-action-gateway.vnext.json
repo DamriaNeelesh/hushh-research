@@ -226,7 +226,7 @@
     {
       "schema_version": "kai.local_action_contract.v1",
       "surface_id": "one_agents",
-      "surface_title": "Agents",
+      "surface_title": "One",
       "docs_references": [
         "docs/reference/kai/kai-action-gateway-vnext.md",
         "docs/reference/one/one-voice-runtime-architecture.md"
@@ -10566,7 +10566,7 @@
     {
       "action_id": "route.one_agents",
       "surface_id": "one_agents",
-      "label": "Open Agents",
+      "label": "Open One",
       "aliases": [
         "open agents",
         "open one agents",
@@ -10581,7 +10581,7 @@
         "dashboard",
         "apps"
       ],
-      "meaning": "Navigates to the One Agents dashboard.",
+      "meaning": "Navigates to the One agent launcher.",
       "speaker_persona": "one",
       "delegate_agent_id": null,
       "reachability": {
@@ -10642,7 +10642,7 @@
           {
             "type": "action",
             "action_id": "route.one_agents",
-            "label": "Open Agents",
+            "label": "Open One",
             "failure_behavior": "stop",
             "settlement_target": {
               "route": "/one",
