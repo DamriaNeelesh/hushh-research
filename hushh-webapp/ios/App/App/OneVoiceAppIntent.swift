@@ -680,9 +680,25 @@ struct OpenOneLocationDestinationIntent: OpenIntent {
     @available(iOS 26.0, *)
     static let supportedModes: IntentModes = [.foreground(.immediate)]
 
+    // OpenIntent requires `target`. It had been removed while the conformance
+    // was left in place, which is a compile error, and it also meant every
+    // destination resolved to the Location home instead of the one asked for.
+    @Parameter(
+        title: "Destination",
+        requestValueDialog: "Which Agent One Location destination?"
+    )
+    var target: OneLocationDestinationEntity
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Open \(\.$target) in Agent One")
+    }
+
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let actionID = target.actionID else {
+            return .result(dialog: "That Agent One Location destination is unavailable.")
+        }
         let summary = await OneAppIntentActionExecutor.run(
-            OneAppIntentActionRequestFactory.open(.openLocation)
+            OneAppIntentActionRequestFactory.open(actionID)
         )
         return .result(dialog: "\(summary)")
     }
@@ -926,15 +942,6 @@ struct AskOneRequestIntent: AppIntent {
                 snippet: .init(string: "Continue in Agent One to complete your request.")
             )
         }
-    }
-}
-
-@available(iOS 26.0, *)
-struct OneRequestTextOptionsProvider: DynamicOptionsProvider {
-    typealias Intent = AskOneRequestIntent
-
-    func results() async throws -> [IntentStringOption] {
-        []
     }
 }
 

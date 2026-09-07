@@ -230,6 +230,100 @@ function verifyPhraseTypes(source) {
 }
 
 /**
+ * The phrase-corpus invariants.
+ *
+ * These lived in AppTests/AgentOneSiriSemanticCorpusTests.swift until this
+ * change. That file could never compile and never ran: it asserted against
+ * `AppShortcut.shortTitle` and `AppShortcut.phrases`, and AppShortcut exposes
+ * no public properties at all -- only initialisers. The invariants it was
+ * reaching for are real, so they moved here, where they read the source text
+ * and actually execute on every CI job rather than only on a macOS runner.
+ */
+function verifyPhraseCorpus(source) {
+  const families = new Map();
+  const pattern =
+    /static let (\w*[Pp]hrases):\s*\[AppShortcutPhrase<(\w+)>\]\s*=\s*\[([\s\S]*?)\n    \]/g;
+  for (const match of source.matchAll(pattern)) {
+    const [, name, intent, body] = match;
+    const phrases = [...body.matchAll(/^\s*"([^"\n]*)",?\s*$/gm)].map((m) => m[1]);
+    families.set(name, { intent, phrases });
+  }
+  if (families.size === 0) {
+    throw new Error("Could not parse any Siri phrase family");
+  }
+
+  // Minimum breadth per family. Apple's similarity index generalises beyond the
+  // exact strings, but it needs distinct anchors to generalise *from*; a family
+  // thinned to one or two phrases stops matching paraphrases.
+  const minimums = {
+    shareLocationPhrases: 8,
+    askForLocationPhrases: 6,
+    locationStatePhrases: 6,
+    checkInPhrases: 4,
+    createCirclePhrases: 4,
+    talkToAgentOnePhrases: 3,
+    askOneRequestPhrases: 3,
+    emergencySOSPhrases: 5,
+    sendSaveMySoulPhrases: 4,
+  };
+
+  for (const [name, { phrases }] of families) {
+    const floor = minimums[name];
+    if (floor !== undefined && phrases.length < floor) {
+      throw new Error(
+        `${name} has ${phrases.length} phrases, below its floor of ${floor}`,
+      );
+    }
+
+    const seen = new Set();
+    for (const phrase of phrases) {
+      // The app-name token, in every phrase. It is what wins Siri's domain
+      // arbitration against system apps, and what survives localisation.
+      if (!phrase.includes("\\(agentOne)")) {
+        throw new Error(
+          `Every Siri phrase must carry the app-name token; ${name} has: "${phrase}"`,
+        );
+      }
+      // ...and never the literal product name, which does neither.
+      if (/Agent One/.test(phrase)) {
+        throw new Error(
+          `Use the app-name token, not the literal "Agent One"; ${name} has: "${phrase}"`,
+        );
+      }
+      if (seen.has(phrase)) {
+        throw new Error(`${name} repeats the phrase "${phrase}"`);
+      }
+      seen.add(phrase);
+    }
+  }
+
+  // Recipients are always a resolved slot, never a name baked into a phrase.
+  const nameSlotted = ["shareLocationPhrases", "askForLocationPhrases"];
+  for (const name of nameSlotted) {
+    const family = families.get(name);
+    if (!family) throw new Error(`Missing phrase family ${name}`);
+    for (const phrase of family.phrases) {
+      if (!/\\\(\\\.\$(recipient|person)\)/.test(phrase)) {
+        throw new Error(
+          `${name} must resolve its person through a slot, not a literal; "${phrase}" has none`,
+        );
+      }
+    }
+  }
+
+  // Location on/off must bind its state slot in every phrase. `state` is
+  // non-optional with no default, so an unbound phrase makes Siri stop and ask
+  // "On or Off?" instead of acting.
+  for (const phrase of families.get("locationStatePhrases")?.phrases ?? []) {
+    if (!/\\\(\\\.\$state\)/.test(phrase)) {
+      throw new Error(
+        `Every Location On or Off phrase must bind the state slot; "${phrase}" does not`,
+      );
+    }
+  }
+}
+
+/**
  * The invariant that keeps a hardware button from becoming a spoken kill-word.
  *
  * App Intents expose no invocation source, so an intent that sends, sends from
@@ -435,6 +529,7 @@ assertEqualSets(
 );
 verifyShortcutPhrases(read(swiftIntentsPath));
 verifyPhraseTypes(read(swiftIntentsPath));
+verifyPhraseCorpus(read(swiftIntentsPath));
 verifyEnvelopeSeparation(read(swiftIntentsPath));
 verifySaveMySoulSeparation(read(swiftIntentsPath));
 

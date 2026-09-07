@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from ag_ui.core import RunAgentInput
+from ag_ui.core import RunAgentInput, UserMessage
 from ag_ui_adk import ADKAgent, add_adk_fastapi_endpoint
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from google.adk.apps import App, ResumabilityConfig
@@ -434,12 +434,13 @@ async def create_action_proposal(
             STATE_CONSENT_TOKEN: store_request_secret(str(token.get("token") or "")),
         },
         messages=[
-            {
-                "id": "user-proposal",
-                "role": "user",
-                "content": query,
-            }
+            UserMessage(id="user-proposal", role="user", content=query),
         ],
+        # `context` and `tools` are required by RunAgentInput. Omitting context
+        # raised ValidationError on every proposal turn, so this path had never
+        # run; empty is the correct value here because the proposal turn carries
+        # its context in `state`, not as AG-UI context entries.
+        context=[],
         forwarded_props={},
         tools=[],
     )

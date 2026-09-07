@@ -12,10 +12,17 @@ import json
 import logging
 import re
 import unicodedata
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar, cast
 
 logger = logging.getLogger(__name__)
+
+# Fusion is keyed by whatever identity the caller ranks by: `id(entry)` ints in
+# the live path, action-id strings in the tests. The function never inspects the
+# key, so it is generic rather than pinned to one of them -- it was annotated
+# dict[str, float] while being called with dict[int, float].
+_RankKey = TypeVar("_RankKey", bound=Hashable)
 
 # ---------------------------------------------------------------------------
 # Module-level state
@@ -140,7 +147,7 @@ def _ensure_passage_vectors(
     digest = _catalog_digest(gateway)
     cached = _PASSAGE_CACHE
     if cached["digest"] == digest and len(cached["vectors"]) == len(supported):
-        return cached["vectors"]
+        return cast(list[list[float]], cached["vectors"])
     vectors = get_embedding_client().embed_passages([_build_passage(entry) for entry in supported])
     if len(vectors) == len(supported):
         _PASSAGE_CACHE["digest"] = digest
@@ -189,7 +196,7 @@ class EmbeddingClient:
         model = self._load()
         prefixed = f"query: {text}"
         result = model.encode(prefixed, normalize_embeddings=True)
-        return result.tolist()
+        return cast(list[float], result.tolist())
 
     def embed_passages(self, passages: list[str]) -> list[list[float]]:
         if not passages:
@@ -197,7 +204,7 @@ class EmbeddingClient:
         model = self._load()
         prefixed = [f"passage: {p}" for p in passages]
         result = model.encode(prefixed, normalize_embeddings=True)
-        return result.tolist()
+        return cast(list[list[float]], result.tolist())
 
     def similarity(
         self,
@@ -210,7 +217,7 @@ class EmbeddingClient:
 
         q = array(query_vec)
         ps = array(passage_vecs)
-        return dot(ps, q).tolist()
+        return cast(list[float], dot(ps, q).tolist())
 
 
 _embedding_client: EmbeddingClient | None = None
@@ -570,10 +577,10 @@ def _navigation(entry: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _reciprocal_rank_fusion(
-    semantic_ranks: dict[str, float] | list[str],
-    lexical_ranks: dict[str, float] | list[str] | None = None,
+    semantic_ranks: Mapping[_RankKey, float] | Sequence[_RankKey],
+    lexical_ranks: Mapping[_RankKey, float] | Sequence[_RankKey] | None = None,
     k: float = 60.0,
-) -> list[tuple[str, float]]:
+) -> list[tuple[_RankKey, float]]:
     """Fuse ranked lists or rank maps into (action_id, fused_score) pairs.
 
     Backward-compatible: accepts the original list-of-strings form
@@ -582,7 +589,7 @@ def _reciprocal_rank_fusion(
     (``_reciprocal_rank_fusion(semantic_map, lexical_map)``).
     """
 
-    def _to_map(arg: Any) -> dict[str, float]:
+    def _to_map(arg: Any) -> dict[_RankKey, float]:
         if isinstance(arg, dict):
             return dict(arg)
         if isinstance(arg, list):
@@ -595,7 +602,7 @@ def _reciprocal_rank_fusion(
         return []  # caller mistake; not a test scenario
     sem = _to_map(semantic_ranks)
     lex = _to_map(lexical_ranks) if lexical_ranks is not None else {}
-    fused: dict[str, float] = {}
+    fused: dict[_RankKey, float] = {}
     for key, rank in sem.items():
         fused[key] = fused.get(key, 0.0) + k / (rank + k)
     for key, rank in lex.items():

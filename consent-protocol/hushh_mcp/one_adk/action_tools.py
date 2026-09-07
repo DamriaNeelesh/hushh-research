@@ -3569,22 +3569,6 @@ def _relevance_score(entry: dict[str, Any], tokens: list[str]) -> int:
 # A specialist is for open-ended questions. When someone names a concrete thing
 # that has an authored journey, the journey is the answer and the specialist is
 # a detour that ends in a consent boundary.
-_SPECIALIST_ACTION_SURFACES: dict[str, tuple[str, ...]] = {
-    "agent_connections": ("one_connect",),
-}
-
-# Minimum relevance before a specialist request is redirected to a journey.
-#
-# Measured against the live gateway rather than picked. Within the connections
-# surface, concrete requests score 77-182 ("connect me with ankit" 77, "send a
-# connection request to ankit" 182, "remove my connection with rashid" 149)
-# while open-ended ones top out at 32 ("explain trusted connections", "who do i
-# trust" 15, "what are my consents" 5). 50 sits in that gap with roughly 1.5x
-# margin on both sides, so a genuine question still reaches the specialist and
-# a named action never has to.
-_SPECIALIST_REDIRECT_MIN_SCORE = 50
-
-
 def _reachability(
     entry: dict[str, Any],
     action_id: str,

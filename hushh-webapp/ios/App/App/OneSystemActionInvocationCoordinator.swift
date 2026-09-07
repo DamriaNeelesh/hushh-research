@@ -149,7 +149,7 @@ struct OneSystemActionClaimRecord: Codable, Equatable, Sendable {
     let claimedAt: Date
 }
 
-enum OneSystemActionProgressState: Codable, Equatable, Sendable {
+enum OneSystemActionProgressState: String, Codable, Equatable, Sendable {
     case waitingForVault = "waiting_for_vault"
 }
 

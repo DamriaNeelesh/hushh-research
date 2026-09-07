@@ -14,17 +14,19 @@ No mutation is allowed during proposal creation or search.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
 from api.middleware import require_vault_owner_token
-from hushh_mcp.one_adk.action_retrieval import search_actions
+from hushh_mcp.one_adk.action_retrieval import is_retrieval_available, search_actions
 from hushh_mcp.services.action_gateway import get_action_gateway_action
 
 logger = logging.getLogger(__name__)
@@ -110,10 +112,24 @@ class ProposalRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _context_revision(context: dict[str, Any] | None) -> str:
+    """A stable fingerprint of the context a proposal was made against.
+
+    Was ``str(context).__hash__()``, which is an int (not the declared str) and
+    is randomised per process by PYTHONHASHSEED -- so two workers derived
+    different revisions for identical context, and a proposal minted on one
+    could never be matched on another.
+    """
+    if not context:
+        return ""
+    canonical = json.dumps(context, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
 def _load_gateway() -> dict[str, Any]:
     from hushh_mcp.services.action_gateway import get_action_gateway
 
-    return get_action_gateway()
+    return cast(dict[str, Any], get_action_gateway())
 
 
 # ---------------------------------------------------------------------------
@@ -146,29 +162,32 @@ async def search_capabilities(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         logger.exception("action_search_failed")
-        return JSONResponse(
-            {"results": [], "ranking": "degraded" if not search_actions else "error"}
-        )
+        return JSONResponse({"results": [], "ranking": "error"})
 
+    # search_actions returns RetrievedAction dataclasses. This read them as
+    # dicts, so every call to this endpoint raised AttributeError before it
+    # could answer -- and the ranking flag below tested the *function object*
+    # `search_actions`, which is always truthy, so it always claimed "semantic"
+    # even on the lexical fallback. Both are why the endpoint never worked.
     return JSONResponse(
         {
             "results": [
                 {
-                    "action_id": r.get("action_id", ""),
-                    "label": r.get("label", ""),
-                    "meaning": r.get("meaning", ""),
-                    "policy": r.get("policy", "allow_direct"),
-                    "availability": r.get("availability", "on_screen"),
-                    **({"use_tool": r["use_tool"]} if r.get("use_tool") else {}),
+                    "action_id": r.action_id,
+                    "label": r.label,
+                    "meaning": r.meaning,
+                    "policy": r.policy,
+                    "availability": r.availability,
+                    **({"use_tool": r.use_tool} if r.use_tool else {}),
                     **(
-                        {"semantic_boundaries": r["semantic_boundaries"]}
-                        if r.get("semantic_boundaries")
+                        {"semantic_boundaries": r.semantic_boundaries}
+                        if r.semantic_boundaries
                         else {}
                     ),
                 }
                 for r in results
             ],
-            "ranking": "semantic" if search_actions else "degraded",
+            "ranking": "semantic" if is_retrieval_available() else "lexical_only",
         }
     )
 
@@ -221,7 +240,7 @@ async def submit_proposal(
         action_id=payload.action_id,
         slots=dict(payload.slots),
         catalog_revision=catalog_digest,
-        context_revision=str(payload.context or {}).__hash__() if payload.context else "",
+        context_revision=_context_revision(payload.context),
         confirmation_required=confirmation_required,
         status="needs_resolution",
         created_at=now,
