@@ -468,3 +468,48 @@ async def test_connection_is_rolled_back_between_lock_attempts(tmp_path: Path, n
 
     assert conn.executed_sql.count("ROLLBACK") >= 1, "must roll back before retrying"
     assert conn.in_transaction is False
+
+
+class ResetFailsConnection(ContendingConnection):
+    """The lock times out, and the cleanup that follows fails too."""
+
+    async def execute(self, sql: str, *args):
+        if sql == "ROLLBACK":
+            raise RuntimeError("connection is gone")
+        return await super().execute(sql, *args)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reset_never_replaces_the_lock_error(tmp_path: Path, no_sleep):
+    """R28 on the retry path. The cleanup runs on a just-failed connection, so
+    it can fail too -- and if it did, its RuntimeError would be reported as the
+    cause and the real 55P03 would vanish, exactly as six UAT deploys reported
+    'current transaction is aborted' instead of the lock timeout."""
+    entries = _entries(tmp_path)
+    conn = ResetFailsConnection("SELECT 115", fail_times=99)
+
+    with pytest.raises(_LockTimeout) as caught:
+        await apply_manifest_entries(conn, entries, mode=MigrationMode.REPLAY)
+
+    assert conn.attempts == 1, "a dead connection has nothing to retry with"
+    assert any("connection reset failed" in n for n in getattr(caught.value, "__notes__", []))
+    assert conn.locked is False
+
+
+@pytest.mark.asyncio
+async def test_run_wide_retry_budget_stops_a_long_contended_run(
+    tmp_path: Path, no_sleep, monkeypatch
+):
+    """Per-migration bounds alone let a 174-entry lane spend ~78 minutes
+    retrying while holding the advisory lock and the release fence -- worse
+    availability than the bug. The run budget ends it."""
+    monkeypatch.setattr("db.migration_authority._LOCK_RETRY_RUN_BUDGET_S", 1.0)
+    entries = _entries(tmp_path)
+    conn = ContendingConnection("SELECT 115", fail_times=99)
+
+    with pytest.raises(_LockTimeout):
+        await apply_manifest_entries(conn, entries, mode=MigrationMode.REPLAY)
+
+    assert no_sleep == [1.0], "budget of 1.0s affords exactly the first 1s backoff"
+    assert conn.attempts == 2, "then it reports instead of retrying"
+    assert conn.locked is False
