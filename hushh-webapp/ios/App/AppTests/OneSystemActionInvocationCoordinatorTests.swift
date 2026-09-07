@@ -102,16 +102,20 @@ final class OneSystemActionInvocationCoordinatorTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            coordinator.completion(id: invocation.id),
+            coordinator.completion(id: invocation.id, generation: invocation.generation),
             OneSystemActionCompletion(
                 id: invocation.id,
+                generation: invocation.generation,
                 outcome: "succeeded",
                 summary: "Created Family.",
                 finishedAt: now
             )
         )
         coordinator.complete(id: invocation.id, outcome: "failed", summary: "late")
-        XCTAssertEqual(coordinator.completion(id: invocation.id)?.outcome, "succeeded")
+        XCTAssertEqual(
+            coordinator.completion(id: invocation.id, generation: invocation.generation)?.outcome,
+            "succeeded"
+        )
     }
 
     func testVaultProgressIsObservableWithoutConsumingThePendingAction() async throws {
@@ -188,7 +192,7 @@ final class OneSystemActionInvocationCoordinatorTests: XCTestCase {
         coordinator.cancelAll(outcome: "sign_out", clearEntityIndex: true)
 
         XCTAssertNil(coordinator.pending())
-        XCTAssertNil(coordinator.completion(id: invocation.id))
+        XCTAssertNil(coordinator.completion(id: invocation.id, generation: invocation.generation))
         XCTAssertTrue(coordinator.contacts().isEmpty)
         XCTAssertTrue(coordinator.circles().isEmpty)
     }
