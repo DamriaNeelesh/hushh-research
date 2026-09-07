@@ -11,6 +11,12 @@ import OSLog
 // OneSystemActionInvocationCoordinator, does the same Keychain and
 // NotificationCenter work with no annotation at all.
 
+extension Notification.Name {
+    static let oneSystemRequestInvocationAvailable = Notification.Name(
+        "ai.hushh.one.system-request-invocation-available"
+    )
+}
+
 // MARK: - Request capture result
 
 enum OneRequestCaptureResult: Equatable, Sendable {
@@ -24,11 +30,32 @@ enum OneRequestCaptureResult: Equatable, Sendable {
 // MARK: - Request record
 
 struct OneSystemRequestRecord: Codable, Equatable, Sendable {
+    static let bridgeKind = "interpret_one_request"
+    static let bridgeSource = "siri_app_shortcut"
+    static let protocolVersion = "one.request.v1"
+
     let id: String
     let text: String
     let ownerID: String
     let createdAt: Date
     let expiresAt: Date
+
+    /// The envelope handed to the webapp. `text` is deliberately absent: the
+    /// captured request never crosses the bridge, and this coordinator is the
+    /// only layer that ever holds it. The keys and their spelling are the
+    /// contract `isPendingRequestInvocation` validates in
+    /// lib/capacitor/one-system-request-invocation.ts.
+    var bridgePayload: [String: Any] {
+        [
+            "id": id,
+            "kind": Self.bridgeKind,
+            "source": Self.bridgeSource,
+            "createdAt": Int64(createdAt.timeIntervalSince1970 * 1_000),
+            "expiresAt": Int64(expiresAt.timeIntervalSince1970 * 1_000),
+            "protocolVersion": Self.protocolVersion,
+            "ownerBinding": ownerID
+        ]
+    }
 }
 
 // MARK: - Private request store
@@ -159,7 +186,7 @@ final class OneSystemRequestInvocationCoordinator: @unchecked Sendable {
         Self.logger.info(
             "Captured request: id=\(record.id, privacy: .public) length=\(trimmed.utf8.count, privacy: .public) owner=\(currentOwner, privacy: .public)"
         )
-        OneSystemActionInvocationCoordinator.shared.publishAvailability(state: "request_captured")
+        publishAvailability(state: "request_captured")
         return .captured
     }
 
@@ -198,7 +225,87 @@ final class OneSystemRequestInvocationCoordinator: @unchecked Sendable {
         }
         store.remove(pendingKey)
         lock.unlock()
-        OneSystemActionInvocationCoordinator.shared.publishAvailability(state: "request_cancelled")
+        publishAvailability(state: "request_cancelled")
+    }
+
+    // MARK: - Bridge surface
+    //
+    // HushhVoiceInvocationPlugin and AppDelegate call these. They were written
+    // against the shape of OneSystemActionInvocationCoordinator but never
+    // implemented here, so every call site was a compile error -- masked until
+    // now by an availability error that stopped the compiler first.
+
+    /// The pending request, if one is live and belongs to the current owner.
+    func pending() -> OneSystemRequestRecord? {
+        currentRequest()
+    }
+
+    /// Claim a specific request by id. Unlike `claimRequest()`, this refuses
+    /// when the id does not match what is actually pending, so a stale bridge
+    /// call cannot consume a newer request.
+    @discardableResult
+    func claim(id: String) -> Bool {
+        lock.lock()
+        guard let record = readValidatedPending(), record.id == id else {
+            lock.unlock()
+            return false
+        }
+        guard record.expiresAt > now() else {
+            store.remove(pendingKey)
+            lock.unlock()
+            Self.logger.info("Expired request claimed: id=\(record.id, privacy: .public)")
+            return false
+        }
+        store.remove(pendingKey)
+        lock.unlock()
+
+        OneSystemActionInvocationCoordinator.shared.bindRequestOwner(record.ownerID)
+        Self.logger.info("Claimed request: id=\(record.id, privacy: .public)")
+        return true
+    }
+
+    /// Acknowledge progress on a request. Returns whether the id is the one
+    /// actually pending; the state string is never logged with its content.
+    @discardableResult
+    func reportProgress(id: String, state: String) -> Bool {
+        lock.lock()
+        let record = readValidatedPending()
+        lock.unlock()
+        guard let record, record.id == id else { return false }
+        Self.logger.info(
+            "Request progress: id=\(record.id, privacy: .public) state=\(state, privacy: .public)"
+        )
+        return true
+    }
+
+    /// Finish a request. Clears the pending record only when the id matches, so
+    /// a late completion cannot discard a request captured after it.
+    func complete(id: String, outcome: String, summary: String) {
+        lock.lock()
+        let matched = readPending()?.id == id
+        if matched {
+            store.remove(pendingKey)
+        }
+        lock.unlock()
+        guard matched else { return }
+        // `summary` is user-facing copy that can quote the request, so it is
+        // deliberately not logged.
+        Self.logger.info(
+            "Completed request: id=\(id, privacy: .public) outcome=\(outcome, privacy: .public)"
+        )
+        publishAvailability(state: "request_completed")
+    }
+
+    /// Wake the bridge. Posts unconditionally rather than only when something
+    /// is pending, so the webapp can also learn that a request has gone away.
+    func publishAvailability(state: String) {
+        Self.logger.info("Request availability: state=\(state, privacy: .public)")
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .oneSystemRequestInvocationAvailable,
+                object: self
+            )
+        }
     }
 
     // MARK: - Private helpers
