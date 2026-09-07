@@ -264,7 +264,8 @@ export function TopShellTabs({
                 data-ui-role="agent-tab-label"
                 className={cn(
                   "ui-text-agent-tab-label relative truncate transition-colors duration-150",
-                  usesCompactLabels && "[--type-agent-tab-label-size:12px] min-[400px]:[--type-agent-tab-label-size:14px] sm:[--type-agent-tab-label-size:15px]",
+                  usesCompactLabels &&
+                    "[--type-agent-tab-label-size:11px] min-[360px]:[--type-agent-tab-label-size:12px] min-[400px]:[--type-agent-tab-label-size:14px] sm:[--type-agent-tab-label-size:15px]",
                   usesModuleSegmentedTabs
                     ? isActive
                       ? "font-semibold text-[color:var(--app-accent)]"
