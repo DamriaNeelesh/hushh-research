@@ -1213,3 +1213,84 @@ would have broken.
 The Check line must be a command that **runs in this repo** and returns
 something meaningful. Run it before committing the rule. A rule with a command
 that doesn't work here is worse than no rule.
+
+### R32 — A busy database is not a broken migration: retry contention, never widen the lock wait
+
+**Incident (2026-09-07, six failed UAT deploys — runs 34142917051 and 34143403982.)**
+Replay applies every migration with `lock_timeout_ms = 5_000` and **no retry
+anywhere** — `grep -c 'retry\|backoff\|attempt'` on `db/migration_authority.py`
+returned 0. One unlucky 5-second window against a live UAT killed the whole
+release, and the same commit deployed fine minutes later. R26 named the pattern;
+nothing was done about the immediate cause, so it stayed a coin flip.
+
+The obvious repair is the wrong one. Postgres queues lock requests, so a pending
+`ACCESS EXCLUSIVE` request blocks every **later** reader of that table as well.
+Raising `lock_timeout` to 30s does not buy 30s of patience — it buys 30s of
+queued UAT traffic. The safe shape is the opposite: keep the timeout short, roll
+back, let the queue drain, try again.
+
+**Rule.** Never widen `lock_timeout` to survive contention. Retry it instead,
+bounded and backed off, and only on a contention SQLSTATE — `55P03`
+lock_not_available, `40P01` deadlock_detected, `40001` serialization_failure. A
+`23514` check violation or a `42601` syntax error must still fail on the first
+attempt; retrying a broken migration only reports the same error later, having
+spent the deploy window. Roll back between attempts or the retry runs on an
+aborted connection and reports itself instead of the failure (R28).
+
+**Check.**
+```bash
+cd consent-protocol
+python3 -c "
+import re,pathlib
+s=pathlib.Path('db/migration_authority.py').read_text()
+print('retries only on contention:', '_LOCK_CONTENTION_SQLSTATES' in s)
+print('timeout still short:', '_lock_timeout_ms: int = 5_000' in s or 'lock_timeout_ms: int = 5_000' in s)
+print('rolls back between attempts:', '_rollback_failed_transaction(conn)' in s.split('_is_lock_contention(exc) and attempt')[1][:400])
+"
+../.venv/bin/python -m pytest tests/test_migration_authority.py -q -k "lock or retried or bounded"
+```
+All three must print `True`. Mutation-test before trusting it (R22): set
+`_LOCK_RETRY_ATTEMPTS = 1` and three tests must go red; make
+`_is_lock_contention` return `True` unconditionally and
+`test_a_broken_migration_is_not_retried` must go red.
+
+### R33 — `ledger` mode cannot be switched on today: 152 of 194 migrations open their own transaction
+
+**Incident (2026-09-07, scoping the durable fix R26 recommends.)** R26 says the
+durable answer to replay is `ledger` mode — pending migrations only, after a
+baseline. Acting on that sentence alone would have broken a release. Three
+things block it, and none are visible from the mode flag:
+
+1. **The migration bodies nest transactions.** `ledger` wraps each transactional
+   entry in `async with conn.transaction()` (`migration_authority.py:342`), but
+   `grep -lE '^\s*BEGIN\s*;' db/migrations/*.sql` returns **152 of 194 files**
+   that open their own. A `BEGIN` inside an open transaction warns and is
+   ignored; the body's own `COMMIT` then commits the **outer** transaction, so
+   the ledger row and the migration stop being atomic — exactly the guarantee
+   ledger mode exists to provide.
+2. **The backup tooling the baseline requires does not exist.** `establish_baseline`
+   demands `backup_checksum_sha256` matching `[0-9a-f]{64}` plus `restore_status
+   == "ok"`. There are **zero `pg_dump` references in the repository** — the
+   logical-backup scripts were deleted in `78aaa1e4b`. Nothing can produce the
+   artifact the gate asks for.
+3. **The evidence expires in an hour.** `load_preservation_evidence` rejects a
+   report older than `HUSHH_BASELINE_EVIDENCE_MAX_AGE_SECONDS` (default 3600),
+   so backup, restore-verify and baseline must complete inside one window.
+
+**Rule.** Do not set `UAT_MIGRATION_MODE=ledger`, and do not change the
+hardcoded `replay` in `deploy-production.yml:355` or `deploy-dev.yml:324`, until
+every transactional entry is proven not to open its own transaction. Enabling it
+first is not a smaller step — it is a silent loss of atomicity across 152 files.
+The ordered prerequisites are: strip `BEGIN`/`COMMIT` from the migration bodies
+(or mark those entries `transactional=False`), restore a logical-backup tool,
+provision a clone database, then baseline.
+
+**Check.**
+```bash
+cd consent-protocol
+grep -lE '^\s*BEGIN\s*;' db/migrations/*.sql | wc -l   # must be 0 before ledger mode
+grep -rn "pg_dump" --include="*.py" --include="*.sh" . | grep -v node_modules | head -1
+grep -n "migration-mode" ../.github/workflows/deploy-*.yml
+```
+The first must print `0`. The second must return a tool. Until both hold, every
+lane stays on `replay`.
