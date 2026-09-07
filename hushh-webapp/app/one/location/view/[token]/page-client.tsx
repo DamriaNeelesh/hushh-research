@@ -274,8 +274,8 @@ function PublicLocationMap({
       ? `Accuracy +/- ${Math.round(point.accuracyM)} m`
       : null;
   return (
-    <div className="overflow-hidden rounded-[var(--app-card-radius-compact)] bg-[color:var(--app-card-surface-default-solid)]">
-      <div className="relative h-64 overflow-hidden bg-muted sm:h-72">
+    <div className="overflow-hidden rounded-[var(--app-card-radius-compact)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)]">
+      <div className="relative h-[clamp(208px,34vw,252px)] overflow-hidden bg-[color:var(--app-card-surface-compact)] sm:h-[clamp(224px,28vw,252px)]">
         <iframe
           key={`live-location-map:${viewportResetKey}`}
           title="Live location map"
@@ -294,7 +294,10 @@ function PublicLocationMap({
           {/* Same foreground as the label beside it: the live dot reads as
               part of the chip, not as a second location colour. */}
           <span className="h-2 w-2 rounded-full bg-current motion-safe:animate-pulse" />
-          <Footnote as="span" className="font-semibold">
+          <Footnote
+            as="span"
+            className="font-semibold !text-[color:var(--app-success-fg)]"
+          >
             {/* "Public location" described who could open the link. The person
                 reading it has already opened it, and what they need to know is
                 whether the pin moves. */}
@@ -313,7 +316,7 @@ function PublicLocationMap({
           <RefreshCw className="h-4 w-4" aria-hidden="true" />
         </Button>
       </div>
-      <div className="space-y-3 p-3.5">
+      <div className="space-y-4 p-4">
         <div className="min-w-0">
           <CardTitle as="p">
             {ownerName ? `${ownerName}'s location` : "Shared location"}
@@ -338,7 +341,7 @@ function PublicLocationMap({
           </div>
         ) : null}
         <div className="grid gap-2">
-          <Button asChild variant="outline" size="sm" className="h-10 rounded-full">
+          <Button asChild variant="default" size="sm" className="h-11 w-full">
             <a
               href={googleMapsDirectionsUrl(point)}
               target="_blank"
@@ -360,7 +363,7 @@ function PublicLocationMap({
  */
 function TrustFooter() {
   return (
-    <footer className="mt-6 flex items-start gap-3 border-t border-border/60 pt-5">
+    <footer className="mt-4 flex items-start gap-3 border-t border-border/60 pt-4">
       <ShieldCheck
         className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
         aria-hidden="true"
@@ -423,10 +426,10 @@ export default function PublicLocationViewPageClient() {
           : `${ownerName || "The sender"} shared this link, but no location is attached to it yet.`;
 
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto flex min-h-screen w-full max-w-[720px] flex-col px-5 pb-10 pt-[max(48px,calc(env(safe-area-inset-top)+28px))] sm:px-6 sm:pt-[max(64px,calc(env(safe-area-inset-top)+40px))]">
-        <div className="rounded-[var(--app-card-radius-standard)] bg-[color:var(--app-card-surface-default-solid)] p-5 shadow-none sm:p-6">
-          <div className="space-y-6">
+    <main className="w-full text-foreground">
+      <div className="mx-auto flex w-full max-w-[720px] flex-col px-4 pb-4 pt-[max(24px,calc(env(safe-area-inset-top)+16px))] sm:px-6 sm:pt-[max(40px,calc(env(safe-area-inset-top)+24px))]">
+        <div className="rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-4 shadow-[var(--app-card-shadow-standard)] sm:p-6">
+          <div className="space-y-4">
             <div>
               <SectionLabel>Live location</SectionLabel>
               <div className="mt-2 flex items-center gap-3">
@@ -455,13 +458,13 @@ export default function PublicLocationViewPageClient() {
             {loading ? (
               <div className="space-y-3">
                 <Skeleton className="h-11 rounded-xl" />
-                <Skeleton className="h-24 rounded-xl" />
+                <Skeleton className="h-[clamp(208px,34vw,252px)] rounded-[var(--app-card-radius-compact)]" />
                 <Skeleton className="h-10 w-36 rounded-xl" />
               </div>
             ) : null}
 
             {!loading && invite ? (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 <LinkStatusBadge
                   lifecycle={lifecycle}
                   remainingMs={remainingMs}
