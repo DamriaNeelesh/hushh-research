@@ -1127,6 +1127,54 @@ PY
 ```
 All three must print `True`.
 
+### R29 — A warning you cannot fix must become an assertion about the one you can
+
+**Incident (2026-09-07, TestFlight build 100.)** Every `exportArchive` logs four copies of
+`warning: exportArchive Upload Symbols Failed. The archive did not include a dSYM for the
+FirebaseAnalytics.framework with the UUIDs [...]` — also for `GoogleAppMeasurement`,
+`GoogleAppMeasurementIdentitySupport` and `GoogleAdsOnDeviceConversion`. It was reported as
+"not something this change introduced" and left alone, which was accurate and useless.
+
+The warning is genuinely unfixable. Those four arrive through Swift Package Manager as binary
+targets under `SourcePackages/artifacts/`; `file` reports **`current ar archive`**, so they are
+static libraries in a `.framework` wrapper, and `find` returns **no `.dSYM` anywhere inside the
+`.xcframework`**. They are linked into `App` and never ship as a separate image. There is no dSYM
+to supply and never will be — Google strips them before publishing.
+
+The danger is not the warning. It is that **our own dSYM going missing prints the same sentence**.
+Flip `DEBUG_INFORMATION_FORMAT` from `dwarf-with-dsym` to `dwarf` on Release and the log grows a
+fifth identical-looking line among four that are always there, every build, forever. Nobody would
+see it, and every crash report from real users would arrive as raw addresses. Crashlytics is not
+linked in this app, so App Store Connect's symbol upload is the *only* symbolication path there is.
+
+**Rule.** Do not silence a warning class that contains a real signal, and do not silence it by
+turning `uploadSymbols` off — that drops our own symbols too, which is the exact failure being
+guarded against. Instead assert the thing that matters (our dSYM exists **and its UUIDs match the
+shipped binary**), name each known-unfixable exception in an allow-list with the reason, and fail
+on anything outside it. Apply it to every lane that exports an archive, not just the one where it
+was noticed (R14).
+
+**Check.** Prove the vendor binaries really are static and dSYM-less rather than assuming it:
+
+```bash
+DD=$(ls -d ~/Library/Developer/Xcode/DerivedData/App-*/SourcePackages/artifacts 2>/dev/null | head -1)
+for n in firebase-ios-sdk/FirebaseAnalytics/FirebaseAnalytics \
+         googleappmeasurement/GoogleAppMeasurement/GoogleAppMeasurement; do
+  b="$DD/$n.xcframework"; s=$(basename "$n")
+  echo "== $s"
+  [ -n "$(find "$b" -name '*.dSYM' 2>/dev/null)" ] && echo "  ships a dSYM" || echo "  ships NO dSYM"
+  file "$b/ios-arm64/$s.framework/$s" | sed 's/.*: /  /'
+done
+# "current ar archive" + "ships NO dSYM" == nothing to upload, permanently. Do not chase it.
+```
+
+Then mutation-test the guard, because a passing new check proves nothing (R22). Against a mock
+archive, all five must hold: healthy passes; a deleted `App.app.dSYM` fails; a dSYM whose UUIDs no
+longer match the binary fails; an allow-listed vendor framework with no dSYM passes; any other
+framework with no dSYM fails. Note that `clang -g` re-runs `dsymutil` automatically, so a "stale
+dSYM" test that rebuilds in place silently regenerates it and passes — hold the dSYM aside first,
+or the mutation test proves nothing.
+
 ## Adding a rule
 
 Every mistake found becomes a rule. Fix the **cause**, not the symptom, then add
