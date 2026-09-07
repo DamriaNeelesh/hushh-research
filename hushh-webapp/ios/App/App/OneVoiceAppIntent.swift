@@ -931,6 +931,26 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
         "View my location map in \(agentOne)",
     ]
 
+    /// Emergency SOS. Deliberately the widest phrase set of any shortcut here:
+    /// this is the one a person may need to reach while panicking, in the dark,
+    /// or in a second language. "SMS" is the in-product name (Save My Soul), so
+    /// it is spelled out as well as abbreviated.
+    ///
+    /// The intent OPENS the SOS screen. It does not send an alert. A hardware
+    /// button or a misheard phrase must never fire an emergency message on
+    /// someone's behalf.
+    static let emergencySOSPhrases: [AppShortcutPhrase<OpenOneEmergencySOSIntent>] = [
+        "SMS in \(agentOne)",
+        "Save my soul in \(agentOne)",
+        "Open SMS in \(agentOne)",
+        "Emergency in \(agentOne)",
+        "Emergency SOS in \(agentOne)",
+        "SOS in \(agentOne)",
+        "Open emergency SOS in \(agentOne)",
+        "I need help in \(agentOne)",
+        "Help me in \(agentOne)",
+    ]
+
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: AskOneRequestIntent(),
@@ -991,11 +1011,21 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
             shortTitle: "Create Circle",
             systemImageName: "person.2.circle"
         )
+        // Emergency SOS holds the tenth slot, not Open Map.
+        //
+        // Apple caps App Shortcuts at ten, enforced at compile time, so this is
+        // a genuine trade. Open Map was the one safe thing to drop: it is fully
+        // reachable through OpenOneDestinationIntent, whose AgentOneDestination
+        // parameter already carries `.map`, and it remains available as an
+        // action in the Shortcuts app. SOS had no voice route at all.
+        //
+        // Being in this list is also what lets a person put SOS on the Action
+        // button, since that picker only offers registered App Shortcuts.
         AppShortcut(
-            intent: OpenOneLocationMapIntent(),
-            phrases: openMapPhrases,
-            shortTitle: "Open Map",
-            systemImageName: "map"
+            intent: OpenOneEmergencySOSIntent(),
+            phrases: emergencySOSPhrases,
+            shortTitle: "Emergency SOS",
+            systemImageName: "sos"
         )
     }
 

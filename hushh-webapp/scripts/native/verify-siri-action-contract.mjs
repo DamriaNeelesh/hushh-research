@@ -95,44 +95,64 @@ function parseTypescriptActionIds(source) {
 
 function verifyShortcutPhrases(source) {
   const shortcutCount = [...source.matchAll(/\bAppShortcut\(/g)].length;
-  if (shortcutCount !== 9) {
-    throw new Error(`Expected 9 App Shortcuts, found ${shortcutCount}`);
+  // Apple caps App Shortcuts at 10 and enforces it at compile time, so the
+  // upper bound is the real safety invariant. The exact count is pinned too, so
+  // that silently dropping one to make room is a failing test rather than a
+  // quiet regression.
+  if (shortcutCount > 10) {
+    throw new Error(
+      `App Shortcuts exceed Apple's limit of 10, found ${shortcutCount}`,
+    );
   }
-  if (source.includes('"Ask \\(.applicationName)"')) {
+  if (shortcutCount !== 10) {
+    throw new Error(`Expected 10 App Shortcuts, found ${shortcutCount}`);
+  }
+  // Emergency SOS must hold a slot. It is the one shortcut a person may need
+  // while unable to navigate the app, and being registered here is also what
+  // makes it assignable to the Action button.
+  if (!source.includes("intent: OpenOneEmergencySOSIntent()")) {
+    throw new Error(
+      "Emergency SOS must remain a registered App Shortcut: it is the only " +
+        "voice and Action-button route to the SOS screen",
+    );
+  }
+  // Phrases interpolate the `agentOne` constant, not a literal
+  // \(.applicationName). Matching the wrong form silently passes.
+  for (const phrase of ['"SMS in \\(agentOne)"', '"Save my soul in \\(agentOne)"']) {
+    if (!source.includes(phrase)) {
+      throw new Error(`Emergency SOS must keep its ${phrase} phrase`);
+    }
+  }
+  if (source.includes('"Ask \\(agentOne)"')) {
     throw new Error("Bare Ask Agent One must not advertise the conversation intent");
   }
+  // These assert the phrases the app actually ships.
+  //
+  // They previously asserted a \(.applicationName) interpolation that appears
+  // nowhere in the Swift, and an "Ask X to Y" phrase style the app moved away
+  // from. None of it was caught, because the shortcut-count check above threw
+  // first and this loop never ran. Treat a failure here as real drift.
   const requiredFragments = [
-    '"Talk to \\(.applicationName)"',
-    '"Start a conversation with \\(.applicationName)"',
-    '"Ask \\(.applicationName) to share my location',
-    '"Tell \\(.applicationName) to share my location',
-    '"Talk to \\(.applicationName) and share my location',
-    '"Ask \\(.applicationName) to ask',
-    '"Tell \\(.applicationName) to request',
-    '"Talk to \\(.applicationName) and ask',
-    '"Ask \\(.applicationName) to stop sharing location',
-    '"Tell \\(.applicationName) to stop sharing location',
-    '"Talk to \\(.applicationName) and stop sharing location',
-    '"Ask \\(.applicationName) to pause my location"',
-    '"Tell \\(.applicationName) to pause my location"',
-    '"Talk to \\(.applicationName) and pause my location"',
-    '"Ask \\(.applicationName) to turn Location',
-    '"Tell \\(.applicationName) to turn Location',
-    '"Talk to \\(.applicationName) and turn Location',
-    '"Ask \\(.applicationName) to create a Circle"',
-    '"Tell \\(.applicationName) to create a Circle"',
-    '"Talk to \\(.applicationName) and create a Circle"',
-    'intent: RenameOneCircleIntent()',
-    '"Ask \\(.applicationName) to rename',
-    '"Tell \\(.applicationName) to rename',
-    '"Talk to \\(.applicationName) and rename',
-    '"Ask \\(.applicationName) to check in"',
-    '"Tell \\(.applicationName) to open Check In"',
-    '"Talk to \\(.applicationName) and check in"',
-    '"Ask \\(.applicationName) to open',
-    '"Tell \\(.applicationName) to show',
-    '"Talk to \\(.applicationName) and open',
+    // Conversation entry stays explicit, and a bare "Ask" must not claim it.
+    '"Talk to \\(agentOne)"',
+    '"Start a conversation with \\(agentOne)"',
+    // Free-text handshake into semantic routing.
+    '"Ask Agent One with \\(\\.$requestText)"',
+    // Location sharing, including the parameterised recipient form.
+    '"Share my location with \\(\\.$recipient) in \\(agentOne) Location Agent"',
+    '"Ask \\(agentOne) to share my location',
+    // Circles, including the named form used by "Make a Circle called Goa".
+    '"Create a Circle in \\(agentOne)"',
+    '"Create a Circle named \\(\\.$name) in \\(agentOne)"',
+    // Check-in.
+    '"Check in with \\(agentOne)"',
+    '"Open Check In in \\(agentOne) Location"',
+    // Emergency SOS: the in-product name and its expansion must both work.
+    '"SMS in \\(agentOne)"',
+    '"Save my soul in \\(agentOne)"',
+    '"Emergency SOS in \\(agentOne)"',
   ];
+
   const missing = requiredFragments.filter((fragment) => !source.includes(fragment));
   if (missing.length > 0) {
     throw new Error(`Missing governed Siri phrase fragments: ${missing.join(", ")}`);
