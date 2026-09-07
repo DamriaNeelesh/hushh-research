@@ -900,6 +900,76 @@ the `calc()`. And grep for other places applying the same clearance — this one
 was being added four times: `.app-page-shell`, `.profile-home-screen`,
 `profile-stack-navigator.tsx`, and the scroll root that legitimately owns it.
 
+### R27 — Hoisting an App Shortcut phrase array deletes every shortcut in the app
+
+**Incident (2026-09-07, iOS TestFlight build 99 — merge `a4a95a1e4`, PR #6559).** Long-pressing
+the app icon showed no App Shortcuts at all, only the system items, and `TalkToHusshOneIntent`
+stopped working despite being **byte-identical to build 98**. The PR had refactored every phrase
+list out of its `AppShortcut(...)` call into a named constant — `phrases: shareLocationPhrases`
+where build 98 wrote the phrases in place — and the app name likewise into
+`private static let agentOne: AppShortcutPhraseToken = .applicationName`.
+
+`appintentsmetadataprocessor` extracts App Shortcuts at **compile time** by reading those
+expressions literally. It cannot follow a reference to a `static let`. It saw ten shortcuts with
+zero phrases and stopped:
+
+```
+OneVoiceAppIntent.swift:1113: warning: App Shortcuts should have at least one phrase
+error: At least one halting error produced during export. No AppIntents metadata have been
+exported and this target is not usable with AppIntents until errors are resolved.
+```
+
+No metadata means **no App Shortcuts of any kind** — including ones whose code never changed.
+
+Proven on this repo, Xcode 26.6, one file swapped between otherwise identical builds:
+
+| provider shape | `Metadata.appintents` |
+| --- | --- |
+| build 99 as shipped (arrays hoisted + token hoisted) | **not written** — halting error |
+| arrays inline, token still hoisted | **not written** — halting error |
+| arrays hoisted, token inline | **not written** — halting error |
+| both inline (build 98's shape) | **written**, 10 shortcuts, 61 phrases |
+
+Both hoistings must be undone; neither alone is sufficient. Note the shipped CI ran Xcode 26.3
+and *did* write a metadata file, so CI never went red — "Writing Metadata.appintents" in a log is
+not evidence that the shortcuts are in it.
+
+Separately and secondarily: that PR also bound `\(\.$requestText)`, a plain `String`, into a
+phrase. Apple allows only `AppEnum` and `AppEntity` phrase parameters. That is a real violation
+worth fixing, but it is **not** what emptied the menu.
+
+**Rule.** Phrase arrays and the `\(.applicationName)` token are written inline inside
+`AppShortcut(phrases: [...])`, never hoisted into a named constant, no matter how much tidier
+hoisting looks. Every phrase parameter is an `AppEnum` or `AppEntity`; free text goes through the
+parameter's `requestValueDialog`. Order both structural checks BEFORE the phrase-fragment
+assertions — an earlier throw means later assertions never run, which is how this verifier passed
+while the app shipped with nothing.
+
+**Check.** Both guards must fail on the real bug. Hoist while keeping every phrase intact, so the
+fragment assertions still pass and only the shape guard can fire:
+
+```bash
+cd hushh-webapp && node scripts/native/verify-siri-action-contract.mjs   # green first
+# then hoist one family into a `static let ...Phrases` and re-run:
+#   Error: Phrase arrays must be written inline ... not hoisted into a named constant
+# and add "Ask \(.applicationName) with \(\.$requestText)" as an extra phrase:
+#   Error: ... binds \(\.$requestText), typed `String` ...
+```
+
+A green contract still is not a registered shortcut. Only a build proves it:
+
+```bash
+xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/dd \
+  CODE_SIGNING_ALLOWED=NO build 2>&1 | grep -E "halting error|Writing Metadata.appintents"
+python3 -c "
+import json;d=json.load(open('/tmp/dd/Build/Products/Debug-iphonesimulator/App.app/Metadata.appintents/extract.actionsdata'))
+[print(s['shortTitle']['key'], len(s.get('phraseTemplates') or [])) for s in d['autoShortcuts']]"
+```
+
+Expect ten rows with non-zero phrase counts. Zero rows, or a row with zero phrases, is the bug.
+
+
 ## Adding a rule
 
 Every mistake found becomes a rule. Fix the **cause**, not the symptom, then add
