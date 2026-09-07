@@ -900,6 +900,110 @@ the `calc()`. And grep for other places applying the same clearance — this one
 was being added four times: `.app-page-shell`, `.profile-home-screen`,
 `profile-stack-navigator.tsx`, and the scroll root that legitimately owns it.
 
+### R24 — A dependency pinned to a private index cannot travel through `requirements.txt`
+
+**Incident (2026-09-07, adding sentence-transformers for semantic retrieval).** To
+keep ~2.5 GB of nvidia CUDA wheels out of a GPU-less Cloud Run image, torch was
+pinned to PyTorch's CPU index in `pyproject.toml` with `[[tool.uv.index]]` +
+`[tool.uv.sources]`. `uv lock` then recorded `torch==2.14.0+cpu`, and
+`uv export` wrote that pin into `requirements.txt` **without any index
+directive** — it does not carry index configuration into the generated file. A
+`+cpu` local version exists only on PyTorch's index, never on PyPI, so the
+Docker build could not resolve it. UAT failed at "Build and pin backend image",
+before deploying anything.
+
+It cannot be repaired at the install command either. `--extra-index-url` fails
+because that index mirrors much of PyPI and uv's first-index strategy then
+refuses the PyPI versions it shadows. `[tool.uv.sources]` and `explicit = true`
+apply in uv **project** mode, not in pip mode against a requirements file.
+
+**Rule.** If the Dockerfile installs from `requirements.txt`, every dependency
+must be resolvable from the indexes that file can reach — which is PyPI alone.
+A per-package index needs project-mode install (`COPY pyproject.toml uv.lock` +
+`uv sync --frozen`), or it does not belong in the lock at all.
+
+**Check.** Resolve for the deploy target, not for your Mac:
+
+```bash
+cd consent-protocol
+uv pip install --dry-run \
+  --python-platform x86_64-unknown-linux-gnu --python-version 3.13 \
+  -r requirements.txt | tail -3
+# "Resolved N packages" = the image will build.
+# "No solution found" = the next UAT deploy dies before it ships anything.
+grep -nE '\+[a-z]+( |$)|^--(extra-)?index-url' requirements.txt
+# A local version (+cpu, +cu121) with no index directive is the trap.
+```
+
+### R25 — In replay mode, every migration must be replay-safe against *today's* data
+
+**Incident (2026-09-07, unblocking UAT).** UAT runs
+`db/migrate.py --migration-mode replay`, which re-executes **every** migration
+body in order on **every** deploy. Migration 138 re-adds
+`connection_origins_origin_kind_check` with the vocabulary as it stood then —
+before 175 added `contact_sync`. The moment UAT held its first `contact_sync`
+row, replaying 138 began failing with *"check constraint ... is violated by
+some row"*, and every deploy of every commit stopped there. The 03:18 run
+passed only because no such row existed yet.
+
+A migration is not a historical record here. It is code that runs again tonight,
+against data that did not exist when it was written.
+
+**Rule.** Any migration that narrows a constraint, adds a NOT NULL, or asserts
+a vocabulary must tolerate rows a later migration legitimises. Add the
+constraint `NOT VALID` when the migration's intent is "change what future rows
+do" — its own comment usually says so. Let the later migration validate the
+full set. Never widen an old migration to name a value that did not exist yet.
+
+**Check.** Find every migration that re-adds a constraint a later one changes:
+
+```bash
+cd consent-protocol
+for c in $(grep -rhoE 'ADD CONSTRAINT [a-z_]+' db/migrations/*.sql \
+           | awk '{print $3}' | sort | uniq -d); do
+  echo "== $c"
+  grep -ln "ADD CONSTRAINT $c" db/migrations/*.sql | sort
+done
+# Two or more files for one constraint name = every earlier one re-runs on
+# replay with its older, narrower rule. Each must be NOT VALID or provably
+# no narrower than the final one.
+```
+
+### R26 — UAT replays migrations against a live database; it fails by time of day, not by commit
+
+**Incident (2026-09-07, after R25 was fixed.)** With the constraint violation
+gone, the deploy got further and then died on
+`LockNotAvailableError: canceling statement due to lock timeout`. Replay takes
+`ACCESS EXCLUSIVE` locks across the whole migration history while UAT is
+serving traffic, and `lock_timeout_ms` defaults to **5 seconds**
+(`db/migration_authority.py:56`). Two consecutive retries failed identically,
+so it is contention, not a transient blip.
+
+The deploy history makes the pattern plain — successes cluster at 00:56, 06:05
+and 11:17; failures at 21:04, 21:59, 14:46, 15:33, 16:22, 16:28. The same
+commit deploys at night and fails in the evening.
+
+**Rule.** Do not read a UAT failure as "my change broke it" until the lane
+itself is ruled out. Check whether the failure is the same step failing for
+everyone, and whether recent successes cluster in quiet hours. A retry is
+evidence only when it changes the outcome; two identical failures mean stop
+retrying and fix the lane.
+
+**Check.** Before blaming a commit, look at the lane:
+
+```bash
+gh run list --repo hushh-labs/hushh-research --workflow deploy-uat.yml \
+  --limit 15 --json conclusion,createdAt,headSha \
+  --jq '.[] | "\(.createdAt[11:16]) \(.conclusion // "running") \(.headSha[0:9])"'
+# Many SHAs failing, and successes clustered in off-hours, means the lane is
+# the problem. One SHA failing while neighbours pass means the commit is.
+```
+
+The durable fix is `ledger` mode — pending migrations only, after a verified
+baseline — which `db/migrate.py` already supports and which exists precisely
+for this. It needs a one-time baseline established against the UAT database
+(`db/migrate.py --establish-baseline`), so it requires database access.
+
 ## Adding a rule
 
 Every mistake found becomes a rule. Fix the **cause**, not the symptom, then add
