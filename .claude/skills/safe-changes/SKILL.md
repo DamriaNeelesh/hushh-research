@@ -1287,3 +1287,90 @@ python3 scripts/ci/check-deploy-secret-coverage.py
 Runs in the `Governance` CI job. It fails on an omission absent from
 `config/deploy-env-coverage.json`, and on a listed entry that no longer matches
 reality — both directions mutation-tested before this rule landed.
+
+### R32 — `secrets versions add` REPLACES. A list in a secret needs read-modify-write
+
+**Incident (2026-09-03, discovered 2026-09-08.)** `HUSHH_UAT_PHONE_TEST_NUMBERS`
+holds the UAT fixed-OTP phone allowlist. Version 8 held **59** numbers. Version
+9, written **three minutes and ten seconds later**, held **1**. Fifty-eight
+testers' numbers were destroyed in a single write, and nothing anywhere said so.
+
+The damage surfaced days later, and not as a secret problem. A number that was
+no longer allowlisted fell through to real Firebase exactly as designed, a real
+SMS went to a number nobody was holding, and the person typing the fixed test
+code `000000` got *"That verification code is incorrect."* Every component
+behaved correctly. The founder spent an evening convinced the database had
+broken phone verification, which never touches the database at all.
+
+The cause is the tool's shape, not carelessness: `gcloud secrets versions add`
+**replaces the entire value**. There is no append. Editing a list therefore
+means read the current version, merge, write back — and skipping the read
+silently deletes everyone else's entries. Nothing warns you, and the old
+versions look like ordinary history rather than the evidence of a wipe.
+
+R3 already says *only ever ADD access, never replace*. It was written about IAM
+policies. It applies exactly as hard to a **list stored in a secret**, and it
+did not say so.
+
+**Rule.** Never hand-write a list-valued secret. Use
+`scripts/ops/secret_list_edit.py`, which reads the current value, unions into
+it, and **refuses to write a version with fewer entries than the current one**.
+Print counts and last-4s, never values. Before assuming a list-valued secret is
+correct, look at its version history — an entry count that collapses between
+adjacent versions is a wipe, not an edit.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne
+# Entry count per version. A sharp drop between adjacent versions is a wipe.
+for v in $(gcloud secrets versions list HUSHH_UAT_PHONE_TEST_NUMBERS \
+  --project=hushh-pda-uat --format='value(name)' --limit=6); do
+  printf 'v%-3s ' "$v"
+  gcloud secrets versions access "$v" --secret=HUSHH_UAT_PHONE_TEST_NUMBERS \
+    --project=hushh-pda-uat 2>/dev/null | tr ',;' '\n' | grep -c . 
+done
+# And the safe editor refuses to shrink:
+scripts/ops/secret_list_edit.py --secret HUSHH_UAT_PHONE_TEST_NUMBERS \
+  --project hushh-pda-uat --show
+```
+Restored as version 10 on 2026-09-08: 59 entries, verified, nothing dropped.
+
+### R33 — Nothing reads a secret's old versions, so a wipe is invisible until a user hits it
+
+**Incident (2026-09-03, found 2026-09-08.)** The 58 numbers deleted from
+`HUSHH_UAT_PHONE_TEST_NUMBERS` (R32) sat gone for **five days**. Not one system
+noticed. No alert, no failing check, no red deploy. It surfaced only when the
+founder could not verify a phone and spent an evening convinced the database had
+broken phone verification — which never touches the database.
+
+The evidence was there the whole time: version 8 had 59 entries, version 9 had
+1. Secret Manager keeps every version. **Nothing in this repo ever read them.**
+
+Audit detail, for the record: both writes came from `kushal@hushh.ai` via
+`Python-urllib/3.13` — a custom script, not the CLI. Automation that owns a
+value and rewrites it wholesale is the highest-risk shape for this, because it
+repeats reliably and nobody reviews its payload.
+
+The same exposure exists in **production**: `HUSHH_PROD_PHONE_TEST_NUMBERS`
+holds 40 entries and one careless write destroys them the same way.
+
+**Rule.** Every list-valued secret that a feature depends on is declared in
+`config/protected-lists.json` with an entry floor and a shrink limit, and
+checked automatically. A deploy must fail rather than ship on top of destroyed
+configuration. Detection is not optional just because the edit tool is safe —
+`secret_list_edit.py` only helps the people who use it, and the wipe came from
+something that did not.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne
+python3 scripts/ops/verify_secret_list_invariants.py
+```
+Runs in `deploy-uat.yml` before the runtime-parity check. Fails when a tracked
+list falls below its floor, or when more entries vanished between adjacent
+versions than the limit allows, and prints the exact `secret_list_edit.py
+--restore-from` command to recover.
+
+Verified by replaying the real incident: against v8 → v9 it reports 58 entries
+lost against a limit of 5, and 1 entry against a floor of 25 — it fails on both
+counts. A guard never seen to catch its own incident is decoration.
