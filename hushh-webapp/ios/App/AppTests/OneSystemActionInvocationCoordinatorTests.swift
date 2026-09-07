@@ -133,6 +133,7 @@ final class OneSystemActionInvocationCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.pending(), invocation)
         let result = await coordinator.waitForCompletionOrProgress(
             id: invocation.id,
+            generation: invocation.generation,
             timeout: 0.1
         )
         XCTAssertEqual(

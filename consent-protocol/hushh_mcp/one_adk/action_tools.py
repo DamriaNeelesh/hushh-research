@@ -139,6 +139,11 @@ _RETRIEVAL_OVERFETCH = 3
 # Sized from the real gap: the shared-alias tie is 2 points, so this settles it
 # while staying far below a genuine relevance difference.
 _ON_SCREEN_RANK_BONUS = 5.0
+# The semantic branch scores on a different scale: RRF scores cluster around
+# 1-2 and a shared-alias tie measures ~0.03 ("people tab" reaches both
+# connect.open_people and location.open_people). Sized to settle that tie and
+# no more, so a genuinely better match is never displaced.
+_ON_SCREEN_SEMANTIC_BONUS = 0.05
 _MAX_QUERY_TOKENS = 8
 # On-screen actions a queried call may keep for context after the real matches.
 _MAX_QUERY_FILLER = 4
@@ -3655,8 +3660,6 @@ async def list_app_actions(query: str, tool_context: ToolContext) -> dict[str, A
             # refused -> list loop rather than an answer.
             if availability == "unreachable_from_here":
                 continue
-            if len(selected) >= _MAX_LIST_RESULTS:
-                break
             selected.append(
                 dataclasses.replace(
                     item,
@@ -3664,6 +3667,17 @@ async def list_app_actions(query: str, tool_context: ToolContext) -> dict[str, A
                     navigation=({"open_first_action_id": open_first} if open_first else None),
                 )
             )
+
+        # Same on-screen preference the lexical branch applies: when two actions
+        # share an alias, the one the person is looking at wins. Retrieval ranks
+        # against the catalog and cannot see the screen, so it happens here.
+        on_screen_ids = available_action_ids or set()
+        selected.sort(
+            key=lambda ra: (
+                -(ra.score + (_ON_SCREEN_SEMANTIC_BONUS if ra.action_id in on_screen_ids else 0.0))
+            )
+        )
+        selected = selected[:_MAX_LIST_RESULTS]
     else:
         # Fallback: list wired actions filtered by reachability (lexical path).
         candidates: list[tuple[int, str, dict[str, Any], str, str | None]] = []

@@ -36,7 +36,7 @@
 		A11C0A730000000000000015 /* OneSystemRequestInvocationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0A730000000000000005 /* OneSystemRequestInvocationCoordinator.swift */; };
 		A11C0A730000000000000022 /* OneVoiceInvocationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0A730000000000000021 /* OneVoiceInvocationCoordinatorTests.swift */; };
 		A11C0A730000000000000023 /* OneSystemActionInvocationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0A730000000000000024 /* OneSystemActionInvocationCoordinatorTests.swift */; };
-		A11C0A730000000000000024 /* AgentOneSiriSemanticCorpusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0A730000000000000025 /* AgentOneSiriSemanticCorpusTests.swift */; };
+		A11C0A730000000000000026 /* AgentOneSiriSemanticCorpusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11C0A730000000000000025 /* AgentOneSiriSemanticCorpusTests.swift */; };
 		A1B2C3D42F0E966A009FC3FD /* PersonalKnowledgeModelPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D52F0E966A009FC3FD /* PersonalKnowledgeModelPlugin.swift */; };
 		A2774DC0614D2A490F85042E /* HushhConsentPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99D0CE383269D3D6B23A9A02 /* HushhConsentPlugin.swift */; };
 		ABCDEF000000000000000002 /* HusshIMessageSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000001 /* HusshIMessageSessionStore.swift */; };
@@ -432,7 +432,7 @@
 				A11C0A710000000000000092 /* LocationEnvelopeCryptoTests.swift in Sources */,
 				A11C0A730000000000000022 /* OneVoiceInvocationCoordinatorTests.swift in Sources */,
 				A11C0A730000000000000023 /* OneSystemActionInvocationCoordinatorTests.swift in Sources */,
-				A11C0A730000000000000024 /* AgentOneSiriSemanticCorpusTests.swift in Sources */,
+				A11C0A730000000000000026 /* AgentOneSiriSemanticCorpusTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -409,6 +409,27 @@ final class OneSystemActionInvocationCoordinator: @unchecked Sendable {
 
     // MARK: - Completion
 
+    /// Bridge-facing overload. The Capacitor plugin never receives a
+    /// generation — `claimActionInvocation` returns only `{claimed}` — so
+    /// resolve the current generation for this id here and delegate.
+    ///
+    /// This is not a weaker guarantee than passing one through JS. `enqueue`
+    /// removes the claimed record whenever a newer request replaces an older
+    /// one, so a completion arriving for a superseded request finds no record
+    /// bearing its id and the generation-checked overload drops it.
+    func complete(id: String, outcome: String, summary: String) {
+        lock.lock()
+        var resolved: Int?
+        if let claimed = readClaimRecord(key: claimedKey), claimed.invocation.id == id {
+            resolved = claimed.invocation.generation
+        } else if let pending = readValidatedPending(key: pendingKey), pending.id == id {
+            resolved = pending.generation
+        }
+        lock.unlock()
+        guard let generation = resolved else { return }
+        complete(id: id, generation: generation, outcome: outcome, summary: summary)
+    }
+
     func complete(id: String, generation: Int, outcome: String, summary: String) {
         let safeOutcome = Self.allowedOutcomes.contains(outcome) ? outcome : "failed"
         let safeSummary = Self.sanitizeDisplayText(summary, maxLength: 240)
@@ -497,6 +518,39 @@ final class OneSystemActionInvocationCoordinator: @unchecked Sendable {
         lock.unlock()
         if let pending { Self.log(state: "cancelled", invocation: pending, outcome: outcome) }
         if let claimed { Self.log(state: "cancelled", invocation: claimed.invocation, outcome: outcome) }
+    }
+
+    /// Wait for the web app to settle this invocation, or to report that it is
+    /// blocked on something the person must do (an unlocked Vault).
+    ///
+    /// Bound to `generation` as well as `id`. A completion written for an
+    /// earlier request must never satisfy a newer one: the coordinator is
+    /// latest-wins, so ids can repeat across a replaced request and an
+    /// id-only match would let a stale result be spoken as this request's
+    /// answer.
+    ///
+    /// Returning `nil` means "not settled yet", never "failed" — the caller
+    /// tells the person to continue in the app rather than claiming an
+    /// outcome it does not have.
+    func waitForCompletionOrProgress(
+        id: String,
+        generation: Int,
+        timeout: TimeInterval = 25
+    ) async -> OneSystemActionWaitResult? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let completion = completion(id: id, generation: generation) {
+                return .completion(completion)
+            }
+            if let progress = progress(id: id) { return .progress(progress) }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        // One last read: the web app may have settled inside the final sleep.
+        if let completion = completion(id: id, generation: generation) {
+            return .completion(completion)
+        }
+        if let progress = progress(id: id) { return .progress(progress) }
+        return nil
     }
 
     @discardableResult

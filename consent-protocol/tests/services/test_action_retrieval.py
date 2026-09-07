@@ -178,21 +178,8 @@ def test_an_explicit_connection_request_surfaces_its_action():
     assert "connect.send_request" in ids, ids
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Known limitation of whole-gateway lexical ranking, documented by the "
-        "code this sits beside: scored across the whole catalog, 'connect me "
-        "with ankit' is won by setup.connect_gmail -- 'a wrong answer that "
-        "looks like a confident one'. In production this phrase is handled "
-        "before discovery, by the journey redirect in ask_consent_agent, which "
-        "is deliberately still in place. This xfail is the gate on REMOVING "
-        "that redirect: it must pass on retrieval's own merits, which needs "
-        "the embedding model packaged. Until then, removing the redirect "
-        "reintroduces the original permissions-refusal incident."
-    ),
-    strict=True,
-)
-def test_the_incident_phrase_still_needs_semantic_retrieval():
+@requires_embeddings
+def test_the_incident_phrase_resolves_through_semantic_retrieval():
     """The phrase from the original production incident.
 
     One was told specialists validate consent, sent "connect me with Ankit" to
@@ -200,8 +187,15 @@ def test_the_incident_phrase_still_needs_semantic_retrieval():
     relayed it -- so a request the app could satisfy end to end came back as
     "I don't have the right permissions".
 
-    This test is expected to FAIL until the embedding dependency ships. It is
-    the gate on removing the override, not decoration.
+    Lexical ranking alone cannot resolve this: scored across the whole catalog
+    the phrase is won by setup.connect_gmail, "a wrong answer that looks like a
+    confident one". Embedding retrieval does resolve it, which is why this is
+    skipped rather than failed when the model is absent -- the degraded path is
+    not expected to pass, and the journey redirect in ask_consent_agent is what
+    covers the phrase there.
+
+    This is the gate on removing that redirect: it must hold wherever the
+    redirect is removed, which means the model must be packaged first.
     """
     import asyncio
     from types import SimpleNamespace

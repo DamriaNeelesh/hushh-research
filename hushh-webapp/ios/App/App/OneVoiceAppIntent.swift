@@ -331,7 +331,8 @@ private enum OneAppIntentActionExecutor {
             return "Agent One could not prepare that action."
         }
         guard let result = await OneSystemActionInvocationCoordinator.shared.waitForCompletionOrProgress(
-            id: invocation.id
+            id: invocation.id,
+            generation: invocation.generation
         ) else {
             return "Continue in Agent One to finish. Your request is waiting."
         }

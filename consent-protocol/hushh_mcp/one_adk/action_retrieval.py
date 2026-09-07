@@ -115,24 +115,37 @@ def _unicode_tokens(text: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _reciprocal_rank_fusion(
-    ranked_lists: list[list[str]],
-    k: float = 60.0,
-) -> list[tuple[str, float]]:
-    """Fuse multiple ranked lists into (action_id, fused_score) pairs.
-
-    Accepts lists of action-id strings ordered best-first.
-    """
-    scores: dict[str, float] = {}
-    for ranked in ranked_lists:
-        for rank_i, action_id in enumerate(ranked):
-            scores[action_id] = scores.get(action_id, 0.0) + k / (rank_i + 1 + k)
-    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-
 # ---------------------------------------------------------------------------
 # Catalog digest
 # ---------------------------------------------------------------------------
+
+
+# Passage vectors for the whole wired catalog, keyed by catalog digest.
+#
+# Without this, the semantic branch embedded `supported[:20]` -- an arbitrary
+# 20 actions in generated-file order, out of 175 wired. Similarity was never
+# computed for the rest, so location.share_selected could not win "let Ankit see
+# where I am" no matter how well it matched: it was never scored at all.
+_PASSAGE_CACHE: dict[str, Any] = {"digest": None, "vectors": []}
+
+
+def _ensure_passage_vectors(
+    supported: list[dict[str, Any]], gateway: dict[str, Any]
+) -> list[list[float]]:
+    """Embed every wired action once per catalog revision.
+
+    Vectors are positionally aligned to ``supported``; the digest covers the
+    generated content, so identical digest implies identical order.
+    """
+    digest = _catalog_digest(gateway)
+    cached = _PASSAGE_CACHE
+    if cached["digest"] == digest and len(cached["vectors"]) == len(supported):
+        return cached["vectors"]
+    vectors = get_embedding_client().embed_passages([_build_passage(entry) for entry in supported])
+    if len(vectors) == len(supported):
+        _PASSAGE_CACHE["digest"] = digest
+        _PASSAGE_CACHE["vectors"] = vectors
+    return vectors
 
 
 def _catalog_digest(gateway: dict[str, Any]) -> str:
@@ -609,8 +622,11 @@ def search_actions(
     if not entries:
         return []
 
-    # Gate out unsupported/legacy entries.
-    supported = [e for e in entries if e.get("voice_enabled")]
+    # Gate to wired actions. `voice_enabled` is not a field the generator emits
+    # -- it appears on zero of the catalog's entries -- so filtering on it
+    # returned [] for every query while reporting retrieval as available. The
+    # rest of the codebase gates on execution_target.status, and so does this.
+    supported = [e for e in entries if (e.get("execution_target") or {}).get("status") == "wired"]
     if not supported:
         return []
 
@@ -634,37 +650,37 @@ def search_actions(
     semantic_scores: dict[int, float] = {}
     try:
         query_vec = client.embed_query(query)
-        passages = [_build_passage(e) for e in supported[:semantic_branch_k]]
-        if passages:
-            passage_vecs = client.embed_passages(passages)
+        passage_vecs = _ensure_passage_vectors(supported, gateway)
+        if passage_vecs:
             sims = client.similarity(query_vec, passage_vecs)
             # strict=True: a length mismatch would pair an action with another
             # action's similarity, which is unfindable at runtime.
-            for entry, score in zip(supported[:semantic_branch_k], sims, strict=True):
+            for entry, score in zip(supported, sims, strict=True):
                 semantic_scores[id(entry)] = float(score)
     except Exception:
         logger.warning("semantic_search_failed", exc_info=True)
 
+    # Every wired action is scored above; this bounds how many reach fusion.
     semantic_rank_map = {
         eid: float(i)
         for i, (eid, _) in enumerate(
-            sorted(semantic_scores.items(), key=lambda x: x[1], reverse=True)
+            sorted(semantic_scores.items(), key=lambda x: x[1], reverse=True)[:semantic_branch_k]
         )
     }
 
-    fused_scores = _reciprocal_rank_fusion(semantic_rank_map, lexical_ranks)
+    # Already sorted best-first, as a list of (entry_id, score) pairs.
+    fused = _reciprocal_rank_fusion(semantic_rank_map, lexical_ranks)
 
-    # Score floor on semantic branch only (RRF score is not calibrated).
+    # Score floor on the semantic branch only (an RRF score is not calibrated).
+    # semantic_scores is keyed by id(entry) already, so do not take id() again.
     if semantic_score_floor is not None:
-        filtered_ids = {id(e) for e, s in semantic_scores.items() if s >= semantic_score_floor}
-        fused_scores = {eid: s for eid, s in fused_scores.items() if eid in filtered_ids}
+        filtered_ids = {eid for eid, s in semantic_scores.items() if s >= semantic_score_floor}
+        fused = [(eid, s) for eid, s in fused if eid in filtered_ids]
 
     id_to_entry = {id(e): e for e in supported}
     results: list[RetrievedAction] = []
 
-    for rank_i, (eid, score) in enumerate(
-        sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:limit]
-    ):
+    for rank_i, (eid, score) in enumerate(fused[:limit]):
         entry = id_to_entry.get(eid)
         if not entry:
             continue
@@ -693,6 +709,11 @@ def search_actions(
                     if isinstance(spec, dict)
                 ],
                 execution_policy=str(entry.get("execution_policy") or "allow_direct"),
+                # `policy` is what action_tools reads. Setting only
+                # execution_policy left this at its "allow_direct" default, so a
+                # confirm_required action reached One reported as directly
+                # executable -- the one field where a wrong default is unsafe.
+                policy=str(entry.get("execution_policy") or "allow_direct"),
                 use_tool=use_tool,
                 navigation=nav,
                 delegate_agent_id=delegate_id,
