@@ -1135,11 +1135,23 @@ FirebaseAnalytics.framework with the UUIDs [...]` — also for `GoogleAppMeasure
 `GoogleAppMeasurementIdentitySupport` and `GoogleAdsOnDeviceConversion`. It was reported as
 "not something this change introduced" and left alone, which was accurate and useless.
 
-The warning is genuinely unfixable. Those four arrive through Swift Package Manager as binary
-targets under `SourcePackages/artifacts/`; `file` reports **`current ar archive`**, so they are
-static libraries in a `.framework` wrapper, and `find` returns **no `.dSYM` anywhere inside the
-`.xcframework`**. They are linked into `App` and never ship as a separate image. There is no dSYM
-to supply and never will be — Google strips them before publishing.
+The warning is unfixable from here, but **not** for the reason first written down. The original
+version of this rule claimed those four were static libraries linked into `App` that never ship as
+their own image, so nothing was lost. That was wrong, and the guard's own first real run disproved
+it: all four appear in `App.app/Frameworks/`, and the signed `.ipa` shows each is `MH_DYLIB` with
+its own UUID (`FirebaseAnalytics` = `CC492DC7-…`). They are separately loaded dynamic libraries.
+
+The claim came from reading `SourcePackages/artifacts/` in **local** DerivedData, where `file` said
+`current ar archive`. That local checkout did not match what CI resolves and ships. R19's lesson
+again, in a new place: when a local reading and a measurement of the real artifact disagree, the
+artifact wins.
+
+What *is* true, and is what makes it unfixable: Google publishes **no dSYM** for any of the four —
+none inside the `.xcframework`, none reaching `App.xcarchive/dSYMs` (the archive holds 8 dSYMs:
+`App.app` plus Capacitor, Cordova, four Facebook SDK frameworks, and IONCameraLib — none Google).
+So there is nothing to supply, and **crash frames inside those four libraries genuinely will not
+symbolicate**. That is a real accepted loss, not a harmless one. Say so plainly rather than
+implying the warning costs nothing.
 
 The danger is not the warning. It is that **our own dSYM going missing prints the same sentence**.
 Flip `DEBUG_INFORMATION_FORMAT` from `dwarf-with-dsym` to `dwarf` on Release and the log grows a
@@ -1154,19 +1166,22 @@ shipped binary**), name each known-unfixable exception in an allow-list with the
 on anything outside it. Apply it to every lane that exports an archive, not just the one where it
 was noticed (R14).
 
-**Check.** Prove the vendor binaries really are static and dSYM-less rather than assuming it:
+**Check.** Measure the **shipped artifact**, never the local package checkout — that is the whole
+mistake above. Download the `.ipa` a dry run produces and read it:
 
 ```bash
-DD=$(ls -d ~/Library/Developer/Xcode/DerivedData/App-*/SourcePackages/artifacts 2>/dev/null | head -1)
-for n in firebase-ios-sdk/FirebaseAnalytics/FirebaseAnalytics \
-         googleappmeasurement/GoogleAppMeasurement/GoogleAppMeasurement; do
-  b="$DD/$n.xcframework"; s=$(basename "$n")
-  echo "== $s"
-  [ -n "$(find "$b" -name '*.dSYM' 2>/dev/null)" ] && echo "  ships a dSYM" || echo "  ships NO dSYM"
-  file "$b/ios-arm64/$s.framework/$s" | sed 's/.*: /  /'
+gh run download <RUN_ID> --repo hushh-labs/hushh-research -n ios-testflight-<N> -D /tmp/art
+cd /tmp/art/export && mkdir -p ipa && unzip -qq *.ipa -d ipa
+APP=$(find ipa/Payload -maxdepth 1 -name '*.app' | head -1)
+for fw in "$APP"/Frameworks/*.framework; do
+  n=$(basename "$fw" .framework)
+  printf '  %-38s %s\n' "$n" "$(file -b "$fw/$n" | tail -1)"
 done
-# "current ar archive" + "ships NO dSYM" == nothing to upload, permanently. Do not chase it.
+ls /tmp/art/App.xcarchive/dSYMs
 ```
+
+Every framework listed must either have a matching `.framework.dSYM` in that `dSYMs` listing or be
+one of the four Google names. A dynamic library that is neither is a real symbolication gap.
 
 Then mutation-test the guard, because a passing new check proves nothing (R22). Against a mock
 archive, all five must hold: healthy passes; a deleted `App.app.dSYM` fails; a dSYM whose UUIDs no
