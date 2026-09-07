@@ -49,6 +49,20 @@ report. Finish stays available during the optional scan; if the user opens the
 Location hub before it settles, the page still presents the completed report.
 Opening a contact source always requires the user's contact-check action.
 
+## Onboarding Resume
+
+Location onboarding checkpoints the current screen in tab-scoped session storage,
+separately for each account and for setup versus the workspace. Returning from an
+invite share or another tab still performs the normal session validation; when
+auth guards remount the route, onboarding resumes at the checkpoint instead of
+restarting at Welcome. Admission refreshes do not reset an active journey.
+
+The checkpoint contains only a screen name. Contacts, invite codes, coordinates,
+saved-place drafts and vault material are not stored there. A remounted place
+editor returns to Features to capture a fresh memory-only draft. Restoring Ready
+does not automatically resync contacts or request location permission. Successful
+completion or skip clears the checkpoint; failed settlement retains it for retry.
+
 ## Plaintext Boundary
 
 Plain coordinates are allowed only on:
