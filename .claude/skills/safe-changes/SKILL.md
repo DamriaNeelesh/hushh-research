@@ -1027,3 +1027,49 @@ would have broken.
 The Check line must be a command that **runs in this repo** and returns
 something meaningful. Run it before committing the rule. A rule with a command
 that doesn't work here is worse than no rule.
+
+### R28 — An error handler that runs on a broken connection will report itself instead of the failure
+
+**Incident (2026-09-07, six consecutive UAT deploys.)** Every one failed at
+"Apply UAT DB migrations behind account deletion fence" with
+`asyncpg.exceptions.InFailedSQLTransactionError: current transaction is aborted`.
+That was never the failure. The real one, four frames up the chained traceback,
+was `LockNotAvailableError: canceling statement due to lock timeout`.
+
+`apply_manifest_entries` rolled the failed transaction back only when
+`mode is not MigrationMode.REPLAY` — and UAT runs in `replay`. So a replay
+failure left the connection aborted, and the function's own
+`finally: await _unlock(conn)` then issued `SELECT pg_advisory_unlock($1)` on
+that dead connection. Its exception propagated **in place of** the migration's.
+The cleanup step overwrote the diagnosis.
+
+It compounded with a second gap: nothing in that function ever named
+`entry.filename`. UAT replays 173 migrations per deploy, so the log said a
+migration failed and gave no way to learn which one. Six deploys produced six
+identical, useless tracebacks.
+
+**Rule.** Cleanup in a `finally` — unlock, close, release, flush — must not be
+able to replace the exception that brought you there. Wrap it and swallow its
+own failure. Any loop applying a batch of units must name the unit in the error;
+"something in this batch failed" is not a diagnosis. And when an error path is
+gated on a mode, check whether the *cleanup* it also skips is needed in every
+mode. Diagnostics must not quote the database's message — a Postgres error can
+carry row values (a unique violation names the key and its value) — so report
+the exception class and its SQLSTATE instead.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne/consent-protocol
+# The unlock must be guarded, and the rollback must not be inside the mode gate.
+python3 - <<'PY'
+import re, pathlib
+s = pathlib.Path("db/migration_authority.py").read_text()
+tail = s.split("async def apply_manifest_entries")[1].split("    finally:")[1]
+print("unlock guarded:", "try:" in tail and "_unlock(conn)" in tail)
+blk = re.search(r"except Exception as exc:(.*?)\n                raise", s, re.S).group(1)
+print("rollback before mode gate:",
+      blk.index("_rollback_failed_transaction") < blk.index("if mode is not"))
+print("failure names the file:", "entry.filename" in blk)
+PY
+```
+All three must print `True`.
