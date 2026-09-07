@@ -1,9 +1,18 @@
 import Foundation
 import OSLog
 
+// Deliberately not @available(iOS 16.0, *).
+//
+// Every type here was annotated iOS 16+, but this file imports only Foundation
+// and OSLog and uses no iOS 16 API -- the annotation came along from the App
+// Intents code that calls into it. The app deploys to iOS 15, so the marking
+// made each unguarded call site (AppDelegate, HushhAuthPlugin,
+// HushhVoiceInvocationPlugin) a compile error. Its sibling,
+// OneSystemActionInvocationCoordinator, does the same Keychain and
+// NotificationCenter work with no annotation at all.
+
 // MARK: - Request capture result
 
-@available(iOS 16.0, *)
 enum OneRequestCaptureResult: Equatable, Sendable {
     case captured
     case ownerRequired
@@ -14,7 +23,6 @@ enum OneRequestCaptureResult: Equatable, Sendable {
 
 // MARK: - Request record
 
-@available(iOS 16.0, *)
 struct OneSystemRequestRecord: Codable, Equatable, Sendable {
     let id: String
     let text: String
@@ -25,14 +33,12 @@ struct OneSystemRequestRecord: Codable, Equatable, Sendable {
 
 // MARK: - Private request store
 
-@available(iOS 16.0, *)
 protocol OneSystemRequestStoring: AnyObject {
     func data(for key: String) -> Data?
     func set(_ data: Data, for key: String) -> Bool
     func remove(_ key: String)
 }
 
-@available(iOS 16.0, *)
 final class OneSystemRequestKeychainStore: OneSystemRequestStoring {
     private let service: String
 
@@ -85,7 +91,6 @@ final class OneSystemRequestKeychainStore: OneSystemRequestStoring {
 
 // MARK: - Request coordinator
 
-@available(iOS 16.0, *)
 final class OneSystemRequestInvocationCoordinator: @unchecked Sendable {
     static let shared = OneSystemRequestInvocationCoordinator()
     static let maxRequestLength = 4 * 1024

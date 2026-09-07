@@ -125,14 +125,17 @@ struct OneLocationDestinationEntity: AppEntity, Identifiable, Hashable {
         guard let destination = AgentOneDestination(rawValue: id) else {
             return "Agent One Location"
         }
-        return DisplayRepresentation(title: destination.caseDisplayRepresentations[destination]?.title ?? "Agent One Location")
+        return DisplayRepresentation(title: AgentOneDestination.caseDisplayRepresentations[destination]?.title ?? "Agent One Location")
     }
 
     var searchableNames: [String] {
         guard let destination = AgentOneDestination(rawValue: id) else { return [] }
-        // Derive searchable tokens from the display title.
-        let title = destination.caseDisplayRepresentations[destination]?.title ?? ""
-        let normalized = title
+        // Derive searchable tokens from the display title. `title` is a
+        // LocalizedStringResource, not a String, so it has to be resolved
+        // before any string work -- .folding() on it does not compile.
+        guard let resource = AgentOneDestination.caseDisplayRepresentations[destination]?.title
+        else { return [] }
+        let normalized = String(localized: resource)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .joined(separator: " ")
@@ -907,40 +910,26 @@ struct AskOneRequestIntent: AppIntent {
         Summary("Ask Agent One to \(\.$requestText)")
     }
 
-    func perform() async throws -> some IntentResult & ShowsSnippetView {
+    func perform() async throws -> some IntentResult & ProvidesDialog {
         let text = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            return .result(
-                snippet: .init(string: "What would you like Agent One to do?")
-            )
+            return .result(dialog: "What would you like Agent One to do?")
         }
 
         let result = OneSystemRequestInvocationCoordinator.shared.captureRequest(text)
         switch result {
         case .captured:
-            return .result(
-                snippet: .init(string: "Your request is with Agent One. Continue in the app to complete it.")
-            )
+            return .result(dialog: "Your request is with Agent One. Continue in the app to complete it.")
         case .ownerRequired:
-            return .result(
-                snippet: .init(string: "Sign in to Agent One to send a request from here.")
-            )
+            return .result(dialog: "Sign in to Agent One to send a request from here.")
         case .tooLarge:
-            return .result(
-                snippet: .init(string: "That request is too long. Try a shorter phrase.")
-            )
+            return .result(dialog: "That request is too long. Try a shorter phrase.")
         case .alreadyPending:
-            return .result(
-                snippet: .init(string: "Agent One is already handling a request. Complete or cancel it first.")
-            )
+            return .result(dialog: "Agent One is already handling a request. Complete or cancel it first.")
         case .failure:
-            return .result(
-                snippet: .init(string: "I couldn't capture that request right now. Try again in the app.")
-            )
+            return .result(dialog: "I couldn't capture that request right now. Try again in the app.")
         @unknown default:
-            return .result(
-                snippet: .init(string: "Continue in Agent One to complete your request.")
-            )
+            return .result(dialog: "Continue in Agent One to complete your request.")
         }
     }
 }
