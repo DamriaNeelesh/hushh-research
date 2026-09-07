@@ -154,16 +154,17 @@ function verifyShortcutPhrases(source) {
     '"Talk to \\(agentOne)"',
     '"Start a conversation with \\(agentOne)"',
     // Free-text handshake into semantic routing.
-    '"Ask Agent One with \\(\\.$requestText)"',
+    '"Ask \\(agentOne) with \\(\\.$requestText)"',
     // Location sharing, including the parameterised recipient form.
     '"Share my location with \\(\\.$recipient) in \\(agentOne) Location Agent"',
     '"Ask \\(agentOne) to share my location',
-    // Circles, including the named form used by "Make a Circle called Goa".
-    '"Create a Circle in \\(agentOne)"',
-    '"Create a Circle named \\(\\.$name) in \\(agentOne)"',
+    // Circles. No \(\.$name) slot -- an open string slot has no value set for
+    // Siri to match, so naming a Circle out loud goes through the handshake.
+    '"Create a Circle in \\(agentOne) Location Agent"',
+    '"Start a Circle in \\(agentOne)"',
     // Check-in.
-    '"Check in with \\(agentOne)"',
-    '"Open Check In in \\(agentOne) Location"',
+    '"Check in with \\(agentOne) Location Agent"',
+    '"Open \\(agentOne) Location Check In"',
     // Save My Soul: the in-product name and its abbreviation must both work.
     '"SMS in \\(agentOne)"',
     '"Save my soul in \\(agentOne)"',
@@ -186,6 +187,45 @@ function verifyShortcutPhrases(source) {
         `${phrase} belongs to location.sos_default, not to an open-only intent`,
       );
     }
+  }
+}
+
+/**
+ * App Shortcut phrases must actually be able to compile.
+ *
+ * AppShortcutPhrase's StringInterpolation declares exactly two overloads -- an
+ * AppShortcutPhraseToken and a parameter KeyPath. There is no String overload,
+ * and AppShortcut(phrases:) takes [AppShortcutPhrase<Intent>], not [String].
+ * Both rules were broken at once on this branch: `agentOne` was declared as the
+ * String ".applicationName" and six phrase families were typed [String], so the
+ * target could never have built. Nothing caught it, because a Swift *parse*
+ * succeeds on all of it and no CI job had run on the branch.
+ */
+function verifyPhraseTypes(source) {
+  const tokenDecl = /private static let agentOne:\s*AppShortcutPhraseToken\s*=\s*\.applicationName/;
+  if (!tokenDecl.test(source)) {
+    throw new Error(
+      "agentOne must be `private static let agentOne: AppShortcutPhraseToken = .applicationName` -- " +
+        "a String cannot be interpolated into an AppShortcutPhrase and will not compile",
+    );
+  }
+  const stringTyped = [
+    ...source.matchAll(/static let (\w*[Pp]hrases):\s*\[String\]/g),
+  ].map((match) => match[1]);
+  if (stringTyped.length > 0) {
+    throw new Error(
+      `Phrase families must be typed [AppShortcutPhrase<Intent>], not [String]: ${stringTyped.join(", ")}`,
+    );
+  }
+  // Every registered shortcut must pass a phrase array, never an inline literal
+  // that would dodge the typing rule above.
+  const phraseArrays = [
+    ...source.matchAll(/static let (\w*[Pp]hrases):\s*\[AppShortcutPhrase<(\w+)>\]/g),
+  ];
+  if (phraseArrays.length < 9) {
+    throw new Error(
+      `Expected at least 9 typed phrase families, found ${phraseArrays.length}`,
+    );
   }
 }
 
@@ -394,6 +434,7 @@ assertEqualSets(
   exposedIds,
 );
 verifyShortcutPhrases(read(swiftIntentsPath));
+verifyPhraseTypes(read(swiftIntentsPath));
 verifyEnvelopeSeparation(read(swiftIntentsPath));
 verifySaveMySoulSeparation(read(swiftIntentsPath));
 

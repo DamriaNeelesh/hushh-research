@@ -197,6 +197,70 @@ struct OneCircleEntityQuery: EntityStringQuery {
     }
 }
 
+/// A person or a Circle -- whichever "share my location with Family" or
+/// "share my location with Sarah" turns out to name. Share/ask intents used
+/// to accept only `OneContactEntity`, so a Circle name had nowhere to
+/// resolve: Siri's own entity matching failed before the app ever ran,
+/// independent of anything the backend already knows how to do with a
+/// Circle name in the `person` slot. One merged query over both pools is
+/// what lets Siri's picker (and free-speech matching) offer either.
+@available(iOS 16.0, *)
+struct OneShareRecipientEntity: AppEntity, Identifiable, Hashable {
+    enum Kind: String, Hashable {
+        case contact
+        case circle
+    }
+
+    let id: String
+    let name: String
+    let kind: Kind
+
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Agent One Recipient"
+    static let defaultQuery = OneShareRecipientEntityQuery()
+
+    var displayRepresentation: DisplayRepresentation {
+        switch kind {
+        case .contact:
+            return DisplayRepresentation(title: "\(name)")
+        case .circle:
+            return DisplayRepresentation(title: "\(name)", subtitle: "Circle")
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+struct OneShareRecipientEntityQuery: EntityStringQuery {
+    func entities(for identifiers: [OneShareRecipientEntity.ID]) async throws -> [OneShareRecipientEntity] {
+        let requested = Set(identifiers)
+        let coordinator = OneSystemActionInvocationCoordinator.shared
+        let contacts = coordinator.contacts()
+            .filter { requested.contains($0.id) }
+            .map { OneShareRecipientEntity(id: $0.id, name: $0.name, kind: .contact) }
+        let circles = coordinator.circles()
+            .filter { requested.contains($0.id) }
+            .map { OneShareRecipientEntity(id: $0.id, name: $0.name, kind: .circle) }
+        return contacts + circles
+    }
+
+    func entities(matching string: String) async throws -> [OneShareRecipientEntity] {
+        let coordinator = OneSystemActionInvocationCoordinator.shared
+        let contacts = coordinator.contacts(matching: string)
+            .map { OneShareRecipientEntity(id: $0.id, name: $0.name, kind: .contact) }
+        let circles = coordinator.circles(matching: string)
+            .map { OneShareRecipientEntity(id: $0.id, name: $0.name, kind: .circle) }
+        return contacts + circles
+    }
+
+    func suggestedEntities() async throws -> [OneShareRecipientEntity] {
+        let coordinator = OneSystemActionInvocationCoordinator.shared
+        let contacts = coordinator.contacts()
+            .map { OneShareRecipientEntity(id: $0.id, name: $0.name, kind: .contact) }
+        let circles = coordinator.circles()
+            .map { OneShareRecipientEntity(id: $0.id, name: $0.name, kind: .circle) }
+        return contacts + circles
+    }
+}
+
 @available(iOS 16.0, *)
 enum OneLocationDuration: String, AppEnum {
     case fifteenMinutes = "0.25"
@@ -391,7 +455,7 @@ struct TalkToHusshOneIntent: AppIntent {
 struct ShareLocationWithOneIntent: AppIntent {
     static let title: LocalizedStringResource = "Share Location"
     static let description = IntentDescription(
-        "Share your live location with an existing Agent One connection."
+        "Share your live location with an existing Agent One connection or Circle."
     )
     static let authenticationPolicy: IntentAuthenticationPolicy =
         .requiresLocalDeviceAuthentication
@@ -400,8 +464,8 @@ struct ShareLocationWithOneIntent: AppIntent {
     @available(iOS 26.0, *)
     static let supportedModes: IntentModes = [.foreground(.immediate)]
 
-    @Parameter(title: "Person")
-    var recipient: OneContactEntity
+    @Parameter(title: "Person or Circle")
+    var recipient: OneShareRecipientEntity
 
     @Parameter(title: "Duration")
     var duration: OneLocationDuration
@@ -427,7 +491,7 @@ struct ShareLocationWithOneIntent: AppIntent {
 struct AskForLocationWithOneIntent: AppIntent {
     static let title: LocalizedStringResource = "Ask for Location"
     static let description = IntentDescription(
-        "Ask an existing Agent One connection to share their location."
+        "Ask an existing Agent One connection or Circle to share their location."
     )
     static let authenticationPolicy: IntentAuthenticationPolicy =
         .requiresLocalDeviceAuthentication
@@ -436,8 +500,8 @@ struct AskForLocationWithOneIntent: AppIntent {
     @available(iOS 26.0, *)
     static let supportedModes: IntentModes = [.foreground(.immediate)]
 
-    @Parameter(title: "Person")
-    var person: OneContactEntity
+    @Parameter(title: "Person or Circle")
+    var person: OneShareRecipientEntity
 
     @Parameter(title: "Duration")
     var duration: OneLocationDuration
@@ -821,7 +885,7 @@ struct AskOneRequestIntent: AppIntent {
     static let supportedModes: IntentModes = [.foreground(.immediate)]
 
     @Parameter(title: "Request")
-    var requestText: AppEntityString<AppScope>
+    var requestText: String
 
     static var parameterSummary: some ParameterSummary {
         Summary("Ask Agent One to \(\.$requestText)")
@@ -878,87 +942,111 @@ struct OneRequestTextOptionsProvider: DynamicOptionsProvider {
 
 @available(iOS 16.0, *)
 struct HusshOneAppShortcuts: AppShortcutsProvider {
-    private static let agentOne = ".applicationName"
+    // The app-name token, not the words "Agent One".
+    //
+    // This must be `AppShortcutPhraseToken`, never a String. AppShortcutPhrase's
+    // StringInterpolation declares exactly two overloads -- one for this token
+    // and one for a parameter KeyPath -- so interpolating a String does not
+    // compile at all. It was `= ".applicationName"` (a String literal) until
+    // this merge, which is why nothing on this branch had ever built.
+    //
+    // The token is also what wins Siri's domain arbitration and what survives
+    // localisation, so a literal "Agent One" in a phrase is a bug even where it
+    // would compile.
+    private static let agentOne: AppShortcutPhraseToken = .applicationName
 
     // MARK: - Share Location phrase family
     //
-    // Eight semantically distinct anchors teach Siri that every reasonable
-    // way of asking to share one's location resolves to the same intent.
-    // Apple's semantic similarity index generalises beyond these exact strings,
-    // but diversity here is what seeds that index.
-    // No phrase hardcodes a person name — the recipient is always the
-    // `\.$recipient` slot so Siri resolves against Agent One's contact entities.
+    // Nine semantically distinct anchors teach Siri that every reasonable way
+    // of asking to share one's location resolves to the same intent. Apple's
+    // similarity index generalises beyond these exact strings; diversity here
+    // is what seeds it. No phrase hardcodes a person name -- the recipient is
+    // always the `\.$recipient` slot, which resolves against contacts *and*
+    // Circles via OneShareRecipientEntity.
 
-    private static let shareLocationPhrases: [String] = [
+    private static let shareLocationPhrases: [AppShortcutPhrase<ShareLocationWithOneIntent>] = [
         "Share my location with \(\.$recipient) in \(agentOne) Location Agent",
         "Let \(\.$recipient) see my location with \(agentOne)",
-        "Agent One, share my location with \(\.$recipient)",
         "Ask \(agentOne) to share my location with \(\.$recipient)",
         "Tell \(agentOne) to share my location with \(\.$recipient)",
+        "Talk to \(agentOne) and share my location with \(\.$recipient)",
         "Use \(agentOne) to share my location with \(\.$recipient)",
         "Share my location to \(\.$recipient) using \(agentOne)",
         "Start sharing my location in \(agentOne) with \(\.$recipient)",
-        "Turn on location sharing with \(\.$recipient) in \(agentOne)",
         "Give \(\.$recipient) access to my location through \(agentOne)",
     ]
 
     // MARK: - Ask for Location phrase family
 
-    private static let askForLocationPhrases: [String] = [
+    private static let askForLocationPhrases: [AppShortcutPhrase<AskForLocationWithOneIntent>] = [
         "Ask \(\.$person) for location in \(agentOne) Location Agent",
         "Request \(\.$person)'s location with \(agentOne)",
         "Ask \(agentOne) to ask \(\.$person) for location",
         "Tell \(agentOne) to request \(\.$person)'s location",
         "Talk to \(agentOne) and ask \(\.$person) for location",
-        "Can you ask \(\.$person) for their location in \(agentOne)",
         "Use \(agentOne) to request \(\.$person)'s location",
         "Have \(agentOne) ask \(\.$person) where they are",
     ]
 
     // MARK: - Location On / Off phrase family
+    //
+    // Every phrase here binds `\.$state`. `state` is a non-optional parameter
+    // with no default, so an unbound phrase makes Siri stop and ask "On or
+    // Off?" instead of acting -- which defeats the point of a one-shot phrase.
 
-    private static let locationStatePhrases: [String] = [
+    private static let locationStatePhrases: [AppShortcutPhrase<SetOneLocationStateIntent>] = [
         "Turn \(agentOne) Location \(\.$state)",
         "Ask \(agentOne) to turn Location \(\.$state)",
         "Tell \(agentOne) to turn Location \(\.$state)",
         "Talk to \(agentOne) and turn Location \(\.$state)",
         "Turn location updates \(\.$state) in \(agentOne)",
-        "Start location sharing in \(agentOne)",
-        "Stop location updates in \(agentOne)",
-        "Turn on Agent One location",
-        "Turn off my Agent One location",
+        "Set \(agentOne) Location to \(\.$state)",
     ]
 
     // MARK: - Talk to Agent One phrase family
 
-    private static let talkToAgentOnePhrases: [String] = [
+    private static let talkToAgentOnePhrases: [AppShortcutPhrase<TalkToHusshOneIntent>] = [
         "Talk to \(agentOne)",
-        "Start a conversation with \(agentOne)",
-        "Open \(agentOne) and chat",
         "Speak to \(agentOne)",
-        "Launch \(agentOne) voice",
+        "Start a conversation with \(agentOne)",
     ]
 
     // MARK: - Check In phrase family
 
-    private static let checkInPhrases: [String] = [
-        "Check in with \(agentOne)",
-        "Do a Check In in \(agentOne)",
-        "Open Check In in \(agentOne) Location",
-        "Start a Check In with \(agentOne)",
-        "Use \(agentOne) to check in",
-        "Open my Agent One Check In",
+    private static let checkInPhrases: [AppShortcutPhrase<CheckInWithOneIntent>] = [
+        "Check in with \(agentOne) Location Agent",
+        "Open \(agentOne) Location Check In",
+        "Ask \(agentOne) to check in",
+        "Tell \(agentOne) to open Check In",
+        "Talk to \(agentOne) and check in",
+        "Do an \(agentOne) Check In",
+        "Start an \(agentOne) Check In",
     ]
 
     // MARK: - Create Circle phrase family
+    //
+    // No `\.$name` slot. `name` is a plain String, and an open string slot in a
+    // phrase has no compile-time-known value set for Siri to match against, so
+    // it degrades the whole family. Naming a Circle out loud goes through the
+    // free-text handshake instead, which is what semantic routing is for.
 
-    private static let createCirclePhrases: [String] = [
-        "Create a Circle in \(agentOne)",
-        "Make a new Circle in \(agentOne)",
+    private static let createCirclePhrases: [AppShortcutPhrase<CreateOneCircleIntent>] = [
+        "Create a Circle in \(agentOne) Location Agent",
+        "Make a new Circle in \(agentOne) Location Agent",
+        "Ask \(agentOne) to create a Circle",
+        "Tell \(agentOne) to create a Circle",
+        "Talk to \(agentOne) and create a Circle",
         "Start a Circle in \(agentOne)",
-        "Create a Circle named \(\.$name) in \(agentOne)",
-        "Make a new \(\.$name) Circle in \(agentOne)",
         "Add a Circle in \(agentOne)",
+    ]
+
+    // MARK: - The free-text handshake
+
+    private static let askOneRequestPhrases: [AppShortcutPhrase<AskOneRequestIntent>] = [
+        "Ask \(agentOne) with \(\.$requestText)",
+        "Ask \(agentOne) to \(\.$requestText)",
+        "Use \(agentOne) to \(\.$requestText)",
+        "Tell \(agentOne) to \(\.$requestText)",
     ]
 
     /// Save My Soul, the screen. Deliberately the widest phrase set here: this
@@ -997,12 +1085,7 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: AskOneRequestIntent(),
-            phrases: [
-                "Ask Agent One with \(\.$requestText)",
-                "Ask \(agentOne) to \(\.$requestText)",
-                "Use \(agentOne) to \(\.$requestText)",
-                "Tell \(agentOne) to \(\.$requestText)",
-            ],
+            phrases: askOneRequestPhrases,
             shortTitle: "Ask Agent One",
             systemImageName: "bubble.left.and.bubble.right"
         )
@@ -1044,12 +1127,12 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
         )
         // Save My Soul takes two of Apple's ten slots, and that is the point.
         //
-        // The list above is the Location feature set a person actually asks
-        // for out loud. Stop Sharing and Open Destination were dropped to make
-        // room: stopping is still reachable through Location On or Off and
-        // through the free-text handshake, and every open* destination is
-        // reachable through the handshake too. Both intents remain defined and
-        // usable in the Shortcuts app.
+        // The list above is the Location feature set a person actually asks for
+        // out loud. Stop Sharing, Rename Circle and Open Destination were
+        // dropped to make room: stopping is still reachable through Location On
+        // or Off, and renaming and every open* destination through the
+        // free-text handshake. All three intents remain defined and usable in
+        // the Shortcuts app.
         //
         // The two SOS entries are split rather than merged because App Intents
         // expose no invocation source. One opens and can never alert anyone;

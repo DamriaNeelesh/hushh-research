@@ -83,7 +83,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { LocationPermissionRecoveryCard } from "@/components/one-location/location-permission-recovery-card";
-import { PageHeader } from "@/components/app-ui/page-sections";
+import { AgentHeaderIcon, PageHeader } from "@/components/app-ui/page-sections";
 import {
   ButtonLabel,
   CardTitle,
@@ -2141,15 +2141,9 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
 }
 
 function LocationHeaderIconTile() {
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-[12px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]"
-      data-testid="one-location-header-icon"
-    >
-      <MapPin className="h-6 w-6" strokeWidth={2} />
-    </span>
-  );
+  // The tile itself now lives with the header primitive, so RIA's agent
+  // screens draw the same one instead of a second copy of these classes.
+  return <AgentHeaderIcon icon={MapPin} data-testid="one-location-header-icon" />;
 }
 
 function LocationSharePulseIcon() {
@@ -2577,15 +2571,7 @@ function LocationDetailFlow({
 
   return (
     <div className="space-y-5" data-testid={`one-location-${kind}`}>
-      <TaskFlowHeader
-        eyebrow={
-          kind === "active-shares" || kind === "needs-review"
-            ? undefined
-            : "Location"
-        }
-        title={copy.title}
-        description={copy.description}
-      />
+      <TaskFlowHeader title={copy.title} description={copy.description} />
       {kind === "active-shares" ? (
         ownerGrantGroups.length ? (
           <SettingsGroup separatorInset>
@@ -5401,6 +5387,14 @@ function ShareFlow({
           ) : null}
           {notSharing.length ? (
             <SettingsGroup
+              title={
+                <span className="flex w-full items-center justify-between gap-4">
+                  <span>Not sharing</span>
+                  <span className="font-normal text-muted-foreground">
+                    {notSharing.length}
+                  </span>
+                </span>
+              }
               testId="one-location-share-people"
               separatorInset
               className="[&>div:first-child]:mt-0"
