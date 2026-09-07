@@ -1198,3 +1198,84 @@ would have broken.
 The Check line must be a command that **runs in this repo** and returns
 something meaningful. Run it before committing the rule. A rule with a command
 that doesn't work here is worse than no rule.
+
+### R30 — A default that is right for you is a silent bug for everyone else
+
+**Incident (2026-09-08, UAT phone verification.)** The founder, testing from
+India, could not verify any phone number. The country picker read **United
+States (+1)** and he typed a real Indian mobile, so the app sent
+`+1<10 digits>` — a different number. The code went nowhere, and the UAT
+test-number allowlist, which matches on the full E.164 string, could never hit:
+`+19898989892` is not `+919898989892`.
+
+Nothing failed loudly. The picker was on screen and looked deliberate, so the
+symptom read as *"phone verification is broken"* and cost an evening chasing a
+database that phone verification never touches. The whole path is the client,
+Google's `identitytoolkit.googleapis.com`, and two environment variables — no
+table, no column, no migration.
+
+`DEFAULT_COUNTRY_VALUE = "US"` was hard-coded, in a product whose team tests
+from India. The repo already had `resolveContactPhoneRegion` doing this
+properly for contact sync — SIM region, then the account's own number, then the
+browser locale. One surface used it; the other guessed.
+
+**Rule.** A locale-, country-, currency-, timezone- or unit-shaped default must
+be derived from the person, not hard-coded to the team's own market. When the
+repo already resolves that signal somewhere, reuse it rather than writing a
+second answer. Detect in an effect, never during render: `navigator` does not
+exist on the server, and seeding state from it changes the first client paint
+and breaks hydration. An explicit user choice always outranks detection.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne/hushh-webapp
+# Hard-coded country/locale defaults. Each hit must either derive from the user
+# or be a deliberate, commented fallback.
+grep -rnE 'DEFAULT_(COUNTRY|LOCALE|REGION|CURRENCY)[A-Z_]* *= *"' \
+  --include='*.ts' --include='*.tsx' lib components app | grep -v node_modules
+# The phone flow must consult the shared resolver, not guess.
+grep -n 'resolveContactPhoneRegion' components/auth/phone-verification-flow.tsx
+npx vitest run __tests__/components/phone-verification-flow-interaction.test.tsx
+```
+The second must return a line; the suite covers `en-IN`, `en-US`, and an
+existing account number outranking the browser.
+
+### R31 — An unpassed deploy substitution is a feature that never turns on
+
+**Incident (2026-09-08, found while tracing the above.)**
+`deploy/backend.cloudbuild.yaml` binds 49 secrets, each through a substitution:
+
+```bash
+add_secret "${_SOME_THING_SECRET}" "SOME_THING"
+```
+
+Every substitution defaults to `""`, and `add_secret` skips empties. So a lane
+that never passes one deploys a service with that environment variable simply
+**absent** — no error, no log, no failed step. The feature that reads it behaves
+exactly as though it was never configured.
+
+Measured across the three lanes: UAT passes 37/49, production 16/49, dev 17/49.
+Most omissions are correct — production must not carry UAT test numbers. But
+`_HUSHH_UAT_PHONE_TEST_CHALLENGE_SECRET_SECRET` is missing from the UAT lane by
+accident, so the phone-test challenge key silently falls back to
+`APP_SIGNING_KEY` and every test code changes the day that key rotates. And
+`_HUSHH_MANAGED_GEMINI_LIVE_API_KEY_SECRET` is passed by **no lane at all**.
+
+This is R8 in a new place: a degrade-quietly branch with no signal on the way
+out. Nobody can tell a deliberate omission from a forgotten one by reading the
+workflow.
+
+**Rule.** Every secret bound by the cloudbuild template must be passed by each
+deploy lane, or recorded as a deliberate omission **with a reason**. Do not bind
+a secret you have not confirmed exists — Cloud Run validates every `secretKeyRef`
+at revision start, so a missing one produces a revision that never becomes ready
+while the old one keeps serving (R1).
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne
+python3 scripts/ci/check-deploy-secret-coverage.py
+```
+Runs in the `Governance` CI job. It fails on an omission absent from
+`config/deploy-env-coverage.json`, and on a stale entry there that no longer
+matches reality — both directions were mutation-tested before this rule landed.
