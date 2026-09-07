@@ -1,4 +1,5 @@
 import gatewayJson from "@/contracts/kai/kai-action-gateway.vnext.json";
+import { ApiService } from "@/lib/services/api-service";
 
 import type { KaiCommandAction } from "@/lib/kai/kai-command-types";
 import type { Persona } from "@/lib/services/ria-service";
@@ -7,7 +8,7 @@ import type { VoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
 import { isLocalCrmBuildEnabled } from "@/lib/connected-systems/crm-product-availability";
 
 const logger =
-  typeof console !== "undefined" && console.warn
+  typeof console !== "undefined" && typeof console.warn === "function"
     ? console
     : { warn: () => {}, log: () => {}, error: () => {} };
 
@@ -1216,7 +1217,11 @@ async function searchKaiActionsSemantic(
   _pendingSemanticAbort = abort;
 
   try {
-    const res = await fetch(url, {
+    // ApiService.apiFetch, not fetch: on iOS/Android there is no Next.js
+    // server to serve a relative /api path, so a direct fetch resolves to
+    // nothing on device -- which is exactly where the Siri handoff runs.
+    // apiFetch routes to the real backend base URL on native platforms.
+    const res = await ApiService.apiFetch(url, {
       method: "GET",
       headers: { "Content-Type": "application/json" },
       signal: signal ?? abort.signal,
@@ -1298,9 +1303,12 @@ export async function searchKaiActionsAsync(input: {
   const semantic = await searchKaiActionsSemantic(input, input.signal);
   if (semantic.length > 0) {
     const actionIds = new Set(semantic.map((r) => r.action.action_id));
-    const local = searchKaiActions(input)
-      .filter((r) => !actionIds.has(r.action.action_id))
-      .map((r) => ({ ...r, semantic: false as const }));
+    // No `semantic: false` tag: the declared return type marks semantic hits
+    // with `semantic?: true`, so absence already means a local hit. Tagging it
+    // widens the union and breaks every consumer that reads `availability`.
+    const local = searchKaiActions(input).filter(
+      (r) => !actionIds.has(r.action.action_id),
+    );
     return [...semantic, ...local];
   }
   return searchKaiActions(input);

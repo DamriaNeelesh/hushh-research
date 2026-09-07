@@ -326,7 +326,11 @@ _PROPOSAL_TTL_SECONDS = 900
 
 def _cleanup_expired_proposals() -> None:
     now = datetime.now(timezone.utc).timestamp()
-    expired = [pid for pid, p in _proposal_store.items() if now - p.get("created_at", 0) > _PROPOSAL_TTL_SECONDS]
+    expired = [
+        pid
+        for pid, p in _proposal_store.items()
+        if now - p.get("created_at", 0) > _PROPOSAL_TTL_SECONDS
+    ]
     for pid in expired:
         del _proposal_store[pid]
 
@@ -386,7 +390,6 @@ async def create_action_proposal(
     Emits a distinct ``one_action_proposal`` event; never an ordinary executable
     directive.
     """
-    from hushh_mcp.one_adk.action_tools import propose_app_action
     from hushh_mcp.one_adk.agent_tree import build_one_text_agent
 
     _cleanup_expired_proposals()
@@ -402,7 +405,9 @@ async def create_action_proposal(
     )
     proposal_agent = ADKAgent.from_app(
         proposal_app,
-        user_id_extractor=lambda d: str((d.state or {}).get(STATE_USER_ID) or token.get("user_id", "")),
+        user_id_extractor=lambda d: str(
+            (d.state or {}).get(STATE_USER_ID) or token.get("user_id", "")
+        ),
         session_service=InMemorySessionService(),
         use_in_memory_services=True,
         use_thread_id_as_session_id=True,
@@ -415,7 +420,8 @@ async def create_action_proposal(
         "propose_app_action",
     }
     proposal_agent._adk_app.root_agent.tools = [
-        t for t in proposal_agent._adk_app.root_agent.tools
+        t
+        for t in proposal_agent._adk_app.root_agent.tools
         if getattr(t, "name", "") in _PROPOSAL_ALLOWED_TOOLS
     ]
 
@@ -427,11 +433,13 @@ async def create_action_proposal(
             STATE_USER_ID: token.get("user_id", ""),
             STATE_CONSENT_TOKEN: store_request_secret(str(token.get("token") or "")),
         },
-        messages=[{
-            "id": "user-proposal",
-            "role": "user",
-            "content": query,
-        }],
+        messages=[
+            {
+                "id": "user-proposal",
+                "role": "user",
+                "content": query,
+            }
+        ],
         forwarded_props={},
         tools=[],
     )

@@ -134,6 +134,11 @@ _MAX_LIST_RESULTS = 10
 # Retrieval truncates before reachability is known, so ask for more than
 # the window and trim after filtering.
 _RETRIEVAL_OVERFETCH = 3
+# Enough to settle a shared-alias tie in favour of the screen the person is
+# on, without letting a weak on-screen match beat a strong off-screen one.
+# Sized from the real gap: the shared-alias tie is 2 points, so this settles it
+# while staying far below a genuine relevance difference.
+_ON_SCREEN_RANK_BONUS = 5.0
 _MAX_QUERY_TOKENS = 8
 # On-screen actions a queried call may keep for context after the real matches.
 _MAX_QUERY_FILLER = 4
@@ -3687,13 +3692,23 @@ async def list_app_actions(query: str, tool_context: ToolContext) -> dict[str, A
         # asked for outside the truncation window -- One then cannot see it at
         # all.  This is a ranking signal, never an execution decision.
         if query and str(query).strip():
-            candidates.sort(
-                key=lambda item: (
-                    -lexical_score(item[2], str(query)),
-                    item[0],
-                    item[1],
-                )
-            )
+            # On-screen bonus rather than sorting by availability first. Two
+            # actions can share an alias ("people tab" reaches both
+            # connect.open_people and location.open_people); the one the person
+            # is actually looking at should win that tie. Making availability
+            # the primary key instead would let a weak on-screen match outrank
+            # a much stronger off-screen one, which is the opposite failure.
+            on_screen_ids = available_action_ids or set()
+
+            def _rank(item: tuple) -> tuple:
+                entry = item[2]
+                action_id = str(entry.get("action_id") or "")
+                score = lexical_score(entry, str(query))
+                if action_id in on_screen_ids:
+                    score += _ON_SCREEN_RANK_BONUS
+                return (-score, item[0], item[1])
+
+            candidates.sort(key=_rank)
         else:
             candidates.sort(key=lambda item: (item[0], item[1]))
         selected = [
@@ -3804,7 +3819,8 @@ async def propose_app_action(
     # Resolve required inputs from the goal contract.
     goal = entry.get("goal") or {}
     required_specs: list[dict[str, Any]] = [
-        spec for spec in goal.get("required_inputs", [])
+        spec
+        for spec in goal.get("required_inputs", [])
         if isinstance(spec, dict) and spec.get("required")
     ]
     provided_slots = {str(k): v for k, v in (slots or {}).items() if str(k).strip()}
@@ -3819,10 +3835,12 @@ async def propose_app_action(
         default_value = spec.get("default_value")
         if default_value not in (None, ""):
             continue
-        missing.append({
-            "slot": slot_name,
-            "prompt": str(spec.get("prompt") or f"What should {slot_name} be?"),
-        })
+        missing.append(
+            {
+                "slot": slot_name,
+                "prompt": str(spec.get("prompt") or f"What should {slot_name} be?"),
+            }
+        )
 
     delegate_id = str(entry.get("delegate_agent_id") or "").strip()
     use_tool: str | None = None

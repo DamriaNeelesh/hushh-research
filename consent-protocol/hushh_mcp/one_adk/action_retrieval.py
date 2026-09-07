@@ -31,8 +31,27 @@ _retrieval_error: str | None = None
 
 
 def is_retrieval_available() -> bool:
-    """True when the embedding model is reachable and loadable."""
-    return _retrieval_available
+    """True when the embedding model is reachable and loadable.
+
+    Probes the dependency rather than trusting the module flag, which starts
+    True and only flips on a load attempt. Without this it reported "available"
+    on a host where sentence-transformers is not installed, so the degraded
+    ranking looked exactly like a working one -- the failure mode this whole
+    module is meant to make visible.
+    """
+    global _retrieval_available, _retrieval_error
+    if not _retrieval_available:
+        return False
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("sentence_transformers") is None:
+            _retrieval_available = False
+            _retrieval_error = "sentence_transformers not installed"
+            return False
+    except Exception:  # noqa: BLE001 - a probe must never raise into a turn
+        return False
+    return True
 
 
 def _get_model() -> Any | None:
@@ -295,34 +314,131 @@ def _text_matches(text: str, query_tokens: list[str]) -> bool:
     return any(t in lowered for t in query_tokens)
 
 
-def _lexical_score(entry: dict[str, Any], query_tokens: list[str]) -> float:
-    """Compute literal overlap score.
+_LEXICAL_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "at",
+        "can",
+        "could",
+        "do",
+        "does",
+        "for",
+        "get",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "let",
+        "me",
+        "my",
+        "need",
+        "of",
+        "on",
+        "one",
+        "or",
+        "please",
+        "show",
+        "that",
+        "this",
+        "to",
+        "us",
+        "want",
+        "we",
+        "what",
+        "with",
+        "would",
+        "you",
+    }
+)
 
-    This is a *retrieval signal only* -- it must never be the sole decision
-    to execute.  A semantic match must not require positive lexical score.
+
+def _lexical_score(entry: dict[str, Any], query: Any) -> float:
+    """Literal overlap score for one catalog entry.
+
+    Accepts either the raw query string or a pre-tokenized list. Callers pass
+    both: action_tools passes a string, the retrieval loop passes tokens.
+    Iterating a string as if it were tokens scores single CHARACTERS against
+    every label, which is how "start the analysis" came back ranked by
+    route.analysis_history and connect.cancel_request.
+
+    A retrieval signal only. It never decides execution on its own.
     """
-    if not query_tokens:
+    if isinstance(query, str):
+        raw = query.lower()
+        tokens = _unicode_tokens(raw)
+    else:
+        tokens = [str(t).lower() for t in (query or [])]
+        raw = " ".join(tokens)
+    if not tokens:
         return 0.0
+
+    # A query of only function words carries no discriminating signal. Scoring
+    # it ranks whichever unrelated action contains "show" or "me" above the
+    # actions actually on the person's screen, so return nothing and let the
+    # caller fall back to its availability-ordered context list.
+    content = [t for t in tokens if t not in _LEXICAL_STOPWORDS]
+    if not content:
+        return 0.0
+
     score = 0.0
     label = str(entry.get("label") or "").lower()
+    meaning = str(entry.get("meaning") or "").lower()
     action_id = str(entry.get("action_id") or "").lower()
     aliases = [str(a).lower() for a in (entry.get("aliases") or [])]
-    keywords = [str(k).lower() for k in (entry.get("keywords") or [])]
-    for token in query_tokens:
-        if token == action_id:
-            score += 25.0
-        if token == label:
+    # The generated contract authors this as search_keywords; "keywords" never
+    # matched anything.
+    keywords = [
+        str(k).lower() for k in (entry.get("search_keywords") or entry.get("keywords") or [])
+    ]
+
+    # Whole-phrase signals: strongest, and only fire for short queries.
+    if raw and raw in label:
+        score += 40.0
+    if raw and raw in meaning:
+        score += 15.0
+    for alias in aliases:
+        if raw == alias:
             score += 90.0
-        if token in aliases:
-            score += 15.0
-        if token in keywords:
-            score += 12.0
-        for alias in aliases:
-            if token in alias:
-                score += 5.0
-                break
-        if token in label:
-            score += 20.0
+        elif raw and raw in alias:
+            score += 25.0
+    for keyword in keywords:
+        if raw == keyword:
+            score += 35.0
+
+    label_tokens = set(_unicode_tokens(label))
+    meaning_tokens = set(_unicode_tokens(meaning))
+    id_tokens = set(_unicode_tokens(action_id))
+    alias_tokens: set[str] = set()
+    for alias in aliases:
+        alias_tokens |= set(_unicode_tokens(alias))
+    keyword_tokens: set[str] = set()
+    for keyword in keywords:
+        keyword_tokens |= set(_unicode_tokens(keyword))
+
+    matched_label = 0
+    for token in set(content):
+        if token in alias_tokens:
+            score += 8.0
+        if token in label_tokens:
+            score += 6.0
+            matched_label += 1
+        if token in keyword_tokens:
+            score += 4.0
+        if token in id_tokens:
+            score += 3.0
+        if token in meaning_tokens:
+            score += 2.0
+
+    # Absolute coverage, deliberately NOT divided by label length: normalizing
+    # turns this into a short-label bonus, which pushed
+    # location.select_share_recipient out of the window for
+    # "share my location with mom" in favour of location.refresh.
+    if matched_label > 1:
+        score += 4.0 * matched_label
+
     return score
 
 
@@ -419,9 +535,11 @@ def _delegate_tool_name(delegate_id: str) -> str | None:
 
 def _default_exec_tool(entry: dict[str, Any]) -> str:
     goal = entry.get("goal") or {}
-    if goal.get("goal_id") and isinstance(goal.get("workflow_steps"), list) and len(
-        goal.get("workflow_steps", [])
-    ) >= 2:
+    if (
+        goal.get("goal_id")
+        and isinstance(goal.get("workflow_steps"), list)
+        and len(goal.get("workflow_steps", [])) >= 2
+    ):
         return "start_app_goal"
     return "run_app_action"
 
@@ -450,6 +568,7 @@ def _reciprocal_rank_fusion(
     the dict rank-map form used by ``search_actions``
     (``_reciprocal_rank_fusion(semantic_map, lexical_map)``).
     """
+
     def _to_map(arg: Any) -> dict[str, float]:
         if isinstance(arg, dict):
             return dict(arg)
@@ -509,9 +628,7 @@ def search_actions(
             lexical_candidates.append((entry, score))
     lexical_candidates.sort(key=lambda x: x[1], reverse=True)
     lexical_candidates = lexical_candidates[:lexical_branch_k]
-    lexical_ranks = {
-        id(entry): float(i) for i, (entry, _) in enumerate(lexical_candidates)
-    }
+    lexical_ranks = {id(entry): float(i) for i, (entry, _) in enumerate(lexical_candidates)}
 
     # --- Semantic branch ---
     semantic_scores: dict[int, float] = {}
@@ -521,7 +638,9 @@ def search_actions(
         if passages:
             passage_vecs = client.embed_passages(passages)
             sims = client.similarity(query_vec, passage_vecs)
-            for entry, score in zip(supported[:semantic_branch_k], sims):
+            # strict=True: a length mismatch would pair an action with another
+            # action's similarity, which is unfindable at runtime.
+            for entry, score in zip(supported[:semantic_branch_k], sims, strict=True):
                 semantic_scores[id(entry)] = float(score)
     except Exception:
         logger.warning("semantic_search_failed", exc_info=True)
@@ -537,12 +656,8 @@ def search_actions(
 
     # Score floor on semantic branch only (RRF score is not calibrated).
     if semantic_score_floor is not None:
-        filtered_ids = {
-            id(e) for e, s in semantic_scores.items() if s >= semantic_score_floor
-        }
-        fused_scores = {
-            eid: s for eid, s in fused_scores.items() if eid in filtered_ids
-        }
+        filtered_ids = {id(e) for e, s in semantic_scores.items() if s >= semantic_score_floor}
+        fused_scores = {eid: s for eid, s in fused_scores.items() if eid in filtered_ids}
 
     id_to_entry = {id(e): e for e in supported}
     results: list[RetrievedAction] = []
@@ -571,8 +686,7 @@ def search_actions(
                 availability=availability,
                 aliases=[str(a) for a in (entry.get("aliases") or [])],
                 keywords=[str(k) for k in (entry.get("keywords") or [])],
-                semantic_boundaries=str(entry.get("semantic_boundaries") or "").strip()
-                or None,
+                semantic_boundaries=str(entry.get("semantic_boundaries") or "").strip() or None,
                 required_inputs=[
                     spec
                     for spec in (entry.get("goal") or {}).get("required_inputs", [])

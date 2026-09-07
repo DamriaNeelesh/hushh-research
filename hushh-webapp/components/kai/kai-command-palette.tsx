@@ -325,8 +325,16 @@ export function KaiCommandPalette({
   const [remoteSearchError, setRemoteSearchError] = useState<string | null>(
     null,
   );
+  // Carries `availability`: the gateway re-checks it locally for every semantic
+  // hit (evaluateKaiActionAvailability), and every consumer below reads it to
+  // decide whether a row is disabled. Dropping it here discarded that work.
   const [semanticMatches, setSemanticMatches] = useState<
-    Array<{ action: KaiActionDefinition; score: number; semantic?: true }>
+    Array<{
+      action: KaiActionDefinition;
+      availability: KaiActionAvailability;
+      score: number;
+      semantic?: true;
+    }>
   >([]);
 
   /**
@@ -651,10 +659,17 @@ export function KaiCommandPalette({
       limit: 24,
     });
     const localIds = new Set(local.map((e) => e.action.action_id));
-    const combined = semanticMatches
-      .filter((e) => !localIds.has(e.action.action_id))
-      .map((e) => ({ ...e, semantic: true as const }))
-      .concat(local.map((e) => ({ ...e, semantic: false as const })));
+    // `semantic: boolean`, not `true as const` / `false as const`: the literal
+    // types will not unify across concat, so TypeScript widens the element to
+    // their union and drops `availability`, which every consumer below reads.
+    const combined: Array<
+      (typeof local)[number] & { semantic: boolean }
+    > = [
+      ...semanticMatches
+        .filter((e) => !localIds.has(e.action.action_id))
+        .map((e) => ({ ...e, semantic: true })),
+      ...local.map((e) => ({ ...e, semantic: false })),
+    ];
     return combined.filter((entry) => {
       if (
         isLocalHandlerAwayFromItsScreen(entry.action, currentScreen) &&

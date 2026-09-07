@@ -15,6 +15,7 @@ No mutation is allowed during proposal creation or search.
 from __future__ import annotations
 
 import logging
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -24,10 +25,6 @@ from starlette.responses import JSONResponse
 
 from api.middleware import require_vault_owner_token
 from hushh_mcp.one_adk.action_retrieval import search_actions
-from hushh_mcp.services.action_directive_ledger import (
-    ActionDirectiveAuthorityError,
-    ActionDirectiveStore,
-)
 from hushh_mcp.services.action_gateway import get_action_gateway_action
 
 logger = logging.getLogger(__name__)
@@ -73,13 +70,13 @@ def _evict_expired() -> None:
 
 
 def _evict_owner_overflow(owner_id: str) -> None:
-    owner_proposals = [
-        (pid, p) for pid, p in _proposal_store.items() if p["owner_id"] == owner_id
-    ]
+    owner_proposals = [(pid, p) for pid, p in _proposal_store.items() if p["owner_id"] == owner_id]
     if len(owner_proposals) <= _MAX_PROPOSALS_PER_OWNER:
         return
     owner_proposals.sort(key=lambda x: x[1]["created_at"])
-    to_remove = [pid for pid, _ in owner_proposals[: len(owner_proposals) - _MAX_PROPOSALS_PER_OWNER]]
+    to_remove = [
+        pid for pid, _ in owner_proposals[: len(owner_proposals) - _MAX_PROPOSALS_PER_OWNER]
+    ]
     for pid in to_remove:
         del _proposal_store[pid]
 
@@ -87,6 +84,7 @@ def _evict_owner_overflow(owner_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
+
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4096)
@@ -100,6 +98,7 @@ class ProposalRequest(BaseModel):
     The server validates the action exists in the current catalog and creates
     a server-issued binding.  No mutation happens.
     """
+
     action_id: str = Field(min_length=1)
     slots: dict[str, Any] = Field(default_factory=dict)
     request_id: str = Field(min_length=1)
@@ -110,14 +109,17 @@ class ProposalRequest(BaseModel):
 # Helper: load gateway from action_gateway
 # ---------------------------------------------------------------------------
 
+
 def _load_gateway() -> dict[str, Any]:
     from hushh_mcp.services.action_gateway import get_action_gateway
+
     return get_action_gateway()
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.post("/api/one/actions/search")
 async def search_capabilities(
@@ -134,7 +136,9 @@ async def search_capabilities(
         gateway = _load_gateway()
     except Exception:
         logger.exception("action_search_gateway_load_failed")
-        return JSONResponse({"results": [], "ranking": "unavailable", "error": "catalog_unavailable"})
+        return JSONResponse(
+            {"results": [], "ranking": "unavailable", "error": "catalog_unavailable"}
+        )
 
     try:
         results = search_actions(payload.query, gateway, limit=payload.limit or 10)
@@ -142,23 +146,31 @@ async def search_capabilities(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         logger.exception("action_search_failed")
-        return JSONResponse({"results": [], "ranking": "degraded" if not search_actions else "error"})
+        return JSONResponse(
+            {"results": [], "ranking": "degraded" if not search_actions else "error"}
+        )
 
-    return JSONResponse({
-        "results": [
-            {
-                "action_id": r.get("action_id", ""),
-                "label": r.get("label", ""),
-                "meaning": r.get("meaning", ""),
-                "policy": r.get("policy", "allow_direct"),
-                "availability": r.get("availability", "on_screen"),
-                **({"use_tool": r["use_tool"]} if r.get("use_tool") else {}),
-                **({"semantic_boundaries": r["semantic_boundaries"]} if r.get("semantic_boundaries") else {}),
-            }
-            for r in results
-        ],
-        "ranking": "semantic" if search_actions else "degraded",
-    })
+    return JSONResponse(
+        {
+            "results": [
+                {
+                    "action_id": r.get("action_id", ""),
+                    "label": r.get("label", ""),
+                    "meaning": r.get("meaning", ""),
+                    "policy": r.get("policy", "allow_direct"),
+                    "availability": r.get("availability", "on_screen"),
+                    **({"use_tool": r["use_tool"]} if r.get("use_tool") else {}),
+                    **(
+                        {"semantic_boundaries": r["semantic_boundaries"]}
+                        if r.get("semantic_boundaries")
+                        else {}
+                    ),
+                }
+                for r in results
+            ],
+            "ranking": "semantic" if search_actions else "degraded",
+        }
+    )
 
 
 @router.post("/api/one/agent-chat/proposals")
@@ -183,13 +195,16 @@ async def submit_proposal(
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Action '{payload.action_id}' not found.")
     if (entry.get("execution_target") or {}).get("status") != "wired":
-        raise HTTPException(status_code=400, detail=f"Action '{payload.action_id}' is not executable.")
+        raise HTTPException(
+            status_code=400, detail=f"Action '{payload.action_id}' is not executable."
+        )
 
     # Check owner overflow.
     _evict_owner_overflow(owner_id)
 
     # Build catalog digest.
     from hushh_mcp.one_adk.action_retrieval import _catalog_digest
+
     catalog_digest = _catalog_digest(gateway)
 
     # Determine confirmation requirement from the action's execution policy.
@@ -206,9 +221,7 @@ async def submit_proposal(
         action_id=payload.action_id,
         slots=dict(payload.slots),
         catalog_revision=catalog_digest,
-        context_revision=str(payload.context or {}).__hash__()
-        if payload.context
-        else "",
+        context_revision=str(payload.context or {}).__hash__() if payload.context else "",
         confirmation_required=confirmation_required,
         status="needs_resolution",
         created_at=now,
@@ -223,19 +236,21 @@ async def submit_proposal(
         owner_id,
     )
 
-    return JSONResponse({
-        "schemaVersion": _PROTOCOL_VERSION,
-        "requestId": payload.request_id,
-        "proposalId": proposal_id,
-        "status": "needs_resolution" if not draft.missing_slots else "needs_clarification",
-        "actionId": payload.action_id,
-        "slots": dict(draft.slots),
-        "entityMentions": draft.entity_mentions,
-        "missingSlots": draft.missing_slots,
-        "catalogRevision": catalog_digest,
-        "contextRevision": draft.context_revision,
-        "confirmationRequired": confirmation_required,
-    })
+    return JSONResponse(
+        {
+            "schemaVersion": _PROTOCOL_VERSION,
+            "requestId": payload.request_id,
+            "proposalId": proposal_id,
+            "status": "needs_resolution" if not draft.missing_slots else "needs_clarification",
+            "actionId": payload.action_id,
+            "slots": dict(draft.slots),
+            "entityMentions": draft.entity_mentions,
+            "missingSlots": draft.missing_slots,
+            "catalogRevision": catalog_digest,
+            "contextRevision": draft.context_revision,
+            "confirmationRequired": confirmation_required,
+        }
+    )
 
 
 @router.post("/api/one/action-proposals/{proposal_id}/admit")
@@ -253,29 +268,37 @@ async def admit_proposal(
         raise HTTPException(status_code=404, detail="Proposal not found or expired.")
 
     if draft["owner_id"] != owner_id:
-        raise HTTPException(status_code=403, detail="Proposal does not belong to the current owner.")
+        raise HTTPException(
+            status_code=403, detail="Proposal does not belong to the current owner."
+        )
 
     if draft["status"] not in ("needs_resolution", "needs_clarification"):
-        raise HTTPException(status_code=400, detail=f"Proposal is in state '{draft['status']}' and cannot be admitted.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Proposal is in state '{draft['status']}' and cannot be admitted.",
+        )
 
     # Revalidate against current catalog.
     gateway = _load_gateway()
     from hushh_mcp.one_adk.action_retrieval import _catalog_digest
+
     current_digest = _catalog_digest(gateway)
     if draft["catalog_revision"] != current_digest:
         draft["status"] = "blocked"
-        return JSONResponse({
-            "status": "blocked",
-            "reason": "catalog_changed",
-            "detail": "The action catalog has changed. Please retry.",
-        })
+        return JSONResponse(
+            {
+                "status": "blocked",
+                "reason": "catalog_changed",
+                "detail": "The action catalog has changed. Please retry.",
+            }
+        )
 
     # Check if all required slots are filled.
     entry = get_action_gateway_action(draft["action_id"])
     missing: list[str] = []
     if entry:
         goal = entry.get("goal") or {}
-        for spec in (goal.get("required_inputs") or []):
+        for spec in goal.get("required_inputs") or []:
             if not isinstance(spec, dict):
                 continue
             slot_name = str(spec.get("slot") or spec.get("name") or "").strip()
@@ -290,21 +313,25 @@ async def admit_proposal(
     if missing:
         draft["status"] = "needs_clarification"
         draft["missing_slots"] = missing
-        return JSONResponse({
-            "status": "needs_clarification",
-            "proposalId": proposal_id,
-            "missingSlots": missing,
-            "slots": draft["slots"],
-        })
+        return JSONResponse(
+            {
+                "status": "needs_clarification",
+                "proposalId": proposal_id,
+                "missingSlots": missing,
+                "slots": draft["slots"],
+            }
+        )
 
     draft["status"] = "ready_for_review"
-    return JSONResponse({
-        "status": "ready_for_review",
-        "proposalId": proposal_id,
-        "actionId": draft["action_id"],
-        "slots": draft["slots"],
-        "confirmationRequired": draft["confirmation_required"],
-    })
+    return JSONResponse(
+        {
+            "status": "ready_for_review",
+            "proposalId": proposal_id,
+            "actionId": draft["action_id"],
+            "slots": draft["slots"],
+            "confirmationRequired": draft["confirmation_required"],
+        }
+    )
 
 
 @router.post("/api/one/action-proposals/{proposal_id}/confirm")
@@ -326,28 +353,36 @@ async def confirm_proposal(
         raise HTTPException(status_code=404, detail="Proposal not found or expired.")
 
     if draft["owner_id"] != owner_id:
-        raise HTTPException(status_code=403, detail="Proposal does not belong to the current owner.")
+        raise HTTPException(
+            status_code=403, detail="Proposal does not belong to the current owner."
+        )
 
     if draft["status"] != "ready_for_review":
-        raise HTTPException(status_code=400, detail=f"Proposal is in state '{draft['status']}'. Admit first.")
+        raise HTTPException(
+            status_code=400, detail=f"Proposal is in state '{draft['status']}'. Admit first."
+        )
 
     # Atomically mark as confirmed.
     draft["status"] = "confirmed"
     _proposal_store[proposal_id] = draft
 
-    logger.info("one_action_proposal_confirmed proposal_id=%s action=%s", proposal_id, draft["action_id"])
+    logger.info(
+        "one_action_proposal_confirmed proposal_id=%s action=%s", proposal_id, draft["action_id"]
+    )
 
-    return JSONResponse({
-        "status": "confirmed",
-        "proposalId": proposal_id,
-        "actionId": draft["action_id"],
-        "slots": draft["slots"],
-        "executionGrant": {
-            "action_id": draft["action_id"],
+    return JSONResponse(
+        {
+            "status": "confirmed",
+            "proposalId": proposal_id,
+            "actionId": draft["action_id"],
             "slots": draft["slots"],
-            "use_tool": _resolve_use_tool(draft["action_id"]),
-        },
-    })
+            "executionGrant": {
+                "action_id": draft["action_id"],
+                "slots": draft["slots"],
+                "use_tool": _resolve_use_tool(draft["action_id"]),
+            },
+        }
+    )
 
 
 @router.post("/api/one/action-proposals/{proposal_id}/settle")
@@ -368,10 +403,14 @@ async def settle_proposal(
         raise HTTPException(status_code=404, detail="Proposal not found or expired.")
 
     if draft["owner_id"] != owner_id:
-        raise HTTPException(status_code=403, detail="Proposal does not belong to the current owner.")
+        raise HTTPException(
+            status_code=403, detail="Proposal does not belong to the current owner."
+        )
 
     if draft["status"] not in ("confirmed", "consumed"):
-        raise HTTPException(status_code=400, detail=f"Proposal is in state '{draft['status']}'. Confirm first.")
+        raise HTTPException(
+            status_code=400, detail=f"Proposal is in state '{draft['status']}'. Confirm first."
+        )
 
     draft["status"] = "settled"
     _proposal_store[proposal_id] = draft
@@ -394,7 +433,9 @@ async def cancel_proposal(
         return JSONResponse({"status": "cancelled", "proposalId": proposal_id})
 
     if draft["owner_id"] != owner_id:
-        raise HTTPException(status_code=403, detail="Proposal does not belong to the current owner.")
+        raise HTTPException(
+            status_code=403, detail="Proposal does not belong to the current owner."
+        )
 
     if draft["status"] in ("settled",):
         return JSONResponse({"status": "already_settled", "proposalId": proposal_id})
@@ -410,8 +451,10 @@ async def cancel_proposal(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _resolve_use_tool(action_id: str) -> str | None:
     from hushh_mcp.one_adk.action_tools import _DELEGATE_TOOL_BY_AGENT_ID
+
     entry = get_action_gateway_action(action_id)
     if entry is None:
         return None
@@ -422,7 +465,11 @@ def _resolve_use_tool(action_id: str) -> str | None:
     # Check journey.
     goal = entry.get("goal") or {}
     steps = goal.get("workflow_steps") or []
-    if len(steps) >= 2 and steps[0].get("type") == "action" and steps[0].get("action_id") == action_id:
+    if (
+        len(steps) >= 2
+        and steps[0].get("type") == "action"
+        and steps[0].get("action_id") == action_id
+    ):
         initial = steps[0] if isinstance(steps[0], dict) else {}
         settlement_target = initial.get("settlement_target") or {}
         if settlement_target.get("route") and settlement_target.get("screen"):
