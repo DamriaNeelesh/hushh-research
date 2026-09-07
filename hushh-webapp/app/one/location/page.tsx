@@ -8658,6 +8658,19 @@ export function OneLocationAgentPageContent({
           inviteId: invite.id,
         });
         setCreatedPublicInvite(null);
+        setStateEntry((current) =>
+          current?.userId === auth.userId
+            ? {
+                ...current,
+                state: {
+                  ...current.state,
+                  publicInvites: (current.state.publicInvites ?? []).filter(
+                    (existing) => existing.id !== invite.id,
+                  ),
+                },
+              }
+            : current,
+        );
         toast.success("Public location link revoked.");
         void refresh().catch(() => null);
       } catch (error) {
@@ -8671,7 +8684,7 @@ export function OneLocationAgentPageContent({
         setBusy(null);
       }
     },
-    [refresh, vaultOwnerToken],
+    [auth.userId, refresh, vaultOwnerToken],
   );
 
   /**

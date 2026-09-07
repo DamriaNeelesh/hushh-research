@@ -65,6 +65,7 @@ const {
   mockWithdrawRequest,
   mockUpdateAutoApprovePreference,
   mockCreatePublicInvite,
+  mockRevokePublicInvite,
   mockCreateCircleInvite,
   mockListCircles,
   mockGetCircle,
@@ -126,6 +127,7 @@ const {
   mockWithdrawRequest: vi.fn(),
   mockUpdateAutoApprovePreference: vi.fn(),
   mockCreatePublicInvite: vi.fn(),
+  mockRevokePublicInvite: vi.fn(),
   mockCreateCircleInvite: vi.fn(),
   mockListCircles: vi.fn(),
   mockGetCircle: vi.fn(),
@@ -414,7 +416,7 @@ vi.mock("@/lib/one-location/service", () => ({
     referRecipient: vi.fn(),
     createPublicInvite: mockCreatePublicInvite,
     createCircleInvite: mockCreateCircleInvite,
-    revokePublicInvite: vi.fn(),
+    revokePublicInvite: mockRevokePublicInvite,
     revokeCircleInvite: vi.fn(),
     // Named-circle surface: the mandatory onboarding invite screen
     // find-or-creates the user's first owned Circle and issues its
@@ -7804,6 +7806,25 @@ describe("OneLocationAgentPage", () => {
     expect(screen.queryByText("Duration")).toBeNull();
     // Ending it stays reachable -- that is the only exit.
     expect(screen.getByRole("button", { name: /Revoke link/i })).toBeTruthy();
+  });
+
+  it("removes revoked link actions even when refreshing the workspace fails", async () => {
+    mockGetState.mockResolvedValue({
+      ...locationState(),
+      publicInvites: [activePublicInvite({ publicUrl: "/one/location/view/neelesh.derived-token-abc" })],
+    });
+    mockRevokePublicInvite.mockResolvedValue({ invite: { status: "revoked" } });
+    render(<OneLocationAgentPage />);
+    await skipLocationEntryFlow();
+    await waitFor(() => expect(mockGetState).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Links" }));
+    expect(await screen.findByRole("button", { name: /Copy link/i })).toBeTruthy();
+    mockGetState.mockRejectedValue(new Error("State refresh unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: /Revoke link/i }));
+    await waitFor(() => expect(mockRevokePublicInvite).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Copy link$/i })).toBeNull());
+    expect(screen.queryByRole("button", { name: /^Share$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Create link$/i })).toBeTruthy();
   });
 
   it("lets a link whose URL cannot be recovered be stopped", async () => {
