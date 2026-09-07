@@ -101,14 +101,6 @@ package = false
 # ~15 nvidia-* wheels plus triton, all gated on sys_platform == 'linux' -- which
 # is exactly the Cloud Run image. That is multiple GB of GPU runtime for a
 # service with no GPU, paid for on every cold start.
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-
 [tool.ruff]
 # Python 3.13 - aligned with CI and Dockerfile
 target-version = "py313"
