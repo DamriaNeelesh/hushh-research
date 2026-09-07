@@ -42,6 +42,14 @@ _SLOW_MIGRATION_MS = 1_000
 _LOCK_CONTENTION_SQLSTATES = frozenset({"55P03", "40P01", "40001"})
 _LOCK_RETRY_ATTEMPTS = 4
 _LOCK_RETRY_BASE_DELAY_S = 1.0
+# Bound what the RUN may spend retrying, not only what one migration may.
+# The UAT lane is 174 entries; at 4 attempts each that is
+# 174 x (4 x 5s lock wait + 7s backoff) = ~78 minutes, and deploy-uat.yml sets
+# no `timeout-minutes` (GitHub default 360). Unbounded, retry would turn a
+# 3-minute red deploy into a 78-minute hung one holding the advisory lock with
+# the account-deletion release fence installed -- worse than the bug it fixes.
+# Past the budget the next contention failure is reported instead of retried.
+_LOCK_RETRY_RUN_BUDGET_S = 300.0
 
 
 def _is_lock_contention(exc: BaseException) -> bool:
@@ -53,6 +61,27 @@ def _is_lock_contention(exc: BaseException) -> bool:
     """
     sqlstate = getattr(exc, "sqlstate", None)
     return isinstance(sqlstate, str) and sqlstate in _LOCK_CONTENTION_SQLSTATES
+
+
+async def _reset_connection(conn: Any, failure: BaseException) -> bool:
+    """Clear the aborted transaction. Returns False when the connection is gone.
+
+    R28 again, on the new path: this cleanup runs on a connection that has just
+    failed, so it can fail too -- and its failure must never become the reported
+    error. The lock timeout stays the diagnosis; a reset failure becomes a note
+    on it and ends the retrying, because there is nothing left to retry with.
+    """
+    try:
+        await _rollback_failed_transaction(conn)
+        return True
+    except Exception as reset_error:  # noqa: BLE001 - diagnostic only
+        failure.add_note(f"connection reset failed [{_failure_signature(reset_error)}]")
+        print(
+            f"  connection reset failed [{_failure_signature(reset_error)}]",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
 
 
 def _lock_retry_delay_seconds(attempt: int) -> float:
@@ -306,6 +335,7 @@ async def apply_manifest_entries(
 
     await _try_lock(conn)
     applied: list[str] = []
+    retry_spent_s = 0.0
     try:
         rows: dict[str, dict[str, Any]] = {}
         baseline_through: int | None = None
@@ -370,9 +400,18 @@ async def apply_manifest_entries(
                     # queue to drain and try the same body once more. Only a
                     # contention SQLSTATE gets this; a constraint violation or a
                     # syntax error still fails on the first attempt.
-                    if _is_lock_contention(exc) and attempt < _LOCK_RETRY_ATTEMPTS:
-                        await _rollback_failed_transaction(conn)
-                        delay = _lock_retry_delay_seconds(attempt)
+                    delay = _lock_retry_delay_seconds(attempt)
+                    if (
+                        _is_lock_contention(exc)
+                        and attempt < _LOCK_RETRY_ATTEMPTS
+                        and retry_spent_s + delay <= _LOCK_RETRY_RUN_BUDGET_S
+                        # The next attempt runs on the connection this one left
+                        # behind, so clearing it is part of the decision: if the
+                        # reset fails there is nothing to retry with, and the
+                        # lock error -- not the reset -- stays the diagnosis.
+                        and await _reset_connection(conn, exc)
+                    ):
+                        retry_spent_s += delay
                         print(
                             f"  lock contention on {entry.filename} after {duration_ms}ms "
                             f"[{_failure_signature(exc)}]; retry {attempt}/"
@@ -404,7 +443,10 @@ async def apply_manifest_entries(
                     # -- which replaced the real error in the traceback. The UAT
                     # workflow reported "current transaction is aborted" when the
                     # actual failure was "canceling statement due to lock timeout".
-                    await _rollback_failed_transaction(conn)
+                    # Guarded for the same reason the unlock below is: this reset
+                    # runs on a just-failed connection and can fail itself, and
+                    # its exception must not replace the migration's (R28).
+                    await _reset_connection(conn, exc)
                     if mode is not MigrationMode.REPLAY:
                         await _record_result(
                             conn,

@@ -1240,19 +1240,19 @@ aborted connection and reports itself instead of the failure (R28).
 **Check.**
 ```bash
 cd consent-protocol
-python3 -c "
-import re,pathlib
-s=pathlib.Path('db/migration_authority.py').read_text()
-print('retries only on contention:', '_LOCK_CONTENTION_SQLSTATES' in s)
-print('timeout still short:', '_lock_timeout_ms: int = 5_000' in s or 'lock_timeout_ms: int = 5_000' in s)
-print('rolls back between attempts:', '_rollback_failed_transaction(conn)' in s.split('_is_lock_contention(exc) and attempt')[1][:400])
-"
-../.venv/bin/python -m pytest tests/test_migration_authority.py -q -k "lock or retried or bounded"
+# The behaviour, not the source text. A string-matching check over this
+# function is worthless: the first version of this Check split on
+# `_is_lock_contention(exc) and attempt`, and died with IndexError the moment
+# that condition became multi-line -- one commit later (R34).
+../.venv/bin/python -m pytest tests/test_migration_authority.py -q
+grep -n "test_migration_authority" scripts/test-ci.manifest.txt
 ```
-All three must print `True`. Mutation-test before trusting it (R22): set
-`_LOCK_RETRY_ATTEMPTS = 1` and three tests must go red; make
-`_is_lock_contention` return `True` unconditionally and
-`test_a_broken_migration_is_not_retried` must go red.
+All 16 must pass, and the grep must return a line -- an unregistered test file
+never runs in CI, and this manifest is the only pytest invocation in any lane.
+Mutation-test before trusting it (R22): `_LOCK_RETRY_ATTEMPTS = 1` turns three
+red; an unconditional `_is_lock_contention` turns the not-retried test red;
+unguarding the reset turns the masking test red; deleting the run-budget
+condition turns the budget test red.
 
 ### R33 — `ledger` mode cannot be switched on today: 152 of 194 migrations open their own transaction
 
@@ -1294,3 +1294,56 @@ grep -n "migration-mode" ../.github/workflows/deploy-*.yml
 ```
 The first must print `0`. The second must return a tool. Until both hold, every
 lane stays on `replay`.
+
+### R34 — A retry bounded per unit is unbounded per run, and a fix's own tests may never run
+
+**Incident (2026-09-08, hours after R32 shipped in PR #6609.)** The retry that
+fixed the lock-timeout outage introduced three defects of its own, none caught
+by review and none catchable by its tests, because its tests did not run.
+
+1. **Unbounded per run.** 4 attempts per migration is bounded; 174 migrations x
+   (4 x 5s lock wait + 7s backoff) is **~78 minutes**, and `deploy-uat.yml` sets
+   no `timeout-minutes` at all (GitHub default 360). The bug being fixed made
+   UAT go red in three minutes. The fix could make it hang for over an hour
+   while holding the migration advisory lock **and** the installed
+   account-deletion release fence. That is a worse availability posture than the
+   defect.
+2. **R28 reintroduced on the new path.** The retry branch called
+   `await _rollback_failed_transaction(conn)` unguarded. That cleanup runs on a
+   connection that has just failed, so it can fail too -- and its exception then
+   replaces the 55P03 as the reported error, which is precisely the masking R28
+   exists to prevent, on a path R28's own check does not reach.
+3. **The tests were decoration.** `tests/test_migration_authority.py` was not in
+   `consent-protocol/scripts/test-ci.manifest.txt`, and that manifest is the only
+   pytest invocation in any lane (its own header says so). R28's masking tests
+   and R32's four retry tests had never executed in CI, on any PR, ever.
+
+And R32's own Check was brittle: it split the source on
+`_is_lock_contention(exc) and attempt`, so it died with `IndexError` as soon as
+that condition became multi-line -- one commit after it was written.
+
+**Rule.** A retry needs two bounds: per unit **and** per run. State the run's
+worst case in seconds before shipping it, and compare that number against the
+job's own timeout -- if the job has no `timeout-minutes`, the worst case is the
+platform default, not the number you hoped for. Any cleanup on the failure path
+goes through one guarded helper, never a bare call, so a second failure cannot
+overwrite the first. And a test file is not coverage until it is in the
+manifest: adding tests and adding them to `test-ci.manifest.txt` are one change,
+not two. Write Checks against behaviour (run the tests) rather than against
+source text, which goes stale on the next refactor.
+
+**Check.**
+```bash
+cd consent-protocol
+grep -n "test_migration_authority" scripts/test-ci.manifest.txt
+python3 -c "
+import pathlib
+s=pathlib.Path('db/migration_authority.py').read_text()
+print('run budget present:', '_LOCK_RETRY_RUN_BUDGET_S' in s)
+print('no bare rollback on a failure path:', s.count('await _rollback_failed_transaction(conn)') == 1)
+"
+grep -n "timeout-minutes" ../.github/workflows/deploy-uat.yml || echo "deploy-uat has NO job timeout"
+```
+The grep must return a line. Both prints must be `True` -- the single remaining
+bare call is the one inside `_reset_connection` itself. The last line records
+whether the lane is still relying on the platform default.
