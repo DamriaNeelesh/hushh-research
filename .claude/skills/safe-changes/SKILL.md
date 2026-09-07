@@ -1374,3 +1374,53 @@ versions than the limit allows, and prints the exact `secret_list_edit.py
 Verified by replaying the real incident: against v8 → v9 it reports 58 entries
 lost against a limit of 5, and 1 entry against a floor of 25 — it fails on both
 counts. A guard never seen to catch its own incident is decoration.
+
+### R34 — On a flat team you cannot remove access, so remove the accident and shorten the silence
+
+**Context (2026-09-08, after R32/R33.)** The obvious fix for "one write destroyed
+58 entries" is to restrict who may write that secret. On a small team with a flat
+hierarchy that is the wrong trade: everyone genuinely needs to ship, and an
+access ticket between an engineer and their own test number buys nothing.
+
+So the control is not permission. It is three layers, none of which asks anyone
+for approval:
+
+1. **Make the safe path the easy path.** `scripts/ops/secret_list_edit.py`
+   reads before it writes, unions, and refuses to shrink a list. It is shorter
+   to type than the raw command it replaces.
+2. **Make the accident impossible.** `scripts/ops/protected-secret-guard.sh`
+   defines a shell function that refuses `gcloud secrets versions add` on any
+   secret declared in `config/protected-lists.json`, and tells you what to run
+   instead. Installed per engineer with one line in `~/.zshrc`. It is
+   deliberately bypassable with `command gcloud` — it stops the slip, not the
+   decision.
+3. **Make the silence short.** `.github/workflows/verify-protected-lists.yml`
+   runs hourly against UAT *and* production, and the same check gates both
+   deploy lanes. The 2026-09-03 wipe went unnoticed for five days; the ceiling
+   is now an hour, and a production wipe cannot wait for the next rare
+   production deploy to be found.
+
+Prevention that only works when people cooperate is not a control. Detection
+that only runs at deploy time is not a control either, because the deploy that
+would catch it may be weeks away. Layer both.
+
+**Rule.** When access cannot be restricted, every destructive operation on
+shared state needs all three: a safe default tool, a guard against the
+accidental form, and time-bounded detection that runs without anyone
+remembering to run it. Adding a list to `config/protected-lists.json` gets all
+three at once.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne
+# The guard must refuse a protected list and pass everything else through.
+HUSHH_REPO_ROOT="$PWD" bash -c '
+source scripts/ops/protected-secret-guard.sh
+gcloud secrets versions add HUSHH_UAT_PHONE_TEST_NUMBERS --project=hushh-pda-uat \
+  --data-file=- </dev/null 2>&1 | grep -q REFUSED && echo "guard: refuses protected" || echo "GUARD BROKEN"
+gcloud secrets versions list HUSHH_UAT_PHONE_TEST_NUMBERS --project=hushh-pda-uat \
+  --limit=1 --format="value(name)" >/dev/null 2>&1 && echo "guard: reads untouched" || echo "GUARD TOO BROAD"'
+```
+Both lines must be the positive form. Verified 2026-09-08, including flags
+placed before the secret name and an unprotected secret passing through to real
+gcloud.
