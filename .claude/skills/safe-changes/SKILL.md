@@ -1240,36 +1240,44 @@ npx vitest run __tests__/components/phone-verification-flow-interaction.test.tsx
 The second must return a line; the suite covers `en-IN`, `en-US`, and an
 existing account number outranking the browser.
 
-### R31 — An unpassed deploy substitution is a feature that never turns on
+### R31 — An empty-defaulting deploy substitution is a feature that never turns on
 
-**Incident (2026-09-08, found while tracing the above.)**
+**Incident (2026-09-08, found while tracing R30.)**
 `deploy/backend.cloudbuild.yaml` binds 49 secrets, each through a substitution:
 
 ```bash
 add_secret "${_SOME_THING_SECRET}" "SOME_THING"
 ```
 
-Every substitution defaults to `""`, and `add_secret` skips empties. So a lane
-that never passes one deploys a service with that environment variable simply
-**absent** — no error, no log, no failed step. The feature that reads it behaves
-exactly as though it was never configured.
+**40 of those substitutions default to `""`**, and `add_secret` skips empties. A
+lane that never passes one deploys a service with that environment variable
+simply **absent** — no error, no log, no failed step. The feature that reads it
+behaves exactly as though it was never configured.
 
-Measured across the three lanes: UAT passes 37/49, production 16/49, dev 17/49.
-Most omissions are correct — production must not carry UAT test numbers. But
-`_HUSHH_UAT_PHONE_TEST_CHALLENGE_SECRET_SECRET` is missing from the UAT lane by
-accident, so the phone-test challenge key silently falls back to
-`APP_SIGNING_KEY` and every test code changes the day that key rotates. And
-`_HUSHH_MANAGED_GEMINI_LIVE_API_KEY_SECRET` is passed by **no lane at all**.
+The other 9 default to the secret's own name and are bound whether or not a
+lane passes them. That distinction matters: a first version of this check
+ignored it and reported all 9 as gaps, including `_WALLET_PASS_*` and
+`_OMNIGATEWAY_*` which were working fine. Verified against the live service —
+`HUSHH_MANAGED_GEMINI_LIVE_API_KEY` is **present** on
+`consent-protocol` in `hushh-pda-uat` despite no lane passing it.
 
-This is R8 in a new place: a degrade-quietly branch with no signal on the way
-out. Nobody can tell a deliberate omission from a forgotten one by reading the
-workflow.
+Of the 40 that can vanish, UAT omits 4, production 25, dev 24. Most are
+correct — production must not carry UAT test numbers. The one that is not:
+`_HUSHH_UAT_PHONE_TEST_CHALLENGE_SECRET_SECRET`, so the phone-test challenge
+key silently falls back to `APP_SIGNING_KEY`. Every UAT test code therefore
+changes the day that key rotates, with no warning.
 
-**Rule.** Every secret bound by the cloudbuild template must be passed by each
-deploy lane, or recorded as a deliberate omission **with a reason**. Do not bind
-a secret you have not confirmed exists — Cloud Run validates every `secretKeyRef`
-at revision start, so a missing one produces a revision that never becomes ready
-while the old one keeps serving (R1).
+That one still must not be bound: `gcloud secrets describe
+HUSHH_UAT_PHONE_TEST_CHALLENGE_SECRET --project=hushh-pda-uat` returns
+**not found**. Cloud Run validates every `secretKeyRef` at revision start, so
+binding it would make every UAT revision fail to become ready while the old one
+kept serving (R1). Create the secret first, then bind.
+
+**Rule.** Every empty-defaulting secret substitution must be passed by each
+deploy lane, or recorded as a deliberate omission **with a reason**. Check the
+substitution's default before calling an omission a bug, and check the running
+service before calling it broken. Never bind a secret you have not confirmed
+exists.
 
 **Check.**
 ```bash
@@ -1277,5 +1285,5 @@ cd ~/Desktop/husshOne
 python3 scripts/ci/check-deploy-secret-coverage.py
 ```
 Runs in the `Governance` CI job. It fails on an omission absent from
-`config/deploy-env-coverage.json`, and on a stale entry there that no longer
-matches reality — both directions were mutation-tested before this rule landed.
+`config/deploy-env-coverage.json`, and on a listed entry that no longer matches
+reality — both directions mutation-tested before this rule landed.

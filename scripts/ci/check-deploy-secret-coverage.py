@@ -34,13 +34,33 @@ BASELINE = REPO_ROOT / "config" / "deploy-env-coverage.json"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
 _BIND = re.compile(r'add_secret "\$\{(_[A-Z0-9_]+_SECRET)\}"')
+_DEFAULT = re.compile(r"^  (_[A-Z0-9_]+_SECRET):[ ]*(.*?)[ ]*$", re.MULTILINE)
+
+
+def _defaults(text: str) -> dict[str, str]:
+    """Substitution defaults, read from the `substitutions:` block."""
+    return {
+        name: value.strip().strip('"').strip("'")
+        for name, value in _DEFAULT.findall(text)
+    }
 
 
 def bound_substitutions() -> list[str]:
-    found = _BIND.findall(CLOUDBUILD.read_text(encoding="utf-8"))
-    # Preserve declaration order; de-duplicate.
+    """Bound secrets whose substitution defaults to empty.
+
+    A substitution with a NON-EMPTY default is bound whether or not a lane
+    passes it -- `_HUSHH_MANAGED_GEMINI_LIVE_API_KEY_SECRET` defaults to the
+    secret's own name, so it reaches every service regardless. Only an
+    empty-defaulting substitution can silently vanish, and only those are worth
+    demanding coverage for. Flagging the rest reports working configuration as
+    a defect, which is how a check becomes noise people learn to skip.
+    """
+    text = CLOUDBUILD.read_text(encoding="utf-8")
+    defaults = _defaults(text)
     seen: dict[str, None] = {}
-    for name in found:
+    for name in _BIND.findall(text):
+        if defaults.get(name, "") != "":
+            continue
         seen.setdefault(name, None)
     return list(seen)
 
