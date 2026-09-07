@@ -315,6 +315,22 @@ enum OneAppIntentActionRequestFactory {
         )
     }
 
+    /// `confirmedBySystem` is true here and nowhere else for this action.
+    /// It does not claim Siri showed a confirmation sheet; it records that the
+    /// gesture which reached this factory -- a press-and-hold on the Action
+    /// button, or a spoken phrase that explicitly says "send ... alert" -- is
+    /// itself the confirmation. The web side turns this flag into the
+    /// `confirmed` slot that `resolveTriggerSos` requires, so an invocation
+    /// arriving any other way still gets the tappable confirm card.
+    static func sendSaveMySoulAlert(note: String) -> OneAppIntentActionRequest {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .init(
+            actionID: .triggerSaveMySoul,
+            slots: trimmed.isEmpty ? [:] : ["note": trimmed],
+            confirmedBySystem: true
+        )
+    }
+
     static func open(_ actionID: OneSystemActionID) -> OneAppIntentActionRequest {
         .init(actionID: actionID, slots: [:], confirmedBySystem: false)
     }
@@ -716,6 +732,57 @@ struct OpenOneEmergencySOSIntent: OneLocationOpenIntent {
     }
 }
 
+/// Save My Soul, sent for real.
+///
+/// This is deliberately a separate intent from `OpenOneEmergencySOSIntent`
+/// rather than a branch inside it. App Intents expose no API for the
+/// invocation source -- there is no way to ask "was this the Action button, or
+/// a phrase someone said across the room" -- so an intent that sends, sends
+/// from every entry point it is reachable from. Splitting sending into its own
+/// intent is therefore the only place the distinction can live: the short,
+/// panicky, easily-misheard phrases ("SMS", "SOS") stay on the open intent
+/// where the worst case is a screen appearing, and only the long deliberate
+/// "send ... alert" phrases reach this one.
+///
+/// Being a registered App Shortcut is what makes it assignable to the Action
+/// button, where the press-and-hold is the confirming gesture.
+@available(iOS 16.0, *)
+struct SendSaveMySoulAlertIntent: AppIntent {
+    static let title: LocalizedStringResource = "Send Save My Soul Alert"
+    static let description = IntentDescription(
+        "Alert your Agent One emergency contacts right now and share your live location with them."
+    )
+    static let authenticationPolicy: IntentAuthenticationPolicy =
+        .requiresLocalDeviceAuthentication
+    static let openAppWhenRun = true
+
+    @available(iOS 26.0, *)
+    static let supportedModes: IntentModes = [.foreground(.immediate)]
+
+    /// Optional on purpose. A required parameter would make the Action button
+    /// stop and ask a question, which is the one thing this path must not do.
+    @Parameter(title: "Note for your contacts")
+    var note: String?
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Send my Save My Soul alert") {
+            \.$note
+        }
+    }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        // No requestConfirmation() here, and that is the decision, not an
+        // omission: reaching this intent at all is already the deliberate act.
+        // The app-side guards still refuse and say why -- locked vault, an SOS
+        // already running, location permission off, or no contact ready to be
+        // alerted.
+        let summary = await OneAppIntentActionExecutor.run(
+            OneAppIntentActionRequestFactory.sendSaveMySoulAlert(note: note ?? "")
+        )
+        return .result(dialog: "\(summary)")
+    }
+}
+
 @available(iOS 16.0, *)
 struct OpenOneDestinationIntent: OneLocationOpenIntent {
     static let title: LocalizedStringResource = "Open Agent One Location"
@@ -848,23 +915,6 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
         "Have \(agentOne) ask \(\.$person) where they are",
     ]
 
-    // MARK: - Stop Sharing phrase family
-
-    private static let stopSharingPhrases: [String] = [
-        "Stop sharing location with \(\.$person) in \(agentOne) Location Agent",
-        "Stop my location in \(agentOne) Location Agent",
-        "Ask \(agentOne) to stop sharing location with \(\.$person)",
-        "Tell \(agentOne) to stop sharing location with \(\.$person)",
-        "Talk to \(agentOne) and stop sharing location with \(\.$person)",
-        "Turn off location sharing with \(\.$person) in \(agentOne)",
-        "Stop sharing my location to \(\.$person) using \(agentOne)",
-        "Cancel my location share with \(\.$person) in \(agentOne)",
-        "Ask \(agentOne) to pause my location",
-        "Tell \(agentOne) to pause my location",
-        "Talk to \(agentOne) and pause my location",
-        "Disable my location sharing in \(agentOne)",
-    ]
-
     // MARK: - Location On / Off phrase family
 
     private static let locationStatePhrases: [String] = [
@@ -877,17 +927,6 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
         "Stop location updates in \(agentOne)",
         "Turn on Agent One location",
         "Turn off my Agent One location",
-    ]
-
-    // MARK: - Open Destination phrase family
-
-    private static let openDestinationPhrases: [String] = [
-        "Open \(\.$destination) in \(agentOne) Location Agent",
-        "Show \(\.$destination) in \(agentOne) Location",
-        "View \(\.$destination) in \(agentOne) Location Agent",
-        "Take me to \(\.$destination) in \(agentOne)",
-        "Open my \(\.$destination) on \(agentOne)",
-        "Show me \(\.$destination) in Agent One Location",
     ]
 
     // MARK: - Talk to Agent One phrase family
@@ -922,24 +961,17 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
         "Add a Circle in \(agentOne)",
     ]
 
-    // MARK: - Open Map phrase family
-
-    private static let openMapPhrases: [String] = [
-        "Open the map in \(agentOne) Location",
-        "Show my location map in \(agentOne)",
-        "Open \(agentOne) Location Map",
-        "Show the map for \(agentOne) Location",
-        "View my location map in \(agentOne)",
-    ]
-
-    /// Emergency SOS. Deliberately the widest phrase set of any shortcut here:
-    /// this is the one a person may need to reach while panicking, in the dark,
-    /// or in a second language. "SMS" is the in-product name (Save My Soul), so
-    /// it is spelled out as well as abbreviated.
+    /// Save My Soul, the screen. Deliberately the widest phrase set here: this
+    /// is the one a person may need while panicking, in the dark, or in a
+    /// second language. "SMS" is the in-product abbreviation of Save My Soul --
+    /// no text message is involved -- so both forms are taught.
     ///
-    /// The intent OPENS the SOS screen. It does not send an alert. A hardware
-    /// button or a misheard phrase must never fire an emergency message on
-    /// someone's behalf.
+    /// Every phrase in this family OPENS the screen and sends nothing. That is
+    /// what makes it safe to keep them short and easily misheard. "Help me" and
+    /// "I need help" are not here: they are real aliases of
+    /// `location.sos_default`, which honours the person's own Voice Settings
+    /// choice between opening and sending, and this intent always just opens.
+    /// Putting them here would have silently overridden that preference.
     static let emergencySOSPhrases: [AppShortcutPhrase<OpenOneEmergencySOSIntent>] = [
         "SMS in \(agentOne)",
         "Save my soul in \(agentOne)",
@@ -948,8 +980,18 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
         "Emergency SOS in \(agentOne)",
         "SOS in \(agentOne)",
         "Open emergency SOS in \(agentOne)",
-        "I need help in \(agentOne)",
-        "Help me in \(agentOne)",
+    ]
+
+    /// The sending counterpart. Every phrase carries an explicit "send", and
+    /// none is short enough to arrive by accident from a television or an
+    /// overheard conversation. This is the shortcut meant for the Action
+    /// button.
+    static let sendSaveMySoulPhrases: [AppShortcutPhrase<SendSaveMySoulAlertIntent>] = [
+        "Send my Save My Soul alert in \(agentOne)",
+        "Send the Save My Soul alert in \(agentOne)",
+        "Send my SMS alert in \(agentOne)",
+        "Send my emergency alert in \(agentOne)",
+        "Send an emergency alert in \(agentOne)",
     ]
 
     static var appShortcuts: [AppShortcut] {
@@ -977,22 +1019,10 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
             systemImageName: "location.magnifyingglass"
         )
         AppShortcut(
-            intent: StopLocationSharingWithOneIntent(),
-            phrases: stopSharingPhrases,
-            shortTitle: "Stop Sharing",
-            systemImageName: "location.slash.fill"
-        )
-        AppShortcut(
             intent: SetOneLocationStateIntent(),
             phrases: locationStatePhrases,
             shortTitle: "Location On or Off",
             systemImageName: "location.circle"
-        )
-        AppShortcut(
-            intent: OpenOneDestinationIntent(),
-            phrases: openDestinationPhrases,
-            shortTitle: "Open Destination",
-            systemImageName: "arrow.forward"
         )
         AppShortcut(
             intent: TalkToHusshOneIntent(),
@@ -1012,21 +1042,32 @@ struct HusshOneAppShortcuts: AppShortcutsProvider {
             shortTitle: "Create Circle",
             systemImageName: "person.2.circle"
         )
-        // Emergency SOS holds the tenth slot, not Open Map.
+        // Save My Soul takes two of Apple's ten slots, and that is the point.
         //
-        // Apple caps App Shortcuts at ten, enforced at compile time, so this is
-        // a genuine trade. Open Map was the one safe thing to drop: it is fully
-        // reachable through OpenOneDestinationIntent, whose AgentOneDestination
-        // parameter already carries `.map`, and it remains available as an
-        // action in the Shortcuts app. SOS had no voice route at all.
+        // The list above is the Location feature set a person actually asks
+        // for out loud. Stop Sharing and Open Destination were dropped to make
+        // room: stopping is still reachable through Location On or Off and
+        // through the free-text handshake, and every open* destination is
+        // reachable through the handshake too. Both intents remain defined and
+        // usable in the Shortcuts app.
         //
-        // Being in this list is also what lets a person put SOS on the Action
-        // button, since that picker only offers registered App Shortcuts.
+        // The two SOS entries are split rather than merged because App Intents
+        // expose no invocation source. One opens and can never alert anyone;
+        // the other sends and is worded so it cannot be reached by accident.
+        // Registration is also what puts them in the Action button picker,
+        // which only offers registered App Shortcuts -- assign "Send Save My
+        // Soul" there and the press-and-hold sends, with no second step.
         AppShortcut(
             intent: OpenOneEmergencySOSIntent(),
             phrases: emergencySOSPhrases,
-            shortTitle: "Emergency SOS",
+            shortTitle: "Save My Soul",
             systemImageName: "sos"
+        )
+        AppShortcut(
+            intent: SendSaveMySoulAlertIntent(),
+            phrases: sendSaveMySoulPhrases,
+            shortTitle: "Send Save My Soul",
+            systemImageName: "exclamationmark.bubble.fill"
         )
     }
 

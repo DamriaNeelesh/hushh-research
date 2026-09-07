@@ -20,6 +20,12 @@ enum OneSystemActionID: String, Codable, CaseIterable, Sendable {
     case resumeLocation = "location.resume_updates"
     case createCircle = "location.create_circle"
     case renameCircle = "location.rename_circle"
+    // The only action here that sends something irreversible to other people.
+    // It is reachable from exactly one App Intent (SendSaveMySoulAlertIntent),
+    // which exists solely to be assigned to the Action button, and it is vault
+    // gated below. An action absent from this enum cannot be invoked from an
+    // App Intent at all, so this line is the whole native authorization.
+    case triggerSaveMySoul = "location.trigger_sos"
 
     static let vaultRequiredActionIDs: Set<OneSystemActionID> = [
         .shareLocation,
@@ -28,7 +34,8 @@ enum OneSystemActionID: String, Codable, CaseIterable, Sendable {
         .pauseLocation,
         .resumeLocation,
         .createCircle,
-        .renameCircle
+        .renameCircle,
+        .triggerSaveMySoul
     ]
 
     static let systemConfirmationRequiredActionIDs: Set<OneSystemActionID> = [
@@ -56,6 +63,12 @@ enum OneSystemActionID: String, Codable, CaseIterable, Sendable {
             return ["person", "resolvedRecipientId"]
         case .createCircle:
             return ["name", "kind"]
+        // `confirmed` is deliberately absent: it is never accepted as a slot
+        // from the wire, only derived from the invocation's confirmedBySystem
+        // flag on the web side. A slot outside this set rejects the whole
+        // invocation, so no caller can smuggle a confirmation in as text.
+        case .triggerSaveMySoul:
+            return ["note"]
         case .renameCircle:
             return ["circle", "resolvedCircleId", "name"]
         case .pauseLocation, .resumeLocation, .openLocation, .openLocationMap,

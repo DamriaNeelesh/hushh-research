@@ -24,8 +24,15 @@ const typescriptBridgePath = path.join(
 );
 
 const EXPOSED_MODES = new Set(["direct", "review_ui"]);
+// location.trigger_sos is deliberately absent: it is now a direct Siri action,
+// reachable from exactly one App Intent, and that reachability is asserted
+// separately in verifySaveMySoulSeparation below.
+//
+// location.sos_default stays forbidden and must never become direct. It
+// branches on a stored preference, so what it does is not knowable from the
+// phrase alone -- a hardware button or a misheard word must never resolve to
+// "whatever this person once chose".
 const FORBIDDEN_DIRECT_IDS = [
-  "location.trigger_sos",
   "location.sos_default",
   "location.delete_circle",
 ];
@@ -104,17 +111,27 @@ function verifyShortcutPhrases(source) {
       `App Shortcuts exceed Apple's limit of 10, found ${shortcutCount}`,
     );
   }
-  if (shortcutCount !== 10) {
-    throw new Error(`Expected 10 App Shortcuts, found ${shortcutCount}`);
+  if (shortcutCount !== 9) {
+    throw new Error(`Expected 9 App Shortcuts, found ${shortcutCount}`);
   }
-  // Emergency SOS must hold a slot. It is the one shortcut a person may need
-  // while unable to navigate the app, and being registered here is also what
-  // makes it assignable to the Action button.
-  if (!source.includes("intent: OpenOneEmergencySOSIntent()")) {
-    throw new Error(
-      "Emergency SOS must remain a registered App Shortcut: it is the only " +
-        "voice and Action-button route to the SOS screen",
-    );
+  // Both halves of Save My Soul must hold a slot. Registration is the only
+  // thing that puts a shortcut in the Action button picker, and the picker is
+  // the whole point of the sending half.
+  for (const [registration, why] of [
+    [
+      "intent: OpenOneEmergencySOSIntent()",
+      "the only voice and Action-button route to the SOS screen",
+    ],
+    [
+      "intent: SendSaveMySoulAlertIntent()",
+      "the only route that actually sends the alert, and the one meant for the Action button",
+    ],
+  ]) {
+    if (!source.includes(registration)) {
+      throw new Error(
+        `Save My Soul must keep its App Shortcut (${registration}): it is ${why}`,
+      );
+    }
   }
   // Phrases interpolate the `agentOne` constant, not a literal
   // \(.applicationName). Matching the wrong form silently passes.
@@ -147,15 +164,113 @@ function verifyShortcutPhrases(source) {
     // Check-in.
     '"Check in with \\(agentOne)"',
     '"Open Check In in \\(agentOne) Location"',
-    // Emergency SOS: the in-product name and its expansion must both work.
+    // Save My Soul: the in-product name and its abbreviation must both work.
     '"SMS in \\(agentOne)"',
     '"Save my soul in \\(agentOne)"',
     '"Emergency SOS in \\(agentOne)"',
+    // ...and the sending half needs an unmistakable phrase of its own.
+    '"Send my Save My Soul alert in \\(agentOne)"',
   ];
 
   const missing = requiredFragments.filter((fragment) => !source.includes(fragment));
   if (missing.length > 0) {
     throw new Error(`Missing governed Siri phrase fragments: ${missing.join(", ")}`);
+  }
+
+  // These are aliases of location.sos_default, which honours the person's own
+  // "In an emergency" preference. On an intent that only ever opens, they
+  // would silently override that choice for anyone who set it to send.
+  for (const phrase of ['"I need help in \\(agentOne)"', '"Help me in \\(agentOne)"']) {
+    if (source.includes(phrase)) {
+      throw new Error(
+        `${phrase} belongs to location.sos_default, not to an open-only intent`,
+      );
+    }
+  }
+}
+
+/**
+ * The invariant that keeps a hardware button from becoming a spoken kill-word.
+ *
+ * App Intents expose no invocation source, so an intent that sends, sends from
+ * every phrase it answers to. Sending therefore lives in exactly one intent,
+ * and this asserts it stays that way -- a future edit that points the short
+ * "SMS" phrases at the sending action fails here rather than in someone's
+ * pocket.
+ */
+function verifySaveMySoulSeparation(source) {
+  const ownerOf = (index) => {
+    const preceding = source.slice(0, index);
+    const declarations = [
+      ...preceding.matchAll(/\n(?:struct|enum|extension|final class|class)\s+([A-Za-z0-9_]+)/g),
+    ];
+    return declarations.at(-1)?.[1] ?? "<file scope>";
+  };
+  const ownersReferencing = (needle) => {
+    const owners = new Set();
+    let from = 0;
+    for (;;) {
+      const index = source.indexOf(needle, from);
+      if (index === -1) break;
+      owners.add(ownerOf(index));
+      from = index + needle.length;
+    }
+    return owners;
+  };
+
+  const sendOwners = new Set([
+    ...ownersReferencing(".triggerSaveMySoul"),
+    ...ownersReferencing("sendSaveMySoulAlert("),
+  ]);
+  const permittedSendOwners = new Set([
+    "SendSaveMySoulAlertIntent",
+    "OneAppIntentActionRequestFactory",
+  ]);
+  const trespassers = [...sendOwners].filter(
+    (owner) => !permittedSendOwners.has(owner),
+  );
+  if (sendOwners.size === 0) {
+    throw new Error("Nothing reaches location.trigger_sos: the send path is gone");
+  }
+  if (trespassers.length > 0) {
+    throw new Error(
+      `Only SendSaveMySoulAlertIntent may send a Save My Soul alert; also reached from: ${trespassers.join(", ")}`,
+    );
+  }
+
+  // The open side may legitimately be reached two ways: its own intent, and
+  // the destination entity that resolves "open the SOS screen" phrases. Both
+  // only ever open. Anything else appearing here means a new path to the SOS
+  // screen grew without review.
+  const openOwners = ownersReferencing(".openEmergencySOS");
+  const permittedOpenOwners = new Set([
+    "OpenOneEmergencySOSIntent",
+    "AgentOneDestination",
+  ]);
+  const unexpectedOpenOwners = [...openOwners].filter(
+    (owner) => !permittedOpenOwners.has(owner),
+  );
+  if (!openOwners.has("OpenOneEmergencySOSIntent")) {
+    throw new Error(
+      "OpenOneEmergencySOSIntent no longer opens location.open_sos -- it has been repointed",
+    );
+  }
+  if (unexpectedOpenOwners.length > 0) {
+    throw new Error(
+      `Unreviewed paths to the SOS screen: ${unexpectedOpenOwners.join(", ")}`,
+    );
+  }
+
+  // And the open intent must stay open-only: it must not reach the sending
+  // action, which is what would make the short "SMS" phrase alert people.
+  const openBlock = source.match(
+    /struct OpenOneEmergencySOSIntent[\s\S]*?\n\}\n/,
+  )?.[0];
+  if (!openBlock) {
+    throw new Error("Could not isolate OpenOneEmergencySOSIntent");
+  }
+  if (openBlock.includes("triggerSaveMySoul")) {
+    throw new Error("OpenOneEmergencySOSIntent must never reach the sending action");
   }
 }
 
@@ -216,9 +331,9 @@ const review = actions.filter((action) => action.siri_mode === "review_ui");
 const conversation = actions.filter(
   (action) => action.siri_mode === "conversation_only",
 );
-if (direct.length !== 7 || review.length !== 10 || conversation.length !== 1) {
+if (direct.length !== 8 || review.length !== 10 || conversation.length !== 1) {
   throw new Error(
-    `Expected Siri modes direct=7 review_ui=10 conversation_only=1; found ${direct.length}/${review.length}/${conversation.length}`,
+    `Expected Siri modes direct=8 review_ui=10 conversation_only=1; found ${direct.length}/${review.length}/${conversation.length}`,
   );
 }
 if (conversation[0]?.action_id !== "location.chat.turn") {
@@ -280,6 +395,7 @@ assertEqualSets(
 );
 verifyShortcutPhrases(read(swiftIntentsPath));
 verifyEnvelopeSeparation(read(swiftIntentsPath));
+verifySaveMySoulSeparation(read(swiftIntentsPath));
 
 const handoffSource = read(
   path.join(webappRoot, "components/agent/siri-one-action-handoff.tsx"),
