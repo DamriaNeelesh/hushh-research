@@ -3764,6 +3764,129 @@ async def list_app_actions(query: str, tool_context: ToolContext) -> dict[str, A
     return payload
 
 
+async def propose_app_action(
+    action_id: str,
+    slots: dict[str, Any] | None = None,
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
+    """Return a typed proposal for one action without executing it.
+
+    This is the proposal-mode counterpart of ``run_app_action``: One returns a
+    structured assessment (action, inputs, gaps, confirmation need) and the
+    app's proposal controller decides whether to admit, confirm, or reject
+    the draft.  No domain mutation occurs here.
+
+    ``tool_mode`` enforcement (in ``agent_tree.py``) restricts this tool to
+    the proposal roster.  The server-side controller still validates the
+    action, slots, and current context before admitting the draft.
+    """
+    clean_id = str(action_id or "").strip()
+    if not clean_id:
+        return {"status": "blocked", "message": "An action id is required."}
+
+    entry = get_action_gateway_action(clean_id)
+    if entry is None:
+        return {
+            "status": "unsupported",
+            "action_id": clean_id,
+            "message": f"'{clean_id}' is not a recognized action.",
+        }
+
+    # Enforce execution boundary at the tool layer.
+    policy = str(entry.get("execution_policy") or "allow_direct")
+    if policy == "manual_only":
+        return {
+            "status": "blocked",
+            "action_id": clean_id,
+            "message": f"'{clean_id}' requires the app UI and cannot be proposed.",
+        }
+
+    # Resolve required inputs from the goal contract.
+    goal = entry.get("goal") or {}
+    required_specs: list[dict[str, Any]] = [
+        spec for spec in goal.get("required_inputs", [])
+        if isinstance(spec, dict) and spec.get("required")
+    ]
+    provided_slots = {str(k): v for k, v in (slots or {}).items() if str(k).strip()}
+
+    missing: list[dict[str, str]] = []
+    for spec in required_specs:
+        slot_name = str(spec.get("slot") or spec.get("name") or "").strip()
+        if not slot_name:
+            continue
+        if provided_slots.get(slot_name) not in (None, ""):
+            continue
+        default_value = spec.get("default_value")
+        if default_value not in (None, ""):
+            continue
+        missing.append({
+            "slot": slot_name,
+            "prompt": str(spec.get("prompt") or f"What should {slot_name} be?"),
+        })
+
+    delegate_id = str(entry.get("delegate_agent_id") or "").strip()
+    use_tool: str | None = None
+    if delegate_id in _DELEGATE_TOOL_BY_AGENT_ID:
+        use_tool = _DELEGATE_TOOL_BY_AGENT_ID[delegate_id]
+    elif _is_journey_startable(entry):
+        use_tool = "start_app_goal"
+    else:
+        use_tool = "run_app_action"
+
+    nav_target: dict[str, Any] | None = None
+    exec_target = entry.get("execution_target") or {}
+    if exec_target.get("path") == "route":
+        nav_target = {"route": str(exec_target.get("target") or ""), "path": "route"}
+
+    proposal_status = "needs_resolution" if missing else "needs_review"
+    if policy == "confirm_required" and not missing:
+        proposal_status = "ready_for_confirmation"
+
+    return {
+        "status": "ok",
+        "proposal": {
+            "schemaVersion": "one.action_proposal.v1",
+            "status": proposal_status,
+            "actionId": clean_id,
+            "label": str(entry.get("label") or ""),
+            "meaning": str(entry.get("meaning") or ""),
+            "semanticBoundaries": _normalize_boundaries_str(entry.get("semantic_boundaries")),
+            "slots": provided_slots,
+            "requiredInputs": [
+                {
+                    "name": str(spec.get("slot") or spec.get("name") or ""),
+                    "slot": str(spec.get("slot") or spec.get("name") or ""),
+                    "resolver": str(spec.get("resolver") or ""),
+                    "prompt": str(spec.get("prompt") or ""),
+                    "required": bool(spec.get("required", True)),
+                }
+                for spec in required_specs
+            ],
+            "missingSlots": missing,
+            "entityMentions": [],
+            "catalogRevision": "server-computed",
+            "contextRevision": "validated-at-admit",
+            "confirmationRequired": policy == "confirm_required",
+            "executionPolicy": policy,
+            "useTool": use_tool,
+            "delegateAgentId": delegate_id or None,
+            "navigation": nav_target,
+            "guardIds": [str(g) for g in (entry.get("guard_ids") or []) if str(g)],
+        },
+    }
+
+
+def _normalize_boundaries_str(value: Any) -> str | None:
+    """Return semantic_boundaries as a single string or None."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        joined = " ".join(str(x) for x in value).strip()
+        return joined or None
+    s = str(value).strip()
+    return s or None
+
+
 async def list_available_models(tool_context: ToolContext) -> dict[str, Any]:
     """List the models this agent can run on, which one the owner picked, and which is running.
 

@@ -752,21 +752,22 @@ struct AskOneRequestIntent: AppIntent {
     @available(iOS 26.0, *)
     static let supportedModes: IntentModes = [.foreground(.immediate)]
 
-    @Parameter(title: "Request", optionsProvider: OneRequestTextOptionsProvider())
-    var requestText: String
+    @Parameter(title: "Request")
+    var requestText: AppEntityString<AppScope>
 
     static var parameterSummary: some ParameterSummary {
         Summary("Ask Agent One to \(\.$requestText)")
     }
 
     func perform() async throws -> some IntentResult & ShowsSnippetView {
-        guard !requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let text = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
             return .result(
                 snippet: .init(string: "What would you like Agent One to do?")
             )
         }
 
-        let result = OneSystemRequestInvocationCoordinator.shared.captureRequest(requestText)
+        let result = OneSystemRequestInvocationCoordinator.shared.captureRequest(text)
         switch result {
         case .captured:
             return .result(
@@ -796,7 +797,7 @@ struct AskOneRequestIntent: AppIntent {
     }
 }
 
-@available(iOS 16.0, *)
+@available(iOS 26.0, *)
 struct OneRequestTextOptionsProvider: DynamicOptionsProvider {
     typealias Intent = AskOneRequestIntent
 
