@@ -1003,30 +1003,83 @@ The durable fix is `ledger` mode — pending migrations only, after a verified
 baseline — which `db/migrate.py` already supports and which exists precisely
 for this. It needs a one-time baseline established against the UAT database
 (`db/migrate.py --establish-baseline`), so it requires database access.
+### R27 — Hoisting an App Shortcut phrase array deletes every shortcut in the app
 
-## Adding a rule
+**Incident (2026-09-07, iOS TestFlight build 99 — merge `a4a95a1e4`, PR #6559).** Long-pressing
+the app icon showed no App Shortcuts at all, only the system items, and `TalkToHusshOneIntent`
+stopped working despite being **byte-identical to build 98**. The PR had refactored every phrase
+list out of its `AppShortcut(...)` call into a named constant — `phrases: shareLocationPhrases`
+where build 98 wrote the phrases in place — and the app name likewise into
+`private static let agentOne: AppShortcutPhraseToken = .applicationName`.
 
-Every mistake found becomes a rule. Fix the **cause**, not the symptom, then add
-the rule so it cannot recur. When the user says "add that to the skill", that
-means a new numbered rule here.
+`appintentsmetadataprocessor` extracts App Shortcuts at **compile time** by reading those
+expressions literally. It cannot follow a reference to a `static let`. It saw ten shortcuts with
+zero phrases and stopped:
 
-Rules are numbered sequentially and **never renumbered** — R3 must still mean R3
-in six months, so it can be cited in review. Append; do not reorder or reuse a
-retired number.
-
-Template:
-
-```markdown
-### R<n> — <imperative one-liner>
-**Incident (<date>, <what was being built>).** What went wrong and what it
-would have broken.
-**Rule.** The generalisation.
-**Check.** The exact command or diff that catches it next time.
+```
+OneVoiceAppIntent.swift:1113: warning: App Shortcuts should have at least one phrase
+error: At least one halting error produced during export. No AppIntents metadata have been
+exported and this target is not usable with AppIntents until errors are resolved.
 ```
 
-The Check line must be a command that **runs in this repo** and returns
-something meaningful. Run it before committing the rule. A rule with a command
-that doesn't work here is worse than no rule.
+No metadata means **no App Shortcuts of any kind** — including ones whose code never changed.
+
+Proven on this repo, Xcode 26.6, one file swapped between otherwise identical builds:
+
+| provider shape | `Metadata.appintents` |
+| --- | --- |
+| build 99 as shipped (arrays hoisted + token hoisted) | **not written** — halting error |
+| arrays inline, token still hoisted | **not written** — halting error |
+| arrays hoisted, token inline | **not written** — halting error |
+| both inline (build 98's shape) | **written**, 10 shortcuts, 61 phrases |
+
+Both hoistings must be undone; neither alone is sufficient. The table above was produced locally
+on Xcode 26.6; the shipped CI ran 26.3 and *did* write a metadata file, so no log line looked
+wrong — "Writing Metadata.appintents" in a log is not evidence that the shortcuts are in it.
+
+Corrected 2026-09-07: do not read that as a version mismatch between CI and the release. All three
+iOS lanes pin the same Xcode — `ci.yml:424`, `ship-ios-testflight.yml:121` and
+`release-ios-appstore.yml:135` are each `xcode-version: "26.3"` — so build 99 was cut by the same
+compiler CI used. The reason CI stayed green is simpler and worth naming plainly: **nothing
+checked.** `xcodebuild` exits 0 even when `appintentsmetadataprocessor` halts. The fix is the
+assertion, not a version bump. Verified on the merge run, reading the built binary on 26.3:
+`OK: 10 App Shortcuts, 61 phrases, compiled into the binary.`
+
+Separately and secondarily: that PR also bound `\(\.$requestText)`, a plain `String`, into a
+phrase. Apple allows only `AppEnum` and `AppEntity` phrase parameters. That is a real violation
+worth fixing, but it is **not** what emptied the menu.
+
+**Rule.** Phrase arrays and the `\(.applicationName)` token are written inline inside
+`AppShortcut(phrases: [...])`, never hoisted into a named constant, no matter how much tidier
+hoisting looks. Every phrase parameter is an `AppEnum` or `AppEntity`; free text goes through the
+parameter's `requestValueDialog`. Order both structural checks BEFORE the phrase-fragment
+assertions — an earlier throw means later assertions never run, which is how this verifier passed
+while the app shipped with nothing.
+
+**Check.** Both guards must fail on the real bug. Hoist while keeping every phrase intact, so the
+fragment assertions still pass and only the shape guard can fire:
+
+```bash
+cd hushh-webapp && node scripts/native/verify-siri-action-contract.mjs   # green first
+# then hoist one family into a `static let ...Phrases` and re-run:
+#   Error: Phrase arrays must be written inline ... not hoisted into a named constant
+# and add "Ask \(.applicationName) with \(\.$requestText)" as an extra phrase:
+#   Error: ... binds \(\.$requestText), typed `String` ...
+```
+
+A green contract still is not a registered shortcut. Only a build proves it:
+
+```bash
+xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/dd \
+  CODE_SIGNING_ALLOWED=NO build 2>&1 | grep -E "halting error|Writing Metadata.appintents"
+python3 -c "
+import json;d=json.load(open('/tmp/dd/Build/Products/Debug-iphonesimulator/App.app/Metadata.appintents/extract.actionsdata'))
+[print(s['shortTitle']['key'], len(s.get('phraseTemplates') or [])) for s in d['autoShortcuts']]"
+```
+
+Expect ten rows with non-zero phrase counts. Zero rows, or a row with zero phrases, is the bug.
+
 
 ### R28 — An error handler that runs on a broken connection will report itself instead of the failure
 
@@ -1073,3 +1126,27 @@ print("failure names the file:", "entry.filename" in blk)
 PY
 ```
 All three must print `True`.
+
+## Adding a rule
+
+Every mistake found becomes a rule. Fix the **cause**, not the symptom, then add
+the rule so it cannot recur. When the user says "add that to the skill", that
+means a new numbered rule here.
+
+Rules are numbered sequentially and **never renumbered** — R3 must still mean R3
+in six months, so it can be cited in review. Append; do not reorder or reuse a
+retired number.
+
+Template:
+
+```markdown
+### R<n> — <imperative one-liner>
+**Incident (<date>, <what was being built>).** What went wrong and what it
+would have broken.
+**Rule.** The generalisation.
+**Check.** The exact command or diff that catches it next time.
+```
+
+The Check line must be a command that **runs in this repo** and returns
+something meaningful. Run it before committing the rule. A rule with a command
+that doesn't work here is worse than no rule.
