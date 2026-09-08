@@ -174,8 +174,15 @@ be resolved during a rolling migration. Legacy sources already purged before
 the identity link existed cannot be reconstructed; their rows keep initials
 or a domain icon, never another person's guessed photo.
 
-After migration 202, use the explicit resumable backfill outside the schema
-transaction:
+Migrations 203–204 remove the Location audit-table scan from identity resolution.
+Grant keys use the existing grant index; numeric audit keys retain their primary-key
+lookup. Request, referral, and arbitrary legacy metadata keys inspect only the
+viewer's owner/recipient events through indexes, then apply the original exact
+source and audience checks. Legacy lookup cost can still grow with that viewer's
+own history. No source records or identities are backfilled inside these migrations.
+
+Apply through migration 204 before running the explicit resumable backfill outside
+the schema transaction:
 
 ```bash
 cd consent-protocol
@@ -188,10 +195,30 @@ identities or photos. The down migration is
 only this derived feature and preserves Feed history. New readers fall back
 to legacy source enrichment on an older schema.
 
+Migration 203 builds the recipient/event-type index concurrently, as a single
+statement outside a transaction. Migration 204 refuses to install the new resolver
+if that index is missing or invalid. If a concurrent build is interrupted, an
+`IF NOT EXISTS` retry can leave the invalid index in place. With migration runners
+stopped, run `rollback/203_feed_counterpart_recipient_index.rollback.sql`, then run
+the **203 SQL file itself** outside a transaction, and retry the release. Merely
+retrying ledger mode after dropping the index is insufficient: 203 may already be
+recorded as applied. Do not change an accepted migration checksum or delete ledger
+history to repair the index.
+
+To roll back this optimization, execute
+`rollback/204_feed_counterpart_indexed_lookup.rollback.sql` first, then
+`rollback/203_feed_counterpart_recipient_index.rollback.sql` outside a transaction.
+This restores the 202 resolver and preserves all Feed events and counterpart links.
+
 Automated proof includes the actual-component Feed fixture, Circle layout
 contracts, image lifecycle unit tests, and
-`tests/test_feed_counterpart_identity_postgres.py` against a unique disposable
-PostgreSQL database. Browser emulation and these fixtures do not replace
+`tests/test_feed_counterpart_identity_postgres.py` and
+`tests/test_feed_counterpart_lookup_postgres.py` against unique disposable
+PostgreSQL databases. Set `FEED_IDENTITY_POSTGRES_TEST_URL` to a local disposable
+server's admin database and run those tests explicitly. The lookup regression
+checks buffer accesses with 250,000 unrelated audit rows in custom and generic plan
+modes, source compatibility, concurrent-index failure recovery, and rollback.
+Browser emulation and these fixtures do not replace
 authenticated user review or physical iOS/Android acceptance.
 
 ## Caching

@@ -50,6 +50,10 @@ async def test_durable_feed_identity_lifecycle():
           CREATE TABLE one_location_events (id BIGSERIAL PRIMARY KEY, owner_user_id TEXT, recipient_user_id TEXT,
             actor_user_id TEXT, event_type TEXT, grant_id UUID, request_id UUID, referral_id UUID,
             metadata JSONB DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT '2026-09-08T12:00:00Z');
+          CREATE INDEX idx_one_location_events_owner_created
+            ON one_location_events(owner_user_id, created_at DESC);
+          CREATE INDEX idx_one_location_events_retention_links
+            ON one_location_events(grant_id, request_id, referral_id);
           INSERT INTO vault_keys VALUES ('owner'), ('peer'), ('referrer'), ('stranger');
           INSERT INTO actor_profiles SELECT user_id FROM vault_keys;
           INSERT INTO actor_identity_cache(user_id, display_name, photo_url)
@@ -64,6 +68,13 @@ async def test_durable_feed_identity_lifecycle():
         )
         await conn.execute(migration)
         await conn.execute(migration)  # safe replay
+        for filename in (
+            "203_feed_counterpart_recipient_index.sql",
+            "204_feed_counterpart_indexed_lookup.sql",
+        ):
+            sql = (ROOT / "db/migrations" / filename).read_text(encoding="utf-8")
+            await conn.execute(sql)
+            await conn.execute(sql)
         await conn.execute(
             (ROOT / "db/migrations/186_feed_share_kind_projection.sql").read_text(encoding="utf-8")
         )
