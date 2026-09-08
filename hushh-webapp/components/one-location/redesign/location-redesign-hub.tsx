@@ -3444,7 +3444,7 @@ function PersonRow({
           label={name}
           photoUrl={photoUrl}
           verified={verified}
-          className="h-9 w-9 text-[12px]"
+          size="list"
         />
         {active ? (
           <span
@@ -3474,7 +3474,7 @@ function PersonRow({
           )}
         </div>
         {subtitle ? (
-          <p className="break-words text-[12px] font-normal leading-[17px] tracking-normal text-[color:var(--app-secondary-label)]">
+          <p className="break-words text-[13px] font-normal leading-[18px] tracking-normal text-[color:var(--app-secondary-label)]">
             {subtitle}
           </p>
         ) : null}
@@ -3503,7 +3503,7 @@ function PersonRow({
       className={cn(
         "relative transition-colors motion-reduce:transition-none",
         !first &&
-          "before:absolute before:left-[60px] before:right-4 before:top-0 before:h-px before:bg-[color:var(--app-separator)] before:content-['']",
+          "before:absolute before:left-[68px] before:right-4 before:top-0 before:h-px before:bg-[color:var(--app-separator)] before:content-['']",
         "[@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
       )}
     >
@@ -3512,12 +3512,12 @@ function PersonRow({
           type="button"
           onClick={onOpen}
           aria-label={ariaLabel}
-          className="flex min-h-14 w-full items-center gap-3 px-4 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2"
+          className="flex min-h-[72px] w-full items-center gap-3 px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2"
         >
           {content}
         </button>
       ) : (
-        <div className="flex min-h-14 items-center gap-3 px-4 py-2">
+        <div className="flex min-h-[72px] items-center gap-3 px-4 py-3">
           {content}
         </div>
       )}

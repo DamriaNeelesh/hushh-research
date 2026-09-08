@@ -135,6 +135,65 @@ Both zones are built on the canonical `SettingsGroup` + `SettingsRow` list
 primitives (`FeedRow` for history, `FeedActionableRow` for the actionable
 zone), so the feed shares the app's list vocabulary.
 
+## Person identity and responsive rows
+
+Connect, Location People/Circle rosters, and both Feed zones use
+`ConnectionPersonAvatar`. Person lists use a 40px circular leading visual and
+a 68px text/separator inset. Compact rows use a 16px name, 13px description,
+and a separate timestamp line. On narrow phones, relationship actions move
+below the name instead of compressing it; interactive targets remain at least
+44px even when the action looks like secondary text. These are shared React
+and CSS contracts for web and the iOS/Android Capacitor containers.
+
+Photo reads prefer a nonblank `actor_identity_cache.custom_photo_url`, then
+`photo_url`. Pending connection-request DTOs include optional
+`counterpartPhotoUrl`; Circle member-invite DTOs include optional
+`inviterPhotoUrl` and `inviteePhotoUrl`. Web proxies and native HTTP transport
+preserve these additive fields. Image failure, replacement, and removal reset
+the avatar loading state and reveal the same initials used by Connect.
+
+Feed photo sanitization preserves complete bounded PNG/JPEG/WebP data URLs
+(up to 300 KiB decoded, matching the upload contract). It never truncates
+base64 to the general metadata text limit. Invalid/oversized data, SVG, and
+unsupported schemes are omitted; HTTP(S) URLs remain bounded to 1024
+characters. A failed identity read must not resurrect a stored photo snapshot.
+
+Migration `202_feed_counterpart_identity.sql` adds a server-only companion
+table, `feed_event_counterparts`, linking a Feed event to its registered
+counterpart. An AFTER INSERT trigger resolves the source event with the
+viewer's audience checks. This link survives short-lived Location source
+cleanup and resolves the current photo at read time; it grants no location
+access and is not part of the public Feed DTO. Feed deletion or counterpart
+account deletion cascades the link; migration 201's tombstone/write guards
+apply. Historical event copy remains historical rather than being rewritten
+when a profile changes.
+
+Reads resolve at most the requested Feed page, materializing counterpart IDs
+before joining the indexed identity cache. Retained legacy sources can still
+be resolved during a rolling migration. Legacy sources already purged before
+the identity link existed cannot be reconstructed; their rows keep initials
+or a domain icon, never another person's guessed photo.
+
+After migration 202, use the explicit resumable backfill outside the schema
+transaction:
+
+```bash
+cd consent-protocol
+python scripts/backfill_feed_counterpart_identity.py --apply --expected-database <exact-database-name> --batch-size 250 --max-batches 20
+```
+
+Without `--apply` it is a dry run. Output contains counts and cursors, not
+identities or photos. The down migration is
+`db/migrations/rollback/202_feed_counterpart_identity.rollback.sql`; it removes
+only this derived feature and preserves Feed history. New readers fall back
+to legacy source enrichment on an older schema.
+
+Automated proof includes the actual-component Feed fixture, Circle layout
+contracts, image lifecycle unit tests, and
+`tests/test_feed_counterpart_identity_postgres.py` against a unique disposable
+PostgreSQL database. Browser emulation and these fixtures do not replace
+authenticated user review or physical iOS/Android acceptance.
+
 ## Caching
 
 `FeedPage` (`hushh-webapp/components/feed/feed-page.tsx`) loads its first

@@ -2525,8 +2525,10 @@ export default function ConnectPageClient() {
                               sortedConnections.map((connection) => (
                                 <SettingsRow
                                   key={connection.connectionId}
+                                  layout="person"
                                   leading={
                                     <ConnectionPersonAvatar
+                                      size="list"
                                       photoUrl={connection.photoUrl ?? null}
                                       label={
                                         connection.displayName ||
@@ -2922,12 +2924,14 @@ export default function ConnectPageClient() {
                                   return (
                                     <SettingsRow
                                       key={person.userId}
+                                      layout="person"
                                       // Verified is a state, and green is what this design
                                       // system already spends on a verified one. It is on the
                                       // row rather than on the tab so the mark still means
                                       // something in a search that spans both.
                                       leading={
                                         <ConnectionPersonAvatar
+                                          size="list"
                                           photoUrl={person.photoUrl}
                                           label={title}
                                           verified={Boolean(person.isRia)}
@@ -3234,8 +3238,10 @@ export default function ConnectPageClient() {
                     return (
                       <SettingsRow
                         key={`batch-${person.userId}`}
+                        layout="person"
                         leading={
                           <ConnectionPersonAvatar
+                            size="list"
                             photoUrl={person.photoUrl}
                             label={title}
                             verified={Boolean(person.isRia)}

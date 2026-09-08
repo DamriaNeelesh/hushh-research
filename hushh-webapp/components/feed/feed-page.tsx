@@ -27,7 +27,10 @@ import { CACHE_KEYS } from "@/lib/services/cache-service";
 import { dispatchFeedStateChanged } from "@/lib/feed/feed-events";
 import { FeedRow } from "@/components/feed/feed-row";
 import { FeedActionableRow } from "@/components/feed/feed-actionable-row";
-import { SettingsPresentationProvider } from "@/components/app-ui/settings-ui";
+import {
+  SettingsGroup,
+  SettingsPresentationProvider,
+} from "@/components/app-ui/settings-ui";
 import { useFeedActionables } from "@/lib/feed/use-feed-actionables";
 import { useFeedLiveRefresh } from "@/lib/feed/use-feed-live-refresh";
 import { listKaiActionsForSurface } from "@/lib/voice/kai-action-gateway";
@@ -541,11 +544,11 @@ function FeedPageSession({
             {hasRegularActionables ? (
               <section aria-label="Needs you">
                 <SectionLabel>Needs you</SectionLabel>
-                <div className="divide-y divide-[color:var(--foundation-hairline)]">
+                <SettingsGroup separatorInset>
                   {regularActionables.map((item) => (
                     <FeedActionableRow key={item.id} item={item} />
                   ))}
-                </div>
+                </SettingsGroup>
               </section>
             ) : null}
 
@@ -639,7 +642,7 @@ function FeedPageSession({
               ? dayGroups.map((group) => (
                   <section key={group.label} aria-label={group.label}>
                     <SectionLabel>{group.label}</SectionLabel>
-                    <div className="divide-y divide-[color:var(--app-separator)] overflow-hidden rounded-[16px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] shadow-none">
+                    <SettingsGroup separatorInset>
                       {group.items.map((item) => (
                         <FeedRow
                           key={item.id}
@@ -650,7 +653,7 @@ function FeedPageSession({
                           onOpen={openItem}
                         />
                       ))}
-                    </div>
+                    </SettingsGroup>
                   </section>
                 ))
               : null}

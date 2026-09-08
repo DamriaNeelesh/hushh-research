@@ -373,6 +373,7 @@ export function SettingsRow({
   tone = "default",
   iconTone = "gray",
   density,
+  layout = "settings",
   stackTrailingOnMobile = false,
   className,
   voiceControlId,
@@ -400,6 +401,8 @@ export function SettingsRow({
   iconTone?: SettingsIconTone;
   /** Compact, single-line settings rows for dense grouped menus. */
   density?: "compact" | "comfortable";
+  /** Person lists use a 40px face and a stable 68px text/separator start. */
+  layout?: "settings" | "person";
   stackTrailingOnMobile?: boolean;
   className?: string;
   voiceControlId?: string;
@@ -442,14 +445,18 @@ export function SettingsRow({
     // An inset separator aligns with an icon well. Rows without a leading visual
     // need a full-width hairline; otherwise the divider appears arbitrarily cut
     // off, as it did on Connect's plain-text rows.
-    icon || leading
-      ? resolvedDensity === "compact"
-        ? "group-data-[inset-separators=true]/settings-list:after:left-[58px] sm:group-data-[inset-separators=true]/settings-list:after:left-[58px]"
-        : "group-data-[inset-separators=true]/settings-list:after:left-[62px] sm:group-data-[inset-separators=true]/settings-list:after:left-[62px]"
-      : "group-data-[inset-separators=true]/settings-list:after:left-0";
+    layout === "person"
+      ? "group-data-[inset-separators=true]/settings-list:after:left-[68px]"
+      : icon || leading
+        ? resolvedDensity === "compact"
+          ? "group-data-[inset-separators=true]/settings-list:after:left-[58px] sm:group-data-[inset-separators=true]/settings-list:after:left-[58px]"
+          : "group-data-[inset-separators=true]/settings-list:after:left-[62px] sm:group-data-[inset-separators=true]/settings-list:after:left-[62px]"
+        : "group-data-[inset-separators=true]/settings-list:after:left-0";
   const rowShellClassName = cn(
     "group/settings-row relative isolate overflow-hidden bg-transparent",
     resolvedDensity === "compact" && "[--settings-row-py:8px]",
+    layout === "person" &&
+      "[--settings-row-px:16px] [--settings-row-py:12px] [--settings-row-gap:12px] [--settings-row-stack-indent:52px]",
     // iOS-style separator — active only inside SettingsGroup with
     // separatorInset and hidden on the final row. Its start is derived from
     // whether this row actually has a leading visual.
@@ -469,7 +476,14 @@ export function SettingsRow({
       )}
     >
       {leading ? (
-        <span className="inline-flex shrink-0 self-center">{leading}</span>
+        <span
+          className={cn(
+            "inline-flex shrink-0 self-center",
+            layout === "person" && "w-10 justify-center",
+          )}
+        >
+          {leading}
+        </span>
       ) : icon ? (
         <span
           data-ui-role="settings-icon"
@@ -480,9 +494,11 @@ export function SettingsRow({
             // Agent artwork continues to use AgentSectionIcon, which owns the
             // larger launcher/menu geometry separately.
             "inline-flex shrink-0 items-center justify-center self-center",
-            resolvedDensity === "compact"
-              ? "h-7 w-7 rounded-[7px]"
-              : "h-[34px] w-[34px] rounded-[10px] sm:h-[34px] sm:w-[34px] sm:rounded-[10px]",
+            layout === "person"
+              ? "size-10 rounded-full"
+              : resolvedDensity === "compact"
+                ? "h-7 w-7 rounded-[7px]"
+                : "h-[34px] w-[34px] rounded-[10px] sm:h-[34px] sm:w-[34px] sm:rounded-[10px]",
             SETTINGS_ICON_TONE_CLASSNAME[resolvedIconTone],
           )}
         >
@@ -544,6 +560,7 @@ export function SettingsRow({
   const sharedClassName = cn(
     "relative isolate grid w-full appearance-none overflow-hidden border-0 bg-transparent px-[var(--settings-row-px)] py-[var(--settings-row-py)] text-left outline-hidden ring-0 [-webkit-tap-highlight-color:transparent]",
     resolvedDensity === "compact" ? "min-h-[56px]" : "min-h-[60px]",
+    layout === "person" && "min-h-[72px]",
     shouldStackTrailing
       ? "grid-cols-1 gap-y-[var(--settings-row-stack-gap)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-x-[var(--settings-row-gap)] sm:gap-y-0"
       : "grid-cols-[minmax(0,1fr)_auto] items-center gap-x-[var(--settings-row-gap)]",
@@ -555,7 +572,14 @@ export function SettingsRow({
     "rounded-[inherit] [@media(hover:hover)]:rounded-xl",
     "[@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.065]",
     resolvedDensity === "compact" ? "min-h-[56px]" : "min-h-[60px]",
+    layout === "person" && "min-h-11 p-0",
   );
+  const rowDataProps = {
+    "data-testid": testId,
+    "data-tone": tone,
+    "data-settings-density": resolvedDensity,
+    "data-row-layout": layout,
+  };
   const voiceProps = {
     "data-voice-control-id": voiceControlId || undefined,
     "data-voice-action-id": voiceActionId || undefined,
@@ -584,12 +608,18 @@ export function SettingsRow({
 
   if (splitPrimaryAction) {
     return (
-      <div className={rowShellClassName} data-testid={testId} data-tone={tone}>
+      <div className={rowShellClassName} {...rowDataProps}>
         <div
           className={cn(
             "relative z-10 grid w-full px-[var(--settings-row-px)] py-[var(--settings-row-py)]",
+            layout === "person" && "min-h-[72px]",
             shouldStackTrailing
-              ? "grid-cols-1 gap-y-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-x-3"
+              ? cn(
+                  "grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-x-3 sm:gap-y-0",
+                  layout === "person"
+                    ? "gap-y-[var(--settings-row-stack-gap)]"
+                    : "gap-y-0",
+                )
               : "grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3",
           )}
         >
@@ -620,7 +650,7 @@ export function SettingsRow({
 
   if (resolvedAsChild) {
     return (
-      <div className={rowShellClassName} data-testid={testId} data-tone={tone}>
+      <div className={rowShellClassName} {...rowDataProps}>
         <Comp
           {...(!resolvedAsChild
             ? { "aria-disabled": disabled || undefined }
@@ -635,7 +665,7 @@ export function SettingsRow({
   }
 
   return (
-    <div className={rowShellClassName} data-testid={testId} data-tone={tone}>
+    <div className={rowShellClassName} {...rowDataProps}>
       {isInteractive ? (
         <span
           aria-hidden

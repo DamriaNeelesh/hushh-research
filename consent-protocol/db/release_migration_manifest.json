@@ -173,7 +173,8 @@
     "198_actor_identity_verified_phone_uniqueness.sql",
     "199_one_location_auto_approve_multi_circle_scope.sql",
     "200_contact_sync_directory_policy_lock.sql",
-    "201_account_deletion_tombstones.sql"
+    "201_account_deletion_tombstones.sql",
+    "202_feed_counterpart_identity.sql"
   ],
   "environment_overlays": {
     "uat": [
@@ -298,7 +299,8 @@
       "198_actor_identity_verified_phone_uniqueness.sql",
       "199_one_location_auto_approve_multi_circle_scope.sql",
       "200_contact_sync_directory_policy_lock.sql",
-      "201_account_deletion_tombstones.sql"
+      "201_account_deletion_tombstones.sql",
+      "202_feed_counterpart_identity.sql"
     ],
     "pkm": [
       "030_pkm_cutover.sql",

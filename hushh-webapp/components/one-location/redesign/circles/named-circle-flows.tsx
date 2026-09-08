@@ -62,6 +62,8 @@ import {
   CIRCLE_MEMBERS_CARD_SCROLL_CLASSNAME,
   CIRCLE_MEMBERS_CARD_SHELL_CLASSNAME,
   CIRCLE_MEMBER_ACTION_CLASSNAME,
+  CIRCLE_MEMBER_ACTION_COPY_CLASSNAME,
+  CIRCLE_MEMBER_STACKED_ACTION_CLASSNAME,
   CIRCLE_MEMBER_AVATAR_CLASSNAME,
   CIRCLE_MEMBER_NAME_CLASSNAME,
   CIRCLE_MEMBER_NAME_ROW_CLASSNAME,
@@ -1099,16 +1101,23 @@ function CircleMemberRow({
   // The one second line that is asking for something rather than reporting.
   const secondaryNeedsSetup =
     member.role !== "owner" && !member.secureLocationReady;
+  const hasRelationshipControl = Boolean(pendingLabel || actionCta);
 
   return (
     <div className={CIRCLE_MEMBER_ROW_CLASSNAME}>
       <ConnectionPersonAvatar
         label={member.displayName}
         photoUrl={member.photoUrl}
+        size="list"
         verified={Boolean(member.isRia)}
         className={CIRCLE_MEMBER_AVATAR_CLASSNAME}
       />
-      <div className="min-w-0 flex-1">
+      <div
+        className={cn(
+          "min-w-0 flex-1",
+          hasRelationshipControl && CIRCLE_MEMBER_ACTION_COPY_CLASSNAME,
+        )}
+      >
         <p className={CIRCLE_MEMBER_NAME_ROW_CLASSNAME}>
           <span className={CIRCLE_MEMBER_NAME_CLASSNAME}>
             {member.displayName}
@@ -1134,7 +1143,12 @@ function CircleMemberRow({
           <span className="sr-only">Connected on One</span>
         ) : null}
       </div>
-      <div className={CIRCLE_MEMBER_TRAILING_CLASSNAME}>
+      <div
+        className={cn(
+          CIRCLE_MEMBER_TRAILING_CLASSNAME,
+          hasRelationshipControl && CIRCLE_MEMBER_STACKED_ACTION_CLASSNAME,
+        )}
+      >
         {pendingLabel && !canCancelRequest ? (
           <span
             className="px-1 text-[13px] font-medium leading-5 text-muted-foreground"
@@ -2278,8 +2292,10 @@ export function CircleDetailFlow({
                             return (
                               <SettingsRow
                                 key={connection.userId}
+                                layout="person"
                                 leading={
                                   <ConnectionPersonAvatar
+                                    size="list"
                                     photoUrl={connection.photoUrl ?? null}
                                     label={connection.displayName}
                                     verified={Boolean(connection.isRia)}
@@ -2396,6 +2412,7 @@ export function CircleDetailFlow({
                           {pendingInvites.map((invite) => (
                             <SettingsRow
                               key={invite.id}
+                              layout="person"
                               leading={
                                 <ConnectionPersonAvatar
                                   label={
@@ -2403,7 +2420,7 @@ export function CircleDetailFlow({
                                     "One connection"
                                   }
                                   photoUrl={invite.inviteePhotoUrl}
-                                  className="h-10 w-10"
+                                  size="list"
                                 />
                               }
                               title={

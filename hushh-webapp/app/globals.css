@@ -6214,31 +6214,33 @@ body[data-persona-surface="ria"] {
   line-height: var(--type-section-label-compact-line) !important;
 }
 
-/* Compact app workspaces use a fixed hierarchy instead of the fluid document
+@layer base {
+  /* Compact app workspaces use a fixed hierarchy instead of the fluid document
  * heading ladder. The old `.app-page-shell [aria-level="2"]` rule had greater
  * specificity than the semantic compact classes, so a SettingsGroup asked for
  * a 14px list heading and still rendered at title-3 size (20-22px). Keep this
  * after the semantic role rules and scope it to compact app/list surfaces. */
-.app-page-shell[data-app-density="compact"]
-  :is(
-    .ui-text-large-page-title,
-    .ui-text-page-title,
-    .ui-text-agent-title,
-    .ui-text-identity-name
-  ) {
-  font-size: var(--type-page-title-size) !important;
-  line-height: var(--type-page-title-line) !important;
-}
+  .app-page-shell[data-app-density="compact"]
+    :is(
+      .ui-text-large-page-title,
+      .ui-text-page-title,
+      .ui-text-agent-title,
+      .ui-text-identity-name
+    ) {
+    font-size: var(--type-page-title-size) !important;
+    line-height: var(--type-page-title-line) !important;
+  }
 
-.app-page-shell[data-app-density="compact"] .ui-text-section-label-compact,
-.app-page-shell[data-app-density="compact"]
-  [data-settings-density="compact"]
-  [data-slot="settings-group-heading"] {
-  font-family: var(--font-app-body) !important;
-  font-size: var(--type-section-label-compact-size) !important;
-  font-weight: var(--type-section-label-compact-weight) !important;
-  letter-spacing: normal !important;
-  line-height: var(--type-section-label-compact-line) !important;
+  .app-page-shell[data-app-density="compact"] .ui-text-section-label-compact,
+  .app-page-shell[data-app-density="compact"]
+    [data-settings-density="compact"]
+    [data-slot="settings-group-heading"] {
+    font-family: var(--font-app-body) !important;
+    font-size: var(--type-section-label-compact-size) !important;
+    font-weight: var(--type-section-label-compact-weight) !important;
+    letter-spacing: normal !important;
+    line-height: var(--type-section-label-compact-line) !important;
+  }
 }
 
 :is(
@@ -6260,12 +6262,18 @@ body[data-persona-surface="ria"] {
   font-weight: var(--type-row-label-weight) !important;
 }
 
-.app-page-shell[data-app-density="compact"]
-  [data-settings-density="compact"]
-  .ui-text-row-label-compact {
-  font-size: var(--type-row-label-compact-size) !important;
-  font-weight: var(--type-row-label-compact-weight) !important;
-  line-height: var(--type-row-label-compact-line) !important;
+/* Important declarations in the base layer outrank unlayered important rules.
+   Keep density overrides in that same layer so the compact contract can win. */
+@layer base {
+  .app-page-shell[data-app-density="compact"]
+    [data-settings-density="compact"]
+    .ui-text-row-label-compact,
+  [data-row-layout="person"][data-settings-density="compact"]
+    [data-slot="settings-row-title"].ui-text-row-label-compact {
+    font-size: var(--type-row-label-compact-size) !important;
+    font-weight: var(--type-row-label-compact-weight) !important;
+    line-height: var(--type-row-label-compact-line) !important;
+  }
 }
 
 :is(.ui-text-medium-row-label, .ui-text-row-label-emphasized) {
@@ -6283,11 +6291,15 @@ body[data-persona-surface="ria"] {
   text-transform: none !important;
 }
 
-.app-page-shell[data-app-density="compact"]
-  [data-settings-density="compact"]
-  .ui-text-row-description-compact {
-  font-size: var(--type-row-description-compact-size) !important;
-  line-height: var(--type-row-description-compact-line) !important;
+@layer base {
+  .app-page-shell[data-app-density="compact"]
+    [data-settings-density="compact"]
+    .ui-text-row-description-compact,
+  [data-row-layout="person"][data-settings-density="compact"]
+    .ui-text-row-description-compact {
+    font-size: var(--type-row-description-compact-size) !important;
+    line-height: var(--type-row-description-compact-line) !important;
+  }
 }
 
 :is(.ui-text-trailing-action) {
