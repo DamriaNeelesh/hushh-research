@@ -2118,7 +2118,7 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
         data-testid="one-location-share-row"
         className={cn(
           LOCATION_INTERACTIVE_SURFACE,
-          "grid w-full gap-3 rounded-[16px] px-4 py-4 text-left min-[380px]:grid-cols-[minmax(0,1fr)_auto] min-[380px]:items-center sm:grid-cols-[minmax(0,1fr)_194px] sm:gap-4 sm:px-5",
+          "grid w-full gap-3 rounded-[16px] px-4 py-4 text-left sm:grid-cols-[minmax(0,1fr)_194px] sm:items-center sm:gap-4 sm:px-5",
         )}
       >
         <div className="flex min-w-0 items-center gap-3">
@@ -2139,7 +2139,7 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
           data-voice-label="Share location"
           aria-label="Share location"
           onClick={onClick}
-          className="inline-flex min-h-11 w-full max-w-[200px] items-center justify-center justify-self-start rounded-[13px] bg-[color:var(--app-accent)] px-4 text-[color:var(--app-accent-fg)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-accent-hover)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] min-[380px]:w-auto min-[380px]:min-w-[124px] min-[380px]:justify-self-end sm:col-start-2 sm:min-w-[160px] sm:max-w-[194px]"
+          className="inline-flex min-h-11 w-full items-center justify-center rounded-[13px] bg-[color:var(--app-accent)] px-4 text-[color:var(--app-accent-fg)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-accent-hover)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] sm:col-start-2 sm:min-w-[160px] sm:max-w-[194px] sm:justify-self-end"
         >
           <ButtonLabel as="span">Share location</ButtonLabel>
         </button>

@@ -23,6 +23,7 @@ import {
 } from "@/components/app-ui/app-page-shell";
 import { NearbyDirectories } from "@/components/connect/nearby-directories";
 import { PageHeader } from "@/components/app-ui/page-sections";
+import { SectionLabel } from "@/components/app-ui/typography";
 import { TopShellTabs } from "@/components/app-ui/top-shell-tabs";
 import {
   SettingsGroup,
@@ -38,7 +39,10 @@ import {
   shareLink,
 } from "@/lib/share/share-link";
 import { useLocalOnboardingActionHandler } from "@/lib/agent/local-onboarding-actions";
-import { useScrollReset } from "@/lib/navigation/use-scroll-reset";
+import {
+  getAppScrollRoot,
+  useScrollReset,
+} from "@/lib/navigation/use-scroll-reset";
 import { usePublishVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -289,24 +293,8 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-/**
- * How many people the unsearched People tab offers.
- *
- * Deliberately about a screen's worth. It exists so someone who has just joined
- * and knows nobody's exact name is not staring at an empty surface — not so
- * they can browse the register, which is the thing that stops scaling.
- */
-const SUGGESTED_PEOPLE_LIMIT = 20;
-
-/**
- * How many people a page shows, and the sizes the reader can pick.
- *
- * #5020 answered "the directory is unusably long" with a fixed sample that
- * deliberately refused to page. That solved the first screenful and left no way
- * through the rest, so this replaces it with real paging: the default is still
- * a screenful, and someone who wants to scan more can say so.
- */
-const DEFAULT_PAGE_SIZE = SUGGESTED_PEOPLE_LIMIT;
+/** Fetch one small batch at a time as browsing or search reaches the list end. */
+const DEFAULT_PAGE_SIZE = 20;
 const CONNECT_ROW_ACTION_CLASSNAME =
   "h-8 min-h-8 rounded-2xl px-2.5 text-[14px] font-semibold leading-[18px]";
 const CONNECT_INLINE_BUTTON_CLASSNAME =
@@ -592,6 +580,9 @@ export default function ConnectPageClient() {
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const directoryLoadMoreRef = useRef<HTMLDivElement | null>(null);
+  const directoryRequestPendingRef = useRef(false);
+  const [directoryRetryNonce, setDirectoryRetryNonce] = useState(0);
   const pageSize = DEFAULT_PAGE_SIZE;
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -914,13 +905,8 @@ export default function ConnectPageClient() {
     };
   }, [connectionAudience, loadOutgoingRequestIds, refreshConnectionsFirstPage]);
 
-  // The directory is every account on Hussh, so listing all of it unprompted
-  // stops being useful as soon as sign-ups outgrow a screen or two: the person
-  // you came to connect with is buried among strangers, and paging through them
-  // is the tedious part. Unsearched, this surface therefore shows a short
-  // suggested sample and nothing more — enough that someone who does not yet
-  // know a name has somewhere to start, small enough that it is never the thing
-  // you have to scroll past. Naming a name is what opens the full directory.
+  // Both browsing and search load the directory in bounded server batches.
+  // Scrolling appends the next batch without replacing people already visible.
   const trimmedQuery = debouncedQuery.trim();
   const hasQuery = trimmedQuery.length > 0;
 
@@ -965,8 +951,6 @@ export default function ConnectPageClient() {
   const inviteToOneShare = useMemo(() => buildInviteToOneShare(), []);
   const canInviteToOne = tab === "people" && inviteToOneShare !== null;
 
-  const isDirectoryRefreshing = loading && people.length > 0;
-
   // A share sheet is modal but not instant: on iOS it animates in, and the
   // promise does not settle until it is dismissed. Two taps in that window
   // asked the platform to present a second sheet over the first, which iOS
@@ -1003,20 +987,25 @@ export default function ConnectPageClient() {
     }
   }, [inviteToOneShare]);
 
-  const resultSetKey = `${directoryAudience}:${pageSize}:${trimmedQuery}`;
   const [directoryRefreshNonce, setDirectoryRefreshNonce] = useState(0);
+  const resultSetKey = `${user?.uid ?? ""}:${directoryAudience}:${pageSize}:${trimmedQuery}:${directoryRefreshNonce}`;
   const [renderedResultSetKey, setRenderedResultSetKey] =
     useState(resultSetKey);
   if (renderedResultSetKey !== resultSetKey) {
     setRenderedResultSetKey(resultSetKey);
     setCurrentPage(1);
+    setPeople([]);
+    setHasMore(false);
+    setError(null);
+    setLoading(true);
   }
 
   useEffect(() => {
     let cancelled = false;
     async function run() {
-      if (!user) return;
+      if (!user || surface === "circles" || tab === "nearby") return;
       try {
+        directoryRequestPendingRef.current = true;
         if (currentPage <= 1) setHasMore(false);
         setLoading(true);
         setError(null);
@@ -1029,12 +1018,21 @@ export default function ConnectPageClient() {
           audience: directoryAudience,
         });
         if (!cancelled) {
-          // A page replaces the rows rather than merging into them. While this
-          // list appended, every page left its predecessors on screen, so the
-          // directory grew without limit and the sections below it moved
-          // further out of reach with each batch.
-          setPeople(page.items);
-          setHasMore(page.hasMore);
+          // Keep server order and a single row per user when an offset page
+          // overlaps after a directory update. Page one replaces the generation.
+          setPeople((previous) =>
+            currentPage === 1
+              ? page.items
+              : [
+                  ...new Map(
+                    [...previous, ...page.items].map((person) => [
+                      person.userId,
+                      person,
+                    ]),
+                  ).values(),
+                ],
+          );
+          setHasMore(page.hasMore && page.items.length > 0);
           // Selections deliberately survive this. They used to be pruned to
           // whoever the new page happened to show, on the reasoning that a
           // count the reader cannot see is a promise the surface can't account
@@ -1052,7 +1050,10 @@ export default function ConnectPageClient() {
               : "Failed to load people",
           );
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          directoryRequestPendingRef.current = false;
+          setLoading(false);
+        }
       }
     }
     void run();
@@ -1069,8 +1070,11 @@ export default function ConnectPageClient() {
     // now. Their rows carry a `relationship` the server decided before the
     // sync ran, so without this the directory keeps offering "Connect" to
     // somebody it just connected you to, and the request that follows is
-    // refused. Bumping the nonce re-asks the server for the same page.
+    // refused. Bumping the nonce starts a fresh first-page generation.
     directoryRefreshNonce,
+    directoryRetryNonce,
+    surface,
+    tab,
   ]);
 
   const selectSurface = useCallback(
@@ -1105,15 +1109,44 @@ export default function ConnectPageClient() {
   );
 
   const loadNextDirectoryBatch = useCallback(() => {
-    if (surface === "circles" || tab === "nearby" || loading || !hasMore)
+    if (
+      surface === "circles" ||
+      tab === "nearby" ||
+      loading ||
+      directoryRequestPendingRef.current ||
+      (!hasMore && !error)
+    )
       return;
-    setCurrentPage((page) => page + 1);
-  }, [hasMore, loading, surface, tab]);
+    // Lock synchronously: multiple observer notifications may arrive before
+    // React commits loading state. A failed batch retries its own page.
+    directoryRequestPendingRef.current = true;
+    if (error) setDirectoryRetryNonce((nonce) => nonce + 1);
+    else setCurrentPage((page) => page + 1);
+  }, [error, hasMore, loading, surface, tab]);
 
-  const loadPreviousDirectoryBatch = useCallback(() => {
-    if (surface === "circles" || tab === "nearby" || loading) return;
-    setCurrentPage((page) => Math.max(1, page - 1));
-  }, [loading, surface, tab]);
+  useEffect(() => {
+    const sentinel = directoryLoadMoreRef.current;
+    if (
+      !sentinel ||
+      !hasMore ||
+      loading ||
+      error ||
+      surface === "circles" ||
+      tab === "nearby" ||
+      typeof IntersectionObserver === "undefined"
+    )
+      return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          loadNextDirectoryBatch();
+        }
+      },
+      { root: getAppScrollRoot(), rootMargin: "240px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [error, hasMore, loading, loadNextDirectoryBatch, surface, tab]);
 
   const sendConnectionRequest = useCallback(
     async (
@@ -2251,11 +2284,11 @@ export default function ConnectPageClient() {
         role="menuitemradio"
         aria-checked={active}
         className={cn(
-          "flex min-h-11 w-full items-center justify-between px-3 text-left text-[15px] font-medium leading-5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]",
+          "flex min-h-11 w-full items-center justify-between px-3 text-left font-sans text-[length:var(--type-section-label-size)] leading-[var(--type-section-label-line)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]",
           useWebDirectoryPopover ? "rounded-[12px]" : "rounded-[10px]",
           active
-            ? "text-[color:var(--app-accent)]"
-            : "text-[color:var(--app-primary-label)] hover:bg-[color:var(--app-secondary-fill)]",
+            ? "font-semibold text-[color:var(--app-accent)]"
+            : "font-normal text-[color:var(--app-primary-label)] hover:bg-[color:var(--app-secondary-fill)]",
         )}
         onClick={() => {
           setTab(option.value);
@@ -2270,6 +2303,77 @@ export default function ConnectPageClient() {
       </button>
     );
   });
+
+  const directorySelector = (
+    <div
+      ref={directoryMenuRef}
+      data-testid="connect-directory-menu-anchor"
+      className="relative"
+    >
+      {useWebDirectoryPopover ? (
+        <Popover open={directoryMenuOpen} onOpenChange={setDirectoryMenuOpen}>
+          <PopoverTrigger asChild>
+            <button
+              ref={directoryMenuButtonRef}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={directoryMenuOpen}
+              aria-label={`Current directory: ${CONNECT_TAB_LABEL[tab]}`}
+              className="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
+            >
+              <SectionLabel as="span" compact>
+                {CONNECT_TAB_LABEL[tab]}
+              </SectionLabel>
+              <ChevronDown
+                className="h-4 w-4 text-[color:var(--app-secondary-label)]"
+                aria-hidden
+              />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            role="menu"
+            data-testid="connect-directory-menu"
+            align="start"
+            side="bottom"
+            sideOffset={6}
+            collisionPadding={16}
+            className={CONNECT_WEB_DIRECTORY_POPOVER_CLASSNAME}
+          >
+            {directoryMenuItems}
+          </PopoverContent>
+        </Popover>
+      ) : (
+        <>
+          <button
+            ref={directoryMenuButtonRef}
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={directoryMenuOpen}
+            aria-label={`Current directory: ${CONNECT_TAB_LABEL[tab]}`}
+            className="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
+            onClick={() => setDirectoryMenuOpen((current) => !current)}
+          >
+            <SectionLabel as="span" compact>
+              {CONNECT_TAB_LABEL[tab]}
+            </SectionLabel>
+            <ChevronDown
+              className="h-4 w-4 text-[color:var(--app-secondary-label)]"
+              aria-hidden
+            />
+          </button>
+          {directoryMenuOpen ? (
+            <div
+              role="menu"
+              data-testid="connect-directory-menu"
+              className={CONNECT_DIRECTORY_MENU_CLASSNAME}
+            >
+              {directoryMenuItems}
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
 
   return (
     <AppPageShell
@@ -2324,11 +2428,7 @@ export default function ConnectPageClient() {
         ) : (
           <>
             <AppPageHeaderRegion>
-              <PageHeader
-                title="Connect"
-                titleRole="agent"
-                className="[&_[data-slot=page-header-row]]:!items-center"
-              />
+              <PageHeader title="Connect" titleRole="agent" />
             </AppPageHeaderRegion>
 
             <AppPageContentRegion className={CONNECT_PAGE_CONTENT_CLASSNAME}>
@@ -2366,83 +2466,6 @@ export default function ConnectPageClient() {
                       }}
                       navigationMode="push"
                     />
-                    {surface !== "circles" ? (
-                      <div className="flex min-h-11 items-center justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div
-                            ref={directoryMenuRef}
-                            data-testid="connect-directory-menu-anchor"
-                            className="relative"
-                          >
-                            {useWebDirectoryPopover ? (
-                              <Popover
-                                open={directoryMenuOpen}
-                                onOpenChange={setDirectoryMenuOpen}
-                              >
-                                <PopoverTrigger asChild>
-                                  <button
-                                    ref={directoryMenuButtonRef}
-                                    type="button"
-                                    aria-haspopup="menu"
-                                    aria-expanded={directoryMenuOpen}
-                                    aria-label={`Current directory: ${CONNECT_TAB_LABEL[tab]}`}
-                                    className="inline-flex min-h-11 items-center gap-1.5 rounded-full px-1 text-[16px] font-semibold leading-[21px] text-[color:var(--app-primary-label)] transition-colors hover:text-[color:var(--app-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
-                                  >
-                                    {CONNECT_TAB_LABEL[tab]}
-                                    <ChevronDown
-                                      className="h-4 w-4 text-[color:var(--app-secondary-label)]"
-                                      aria-hidden
-                                    />
-                                  </button>
-                                </PopoverTrigger>
-                                <PopoverContent
-                                  role="menu"
-                                  data-testid="connect-directory-menu"
-                                  align="start"
-                                  side="bottom"
-                                  sideOffset={6}
-                                  collisionPadding={16}
-                                  className={
-                                    CONNECT_WEB_DIRECTORY_POPOVER_CLASSNAME
-                                  }
-                                >
-                                  {directoryMenuItems}
-                                </PopoverContent>
-                              </Popover>
-                            ) : (
-                              <>
-                                <button
-                                  ref={directoryMenuButtonRef}
-                                  type="button"
-                                  aria-haspopup="menu"
-                                  aria-expanded={directoryMenuOpen}
-                                  aria-label={`Current directory: ${CONNECT_TAB_LABEL[tab]}`}
-                                  className="inline-flex min-h-11 items-center gap-1.5 rounded-full px-1 text-[16px] font-semibold leading-[21px] text-[color:var(--app-primary-label)] transition-colors hover:text-[color:var(--app-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
-                                  onClick={() =>
-                                    setDirectoryMenuOpen((current) => !current)
-                                  }
-                                >
-                                  {CONNECT_TAB_LABEL[tab]}
-                                  <ChevronDown
-                                    className="h-4 w-4 text-[color:var(--app-secondary-label)]"
-                                    aria-hidden
-                                  />
-                                </button>
-                                {directoryMenuOpen ? (
-                                  <div
-                                    role="menu"
-                                    data-testid="connect-directory-menu"
-                                    className={CONNECT_DIRECTORY_MENU_CLASSNAME}
-                                  >
-                                    {directoryMenuItems}
-                                  </div>
-                                ) : null}
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
 
                   {surface === "circles" ? (
@@ -2458,7 +2481,10 @@ export default function ConnectPageClient() {
                   ) : (
                     <>
                       {tab === "nearby" ? (
-                        <NearbyDirectories getIdToken={getIdToken} />
+                        <div className="space-y-3">
+                          <div className="px-1">{directorySelector}</div>
+                          <NearbyDirectories getIdToken={getIdToken} />
+                        </div>
                       ) : (
                         <div className="space-y-3 sm:space-y-4">
                           <SettingsGroup
@@ -2678,7 +2704,7 @@ export default function ConnectPageClient() {
 
                           <div className="space-y-4">
                             <SettingsGroup
-                              title={CONNECT_TAB_LABEL[tab]}
+                              titleControl={directorySelector}
                               // People only. This one JSX node also renders the RIAs
                               // tab, where an address book has nothing to offer --
                               // an advisor is found by their verified profile, not
@@ -2845,7 +2871,7 @@ export default function ConnectPageClient() {
                                   density="compact"
                                   disabled
                                 />
-                              ) : error ? (
+                              ) : error && people.length === 0 ? (
                                 <SettingsRow
                                   title={
                                     isAdvisorTab
@@ -2853,6 +2879,20 @@ export default function ConnectPageClient() {
                                       : "People are unavailable"
                                   }
                                   description={error}
+                                  trailing={
+                                    <Button
+                                      type="button"
+                                      variant="none"
+                                      effect="fade"
+                                      size="sm"
+                                      className={
+                                        CONNECT_INLINE_BUTTON_CLASSNAME
+                                      }
+                                      onClick={loadNextDirectoryBatch}
+                                    >
+                                      Try again
+                                    </Button>
+                                  }
                                   density="compact"
                                   tone="destructive"
                                 />
@@ -3114,60 +3154,42 @@ export default function ConnectPageClient() {
                                 })
                               )}
                               {people.length > 0 &&
-                              (hasMore || currentPage > 1) ? (
+                              (hasMore || loading || error) ? (
                                 <div
-                                  className="flex min-h-14 items-center justify-between gap-2 border-t border-[color:var(--app-card-border-standard)] px-4 py-2"
-                                  data-testid="connect-pager-row"
-                                  aria-live="polite"
+                                  ref={directoryLoadMoreRef}
+                                  className="flex min-h-14 items-center justify-center border-t border-[color:var(--app-card-border-standard)] px-4 py-2"
+                                  data-testid="connect-load-more-row"
                                 >
-                                  <Button
-                                    type="button"
-                                    variant="none"
-                                    effect="fade"
-                                    size="sm"
-                                    showRipple={false}
-                                    aria-label="Show the previous page of people"
-                                    className={CONNECT_PAGER_BUTTON_CLASSNAME}
-                                    disabled={
-                                      currentPage <= 1 || isDirectoryRefreshing
-                                    }
-                                    onClick={loadPreviousDirectoryBatch}
-                                  >
-                                    Previous
-                                  </Button>
-                                  {/* The directory endpoint reports `hasMore` but no
-                                total, so this names the page the reader is on
-                                and stops there. "Page 3 of 12" would be a
-                                count nothing here actually knows. */}
-                                  {isDirectoryRefreshing ? (
-                                    <span className="inline-flex items-center gap-2 text-[14px] font-medium leading-5 text-[color:var(--app-secondary-label)]">
+                                  {loading ? (
+                                    <span
+                                      role="status"
+                                      className="inline-flex items-center gap-2"
+                                    >
                                       <Loader2
                                         className="h-3.5 w-3.5 animate-spin"
                                         aria-hidden="true"
                                       />
-                                      Loading…
+                                      <SectionLabel as="span" compact>
+                                        Loading…
+                                      </SectionLabel>
                                     </span>
                                   ) : (
-                                    <span className="text-[14px] font-medium leading-5 tabular-nums text-[color:var(--app-secondary-label)]">
-                                      Page {currentPage}
-                                    </span>
+                                    <Button
+                                      type="button"
+                                      variant="none"
+                                      effect="fade"
+                                      size="sm"
+                                      className={CONNECT_PAGER_BUTTON_CLASSNAME}
+                                      onClick={loadNextDirectoryBatch}
+                                    >
+                                      {error
+                                        ? "Retry loading people"
+                                        : "Load more people"}
+                                    </Button>
                                   )}
-                                  <Button
-                                    type="button"
-                                    variant="none"
-                                    effect="fade"
-                                    size="sm"
-                                    showRipple={false}
-                                    aria-label="Show the next page of people"
-                                    className={CONNECT_PAGER_BUTTON_CLASSNAME}
-                                    disabled={!hasMore || isDirectoryRefreshing}
-                                    onClick={loadNextDirectoryBatch}
-                                  >
-                                    Next
-                                  </Button>
                                 </div>
                               ) : people.length > 0 ? (
-                                <span className="sr-only">
+                                <span className="sr-only" role="status">
                                   All people loaded
                                 </span>
                               ) : null}

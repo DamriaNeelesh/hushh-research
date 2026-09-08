@@ -169,6 +169,7 @@ type SettingsIconTone = keyof typeof SETTINGS_ICON_TONE_CLASSNAME;
 export function SettingsGroup({
   eyebrow,
   title,
+  titleControl,
   titleAction,
   description,
   toolbar,
@@ -185,6 +186,8 @@ export function SettingsGroup({
 }: {
   eyebrow?: string;
   title?: ReactNode;
+  /** Replaces the static heading with a section selector, keeping button semantics. */
+  titleControl?: ReactNode;
   /**
    * A control that belongs to this section, shown at the end of the heading
    * row.
@@ -295,7 +298,7 @@ export function SettingsGroup({
       data-settings-density={resolvedDensity}
       data-testid={testId}
     >
-      {eyebrow || title || description || titleAction ? (
+      {eyebrow || title || titleControl || description || titleAction ? (
         <div
           className={cn(
             "flex items-start justify-between gap-3 px-1",
@@ -304,18 +307,19 @@ export function SettingsGroup({
           )}
         >
           <div className="min-w-0 flex-1 space-y-[var(--settings-heading-stack-gap)]">
-            {eyebrow || title ? (
-              <SectionLabel
-                compact={resolvedDensity === "compact"}
-                data-slot="settings-group-heading"
-                role="heading"
-                aria-level={embedded ? 3 : 2}
-                className="flex flex-wrap items-center gap-x-2 gap-y-1 text-pretty [overflow-wrap:anywhere]"
-              >
-                {eyebrow ? <span>{eyebrow}</span> : null}
-                {title ? <span>{title}</span> : null}
-              </SectionLabel>
-            ) : null}
+            {titleControl ??
+              (eyebrow || title ? (
+                <SectionLabel
+                  compact={resolvedDensity === "compact"}
+                  data-slot="settings-group-heading"
+                  role="heading"
+                  aria-level={embedded ? 3 : 2}
+                  className="flex flex-wrap items-center gap-x-2 gap-y-1 text-pretty [overflow-wrap:anywhere]"
+                >
+                  {eyebrow ? <span>{eyebrow}</span> : null}
+                  {title ? <span>{title}</span> : null}
+                </SectionLabel>
+              ) : null)}
             {description ? (
               <RowDescription
                 compact={resolvedDensity === "compact"}
@@ -341,7 +345,7 @@ export function SettingsGroup({
             "mb-3",
             // Without a heading above it there is no `mt-7` to sit under, so
             // the control would hug whatever preceded the group.
-            !(eyebrow || title || description) &&
+            !(eyebrow || title || titleControl || description) &&
               (resolvedDensity === "compact" ? "mt-5" : "mt-7"),
           )}
         >
