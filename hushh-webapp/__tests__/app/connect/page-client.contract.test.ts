@@ -96,7 +96,7 @@ describe("Connect canonical surface contract", () => {
     expect(tabs).toContain('value: "circles"');
     expect(tabs).toContain('label: "Circles"');
     expect(topShellTabs).toMatch(
-      /tabSet\.id === "location"[\s\S]*tabSet\.id === "connect"/,
+      /tabSet\.id === "location"\s*\|\|\s*tabSet\.id === "connect"/,
     );
     expect(source).toContain(
       'const CONNECT_DIRECTORY_TABS = (["people", "advisors", "nearby"] as const).map(',
