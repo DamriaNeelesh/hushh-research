@@ -502,6 +502,17 @@ jobs:
           "${{ steps.candidate-state.outputs.backend_revision }}"
           "${{ env.RUNTIME_SERVICE_ACCOUNT }}"
 
+      - name: Verify protected list secrets were not wiped
+        shell: bash
+        run: |
+          # `gcloud secrets versions add` REPLACES the whole value, so one write
+          # that skips the read deletes every other entry with no error.
+          # HUSHH_PROD_PHONE_TEST_NUMBERS holds 40 numbers under exactly the
+          # exposure that took the UAT list from 59 to 1 on 2026-09-03. Never
+          # ship on top of destroyed configuration. See R36.
+          python3 scripts/ops/verify_secret_list_invariants.py \
+            --project "${{ env.GCP_PROJECT_ID }}"
+
       - name: Verify production candidate runtime env parity
         id: verify-parity
         if: steps.scope.outputs.deploy_backend == 'true' || steps.scope.outputs.deploy_frontend == 'true'

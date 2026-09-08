@@ -108,6 +108,31 @@ The incident line names the original failure class; the blast radius stated is
 Rules are numbered sequentially and **never renumbered**, so they can be cited
 as "R3" in review.
 
+## Pre-flight checklist
+
+Before editing deploy config, a secret, an IAM policy, or infrastructure:
+
+1. **Which system?** Name it, and name the look-alike you are not touching — R4.
+2. **Who consumes it?** No consumer today → do not wire it — R2.
+3. **Which environments?** Prod, UAT, dev have different runtime identities.
+   Enumerate all three — R1.
+4. **Read access before binding.** Run the R1 check; every row `READER` — R1.
+5. **Additive only.** `add-iam-policy-binding`, never `set-iam-policy`; no
+   revoke/rotate/disable unless asked in those words — R3.
+6. **Shared credential?** Check it against the shared-credentials table above.
+   If it appears there, list every feature affected before touching it — R4.
+
+Before deploying:
+
+7. **Right lane.** All three lanes are manual and must be dispatched from `main`.
+   Prod needs an exact green `main` SHA.
+8. **Live verification.** Run the R6 checks after deploy, not just CI.
+9. **Prove the untouched.** Scoped diff on everything you claim not to have
+   changed — R4, R5.
+10. **Report the gaps.** State what you could not verify and why — R6.
+
+---
+
 ### R1 — Grant the read permission BEFORE binding a secret to a service
 
 **Incident (2026-08-05, carried in — secret bound to a service before its runtime identity could read it).**
@@ -333,31 +358,6 @@ empty result means every lane's mirror is a silent no-op. After a deploy, the
 sync step's own JSON is the second half of the proof — a secret that mirrored
 appears in `synced_secrets` as `(rotated)` or `(unchanged)`; one that was skipped
 does not appear at all.
-
----
-
-## Pre-flight checklist
-
-Before editing deploy config, a secret, an IAM policy, or infrastructure:
-
-1. **Which system?** Name it, and name the look-alike you are not touching — R4.
-2. **Who consumes it?** No consumer today → do not wire it — R2.
-3. **Which environments?** Prod, UAT, dev have different runtime identities.
-   Enumerate all three — R1.
-4. **Read access before binding.** Run the R1 check; every row `READER` — R1.
-5. **Additive only.** `add-iam-policy-binding`, never `set-iam-policy`; no
-   revoke/rotate/disable unless asked in those words — R3.
-6. **Shared credential?** Check it against the shared-credentials table above.
-   If it appears there, list every feature affected before touching it — R4.
-
-Before deploying:
-
-7. **Right lane.** All three lanes are manual and must be dispatched from `main`.
-   Prod needs an exact green `main` SHA.
-8. **Live verification.** Run the R6 checks after deploy, not just CI.
-9. **Prove the untouched.** Scoped diff on everything you claim not to have
-   changed — R4, R5.
-10. **Report the gaps.** State what you could not verify and why — R6.
 
 ---
 
@@ -778,7 +778,6 @@ for (const n of ["झुम्मा","नीलेश","सुमन"])
 
 ---
 
-
 ### R21 — The top shell paints lower than it reserves. Clear the fade, not the reserve
 
 **Incident (2026-08-17, "header overlay ho rha hai" reported across screens.)**
@@ -1003,6 +1002,7 @@ The durable fix is `ledger` mode — pending migrations only, after a verified
 baseline — which `db/migrate.py` already supports and which exists precisely
 for this. It needs a one-time baseline established against the UAT database
 (`db/migrate.py --establish-baseline`), so it requires database access.
+
 ### R27 — Hoisting an App Shortcut phrase array deletes every shortcut in the app
 
 **Incident (2026-09-07, iOS TestFlight build 99 — merge `a4a95a1e4`, PR #6559).** Long-pressing
@@ -1079,7 +1079,6 @@ import json;d=json.load(open('/tmp/dd/Build/Products/Debug-iphonesimulator/App.a
 ```
 
 Expect ten rows with non-zero phrase counts. Zero rows, or a row with zero phrases, is the bug.
-
 
 ### R28 — An error handler that runs on a broken connection will report itself instead of the failure
 
@@ -1190,29 +1189,94 @@ framework with no dSYM fails. Note that `clang -g` re-runs `dsymutil` automatica
 dSYM" test that rebuilds in place silently regenerates it and passes — hold the dSYM aside first,
 or the mutation test proves nothing.
 
-## Adding a rule
+### R30 — A default that is right for you is a silent bug for everyone else
 
-Every mistake found becomes a rule. Fix the **cause**, not the symptom, then add
-the rule so it cannot recur. When the user says "add that to the skill", that
-means a new numbered rule here.
+**Incident (2026-09-08, UAT phone verification.)** The founder, testing from
+India, could not verify any phone number. The country picker read **United
+States (+1)** and he typed a real Indian mobile, so the app sent
+`+1<10 digits>` — a different number. The code went nowhere, and the UAT
+test-number allowlist, which matches on the full E.164 string, could never hit:
+`+19898989892` is not `+919898989892`.
 
-Rules are numbered sequentially and **never renumbered** — R3 must still mean R3
-in six months, so it can be cited in review. Append; do not reorder or reuse a
-retired number.
+Nothing failed loudly. The picker was on screen and looked deliberate, so the
+symptom read as *"phone verification is broken"* and cost an evening chasing a
+database that phone verification never touches. The whole path is the client,
+Google's `identitytoolkit.googleapis.com`, and two environment variables — no
+table, no column, no migration.
 
-Template:
+`DEFAULT_COUNTRY_VALUE = "US"` was hard-coded, in a product whose team tests
+from India. The repo already had `resolveContactPhoneRegion` doing this
+properly for contact sync — SIM region, then the account's own number, then the
+browser locale. One surface used it; the other guessed.
 
-```markdown
-### R<n> — <imperative one-liner>
-**Incident (<date>, <what was being built>).** What went wrong and what it
-would have broken.
-**Rule.** The generalisation.
-**Check.** The exact command or diff that catches it next time.
+**Rule.** A locale-, country-, currency-, timezone- or unit-shaped default must
+be derived from the person, not hard-coded to the team's own market. When the
+repo already resolves that signal somewhere, reuse it rather than writing a
+second answer. Detect in an effect, never during render: `navigator` does not
+exist on the server, and seeding state from it changes the first client paint
+and breaks hydration. An explicit user choice always outranks detection.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne/hushh-webapp
+# Hard-coded country/locale defaults. Each hit must either derive from the user
+# or be a deliberate, commented fallback.
+grep -rnE 'DEFAULT_(COUNTRY|LOCALE|REGION|CURRENCY)[A-Z_]* *= *"' \
+  --include='*.ts' --include='*.tsx' lib components app | grep -v node_modules
+# The phone flow must consult the shared resolver, not guess.
+grep -n 'resolveContactPhoneRegion' components/auth/phone-verification-flow.tsx
+npx vitest run __tests__/components/phone-verification-flow-interaction.test.tsx
+```
+The second must return a line; the suite covers `en-IN`, `en-US`, and an
+existing account number outranking the browser.
+
+### R31 — An empty-defaulting deploy substitution is a feature that never turns on
+
+**Incident (2026-09-08, found while tracing R30.)**
+`deploy/backend.cloudbuild.yaml` binds 49 secrets, each through a substitution:
+
+```bash
+add_secret "${_SOME_THING_SECRET}" "SOME_THING"
 ```
 
-The Check line must be a command that **runs in this repo** and returns
-something meaningful. Run it before committing the rule. A rule with a command
-that doesn't work here is worse than no rule.
+**40 of those substitutions default to `""`**, and `add_secret` skips empties. A
+lane that never passes one deploys a service with that environment variable
+simply **absent** — no error, no log, no failed step. The feature that reads it
+behaves exactly as though it was never configured.
+
+The other 9 default to the secret's own name and are bound whether or not a
+lane passes them. That distinction matters: a first version of this check
+ignored it and reported all 9 as gaps, including `_WALLET_PASS_*` and
+`_OMNIGATEWAY_*` which were working fine. Verified against the live service —
+`HUSHH_MANAGED_GEMINI_LIVE_API_KEY` is **present** on
+`consent-protocol` in `hushh-pda-uat` despite no lane passing it.
+
+Of the 40 that can vanish, UAT omits 4, production 25, dev 24. Most are
+correct — production must not carry UAT test numbers. The one that is not:
+`_HUSHH_UAT_PHONE_TEST_CHALLENGE_SECRET_SECRET`, so the phone-test challenge
+key silently falls back to `APP_SIGNING_KEY`. Every UAT test code therefore
+changes the day that key rotates, with no warning.
+
+That one still must not be bound: `gcloud secrets describe
+HUSHH_UAT_PHONE_TEST_CHALLENGE_SECRET --project=hushh-pda-uat` returns
+**not found**. Cloud Run validates every `secretKeyRef` at revision start, so
+binding it would make every UAT revision fail to become ready while the old one
+kept serving (R1). Create the secret first, then bind.
+
+**Rule.** Every empty-defaulting secret substitution must be passed by each
+deploy lane, or recorded as a deliberate omission **with a reason**. Check the
+substitution's default before calling an omission a bug, and check the running
+service before calling it broken. Never bind a secret you have not confirmed
+exists.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne
+python3 scripts/ci/check-deploy-secret-coverage.py
+```
+Runs in the `Governance` CI job. It fails on an omission absent from
+`config/deploy-env-coverage.json`, and on a listed entry that no longer matches
+reality — both directions mutation-tested before this rule landed.
 
 ### R32 — A busy database is not a broken migration: retry contention, never widen the lock wait
 
@@ -1347,3 +1411,164 @@ grep -n "timeout-minutes" ../.github/workflows/deploy-uat.yml || echo "deploy-ua
 The grep must return a line. Both prints must be `True` -- the single remaining
 bare call is the one inside `_reset_connection` itself. The last line records
 whether the lane is still relying on the platform default.
+
+### R35 — `secrets versions add` REPLACES. A list in a secret needs read-modify-write
+
+**Incident (2026-09-03, discovered 2026-09-08.)** `HUSHH_UAT_PHONE_TEST_NUMBERS`
+holds the UAT fixed-OTP phone allowlist. Version 8 held **59** numbers. Version
+9, written **three minutes and ten seconds later**, held **1**. Fifty-eight
+testers' numbers were destroyed in a single write, and nothing anywhere said so.
+
+The damage surfaced days later, and not as a secret problem. A number that was
+no longer allowlisted fell through to real Firebase exactly as designed, a real
+SMS went to a number nobody was holding, and the person typing the fixed test
+code `000000` got *"That verification code is incorrect."* Every component
+behaved correctly. The founder spent an evening convinced the database had
+broken phone verification, which never touches the database at all.
+
+The cause is the tool's shape, not carelessness: `gcloud secrets versions add`
+**replaces the entire value**. There is no append. Editing a list therefore
+means read the current version, merge, write back — and skipping the read
+silently deletes everyone else's entries. Nothing warns you, and the old
+versions look like ordinary history rather than the evidence of a wipe.
+
+R3 already says *only ever ADD access, never replace*. It was written about IAM
+policies. It applies exactly as hard to a **list stored in a secret**, and it
+did not say so.
+
+**Rule.** Never hand-write a list-valued secret. Use
+`scripts/ops/secret_list_edit.py`, which reads the current value, unions into
+it, and **refuses to write a version with fewer entries than the current one**.
+Print counts and last-4s, never values. Before assuming a list-valued secret is
+correct, look at its version history — an entry count that collapses between
+adjacent versions is a wipe, not an edit.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne
+# Entry count per version. A sharp drop between adjacent versions is a wipe.
+for v in $(gcloud secrets versions list HUSHH_UAT_PHONE_TEST_NUMBERS \
+  --project=hushh-pda-uat --format='value(name)' --limit=6); do
+  printf 'v%-3s ' "$v"
+  gcloud secrets versions access "$v" --secret=HUSHH_UAT_PHONE_TEST_NUMBERS \
+    --project=hushh-pda-uat 2>/dev/null | tr ',;' '\n' | grep -c . 
+done
+# And the safe editor refuses to shrink:
+scripts/ops/secret_list_edit.py --secret HUSHH_UAT_PHONE_TEST_NUMBERS \
+  --project hushh-pda-uat --show
+```
+Restored as version 10 on 2026-09-08: 59 entries, verified, nothing dropped.
+
+### R36 — Nothing reads a secret's old versions, so a wipe is invisible until a user hits it
+
+**Incident (2026-09-03, found 2026-09-08.)** The 58 numbers deleted from
+`HUSHH_UAT_PHONE_TEST_NUMBERS` (R35) sat gone for **five days**. Not one system
+noticed. No alert, no failing check, no red deploy. It surfaced only when the
+founder could not verify a phone and spent an evening convinced the database had
+broken phone verification — which never touches the database.
+
+The evidence was there the whole time: version 8 had 59 entries, version 9 had
+1. Secret Manager keeps every version. **Nothing in this repo ever read them.**
+
+Audit detail, for the record: both writes came from `kushal@hushh.ai` via
+`Python-urllib/3.13` — a custom script, not the CLI. Automation that owns a
+value and rewrites it wholesale is the highest-risk shape for this, because it
+repeats reliably and nobody reviews its payload.
+
+The same exposure exists in **production**: `HUSHH_PROD_PHONE_TEST_NUMBERS`
+holds 40 entries and one careless write destroys them the same way.
+
+**Rule.** Every list-valued secret that a feature depends on is declared in
+`config/protected-lists.json` with an entry floor and a shrink limit, and
+checked automatically. A deploy must fail rather than ship on top of destroyed
+configuration. Detection is not optional just because the edit tool is safe —
+`secret_list_edit.py` only helps the people who use it, and the wipe came from
+something that did not.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne
+python3 scripts/ops/verify_secret_list_invariants.py
+```
+Runs in `deploy-uat.yml` before the runtime-parity check. Fails when a tracked
+list falls below its floor, or when more entries vanished between adjacent
+versions than the limit allows, and prints the exact `secret_list_edit.py
+--restore-from` command to recover.
+
+Verified by replaying the real incident: against v8 → v9 it reports 58 entries
+lost against a limit of 5, and 1 entry against a floor of 25 — it fails on both
+counts. A guard never seen to catch its own incident is decoration.
+
+### R37 — On a flat team you cannot remove access, so remove the accident and shorten the silence
+
+**Context (2026-09-08, after R35/R36.)** The obvious fix for "one write destroyed
+58 entries" is to restrict who may write that secret. On a small team with a flat
+hierarchy that is the wrong trade: everyone genuinely needs to ship, and an
+access ticket between an engineer and their own test number buys nothing.
+
+So the control is not permission. It is three layers, none of which asks anyone
+for approval:
+
+1. **Make the safe path the easy path.** `scripts/ops/secret_list_edit.py`
+   reads before it writes, unions, and refuses to shrink a list. It is shorter
+   to type than the raw command it replaces.
+2. **Make the accident impossible.** `scripts/ops/protected-secret-guard.sh`
+   defines a shell function that refuses `gcloud secrets versions add` on any
+   secret declared in `config/protected-lists.json`, and tells you what to run
+   instead. Installed per engineer with one line in `~/.zshrc`. It is
+   deliberately bypassable with `command gcloud` — it stops the slip, not the
+   decision.
+3. **Make the silence short.** `.github/workflows/verify-protected-lists.yml`
+   runs hourly against UAT *and* production, and the same check gates both
+   deploy lanes. The 2026-09-03 wipe went unnoticed for five days; the ceiling
+   is now an hour, and a production wipe cannot wait for the next rare
+   production deploy to be found.
+
+Prevention that only works when people cooperate is not a control. Detection
+that only runs at deploy time is not a control either, because the deploy that
+would catch it may be weeks away. Layer both.
+
+**Rule.** When access cannot be restricted, every destructive operation on
+shared state needs all three: a safe default tool, a guard against the
+accidental form, and time-bounded detection that runs without anyone
+remembering to run it. Adding a list to `config/protected-lists.json` gets all
+three at once.
+
+**Check.**
+```bash
+cd ~/Desktop/husshOne
+# The guard must refuse a protected list and pass everything else through.
+HUSHH_REPO_ROOT="$PWD" bash -c '
+source scripts/ops/protected-secret-guard.sh
+gcloud secrets versions add HUSHH_UAT_PHONE_TEST_NUMBERS --project=hushh-pda-uat \
+  --data-file=- </dev/null 2>&1 | grep -q REFUSED && echo "guard: refuses protected" || echo "GUARD BROKEN"
+gcloud secrets versions list HUSHH_UAT_PHONE_TEST_NUMBERS --project=hushh-pda-uat \
+  --limit=1 --format="value(name)" >/dev/null 2>&1 && echo "guard: reads untouched" || echo "GUARD TOO BROAD"'
+```
+Both lines must be the positive form. Verified 2026-09-08, including flags
+placed before the secret name and an unprotected secret passing through to real
+gcloud.
+
+## Adding a rule
+
+Every mistake found becomes a rule. Fix the **cause**, not the symptom, then add
+the rule so it cannot recur. When the user says "add that to the skill", that
+means a new numbered rule here.
+
+Rules are numbered sequentially and **never renumbered** — R3 must still mean R3
+in six months, so it can be cited in review. Append; do not reorder or reuse a
+retired number.
+
+Template:
+
+```markdown
+### R<n> — <imperative one-liner>
+**Incident (<date>, <what was being built>).** What went wrong and what it
+would have broken.
+**Rule.** The generalisation.
+**Check.** The exact command or diff that catches it next time.
+```
+
+The Check line must be a command that **runs in this repo** and returns
+something meaningful. Run it before committing the rule. A rule with a command
+that doesn't work here is worse than no rule.
