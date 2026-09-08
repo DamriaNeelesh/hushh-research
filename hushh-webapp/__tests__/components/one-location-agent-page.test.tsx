@@ -66,6 +66,7 @@ const {
   mockWithdrawRequest,
   mockUpdateAutoApprovePreference,
   mockCreatePublicInvite,
+  mockRevokePublicInvite,
   mockCreateCircleInvite,
   mockListCircles,
   mockGetCircle,
@@ -127,6 +128,7 @@ const {
   mockWithdrawRequest: vi.fn(),
   mockUpdateAutoApprovePreference: vi.fn(),
   mockCreatePublicInvite: vi.fn(),
+  mockRevokePublicInvite: vi.fn(),
   mockCreateCircleInvite: vi.fn(),
   mockListCircles: vi.fn(),
   mockGetCircle: vi.fn(),
@@ -419,7 +421,7 @@ vi.mock("@/lib/one-location/service", () => ({
     referRecipient: vi.fn(),
     createPublicInvite: mockCreatePublicInvite,
     createCircleInvite: mockCreateCircleInvite,
-    revokePublicInvite: vi.fn(),
+    revokePublicInvite: mockRevokePublicInvite,
     revokeCircleInvite: vi.fn(),
     // Named-circle surface: the mandatory onboarding invite screen
     // find-or-creates the user's first owned Circle and issues its
@@ -2152,6 +2154,98 @@ describe("OneLocationAgentPage", () => {
       "false",
     );
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("shows owned SMS Circle in auto-approve circles list and excludes Trusted Circle", async () => {
+    const circleFamily = {
+      id: "circle_family",
+      name: "Family",
+      kind: "family" as const,
+      role: "owner" as const,
+      memberCount: 3,
+      memberLimit: 20,
+    };
+    const circleSms = {
+      id: "circle_sms",
+      name: "SMS Contacts",
+      kind: "other" as const,
+      role: "owner" as const,
+      memberCount: 2,
+      memberLimit: 10,
+      isSystem: true,
+      systemKind: "sms" as const,
+    };
+    const circleTrusted = {
+      id: "circle_trusted",
+      name: "Trusted",
+      kind: "other" as const,
+      role: "owner" as const,
+      memberCount: 15,
+      isSystem: false,
+      systemKind: "trusted" as const,
+    };
+    let serverPreference = {
+      enabled: false,
+      scope: null as { kind: "circles"; circleIds: string[] } | null,
+      enabledAt: null as string | null,
+      ruleVersion: 0,
+    };
+    mockGetState.mockImplementation(async () => ({
+      ...locationState(),
+      ownerGrants: [],
+      circles: [circleFamily, circleSms, circleTrusted],
+      autoApprovePreference: serverPreference,
+    }));
+    mockUpdateAutoApprovePreference.mockImplementation(async ({ enabled, scope }) => {
+      serverPreference = enabled
+        ? {
+            enabled: true,
+            scope,
+            enabledAt: "2026-08-24T09:00:00.000Z",
+            ruleVersion: 1,
+          }
+        : { enabled: false, scope: null, enabledAt: null, ruleVersion: 2 };
+      return serverPreference;
+    });
+
+    mockLocationSearchParams("action=settings");
+    render(<OneLocationAgentPage />);
+    await skipLocationEntryFlow({ expectMain: false });
+    expect(
+      await screen.findByRole("heading", { name: "Settings" }),
+    ).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Auto-approve requests" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "Auto-approve for" }),
+    ).toBeTruthy();
+
+    // SMS Contacts and Family circles must be visible as options
+    const smsCheckbox = screen.getByRole("checkbox", { name: /^SMS Contacts/ });
+    const familyCheckbox = screen.getByRole("checkbox", { name: /^Family/ });
+    expect(smsCheckbox).toBeInTheDocument();
+    expect(familyCheckbox).toBeInTheDocument();
+
+    // Trusted Circle must NOT be offered as an auto-approve option
+    expect(screen.queryByRole("checkbox", { name: /^Trusted/ })).not.toBeInTheDocument();
+
+    // Selecting SMS Contacts enables auto-approve for that circle
+    fireEvent.click(smsCheckbox);
+    expect(smsCheckbox).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Turn on" }));
+    await waitFor(() =>
+      expect(mockUpdateAutoApprovePreference).toHaveBeenCalledWith({
+        vaultOwnerToken: "vault-token",
+        enabled: true,
+        scope: {
+          kind: "circles",
+          circleIds: ["circle_sms"],
+        },
+      }),
+    );
   });
 
   it("stops the automatic queue when the server rule is turned off", async () => {
@@ -8057,6 +8151,25 @@ describe("OneLocationAgentPage", () => {
     expect(screen.queryByText("Duration")).toBeNull();
     // Ending it stays reachable -- that is the only exit.
     expect(screen.getByRole("button", { name: /Revoke link/i })).toBeTruthy();
+  });
+
+  it("removes revoked link actions even when refreshing the workspace fails", async () => {
+    mockGetState.mockResolvedValue({
+      ...locationState(),
+      publicInvites: [activePublicInvite({ publicUrl: "/one/location/view/neelesh.derived-token-abc" })],
+    });
+    mockRevokePublicInvite.mockResolvedValue({ invite: { status: "revoked" } });
+    render(<OneLocationAgentPage />);
+    await skipLocationEntryFlow();
+    await waitFor(() => expect(mockGetState).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Links" }));
+    expect(await screen.findByRole("button", { name: /Copy link/i })).toBeTruthy();
+    mockGetState.mockRejectedValue(new Error("State refresh unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: /Revoke link/i }));
+    await waitFor(() => expect(mockRevokePublicInvite).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Copy link$/i })).toBeNull());
+    expect(screen.queryByRole("button", { name: /^Share$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Create link$/i })).toBeTruthy();
   });
 
   it("lets a link whose URL cannot be recovered be stopped", async () => {
