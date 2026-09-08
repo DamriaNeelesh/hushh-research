@@ -171,7 +171,11 @@ import { SosPanel } from "@/components/one-location/redesign/sos-panel";
 import { SmsContactsFlow } from "@/components/one-location/redesign/sms-contacts-flow";
 import { CheckInFlow } from "@/components/one-location/redesign/check-in-flow";
 import { SavedLocationsSection } from "@/components/one-location/saved-locations-section";
-import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
+import {
+  SettingsGroup,
+  SettingsPresentationProvider,
+  SettingsRow,
+} from "@/components/app-ui/settings-ui";
 import { ShellActionSurface } from "@/components/app-ui/shell-action-surface";
 import { roleClasses } from "@/lib/morphy-ux/tokens/semantic-roles";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -452,6 +456,8 @@ export type LocationHubViewModel = {
   selectedRequestOwnerIds: string[];
   shareDurationHours: string;
   shareMessage: string;
+  /** Last failed share attempt, rendered in-flow instead of over the header. */
+  shareError: string | null;
   durationHours: string;
   requestMessage: string;
   shareReviewOpen: boolean;
@@ -519,9 +525,8 @@ export type LocationHubViewModel = {
   onEnterShareConfirm: () => void;
   onConfirmShare: () => void;
   /** Reports whether any request reached the server, and whether all did. */
-  onSendRequest: (
-    reason?: string | null,
-  ) => Promise<LocationRequestSendResult>;  onAskReshare: (grant: OneLocationGrant) => void;
+  onSendRequest: (reason?: string | null) => Promise<LocationRequestSendResult>;
+  onAskReshare: (grant: OneLocationGrant) => void;
   onApprove: (
     request: OneLocationAccessRequest,
     options?: {
@@ -1294,7 +1299,8 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
       }
       openFlow("ask");
     },
-    [openFlow, vm],  );
+    [openFlow, vm],
+  );
 
   const closeFlow = useCallback(
     (nextTab?: LocationHubTab) => {
@@ -1757,11 +1763,13 @@ function LocationFeatureRoot({
 }) {
   return (
     <>
-      {children}
-      <LiveShareDurationDialog
-        vm={vm}
-        triggerRef={liveShareDurationTriggerRef}
-      />
+      <SettingsPresentationProvider density="compact">
+        {children}
+        <LiveShareDurationDialog
+          vm={vm}
+          triggerRef={liveShareDurationTriggerRef}
+        />
+      </SettingsPresentationProvider>
     </>
   );
 }
@@ -1845,7 +1853,7 @@ const LOCATION_INTERACTIVE_SURFACE =
 
 function LocationHubPanel({ children }: { children: ReactNode }) {
   return (
-    <div className="space-y-4 px-[var(--page-inline-gutter-standard)]">
+    <div className="space-y-3 px-[var(--page-inline-gutter-standard)] pt-3 sm:space-y-4 sm:pt-4">
       {children}
     </div>
   );
@@ -2110,10 +2118,10 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
         data-testid="one-location-share-row"
         className={cn(
           LOCATION_INTERACTIVE_SURFACE,
-          "grid w-full gap-4 rounded-[20px] px-5 py-5 text-left sm:grid-cols-[auto_minmax(0,1fr)_194px] sm:items-center sm:gap-5 sm:px-6 sm:py-5",
+          "grid w-full gap-3 rounded-[16px] px-4 py-4 text-left min-[380px]:grid-cols-[minmax(0,1fr)_auto] min-[380px]:items-center sm:grid-cols-[minmax(0,1fr)_194px] sm:gap-4 sm:px-5",
         )}
       >
-        <div className="flex min-w-0 items-center gap-4">
+        <div className="flex min-w-0 items-center gap-3">
           <LocationSharePulseIcon />
           <span className="min-w-0 space-y-1">
             <CardTitle as="span" className="block">
@@ -2131,7 +2139,7 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
           data-voice-label="Share location"
           aria-label="Share location"
           onClick={onClick}
-          className="inline-flex min-h-[47px] w-full items-center justify-center rounded-[15px] bg-[color:var(--app-accent)] px-5 text-[color:var(--app-accent-fg)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-accent-hover)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] sm:col-start-3"
+          className="inline-flex min-h-11 w-full max-w-[200px] items-center justify-center justify-self-start rounded-[13px] bg-[color:var(--app-accent)] px-4 text-[color:var(--app-accent-fg)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-accent-hover)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] min-[380px]:w-auto min-[380px]:min-w-[124px] min-[380px]:justify-self-end sm:col-start-2 sm:min-w-[160px] sm:max-w-[194px]"
         >
           <ButtonLabel as="span">Share location</ButtonLabel>
         </button>
@@ -2143,7 +2151,9 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
 function LocationHeaderIconTile() {
   // The tile itself now lives with the header primitive, so RIA's agent
   // screens draw the same one instead of a second copy of these classes.
-  return <AgentHeaderIcon icon={MapPin} data-testid="one-location-header-icon" />;
+  return (
+    <AgentHeaderIcon icon={MapPin} data-testid="one-location-header-icon" />
+  );
 }
 
 function LocationSharePulseIcon() {
@@ -2151,7 +2161,7 @@ function LocationSharePulseIcon() {
     <span
       aria-hidden="true"
       data-location-share-pulse-icon=""
-      className="relative inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-accent-tint)] shadow-[inset_0_0_0_1px_rgba(0,122,255,0.025)] dark:shadow-none sm:h-16 sm:w-16"
+      className="relative inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-accent-tint)] shadow-[inset_0_0_0_1px_rgba(0,122,255,0.025)] dark:shadow-none"
     >
       <span className="absolute inset-[13%] rounded-full bg-[color:var(--app-accent-surface)]" />
       <span className="absolute inset-[28%] rounded-full bg-[color:var(--app-accent)]/20" />
@@ -2199,18 +2209,21 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
             onClick={item.onClick}
             className={cn(
               LOCATION_INTERACTIVE_SURFACE,
-              "group flex min-h-[96px] min-w-0 flex-col items-center justify-center gap-2.5 rounded-[16px] px-5 py-4 text-center transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-secondary-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)]",
+              "group flex min-h-[80px] min-w-0 flex-col items-center justify-center gap-1.5 rounded-[14px] px-3 py-3 text-center transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-secondary-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)]",
             )}
           >
             <span
               aria-hidden
               data-one-location-action-icon=""
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-[color:var(--app-accent)] transition-transform group-active:scale-95 [&>svg]:h-8 [&>svg]:w-8"
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center text-[color:var(--app-accent)] transition-transform group-active:scale-95 [&>svg]:h-7 [&>svg]:w-7"
             >
               {item.icon}
             </span>
             <span className="min-w-0">
-              <ButtonLabel as="span" className="block min-w-0">
+              <ButtonLabel
+                as="span"
+                className="block min-w-0 !text-[15px] !leading-5"
+              >
                 {item.title}
               </ButtonLabel>
             </span>
@@ -2229,13 +2242,13 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
           data-voice-label={emergencyItem.ariaLabel}
           aria-label={emergencyItem.ariaLabel}
           onClick={emergencyItem.onClick}
-          className="group mt-3 flex min-h-[68px] w-full items-center justify-between gap-4 rounded-[16px] bg-[color:var(--app-destructive-tint)] px-5 py-3 text-left ring-1 ring-inset ring-[color:var(--app-destructive-border)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-destructive-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-destructive-border)]"
+          className="group mt-3 flex min-h-[60px] w-full items-center justify-between gap-3 rounded-[14px] bg-[color:var(--app-destructive-tint)] px-4 py-2.5 text-left ring-1 ring-inset ring-[color:var(--app-destructive-border)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-destructive-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-destructive-border)]"
         >
-          <span className="flex min-w-0 items-center gap-4">
+          <span className="flex min-w-0 items-center gap-3">
             <span
               aria-hidden
               data-one-location-action-icon=""
-              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)] transition-transform group-active:scale-95"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)] transition-transform group-active:scale-95"
             >
               {emergencyItem.icon}
             </span>
@@ -3049,7 +3062,10 @@ function LocationSettingsFlow({
       allDraftCirclesSelected
         ? null
         : ownedCircles.length
-          ? { kind: "circles", circleIds: ownedCircles.map((circle) => circle.id) }
+          ? {
+              kind: "circles",
+              circleIds: ownedCircles.map((circle) => circle.id),
+            }
           : null,
     );
   }, [allDraftCirclesSelected, ownedCircles]);
@@ -3160,7 +3176,9 @@ function LocationSettingsFlow({
             {ownedCircles.length ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3 px-1">
-                  <SectionLabel as="p">Circles</SectionLabel>
+                  <SectionLabel as="p" compact>
+                    Circles
+                  </SectionLabel>
                   <button
                     type="button"
                     onClick={toggleAllDraftCircles}
@@ -3238,7 +3256,7 @@ function LocationSettingSection({
 }) {
   return (
     <section className="w-full">
-      <SectionLabel as="p" className="mb-2 px-[6px]">
+      <SectionLabel as="p" compact className="mb-2 px-[6px]">
         {title}
       </SectionLabel>
       {children}
@@ -3424,7 +3442,7 @@ function PersonRow({
           label={name}
           photoUrl={photoUrl}
           verified={verified}
-          className="h-10 w-10 text-[13px]"
+          className="h-9 w-9 text-[12px]"
         />
         {active ? (
           <span
@@ -3441,20 +3459,20 @@ function PersonRow({
           {profileHref ? (
             <Link
               href={profileHref}
-              className="min-w-0 flex-1 break-words text-left text-[17px] font-medium leading-[22px] tracking-[-0.3px] text-foreground underline-offset-4 hover:underline"
+              className="min-w-0 flex-1 break-words text-left text-[16px] font-medium leading-[21px] tracking-[-0.2px] text-foreground underline-offset-4 hover:underline"
               aria-label={`Open profile: ${name}`}
               data-testid="one-location-person-profile-link"
             >
               {name}
             </Link>
           ) : (
-            <p className="min-w-0 flex-1 break-words text-[17px] font-medium leading-[22px] tracking-[-0.3px] text-foreground">
+            <p className="min-w-0 flex-1 break-words text-[16px] font-medium leading-[21px] tracking-[-0.2px] text-foreground">
               {name}
             </p>
           )}
         </div>
         {subtitle ? (
-          <p className="break-words text-[13px] font-normal leading-[18px] tracking-[-0.2px] text-[color:var(--app-secondary-label)]">
+          <p className="break-words text-[12px] font-normal leading-[17px] tracking-normal text-[color:var(--app-secondary-label)]">
             {subtitle}
           </p>
         ) : null}
@@ -3483,7 +3501,7 @@ function PersonRow({
       className={cn(
         "relative transition-colors motion-reduce:transition-none",
         !first &&
-          "before:absolute before:left-16 before:right-4 before:top-0 before:h-px before:bg-[color:var(--app-separator)] before:content-['']",
+          "before:absolute before:left-[60px] before:right-4 before:top-0 before:h-px before:bg-[color:var(--app-separator)] before:content-['']",
         "[@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
       )}
     >
@@ -3492,12 +3510,12 @@ function PersonRow({
           type="button"
           onClick={onOpen}
           aria-label={ariaLabel}
-          className="flex min-h-[60px] w-full items-center gap-3 px-4 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2 sm:min-h-16"
+          className="flex min-h-14 w-full items-center gap-3 px-4 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2"
         >
           {content}
         </button>
       ) : (
-        <div className="flex min-h-[60px] items-center gap-3 px-4 py-2.5 sm:min-h-16">
+        <div className="flex min-h-14 items-center gap-3 px-4 py-2">
           {content}
         </div>
       )}
@@ -3539,7 +3557,7 @@ function shareGroupStatusLabel({
   incoming,
 }: {
   group: OneLocationGrantLaneGroup;
-  countdownLabel: (value?: string | null) => string,
+  countdownLabel: (value?: string | null) => string;
   incoming?: boolean;
 }): string {
   if (group.grants.length > 1) {
@@ -3566,7 +3584,8 @@ function peopleDirectoryStatus(input: {
   pendingRequest: OneLocationAccessRequest | null;
   countdownLabel: (value?: string | null) => string;
 }): PeopleDirectoryStatus {
-  const { outgoingGroup, incomingGroup, pendingRequest, countdownLabel } = input;
+  const { outgoingGroup, incomingGroup, pendingRequest, countdownLabel } =
+    input;
   if (outgoingGroup && incomingGroup) {
     return { label: "Sharing both ways", active: true, kind: "both" };
   }
@@ -3707,17 +3726,17 @@ function CircleSummaryGroup({
         onClick={onOpenCircles}
         aria-label={`Circles, ${summary.replace(" · ", " and ")}`}
         className={cn(
-          "grid min-h-[68px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-left outline-none transition-colors motion-reduce:transition-none",
+          "grid min-h-[60px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 text-left outline-none transition-colors motion-reduce:transition-none",
           "focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2",
           "[@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
         )}
       >
         <CircleIdentityStack circles={personal.length ? personal : circles} />
         <span className="min-w-0">
-          <span className="block text-[17px] font-semibold leading-[22px] tracking-[-0.3px] text-foreground">
+          <span className="block text-[16px] font-semibold leading-[21px] tracking-[-0.2px] text-foreground">
             Circles
           </span>
-          <span className="mt-0.5 block text-[13px] font-normal leading-[18px] tracking-[-0.2px] text-[color:var(--app-secondary-label)]">
+          <span className="mt-0.5 block text-[12px] font-normal leading-[17px] tracking-normal text-[color:var(--app-secondary-label)]">
             {summary}
           </span>
         </span>
@@ -4040,7 +4059,10 @@ function PersonActionsDialog({
           </div>
         </DialogHeader>
         <div className="mx-4 mb-4">
-          <SettingsGroup separatorInset shellClassName={LOCATION_GROUP_SHELL_CLASSNAME}>
+          <SettingsGroup
+            separatorInset
+            shellClassName={LOCATION_GROUP_SHELL_CLASSNAME}
+          >
             {actionRows.slice(0, 3)}
           </SettingsGroup>
         </div>
@@ -4115,7 +4137,9 @@ export function PeopleHub({
   const selectedPerson = useMemo(
     () =>
       selectedPersonId
-        ? (vm.recipients.find((recipient) => recipient.userId === selectedPersonId) ??
+        ? (vm.recipients.find(
+            (recipient) => recipient.userId === selectedPersonId,
+          ) ??
           filtered.find((recipient) => recipient.userId === selectedPersonId) ??
           null)
         : null,
@@ -4181,11 +4205,7 @@ export function PeopleHub({
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [
-    onLoadMoreRecipients,
-    recipientPageHasMore,
-    recipientPageLoading,
-  ]);
+  }, [onLoadMoreRecipients, recipientPageHasMore, recipientPageLoading]);
 
   const addPeopleEmptyAction = hasSearch ? (
     <Link
@@ -4255,8 +4275,8 @@ export function PeopleHub({
   );
 
   return (
-    <div className="pt-4 sm:pt-5" data-testid="one-location-people-hub">
-      <div className="mx-auto w-full max-w-[640px] space-y-5">
+    <div data-testid="one-location-people-hub">
+      <div className="w-full space-y-4 sm:space-y-5">
         {!hasSearch ? (
           <CircleSummaryGroup
             circles={vm.circles}
@@ -4273,12 +4293,14 @@ export function PeopleHub({
         >
           {!hasSearch ? (
             <div className="flex items-center justify-between gap-4">
-              <h2
+              <SectionLabel
+                as="h2"
+                compact
                 id="one-location-people-heading"
-                className="text-[20px] font-semibold leading-[25px] tracking-[-0.3px] text-[color:var(--app-section-label)]"
+                className="min-w-0"
               >
                 People
-              </h2>
+              </SectionLabel>
               {addConnectionsMenu}
             </div>
           ) : (
@@ -4289,8 +4311,8 @@ export function PeopleHub({
 
           <div
             className={cn(
-              "[&_input]:h-[46px] [&_input]:rounded-[14px] [&_input]:border-0 [&_input]:bg-[color:var(--app-primary-surface)] [&_input]:pl-[46px] [&_input]:pr-[18px] [&_input]:text-[16px] [&_input]:leading-[22px] dark:[&_input]:bg-[color:var(--app-secondary-surface)]",
-              "[&_svg]:left-[18px] [&_svg]:text-[color:var(--app-tertiary-label)]",
+              "[&_input]:h-11 [&_input]:rounded-[13px] [&_input]:border-0 [&_input]:bg-[color:var(--app-primary-surface)] [&_input]:pl-11 [&_input]:pr-4 [&_input]:text-[15px] [&_input]:leading-5 dark:[&_input]:bg-[color:var(--app-secondary-surface)]",
+              "[&_svg]:left-4 [&_svg]:text-[color:var(--app-tertiary-label)]",
             )}
             data-testid="one-location-people-search"
           >
@@ -4362,7 +4384,8 @@ export function PeopleHub({
                     active={status.active}
                     first={index === 0}
                     onOpen={
-                      status.kind !== "neutral" && !(outgoingGroup && !singleGrant)
+                      status.kind !== "neutral" &&
+                      !(outgoingGroup && !singleGrant)
                         ? () => setSelectedPersonId(recipient.userId)
                         : undefined
                     }
@@ -4465,7 +4488,9 @@ export function PeopleHub({
         invites={vm.incomingCircleMemberInvites}
         loading={vm.incomingCircleMemberInvitesLoading}
         focusedInviteId={focusedInviteId}
-        focusedInviteResolutionReady={vm.incomingCircleMemberInviteFocusResolved}
+        focusedInviteResolutionReady={
+          vm.incomingCircleMemberInviteFocusResolved
+        }
         inviteBusy={vm.busy === "circleMemberInvite"}
         onOpenChange={setInvitationsOpen}
         onAcceptInvite={vm.onAcceptNamedCircleMemberInvite}
@@ -4556,11 +4581,11 @@ function PublicLinkActionRows({
   };
 
   return (
-    <div className="space-y-3 px-4 pb-4 pt-2">
+    <div className="space-y-2.5 px-4 pb-4 pt-1.5">
       <div className="grid grid-cols-1 gap-2 min-[340px]:grid-cols-2">
         <Button
           onClick={onShare}
-          className="ui-text-button-label h-12 rounded-[15px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90"
+          className="ui-text-button-label h-11 rounded-[13px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90"
         >
           <Share2 className="mr-1.5 h-4 w-4" />
           Share
@@ -4570,7 +4595,7 @@ function PublicLinkActionRows({
           onClick={handleCopy}
           disabled={copyBusy}
           aria-busy={copyBusy || undefined}
-          className="ui-text-button-label h-12 rounded-[15px]"
+          className="ui-text-button-label h-11 rounded-[13px]"
         >
           <Copy className="mr-1.5 h-4 w-4" />
           {copyBusy ? "Copying…" : copyLabel}
@@ -4663,7 +4688,7 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
   const hasShareableLink = Boolean(vm.publicInviteUrl);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <SettingsGroup
         title="Temporary link"
         separatorInset
@@ -4734,7 +4759,7 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
               title="Create a temporary link"
               description="Anyone with this link can see your location until it expires."
             />
-            <div className="space-y-4 px-4 pb-4 pt-2">
+            <div className="space-y-3 px-4 pb-4 pt-1.5">
               <DurationSelector
                 value={vm.publicLinkDurationHours}
                 onChange={vm.setPublicLinkDurationHours}
@@ -4753,7 +4778,7 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
                 onClick={vm.onCreatePublicInvite}
                 isLoading={vm.busy === "publicInvite"}
                 data-voice-control-id="one-location-action-temp-link"
-                className="h-12 min-h-12 w-full rounded-[15px] bg-[color:var(--app-accent)] text-[17px] font-semibold leading-[22px] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90"
+                className="h-11 min-h-11 w-full max-w-[200px] self-start rounded-[13px] bg-[color:var(--app-accent)] text-[16px] font-semibold leading-[21px] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90"
               >
                 {vm.busy === "publicInvite" ? "Creating link…" : "Create link"}
               </Button>
@@ -5132,6 +5157,20 @@ function ShareFlow({
             you, for how long and when it ends. Repeating that in prose above it
             is the design explaining itself. */}
         <TaskFlowHeader eyebrow="Step 2 of 2" title="Ready to share?" />
+
+        {vm.shareError ? (
+          <div
+            role="alert"
+            className="rounded-[var(--app-radius-control)] border border-destructive/20 bg-destructive/[0.06] px-4 py-3"
+          >
+            <p className="text-[14px] font-semibold leading-[19px] text-foreground">
+              Sharing didn’t start
+            </p>
+            <p className="mt-0.5 text-[13px] leading-[18px] text-muted-foreground">
+              {vm.shareError}
+            </p>
+          </div>
+        ) : null}
 
         <SectionCard className="p-5 sm:p-6">
           <div className="space-y-6">
@@ -5963,7 +6002,8 @@ function AskFlow({
   const pendingNewRequestCount = useMemo(
     () =>
       vm.requestedByMe.filter(
-        (request) => request.status === "pending" && !request.extendsGrantId,      ).length,
+        (request) => request.status === "pending" && !request.extendsGrantId,
+      ).length,
     [vm.requestedByMe],
   );
 
@@ -6200,7 +6240,8 @@ function AskFlow({
                 searchActive &&
                 recipientLabel
                   .toLowerCase()
-                  .includes(normalizedRecipientSearch);              const showStateActions = !status.selectable && exactStatusSearch;
+                  .includes(normalizedRecipientSearch);
+              const showStateActions = !status.selectable && exactStatusSearch;
               return (
                 <RequestRecipientListRow
                   key={r.userId}

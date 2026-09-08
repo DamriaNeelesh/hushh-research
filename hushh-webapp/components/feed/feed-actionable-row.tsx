@@ -5,11 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { SettingsRow } from "@/components/app-ui/settings-ui";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Icon } from "@/lib/morphy-ux/ui";
 import { cn } from "@/lib/utils";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
@@ -149,7 +145,7 @@ function FeedActionableIdentity({
 }) {
   return (
     <Avatar
-      className="h-10 w-10 bg-[color:var(--app-neutral-fill)] text-[13px] font-semibold text-[color:var(--app-secondary-label)]"
+      className="h-9 w-9 bg-[color:var(--app-neutral-fill)] text-[12px] font-semibold text-[color:var(--app-secondary-label)]"
       aria-hidden
       data-testid="feed-actionable-avatar"
       data-photo-url={person.photoUrl ?? ""}

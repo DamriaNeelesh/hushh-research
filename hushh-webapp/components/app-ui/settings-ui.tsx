@@ -174,6 +174,7 @@ export function SettingsGroup({
   toolbar,
   children,
   embedded = false,
+  density,
   separatorInset,
   className,
   headingClassName,
@@ -214,6 +215,12 @@ export function SettingsGroup({
   children: ReactNode;
   embedded?: boolean;
   /**
+   * Sets the row/heading density for every SettingsRow in this group. When
+   * omitted, embedded groups use the compact grouped-list recipe while
+   * full-page groups retain the roomier settings-screen rhythm.
+   */
+  density?: "compact" | "comfortable";
+  /**
    * Opt-in iOS inset-grouped separators: hairlines that start after the leading
    * icon (aligned to the text) instead of full-width dividers. Default false
    * preserves the existing full-width `divide-y` for all other consumers.
@@ -247,14 +254,20 @@ export function SettingsGroup({
   const presentation = useContext(SettingsPresentationContext);
   const resolvedSeparatorInset =
     separatorInset ?? presentation.separatorInset ?? false;
+  const resolvedDensity =
+    density ?? presentation.density ?? (embedded ? "compact" : "comfortable");
   const shell = (
     <div
       data-ui-role="grouped-card"
       data-slot="settings-group-shell"
+      data-settings-density={resolvedDensity}
       className={cn(
         // Inset settings groups use the compact card radius and flat grouped
         // Apple surfaces; separators inside the card carry the structure.
-        "relative isolate [--settings-group-radius:var(--app-card-radius-standard,24px)] overflow-hidden rounded-[var(--settings-group-radius)]",
+        "relative isolate overflow-hidden rounded-[var(--settings-group-radius)]",
+        resolvedDensity === "compact"
+          ? "[--settings-group-radius:var(--app-card-radius-compact,16px)]"
+          : "[--settings-group-radius:var(--app-card-radius-standard,18px)]",
         "bg-[color:var(--app-card-surface-default-solid)] shadow-[var(--app-card-shadow-standard)] ring-0",
         !embedded && "sm:rounded-[var(--settings-group-radius)]",
         shellClassName,
@@ -277,17 +290,23 @@ export function SettingsGroup({
   );
 
   return (
-    <section className={cn("w-full", className)} data-testid={testId}>
+    <section
+      className={cn("w-full", className)}
+      data-settings-density={resolvedDensity}
+      data-testid={testId}
+    >
       {eyebrow || title || description || titleAction ? (
         <div
           className={cn(
-            "mb-2 mt-7 flex items-start justify-between gap-3 px-[6px]",
+            "flex items-start justify-between gap-3 px-1",
+            resolvedDensity === "compact" ? "mb-1.5 mt-5" : "mb-2 mt-7",
             headingClassName,
           )}
         >
           <div className="min-w-0 flex-1 space-y-[var(--settings-heading-stack-gap)]">
             {eyebrow || title ? (
               <SectionLabel
+                compact={resolvedDensity === "compact"}
                 data-slot="settings-group-heading"
                 role="heading"
                 aria-level={embedded ? 3 : 2}
@@ -298,7 +317,10 @@ export function SettingsGroup({
               </SectionLabel>
             ) : null}
             {description ? (
-              <RowDescription className="max-w-2xl [overflow-wrap:anywhere]">
+              <RowDescription
+                compact={resolvedDensity === "compact"}
+                className="max-w-2xl [overflow-wrap:anywhere]"
+              >
                 {description}
               </RowDescription>
             ) : null}
@@ -319,13 +341,19 @@ export function SettingsGroup({
             "mb-3",
             // Without a heading above it there is no `mt-7` to sit under, so
             // the control would hug whatever preceded the group.
-            !(eyebrow || title || description) && "mt-7",
+            !(eyebrow || title || description) &&
+              (resolvedDensity === "compact" ? "mt-5" : "mt-7"),
           )}
         >
           {toolbar}
         </div>
       ) : null}
-      {shell}
+      <SettingsPresentationProvider
+        separatorInset={resolvedSeparatorInset}
+        density={resolvedDensity}
+      >
+        {shell}
+      </SettingsPresentationProvider>
     </section>
   );
 }
@@ -421,7 +449,7 @@ export function SettingsRow({
       : "group-data-[inset-separators=true]/settings-list:after:left-0";
   const rowShellClassName = cn(
     "group/settings-row relative isolate overflow-hidden bg-transparent",
-    resolvedDensity === "compact" && "[--settings-row-py:10px]",
+    resolvedDensity === "compact" && "[--settings-row-py:8px]",
     // iOS-style separator — active only inside SettingsGroup with
     // separatorInset and hidden on the final row. Its start is derived from
     // whether this row actually has a leading visual.
@@ -464,6 +492,7 @@ export function SettingsRow({
       <div className="min-w-0 flex-1 space-y-0.5">
         <RowLabel
           as="div"
+          compact={resolvedDensity === "compact"}
           data-slot="settings-row-title"
           className={cn(
             "[overflow-wrap:anywhere]",
@@ -475,6 +504,7 @@ export function SettingsRow({
         {description ? (
           <RowDescription
             as="div"
+            compact={resolvedDensity === "compact"}
             data-slot="settings-row-description"
             className="[overflow-wrap:anywhere]"
           >
@@ -745,7 +775,12 @@ export function AdaptiveDetailSurface({
             }}
           >
             <SheetHeader className="morphy-theme-content sticky top-0 z-10 border-b border-[color:var(--app-card-border-standard)] bg-[var(--activeGlassColor)] px-4 pt-7 pb-3 text-left backdrop-blur-[var(--blur-standard)]">
-              <div className={cn("flex min-w-0 items-center gap-3 text-left", showMobileCloseButton && "pr-10")}>
+              <div
+                className={cn(
+                  "flex min-w-0 items-center gap-3 text-left",
+                  showMobileCloseButton && "pr-10",
+                )}
+              >
                 {leading ? <div className="shrink-0">{leading}</div> : null}
                 <div className="min-w-0 text-left">
                   {eyebrow ? (
@@ -773,7 +808,7 @@ export function AdaptiveDetailSurface({
             </SheetHeader>
             <div
               className={cn(
-              "bg-[color:var(--app-card-surface-default-solid)] px-3 pb-[calc(var(--app-safe-area-bottom-effective,env(safe-area-inset-bottom,0px))+1rem)] pt-1 sm:px-4 sm:pt-2",
+                "bg-[color:var(--app-card-surface-default-solid)] px-3 pb-[calc(var(--app-safe-area-bottom-effective,env(safe-area-inset-bottom,0px))+1rem)] pt-1 sm:px-4 sm:pt-2",
                 bodyClassName,
               )}
             >

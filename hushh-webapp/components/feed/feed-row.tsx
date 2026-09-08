@@ -2,11 +2,7 @@
 
 import { ChevronRight } from "lucide-react";
 
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import { presentFeedItem } from "@/lib/feed/feed-item-renderers";
 import { formatFeedTimestamp } from "@/lib/feed/feed-timestamp";
@@ -37,7 +33,7 @@ export function FeedRow({
   const timestamp = formatFeedTimestamp(item.created_at);
   const isInteractive = Boolean(presentation.href);
   const rowClassName = cn(
-    "grid min-h-[68px] w-full grid-cols-[40px_minmax(0,1fr)_auto] items-center gap-x-3 px-4 py-3 text-left outline-hidden",
+    "grid min-h-[60px] w-full grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-x-3 px-4 py-2.5 text-left outline-hidden",
     "transition-colors [-webkit-tap-highlight-color:transparent]",
     isInteractive &&
       "cursor-pointer hover:bg-foreground/[0.035] active:bg-foreground/[0.055] focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2",
@@ -49,7 +45,7 @@ export function FeedRow({
       <span className="min-w-0 space-y-0.5">
         <span
           className={cn(
-            "block text-[17px] leading-[22px] text-[color:var(--app-label)] [overflow-wrap:anywhere]",
+            "block text-[16px] leading-[21px] text-[color:var(--app-label)] [overflow-wrap:anywhere]",
             read ? "font-normal" : "font-semibold",
           )}
         >
@@ -133,7 +129,7 @@ function FeedRowIdentity({
   if (person) {
     return (
       <Avatar
-        className="h-10 w-10 bg-[color:var(--app-neutral-fill)] text-[13px] font-semibold text-[color:var(--app-secondary-label)]"
+        className="h-9 w-9 bg-[color:var(--app-neutral-fill)] text-[12px] font-semibold text-[color:var(--app-secondary-label)]"
         aria-hidden
       >
         {person.photoUrl ? <AvatarImage src={person.photoUrl} alt="" /> : null}
@@ -146,7 +142,7 @@ function FeedRowIdentity({
 
   return (
     <span
-      className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-neutral-fill)] text-[color:var(--app-secondary-label)]"
+      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-neutral-fill)] text-[color:var(--app-secondary-label)]"
       aria-hidden
     >
       <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} />
