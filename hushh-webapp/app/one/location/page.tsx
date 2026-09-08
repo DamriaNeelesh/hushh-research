@@ -314,6 +314,7 @@ import {
   runSosPanic,
   selectSmsRecipients,
   selectShareReadyRecipients,
+  sosRecipientReadinessMessage,
   SosPanicError,
 } from "@/lib/one-location/sos-trigger";
 import {
@@ -686,7 +687,8 @@ export const LOCATION_FLOW_LABELS: Readonly<Record<string, string>> = {
 // cap and lose ties to whichever SUBVIEW_ACTION_BOOST entry matches the
 // current subview) -- this only changes what becomes a CANDIDATE, not how
 // candidates are ranked once the list is bigger.
-export const LOCATION_VOICE_ACTIONS = deriveLocationVoiceActions("one_location");
+export const LOCATION_VOICE_ACTIONS =
+  deriveLocationVoiceActions("one_location");
 
 const LOCATION_VOICE_CONTROLS = [
   {
@@ -2772,6 +2774,7 @@ export function OneLocationAgentPageContent({
     ONE_LOCATION_SHARE_DEFAULT_DURATION_HOURS,
   );
   const [shareMessage, setShareMessage] = useState("");
+  const [shareError, setShareError] = useState<string | null>(null);
   const [durationHours, setDurationHours] = useState("1");
   const [requestMessage, setRequestMessage] = useState("");
   const [referralTargets, setReferralTargets] = useState<
@@ -3215,8 +3218,8 @@ export function OneLocationAgentPageContent({
   );
   const rankedRecipients = useMemo(() => {
     const ranked = rankRecipientsForRecommendation(
-        contactSignalRecipients,
-        contactMatchedUserIds,
+      contactSignalRecipients,
+      contactMatchedUserIds,
     );
     // Every paged row came through the same vault-authorized recipient route.
     // Retain it by user id so selecting page 2, then changing search, does not
@@ -3227,7 +3230,7 @@ export function OneLocationAgentPageContent({
         [...pagedRecipientsByUserId.values()],
         contactMatchedUserIds,
       ),
-  );
+    );
   }, [contactMatchedUserIds, contactSignalRecipients, pagedRecipientsByUserId]);
   const shareRecipientPool = useMemo(
     () =>
@@ -3286,9 +3289,9 @@ export function OneLocationAgentPageContent({
             contactMatchedUserIds,
           )
         : filterPeopleByQuery(
-        rankedRecipients,
-        shareRecipientSearch,
-        recipientLabel,
+            rankedRecipients,
+            shareRecipientSearch,
+            recipientLabel,
           ).slice(0, 50),
     [
       contactMatchedUserIds,
@@ -4743,6 +4746,7 @@ export function OneLocationAgentPageContent({
       setSelectedShareCircleSelection(null);
       setShareDurationHours(ONE_LOCATION_SHARE_DEFAULT_DURATION_HOURS);
       setShareMessage("");
+      setShareError(null);
     },
     [setSelectedRecipientIds],
   );
@@ -4848,6 +4852,7 @@ export function OneLocationAgentPageContent({
           summary: "Sharing needs device Location permission.",
         };
       }
+      setShareError(null);
       setBusy("share");
       let successCount = 0;
       let recipientFailureCount = 0;
@@ -4957,7 +4962,10 @@ export function OneLocationAgentPageContent({
         });
         const message =
           error instanceof Error ? error.message : "Could not share location.";
-        toast.error(message);
+        // Keep the failure beside the controls it belongs to. A top toast hid
+        // the page title and made the review screen look broken on narrow iOS
+        // and Android viewports; this alert remains visible through a retry.
+        setShareError(message);
         return { status: "failed", summary: message };
       } finally {
         setBusy(null);
@@ -5248,11 +5256,7 @@ export function OneLocationAgentPageContent({
           unreachableCount: 0,
           note,
         });
-        toast.error(
-          totalSelected
-            ? "Your SMS contacts are not ready to receive location yet."
-            : "Add at least one SMS contact before sending an alert.",
-        );
+        toast.error(sosRecipientReadinessMessage(smsActionRecipients));
         return;
       }
       setBusy("sos");
@@ -6624,7 +6628,8 @@ export function OneLocationAgentPageContent({
   );
 
   const handleSaveLiveShareDuration = useCallback(async () => {
-    const grantId = liveShareDurationGrantId ?? liveShareStatus?.stoppableGrantId;
+    const grantId =
+      liveShareDurationGrantId ?? liveShareStatus?.stoppableGrantId;
     if (!vaultOwnerToken || !grantId) return;
     const grant = activeOwnerGrants.find((row) => row.id === grantId);
     if (!grant || isSmsTriggeredGrant(grant)) return;
@@ -6682,7 +6687,8 @@ export function OneLocationAgentPageContent({
   // the wheel would otherwise still be pointing at a share that is gone.
   useEffect(() => {
     if (!liveShareDurationEditing) return;
-    const grantId = liveShareDurationGrantId ?? liveShareStatus?.stoppableGrantId;
+    const grantId =
+      liveShareDurationGrantId ?? liveShareStatus?.stoppableGrantId;
     if (!grantId || !activeOwnerGrants.some((grant) => grant.id === grantId)) {
       setLiveShareDurationEditing(false);
       setLiveShareDurationGrantId(null);
@@ -7247,25 +7253,25 @@ export function OneLocationAgentPageContent({
                     onClick: () => void handleSyncContactSignalRef.current?.(),
                   },
                 }
-            : outcome.remedy === "invite"
-              ? {
-                  action: {
-                    label: "Invite them",
-                    // The other half of a contact scan. Until now the count of
-                    // people who are NOT on One was computed on every sync and
-                    // read by nothing but an analytics dimension — the product
-                    // learned who was missing, recorded it, and offered the
-                    // person no way to act on it.
-                    //
-                    // Reuses the existing invite share rather than minting a
-                    // second one, and deliberately carries no pre-authorized
-                    // connection: `buildInviteToOneShare` documents why, and
-                    // an invite that consents on the recipient's behalf is not
-                    // an invite.
-                    onClick: () => void handleInviteContactCandidates(),
-                  },
-                }
-              : {}),
+              : outcome.remedy === "invite"
+                ? {
+                    action: {
+                      label: "Invite them",
+                      // The other half of a contact scan. Until now the count of
+                      // people who are NOT on One was computed on every sync and
+                      // read by nothing but an analytics dimension — the product
+                      // learned who was missing, recorded it, and offered the
+                      // person no way to act on it.
+                      //
+                      // Reuses the existing invite share rather than minting a
+                      // second one, and deliberately carries no pre-authorized
+                      // connection: `buildInviteToOneShare` documents why, and
+                      // an invite that consents on the recipient's behalf is not
+                      // an invite.
+                      onClick: () => void handleInviteContactCandidates(),
+                    },
+                  }
+                : {}),
       };
       if (result.matchedUserIds.length > 0) {
         toast.success(outcome.title, outcomeOptions);
@@ -7397,7 +7403,9 @@ export function OneLocationAgentPageContent({
             vaultOwnerToken: activeVaultOwnerToken,
             ownerUserId: owner.userId,
             message: buildOneLocationRequestMessage(reason, requestMessage),
-            requestedDurationHours: Number(durationHoursOverride ?? durationHours),
+            requestedDurationHours: Number(
+              durationHoursOverride ?? durationHours,
+            ),
             requestedDurationMode: "timed",
           });
           successCount += 1;
@@ -10759,9 +10767,7 @@ export function OneLocationAgentPageContent({
 
   useLocalOnboardingActionHandler("location.stop_share", async (slots) => {
     const spoken = String(slots?.person ?? "").trim();
-    const resolvedRecipientId = String(
-      slots?.resolvedRecipientId ?? "",
-    ).trim();
+    const resolvedRecipientId = String(slots?.resolvedRecipientId ?? "").trim();
     if (!spoken && !resolvedRecipientId) {
       return {
         status: "blocked" as const,
@@ -10775,9 +10781,9 @@ export function OneLocationAgentPageContent({
       };
     }
     const exactGrant = resolvedRecipientId
-      ? activeOwnerGrants.find(
+      ? (activeOwnerGrants.find(
           (candidate) => candidate.recipientUserId === resolvedRecipientId,
-        ) ?? null
+        ) ?? null)
       : null;
     const resolved = exactGrant
       ? ({ kind: "one", match: exactGrant } as const)
@@ -11357,9 +11363,7 @@ export function OneLocationAgentPageContent({
       if (!readyRecipients.length) {
         return {
           status: "blocked" as const,
-          summary: smsActionRecipients.length
-            ? "Your emergency contacts are not ready to receive an alert yet."
-            : "Add at least one emergency contact before sending an SMS alert.",
+          summary: sosRecipientReadinessMessage(smsActionRecipients),
         };
       }
       const note = String(slots?.note ?? "").trim() || null;
@@ -12177,8 +12181,8 @@ export function OneLocationAgentPageContent({
     }
     const resolvedCircleId = String(slots?.resolvedCircleId ?? "").trim();
     const exactCircle = resolvedCircleId
-      ? namedCircles.find((candidate) => candidate.id === resolvedCircleId) ??
-        null
+      ? (namedCircles.find((candidate) => candidate.id === resolvedCircleId) ??
+        null)
       : null;
     const resolved = exactCircle
       ? ({ circle: exactCircle } as const)
@@ -12627,9 +12631,9 @@ export function OneLocationAgentPageContent({
       try {
         const preference = await OneLocationService.updateAutoApprovePreference(
           {
-          vaultOwnerToken,
-          enabled,
-          scope: enabled ? (input.scope ?? null) : null,
+            vaultOwnerToken,
+            enabled,
+            scope: enabled ? (input.scope ?? null) : null,
           },
         );
         // The PATCH result is the authority. Keep it visible even when the
@@ -12709,7 +12713,12 @@ export function OneLocationAgentPageContent({
       return;
     }
     dismissLocationOnboarding();
-  }, [clearLocationOnboardingProgress, dismissLocationOnboarding, mode, onSetupSkip]);
+  }, [
+    clearLocationOnboardingProgress,
+    dismissLocationOnboarding,
+    mode,
+    onSetupSkip,
+  ]);
 
   const handleDismissFirstRunGuide = useCallback(() => {
     setFirstRunGuideDismissed(true);
@@ -13642,6 +13651,7 @@ export function OneLocationAgentPageContent({
     selectedRequestOwnerIds,
     shareDurationHours,
     shareMessage,
+    shareError,
     durationHours,
     requestMessage,
     shareReviewOpen,
