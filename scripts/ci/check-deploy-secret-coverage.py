@@ -34,6 +34,12 @@ BASELINE = REPO_ROOT / "config" / "deploy-env-coverage.json"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
 _BIND = re.compile(r'add_secret "\$\{(_[A-Z0-9_]+_SECRET)\}"')
+# Most secrets are bound through an indirect-expansion loop rather than a
+# literal `add_secret "${_X_SECRET}"`:
+#     for n in FOO BAR BAZ; do v="_${n}_SECRET"; add_secret "${!v}" "${n}"; done
+# A parser that only matches the literal form saw 5 of 49 and reported OK. A
+# check that silently covers nothing is worse than no check.
+_LOOP = re.compile(r"^\s*for n in ((?:[A-Z0-9_]+ ?)+); do\s*$", re.MULTILINE)
 _DEFAULT = re.compile(r"^  (_[A-Z0-9_]+_SECRET):[ ]*(.*?)[ ]*$", re.MULTILINE)
 
 
@@ -57,9 +63,18 @@ def bound_substitutions() -> list[str]:
     """
     text = CLOUDBUILD.read_text(encoding="utf-8")
     defaults = _defaults(text)
+    names: list[str] = list(_BIND.findall(text))
+    for group in _LOOP.findall(text):
+        names.extend(f"_{env}_SECRET" for env in group.split())
+
     seen: dict[str, None] = {}
-    for name in _BIND.findall(text):
-        if defaults.get(name, "") != "":
+    for name in names:
+        if name not in defaults:
+            # Bound through a substitution that is not declared at all -- it can
+            # only ever expand to empty, which is its own bug.
+            seen.setdefault(name, None)
+            continue
+        if defaults[name] != "":
             continue
         seen.setdefault(name, None)
     return list(seen)

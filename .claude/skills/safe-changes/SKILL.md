@@ -108,6 +108,31 @@ The incident line names the original failure class; the blast radius stated is
 Rules are numbered sequentially and **never renumbered**, so they can be cited
 as "R3" in review.
 
+## Pre-flight checklist
+
+Before editing deploy config, a secret, an IAM policy, or infrastructure:
+
+1. **Which system?** Name it, and name the look-alike you are not touching — R4.
+2. **Who consumes it?** No consumer today → do not wire it — R2.
+3. **Which environments?** Prod, UAT, dev have different runtime identities.
+   Enumerate all three — R1.
+4. **Read access before binding.** Run the R1 check; every row `READER` — R1.
+5. **Additive only.** `add-iam-policy-binding`, never `set-iam-policy`; no
+   revoke/rotate/disable unless asked in those words — R3.
+6. **Shared credential?** Check it against the shared-credentials table above.
+   If it appears there, list every feature affected before touching it — R4.
+
+Before deploying:
+
+7. **Right lane.** All three lanes are manual and must be dispatched from `main`.
+   Prod needs an exact green `main` SHA.
+8. **Live verification.** Run the R6 checks after deploy, not just CI.
+9. **Prove the untouched.** Scoped diff on everything you claim not to have
+   changed — R4, R5.
+10. **Report the gaps.** State what you could not verify and why — R6.
+
+---
+
 ### R1 — Grant the read permission BEFORE binding a secret to a service
 
 **Incident (2026-08-05, carried in — secret bound to a service before its runtime identity could read it).**
@@ -333,31 +358,6 @@ empty result means every lane's mirror is a silent no-op. After a deploy, the
 sync step's own JSON is the second half of the proof — a secret that mirrored
 appears in `synced_secrets` as `(rotated)` or `(unchanged)`; one that was skipped
 does not appear at all.
-
----
-
-## Pre-flight checklist
-
-Before editing deploy config, a secret, an IAM policy, or infrastructure:
-
-1. **Which system?** Name it, and name the look-alike you are not touching — R4.
-2. **Who consumes it?** No consumer today → do not wire it — R2.
-3. **Which environments?** Prod, UAT, dev have different runtime identities.
-   Enumerate all three — R1.
-4. **Read access before binding.** Run the R1 check; every row `READER` — R1.
-5. **Additive only.** `add-iam-policy-binding`, never `set-iam-policy`; no
-   revoke/rotate/disable unless asked in those words — R3.
-6. **Shared credential?** Check it against the shared-credentials table above.
-   If it appears there, list every feature affected before touching it — R4.
-
-Before deploying:
-
-7. **Right lane.** All three lanes are manual and must be dispatched from `main`.
-   Prod needs an exact green `main` SHA.
-8. **Live verification.** Run the R6 checks after deploy, not just CI.
-9. **Prove the untouched.** Scoped diff on everything you claim not to have
-   changed — R4, R5.
-10. **Report the gaps.** State what you could not verify and why — R6.
 
 ---
 
@@ -778,7 +778,6 @@ for (const n of ["झुम्मा","नीलेश","सुमन"])
 
 ---
 
-
 ### R21 — The top shell paints lower than it reserves. Clear the fade, not the reserve
 
 **Incident (2026-08-17, "header overlay ho rha hai" reported across screens.)**
@@ -1003,6 +1002,7 @@ The durable fix is `ledger` mode — pending migrations only, after a verified
 baseline — which `db/migrate.py` already supports and which exists precisely
 for this. It needs a one-time baseline established against the UAT database
 (`db/migrate.py --establish-baseline`), so it requires database access.
+
 ### R27 — Hoisting an App Shortcut phrase array deletes every shortcut in the app
 
 **Incident (2026-09-07, iOS TestFlight build 99 — merge `a4a95a1e4`, PR #6559).** Long-pressing
@@ -1080,7 +1080,6 @@ import json;d=json.load(open('/tmp/dd/Build/Products/Debug-iphonesimulator/App.a
 
 Expect ten rows with non-zero phrase counts. Zero rows, or a row with zero phrases, is the bug.
 
-
 ### R28 — An error handler that runs on a broken connection will report itself instead of the failure
 
 **Incident (2026-09-07, six consecutive UAT deploys.)** Every one failed at
@@ -1135,11 +1134,23 @@ FirebaseAnalytics.framework with the UUIDs [...]` — also for `GoogleAppMeasure
 `GoogleAppMeasurementIdentitySupport` and `GoogleAdsOnDeviceConversion`. It was reported as
 "not something this change introduced" and left alone, which was accurate and useless.
 
-The warning is genuinely unfixable. Those four arrive through Swift Package Manager as binary
-targets under `SourcePackages/artifacts/`; `file` reports **`current ar archive`**, so they are
-static libraries in a `.framework` wrapper, and `find` returns **no `.dSYM` anywhere inside the
-`.xcframework`**. They are linked into `App` and never ship as a separate image. There is no dSYM
-to supply and never will be — Google strips them before publishing.
+The warning is unfixable from here, but **not** for the reason first written down. The original
+version of this rule claimed those four were static libraries linked into `App` that never ship as
+their own image, so nothing was lost. That was wrong, and the guard's own first real run disproved
+it: all four appear in `App.app/Frameworks/`, and the signed `.ipa` shows each is `MH_DYLIB` with
+its own UUID (`FirebaseAnalytics` = `CC492DC7-…`). They are separately loaded dynamic libraries.
+
+The claim came from reading `SourcePackages/artifacts/` in **local** DerivedData, where `file` said
+`current ar archive`. That local checkout did not match what CI resolves and ships. R19's lesson
+again, in a new place: when a local reading and a measurement of the real artifact disagree, the
+artifact wins.
+
+What *is* true, and is what makes it unfixable: Google publishes **no dSYM** for any of the four —
+none inside the `.xcframework`, none reaching `App.xcarchive/dSYMs` (the archive holds 8 dSYMs:
+`App.app` plus Capacitor, Cordova, four Facebook SDK frameworks, and IONCameraLib — none Google).
+So there is nothing to supply, and **crash frames inside those four libraries genuinely will not
+symbolicate**. That is a real accepted loss, not a harmless one. Say so plainly rather than
+implying the warning costs nothing.
 
 The danger is not the warning. It is that **our own dSYM going missing prints the same sentence**.
 Flip `DEBUG_INFORMATION_FORMAT` from `dwarf-with-dsym` to `dwarf` on Release and the log grows a
@@ -1154,19 +1165,22 @@ shipped binary**), name each known-unfixable exception in an allow-list with the
 on anything outside it. Apply it to every lane that exports an archive, not just the one where it
 was noticed (R14).
 
-**Check.** Prove the vendor binaries really are static and dSYM-less rather than assuming it:
+**Check.** Measure the **shipped artifact**, never the local package checkout — that is the whole
+mistake above. Download the `.ipa` a dry run produces and read it:
 
 ```bash
-DD=$(ls -d ~/Library/Developer/Xcode/DerivedData/App-*/SourcePackages/artifacts 2>/dev/null | head -1)
-for n in firebase-ios-sdk/FirebaseAnalytics/FirebaseAnalytics \
-         googleappmeasurement/GoogleAppMeasurement/GoogleAppMeasurement; do
-  b="$DD/$n.xcframework"; s=$(basename "$n")
-  echo "== $s"
-  [ -n "$(find "$b" -name '*.dSYM' 2>/dev/null)" ] && echo "  ships a dSYM" || echo "  ships NO dSYM"
-  file "$b/ios-arm64/$s.framework/$s" | sed 's/.*: /  /'
+gh run download <RUN_ID> --repo hushh-labs/hushh-research -n ios-testflight-<N> -D /tmp/art
+cd /tmp/art/export && mkdir -p ipa && unzip -qq *.ipa -d ipa
+APP=$(find ipa/Payload -maxdepth 1 -name '*.app' | head -1)
+for fw in "$APP"/Frameworks/*.framework; do
+  n=$(basename "$fw" .framework)
+  printf '  %-38s %s\n' "$n" "$(file -b "$fw/$n" | tail -1)"
 done
-# "current ar archive" + "ships NO dSYM" == nothing to upload, permanently. Do not chase it.
+ls /tmp/art/App.xcarchive/dSYMs
 ```
+
+Every framework listed must either have a matching `.framework.dSYM` in that `dSYMs` listing or be
+one of the four Google names. A dynamic library that is neither is a real symbolication gap.
 
 Then mutation-test the guard, because a passing new check proves nothing (R22). Against a mock
 archive, all five must hold: healthy passes; a deleted `App.app.dSYM` fails; a dSYM whose UUIDs no
@@ -1174,30 +1188,6 @@ longer match the binary fails; an allow-listed vendor framework with no dSYM pas
 framework with no dSYM fails. Note that `clang -g` re-runs `dsymutil` automatically, so a "stale
 dSYM" test that rebuilds in place silently regenerates it and passes — hold the dSYM aside first,
 or the mutation test proves nothing.
-
-## Adding a rule
-
-Every mistake found becomes a rule. Fix the **cause**, not the symptom, then add
-the rule so it cannot recur. When the user says "add that to the skill", that
-means a new numbered rule here.
-
-Rules are numbered sequentially and **never renumbered** — R3 must still mean R3
-in six months, so it can be cited in review. Append; do not reorder or reuse a
-retired number.
-
-Template:
-
-```markdown
-### R<n> — <imperative one-liner>
-**Incident (<date>, <what was being built>).** What went wrong and what it
-would have broken.
-**Rule.** The generalisation.
-**Check.** The exact command or diff that catches it next time.
-```
-
-The Check line must be a command that **runs in this repo** and returns
-something meaningful. Run it before committing the rule. A rule with a command
-that doesn't work here is worse than no rule.
 
 ### R30 — A default that is right for you is a silent bug for everyone else
 
@@ -1288,7 +1278,141 @@ Runs in the `Governance` CI job. It fails on an omission absent from
 `config/deploy-env-coverage.json`, and on a listed entry that no longer matches
 reality — both directions mutation-tested before this rule landed.
 
-### R32 — `secrets versions add` REPLACES. A list in a secret needs read-modify-write
+### R32 — A busy database is not a broken migration: retry contention, never widen the lock wait
+
+**Incident (2026-09-07, six failed UAT deploys — runs 34142917051 and 34143403982.)**
+Replay applies every migration with `lock_timeout_ms = 5_000` and **no retry
+anywhere** — `grep -c 'retry\|backoff\|attempt'` on `db/migration_authority.py`
+returned 0. One unlucky 5-second window against a live UAT killed the whole
+release, and the same commit deployed fine minutes later. R26 named the pattern;
+nothing was done about the immediate cause, so it stayed a coin flip.
+
+The obvious repair is the wrong one. Postgres queues lock requests, so a pending
+`ACCESS EXCLUSIVE` request blocks every **later** reader of that table as well.
+Raising `lock_timeout` to 30s does not buy 30s of patience — it buys 30s of
+queued UAT traffic. The safe shape is the opposite: keep the timeout short, roll
+back, let the queue drain, try again.
+
+**Rule.** Never widen `lock_timeout` to survive contention. Retry it instead,
+bounded and backed off, and only on a contention SQLSTATE — `55P03`
+lock_not_available, `40P01` deadlock_detected, `40001` serialization_failure. A
+`23514` check violation or a `42601` syntax error must still fail on the first
+attempt; retrying a broken migration only reports the same error later, having
+spent the deploy window. Roll back between attempts or the retry runs on an
+aborted connection and reports itself instead of the failure (R28).
+
+**Check.**
+```bash
+cd consent-protocol
+# The behaviour, not the source text. A string-matching check over this
+# function is worthless: the first version of this Check split on
+# `_is_lock_contention(exc) and attempt`, and died with IndexError the moment
+# that condition became multi-line -- one commit later (R34).
+../.venv/bin/python -m pytest tests/test_migration_authority.py -q
+grep -n "test_migration_authority" scripts/test-ci.manifest.txt
+```
+All 16 must pass, and the grep must return a line -- an unregistered test file
+never runs in CI, and this manifest is the only pytest invocation in any lane.
+Mutation-test before trusting it (R22): `_LOCK_RETRY_ATTEMPTS = 1` turns three
+red; an unconditional `_is_lock_contention` turns the not-retried test red;
+unguarding the reset turns the masking test red; deleting the run-budget
+condition turns the budget test red.
+
+### R33 — `ledger` mode cannot be switched on today: 152 of 194 migrations open their own transaction
+
+**Incident (2026-09-07, scoping the durable fix R26 recommends.)** R26 says the
+durable answer to replay is `ledger` mode — pending migrations only, after a
+baseline. Acting on that sentence alone would have broken a release. Three
+things block it, and none are visible from the mode flag:
+
+1. **The migration bodies nest transactions.** `ledger` wraps each transactional
+   entry in `async with conn.transaction()` (`migration_authority.py:342`), but
+   `grep -lE '^\s*BEGIN\s*;' db/migrations/*.sql` returns **152 of 194 files**
+   that open their own. A `BEGIN` inside an open transaction warns and is
+   ignored; the body's own `COMMIT` then commits the **outer** transaction, so
+   the ledger row and the migration stop being atomic — exactly the guarantee
+   ledger mode exists to provide.
+2. **The backup tooling the baseline requires does not exist.** `establish_baseline`
+   demands `backup_checksum_sha256` matching `[0-9a-f]{64}` plus `restore_status
+   == "ok"`. There are **zero `pg_dump` references in the repository** — the
+   logical-backup scripts were deleted in `78aaa1e4b`. Nothing can produce the
+   artifact the gate asks for.
+3. **The evidence expires in an hour.** `load_preservation_evidence` rejects a
+   report older than `HUSHH_BASELINE_EVIDENCE_MAX_AGE_SECONDS` (default 3600),
+   so backup, restore-verify and baseline must complete inside one window.
+
+**Rule.** Do not set `UAT_MIGRATION_MODE=ledger`, and do not change the
+hardcoded `replay` in `deploy-production.yml:355` or `deploy-dev.yml:324`, until
+every transactional entry is proven not to open its own transaction. Enabling it
+first is not a smaller step — it is a silent loss of atomicity across 152 files.
+The ordered prerequisites are: strip `BEGIN`/`COMMIT` from the migration bodies
+(or mark those entries `transactional=False`), restore a logical-backup tool,
+provision a clone database, then baseline.
+
+**Check.**
+```bash
+cd consent-protocol
+grep -lE '^\s*BEGIN\s*;' db/migrations/*.sql | wc -l   # must be 0 before ledger mode
+grep -rn "pg_dump" --include="*.py" --include="*.sh" . | grep -v node_modules | head -1
+grep -n "migration-mode" ../.github/workflows/deploy-*.yml
+```
+The first must print `0`. The second must return a tool. Until both hold, every
+lane stays on `replay`.
+
+### R34 — A retry bounded per unit is unbounded per run, and a fix's own tests may never run
+
+**Incident (2026-09-08, hours after R32 shipped in PR #6609.)** The retry that
+fixed the lock-timeout outage introduced three defects of its own, none caught
+by review and none catchable by its tests, because its tests did not run.
+
+1. **Unbounded per run.** 4 attempts per migration is bounded; 174 migrations x
+   (4 x 5s lock wait + 7s backoff) is **~78 minutes**, and `deploy-uat.yml` sets
+   no `timeout-minutes` at all (GitHub default 360). The bug being fixed made
+   UAT go red in three minutes. The fix could make it hang for over an hour
+   while holding the migration advisory lock **and** the installed
+   account-deletion release fence. That is a worse availability posture than the
+   defect.
+2. **R28 reintroduced on the new path.** The retry branch called
+   `await _rollback_failed_transaction(conn)` unguarded. That cleanup runs on a
+   connection that has just failed, so it can fail too -- and its exception then
+   replaces the 55P03 as the reported error, which is precisely the masking R28
+   exists to prevent, on a path R28's own check does not reach.
+3. **The tests were decoration.** `tests/test_migration_authority.py` was not in
+   `consent-protocol/scripts/test-ci.manifest.txt`, and that manifest is the only
+   pytest invocation in any lane (its own header says so). R28's masking tests
+   and R32's four retry tests had never executed in CI, on any PR, ever.
+
+And R32's own Check was brittle: it split the source on
+`_is_lock_contention(exc) and attempt`, so it died with `IndexError` as soon as
+that condition became multi-line -- one commit after it was written.
+
+**Rule.** A retry needs two bounds: per unit **and** per run. State the run's
+worst case in seconds before shipping it, and compare that number against the
+job's own timeout -- if the job has no `timeout-minutes`, the worst case is the
+platform default, not the number you hoped for. Any cleanup on the failure path
+goes through one guarded helper, never a bare call, so a second failure cannot
+overwrite the first. And a test file is not coverage until it is in the
+manifest: adding tests and adding them to `test-ci.manifest.txt` are one change,
+not two. Write Checks against behaviour (run the tests) rather than against
+source text, which goes stale on the next refactor.
+
+**Check.**
+```bash
+cd consent-protocol
+grep -n "test_migration_authority" scripts/test-ci.manifest.txt
+python3 -c "
+import pathlib
+s=pathlib.Path('db/migration_authority.py').read_text()
+print('run budget present:', '_LOCK_RETRY_RUN_BUDGET_S' in s)
+print('no bare rollback on a failure path:', s.count('await _rollback_failed_transaction(conn)') == 1)
+"
+grep -n "timeout-minutes" ../.github/workflows/deploy-uat.yml || echo "deploy-uat has NO job timeout"
+```
+The grep must return a line. Both prints must be `True` -- the single remaining
+bare call is the one inside `_reset_connection` itself. The last line records
+whether the lane is still relying on the platform default.
+
+### R35 — `secrets versions add` REPLACES. A list in a secret needs read-modify-write
 
 **Incident (2026-09-03, discovered 2026-09-08.)** `HUSHH_UAT_PHONE_TEST_NUMBERS`
 holds the UAT fixed-OTP phone allowlist. Version 8 held **59** numbers. Version
@@ -1335,10 +1459,10 @@ scripts/ops/secret_list_edit.py --secret HUSHH_UAT_PHONE_TEST_NUMBERS \
 ```
 Restored as version 10 on 2026-09-08: 59 entries, verified, nothing dropped.
 
-### R33 — Nothing reads a secret's old versions, so a wipe is invisible until a user hits it
+### R36 — Nothing reads a secret's old versions, so a wipe is invisible until a user hits it
 
 **Incident (2026-09-03, found 2026-09-08.)** The 58 numbers deleted from
-`HUSHH_UAT_PHONE_TEST_NUMBERS` (R32) sat gone for **five days**. Not one system
+`HUSHH_UAT_PHONE_TEST_NUMBERS` (R35) sat gone for **five days**. Not one system
 noticed. No alert, no failing check, no red deploy. It surfaced only when the
 founder could not verify a phone and spent an evening convinced the database had
 broken phone verification — which never touches the database.
@@ -1375,9 +1499,9 @@ Verified by replaying the real incident: against v8 → v9 it reports 58 entries
 lost against a limit of 5, and 1 entry against a floor of 25 — it fails on both
 counts. A guard never seen to catch its own incident is decoration.
 
-### R34 — On a flat team you cannot remove access, so remove the accident and shorten the silence
+### R37 — On a flat team you cannot remove access, so remove the accident and shorten the silence
 
-**Context (2026-09-08, after R32/R33.)** The obvious fix for "one write destroyed
+**Context (2026-09-08, after R35/R36.)** The obvious fix for "one write destroyed
 58 entries" is to restrict who may write that secret. On a small team with a flat
 hierarchy that is the wrong trade: everyone genuinely needs to ship, and an
 access ticket between an engineer and their own test number buys nothing.
@@ -1424,3 +1548,27 @@ gcloud secrets versions list HUSHH_UAT_PHONE_TEST_NUMBERS --project=hushh-pda-ua
 Both lines must be the positive form. Verified 2026-09-08, including flags
 placed before the secret name and an unprotected secret passing through to real
 gcloud.
+
+## Adding a rule
+
+Every mistake found becomes a rule. Fix the **cause**, not the symptom, then add
+the rule so it cannot recur. When the user says "add that to the skill", that
+means a new numbered rule here.
+
+Rules are numbered sequentially and **never renumbered** — R3 must still mean R3
+in six months, so it can be cited in review. Append; do not reorder or reuse a
+retired number.
+
+Template:
+
+```markdown
+### R<n> — <imperative one-liner>
+**Incident (<date>, <what was being built>).** What went wrong and what it
+would have broken.
+**Rule.** The generalisation.
+**Check.** The exact command or diff that catches it next time.
+```
+
+The Check line must be a command that **runs in this repo** and returns
+something meaningful. Run it before committing the rule. A rule with a command
+that doesn't work here is worse than no rule.

@@ -405,14 +405,15 @@ jobs:
           APP_BIN="${ARCHIVE}/Products/Applications/App.app/App"
           APP_DSYM="${ARCHIVE}/dSYMs/App.app.dSYM"
 
-          # Google ships FirebaseAnalytics, GoogleAppMeasurement,
-          # GoogleAppMeasurementIdentitySupport and GoogleAdsOnDeviceConversion as
-          # STATIC frameworks -- `file` reports "current ar archive" -- and the
-          # .xcframework contains no dSYM at all. They are linked into App and never
-          # ship as separate images, so no dSYM can exist for them, and exportArchive
-          # logs "Upload Symbols Failed" for each on every single run. That is
-          # unfixable upstream (see R29). This step exists so that permanent noise can
-          # never hide the one failure that matters: OUR dSYM going missing.
+          # FirebaseAnalytics, GoogleAppMeasurement, GoogleAppMeasurementIdentitySupport
+          # and GoogleAdsOnDeviceConversion DO ship as their own dynamic libraries in
+          # App.app/Frameworks (verified against the signed .ipa: MH_DYLIB, real UUIDs),
+          # but Google publishes no dSYM for any of them -- the .xcframework contains
+          # none, and none reaches the archive. So exportArchive logs "Upload Symbols
+          # Failed" for each on every run, and crash frames inside those four libraries
+          # genuinely will not symbolicate. That is an accepted loss we cannot close
+          # from here (see R29), not a harmless one. This step exists so that permanent
+          # noise can never hide the failure that matters: OUR dSYM going missing.
           ALLOWED_WITHOUT_DSYM="FirebaseAnalytics GoogleAppMeasurement GoogleAppMeasurementIdentitySupport GoogleAdsOnDeviceConversion"
 
           test -f "$APP_BIN" || { echo "::error::No app binary at $APP_BIN"; exit 1; }

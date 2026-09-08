@@ -11,7 +11,7 @@
 #
 # `gcloud secrets versions add` REPLACES the entire value. There is no append.
 # On 2026-09-03 that took the UAT phone allowlist from 59 entries to 1, and it
-# took five days to notice. See R32 and R33 in .claude/skills/safe-changes.
+# took five days to notice. See R35 and R36 in .claude/skills/safe-changes.
 
 _hushh_protected_lists_file() {
   local root="${HUSHH_REPO_ROOT:-$HOME/Desktop/husshOne}"
