@@ -2682,9 +2682,7 @@ export default function RiaPicksPage() {
   return (
     <RiaPageShell
       title="RIA"
-      icon={null}
       titleRole="agent"
-      showRouteSelector
       stackClassName="gap-6"
       nativeTest={{
         routeId: "/ria/picks",

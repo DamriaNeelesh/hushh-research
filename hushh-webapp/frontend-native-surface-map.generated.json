@@ -8820,7 +8820,7 @@
         ]
       },
       "shell": {
-        "app_page_shell": true,
+        "app_page_shell": false,
         "page_header": false,
         "settings_ui": true,
         "shared_loader": false,
@@ -9469,5 +9469,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "440c9b7ae01be16b7b960f8afa2b86365aa56be1654f7c1f1a368b3e0f310f1f"
+  "content_sha256": "99ba2cb127762d582537d7f295209f4405b7215d601beec621fe7961ba9c5896"
 }
