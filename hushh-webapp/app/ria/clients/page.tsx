@@ -4,20 +4,13 @@ import { ChevronRight, Loader2, UserRound } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
-import {
-  AppPageContentRegion,
-  AppPageHeaderRegion,
-  AppPageShell,
-} from "@/components/app-ui/app-page-shell";
-import { PageHeader } from "@/components/app-ui/page-sections";
-import { SurfaceStack } from "@/components/app-ui/surfaces";
+import { AppPageShell } from "@/components/app-ui/app-page-shell";
 import {
   buildKaiTestClientAccess,
   canShowKaiTestProfile,
   getKaiTestUserId,
   isKaiTestProfileUser,
 } from "@/components/ria/ria-client-test-profile";
-import { RiaRouteSelector } from "@/components/ria/layout/ria-route-selector";
 import { NearbyAroundYou } from "@/components/ria/nearby/nearby-around-you";
 import { SettingsGroup, SegmentedTabs } from "@/components/profile/settings-ui";
 import { Badge } from "@/components/ui/badge";
@@ -39,6 +32,7 @@ import { RIA_COPY } from "@/lib/ria/ria-screen-copy";
 import { cn } from "@/lib/utils";
 import {
   RiaCompatibilityState,
+  RiaPageShell,
   RiaVerificationGate,
 } from "@/components/ria/ria-page-shell";
 
@@ -209,9 +203,12 @@ export default function RiaClientsPage() {
   }
 
   return (
-    <AppPageShell
-      as="main"
-      width="agent"
+    <RiaPageShell
+      title="RIA"
+      icon={null}
+      titleRole="agent"
+      showRouteSelector
+      stackClassName="gap-8"
       nativeTest={{
         routeId: "/ria/clients",
         marker: "native-route-ria-clients",
@@ -223,20 +220,7 @@ export default function RiaClientsPage() {
             : "empty-valid",
       }}
     >
-      <AppPageHeaderRegion className="pt-2 sm:pt-3">
-        <PageHeader
-          title={RIA_COPY.clients.title}
-          description={RIA_COPY.clients.description}
-          accent="ria"
-          titleRole="agent"
-        />
-      </AppPageHeaderRegion>
-
-      <AppPageContentRegion>
-        <SurfaceStack className="gap-8">
-          <RiaRouteSelector />
-
-          <RiaVerificationGate>
+      <RiaVerificationGate>
             {/* Connected is the roster of investors who already granted access.
               Around you is prospecting against public records — a different
               kind of person entirely, which is why they are separate views on
@@ -351,9 +335,7 @@ export default function RiaClientsPage() {
                 )}
               </SettingsGroup>
             )}
-          </RiaVerificationGate>
-        </SurfaceStack>
-      </AppPageContentRegion>
-    </AppPageShell>
+      </RiaVerificationGate>
+    </RiaPageShell>
   );
 }

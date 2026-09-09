@@ -25,6 +25,7 @@ import {
   PageHeader,
   SectionHeader,
 } from "@/components/app-ui/page-sections";
+import { RiaRouteSelector } from "@/components/ria/layout/ria-route-selector";
 import {
   SurfaceCard,
   SurfaceInset,
@@ -41,6 +42,7 @@ export function RiaPageShell({
   actions,
   icon = BriefcaseBusiness,
   statusPanel,
+  showRouteSelector = false,
   children,
   // "standard" (90rem / 1440px) matched Connect and Marketplace, but those
   // are directory-browsing surfaces; RIA's own screens are read-and-act
@@ -66,6 +68,7 @@ export function RiaPageShell({
   actions?: ReactNode;
   icon?: LucideIcon | null;
   statusPanel?: ReactNode;
+  showRouteSelector?: boolean;
   children: ReactNode;
   width?: AppPageShellWidth;
   titleRole?: "page" | "agent";
@@ -113,6 +116,9 @@ export function RiaPageShell({
               : undefined
           }
         />
+        {showRouteSelector ? (
+          <RiaRouteSelector className="mt-4 sm:mt-5" />
+        ) : null}
       </AppPageHeaderRegion>
 
       <AppPageContentRegion className={contentClassName}>
