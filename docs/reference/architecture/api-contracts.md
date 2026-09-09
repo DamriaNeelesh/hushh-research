@@ -1055,6 +1055,8 @@ a nonexistent anchor; the parity document is now the canonical definition.
 
 ## See Also
 
+- [Personal contact invitations](../../guides/contact-invitations.md) — client-only recipient callback and native composer contract; contact-sync HTTP payloads remain unchanged.
+
 - [Architecture](./architecture.md) -- System overview and tri-flow
 - [Personal Knowledge Model](../../../consent-protocol/docs/reference/personal-knowledge-model.md) -- Data storage endpoints
 - [Consent Protocol](../../../consent-protocol/docs/reference/consent-protocol.md) -- Token lifecycle

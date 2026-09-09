@@ -415,6 +415,7 @@ import {
 } from "@/lib/one-location/eta-recompute";
 import { getApiBaseUrl } from "@/lib/services/api-service";
 import { buildInviteToOneShare } from "@/lib/connect/invite-to-one";
+import { useContactInvitations } from "@/lib/contacts/use-contact-invitations";
 import { ReferralService } from "@/lib/services/referral-service";
 import { shareLink } from "@/lib/share/share-link";
 import { copyToClipboard } from "@/lib/utils/clipboard";
@@ -2753,7 +2754,13 @@ export function OneLocationAgentPageContent({
     useState<OneLocationContactSignalResult | null>(null);
   const [onboardingContactResult, setOnboardingContactResult] =
     useState<OnboardingContactSyncResult | null>(null);
-  const [contactSyncResultsOpen, setContactSyncResultsOpen] = useState(false);
+  const contactInvitations = useContactInvitations(contactSyncUserId);
+  const { clear: clearContactInvitations, beginSync: beginContactInvites, open: openContactInvitations, captureSession: captureContactInviteSession } = contactInvitations;
+  const [contactSyncResultsOpen, setContactSyncResultsOpenState] = useState(false);
+  const setContactSyncResultsOpen = useCallback((open: boolean) => {
+    if (!open) clearContactInvitations();
+    setContactSyncResultsOpenState(open);
+  }, [clearContactInvitations]);
   const contactResultOwnerUserIdRef = useRef(contactSyncUserId);
   useLayoutEffect(() => {
     if (contactResultOwnerUserIdRef.current === contactSyncUserId) return;
@@ -2764,7 +2771,7 @@ export function OneLocationAgentPageContent({
     setOnboardingContactResult(null);
     setContactSyncResultsOpen(false);
     setContactSignal(INITIAL_CONTACT_SIGNAL_STATE);
-  }, [contactSyncUserId]);
+  }, [contactSyncUserId, setContactSyncResultsOpen]);
   const [activityRange, setActivityRange] =
     useState<OneLocationActivityRange>("30d");
   const [activitySnapshot, setActivitySnapshot] =
@@ -6891,6 +6898,7 @@ export function OneLocationAgentPageContent({
       // The inline action, named sheet, Settings return, and hub share one
       // mutation guard even when Finish unmounts the onboarding component.
       contactSyncInFlightRef.current = true;
+      const onInviteCandidates = beginContactInvites();
       setBusy("contactSync");
       try {
         let googleSource: MarketplaceContactSource | undefined;
@@ -6911,6 +6919,8 @@ export function OneLocationAgentPageContent({
         }
 
         const result = await syncOneLocationContactSignals({
+          accountEmail: auth.user?.email,
+          ...(onInviteCandidates ? { onInviteCandidates } : {}),
           // Read the picker/source before Firebase or backend identity can
           // consume the browser tap's transient activation.
           resolveIdToken: () => auth.user!.getIdToken(),
@@ -7012,6 +7022,8 @@ export function OneLocationAgentPageContent({
       }
     }, [
       accountPhoneNumber,
+      beginContactInvites,
+      setContactSyncResultsOpen,
       auth.user,
       auth.userId,
       auth.resolveVerifiedPhoneNumber,
@@ -7071,7 +7083,7 @@ export function OneLocationAgentPageContent({
    * and has never once been written, and first-touch wins inside it so this
    * cannot overwrite an earlier, truer source.
    */
-  const handleInviteContactCandidates = useCallback(async () => {
+  const prepareContactInvitation = useCallback(async () => {
     rememberLocationInviteSource("contact_sync");
 
     let referralLink = "";
@@ -7095,6 +7107,16 @@ export function OneLocationAgentPageContent({
         }
       : buildInviteToOneShare();
 
+    return share;
+  }, [auth.user]);
+
+  const handleInviteContactCandidates = useCallback(async () => {
+    if (contactInvitations.enabled && contactInvitations.candidates.length) {
+      setContactSyncResultsOpen(true);
+      await openContactInvitations(prepareContactInvitation);
+      return;
+    }
+    const share = await prepareContactInvitation();
     if (!share) {
       // No referral link AND no shareable origin — the same condition that
       // hides the Connect invite row entirely rather than offering a link that
@@ -7112,7 +7134,10 @@ export function OneLocationAgentPageContent({
       if (isShareCancellationError(error)) return;
       toast.error("Could not open the share sheet.");
     }
-  }, [auth.user]);
+  }, [contactInvitations.enabled, contactInvitations.candidates.length, setContactSyncResultsOpen, openContactInvitations, prepareContactInvitation]);
+
+  const contactInviteActionRef = useRef(handleInviteContactCandidates);
+  useLayoutEffect(() => { contactInviteActionRef.current = handleInviteContactCandidates; }, [handleInviteContactCandidates]);
 
   const handleSyncContactSignal = useCallback(async () => {
     if (!auth.user?.getIdToken) {
@@ -7128,6 +7153,8 @@ export function OneLocationAgentPageContent({
     if (!requestContactCheck()) return;
     if (contactSyncInFlightRef.current) return;
     contactSyncInFlightRef.current = true;
+    const onInviteCandidates = beginContactInvites();
+    const inviteSessionIsCurrent = captureContactInviteSession();
     const initiatingUserId = contactSyncUserId;
     const resolveLatestAccountPhoneNumber =
       createContactSyncAccountPhoneResolver({
@@ -7177,6 +7204,8 @@ export function OneLocationAgentPageContent({
       }));
 
       const result = await syncOneLocationContactSignals({
+        accountEmail: auth.user?.email,
+        ...(onInviteCandidates ? { onInviteCandidates } : {}),
         // Preserve transient activation for Chrome Android's Contact Picker;
         // token and phone hydration happen inside the pipeline after reading.
         resolveIdToken: () => auth.user!.getIdToken(),
@@ -7269,7 +7298,7 @@ export function OneLocationAgentPageContent({
                       // connection: `buildInviteToOneShare` documents why, and
                       // an invite that consents on the recipient's behalf is not
                       // an invite.
-                      onClick: () => void handleInviteContactCandidates(),
+                      onClick: () => { if (inviteSessionIsCurrent()) void contactInviteActionRef.current(); },
                     },
                   }
                 : {}),
@@ -7321,13 +7350,15 @@ export function OneLocationAgentPageContent({
     }
   }, [
     accountPhoneNumber,
+    beginContactInvites,
+    captureContactInviteSession,
+    setContactSyncResultsOpen,
     auth.user,
     auth.userId,
     auth.resolveVerifiedPhoneNumber,
     contactSyncUserId,
     contactSignal,
     googleContactsFallback,
-    handleInviteContactCandidates,
     openContactSettingsAndWatch,
     loadRecipientPage,
     requestContactCheck,
@@ -12690,6 +12721,7 @@ export function OneLocationAgentPageContent({
   }, [auth.userId]);
 
   const dismissLocationOnboarding = useCallback(async () => {
+    clearContactInvitations();
     if (mode === "setup") {
       await onSetupComplete?.();
       markLocationOnboardingSeen();
@@ -12701,6 +12733,7 @@ export function OneLocationAgentPageContent({
     setLocationOnboardingGate("hidden");
     setLocationOnboardingBusy(false);
   }, [
+    clearContactInvitations,
     clearLocationOnboardingProgress,
     markLocationOnboardingSeen,
     mode,
@@ -12708,6 +12741,7 @@ export function OneLocationAgentPageContent({
   ]);
 
   const skipLocationOnboarding = useCallback(async () => {
+    clearContactInvitations();
     if (mode === "setup") {
       await onSetupSkip?.();
       clearLocationOnboardingProgress();
@@ -12715,6 +12749,7 @@ export function OneLocationAgentPageContent({
     }
     dismissLocationOnboarding();
   }, [
+    clearContactInvitations,
     clearLocationOnboardingProgress,
     dismissLocationOnboarding,
     mode,
@@ -13499,6 +13534,7 @@ export function OneLocationAgentPageContent({
         />
         <ContactSyncResultsSheet
           takeover
+          invitations={contactInvitations}
           open={contactSyncResultsOpen}
           onOpenChange={setContactSyncResultsOpen}
           result={contactSyncResult}
@@ -13896,6 +13932,7 @@ export function OneLocationAgentPageContent({
         </AppPageContentRegion>
         <ContactSyncResultsSheet
           open={contactSyncResultsOpen}
+          invitations={contactInvitations}
           onOpenChange={setContactSyncResultsOpen}
           result={contactSyncResult}
           syncing={busy === "contactSync"}

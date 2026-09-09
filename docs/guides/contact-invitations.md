@@ -1,0 +1,119 @@
+# Personal contact invitations
+
+One's contact results can open an in-app selection and review sheet on web,
+iOS and Android. Each contact starts unselected. Each compose action addresses
+one recipient, and the person confirms sending in their Messages or mail app.
+There is no Select All, background sending, contact upload or delivery receipt.
+
+## Visual Map
+
+```mermaid
+flowchart LR
+  sync["Contact sync results"] --> select["Choose recipients in One"]
+  select --> review["Review personal messages"]
+  review -->|Back| select
+  review --> compose["Compose for one recipient"]
+  compose --> handoff["User confirms Send or Cancel in Messages/mail"]
+  handoff --> next["Return to One"]
+  next -->|User chooses next or retry| compose
+  next --> finish["Skip or finish and clear"]
+```
+
+## Build and rollback
+
+`NEXT_PUBLIC_CONTACT_INVITATIONS_ENABLED` defaults to true, including when
+the variable is absent. New web/native builds enable selection, additional web
+email collection and session-local recipient retention. An explicit `false` preserves the original
+Google/picker fields and generic invite sharing. It is a build-time flag:
+rollback requires rebuilding the affected web/native bundle, not a database
+migration. Older native binaries can still share/copy without the new composer.
+
+## Contact and session contract
+
+- The existing exact-match sync API, counters, connection outcomes, batching,
+  and 10,000-lookup ceiling are unchanged. Matched/suppressed, self, unknown,
+  partially checked and overflow contacts are not invitation candidates.
+- A separate optional `onInviteCandidates` callback provides names and
+  destinations in device memory; never spread these into sync results,
+  observability, API bodies, persistence or PKM. Known account phone/email
+  destinations are excluded; unknown alternate identities cannot be inferred.
+- No match does not prove non-membership. Email-only web contacts appear under
+  “Not checked—email only”, outside the existing unmatched counter. Original
+  phone-entry provenance prevents malformed phone records bypassing exclusion.
+- Google People reads remain browser-only using the existing read-only scope.
+  Email collection is flag-gated. Browser email capability is probed before
+  the picker tap; the picker itself is never delayed by a capability await.
+- Session generations invalidate reads, referral preparation and old toast
+  actions on dismiss, Finish, resync, account change or unmount. Selection and
+  destinations survive search/pagination/review/back only within that session.
+  The regular matching result still survives Location onboarding Finish.
+
+## Delivery contract
+
+`HushhInvitations.getCapabilities()` returns `{ sms: boolean }`.
+`composeSms({ recipient: string, body: string })` accepts one E.164 number and
+at most 2,000 UTF-16 code units. No new contact or background SMS permission is
+requested. iOS uses MessageUI; Android uses ACTION_SENDTO with `smsto:`.
+
+Outcomes are `queued_or_sent`, `opened`, `cancelled`, `failed`, or `unavailable`.
+They must never become “delivered”. Web `mailto:` launches use one validated
+mailbox and encoded subject/body; launch is only `launch_requested`. The web
+SMS action prefills the number; a separate copy control supplies the text.
+Share/copy never assumes which recipient the user chose in another app.
+
+Existing referral copy, attribution and generic-link fallback are reused.
+Each message adds a greeting using the selected contact's display name, with
+an exact preview with selectable text for each
+recipient. Missing names use the original invitation text. Names and personalized
+messages remain in session memory until the user hands them to another app.
+Link preparation has a bounded wait and a retry that preserves selection.
+If composer, share or clipboard access is unavailable, the preview supports
+manual copy; the person can explicitly mark a recipient handled elsewhere,
+skip, or finish and clear. None of these actions confirms delivery.
+Receiving an invitation does not grant a connection or location capability.
+
+## Verification and release checklist
+
+Run `npm run verify:contact-invitations`, `npm run verify:connect-search`,
+`npm run verify:one-location`, `npm run verify:share-ladder`, typecheck,
+service-boundary and native plugin/static checks. Run `npm run cap:build` and
+native compilation on supported build hosts.
+
+Before enabling production, use designated test recipients on physical iPhone
+and Android devices: prefill one number, Send/Cancel/Retry, app return,
+unavailable handler and older-binary fallback. Exercise Google import and
+email-only recipients on desktop, plus browser share/copy and missing mail/SMS
+handlers. Do not send live invitations from automated tests.
+
+Impact: existing Connect and Location routes only; no endpoint, route, database,
+cache key, PKM or authorization changes. New interfaces are client-local
+recipient callbacks and the native composer plugin. Apple requires individualized
+contact invitations: [App Review 5.1.2(v)](https://developer.apple.com/app-store/review/guidelines/#data-use-and-sharing).
+
+## Implementation verification (2026-09-09)
+
+- Flag-on web production build compiled the actual Connect and Location routes,
+  passed TypeScript, and generated all 161 static pages.
+- Invitation, Connect, Location and share regression suites cover existing
+  matching plus selection, per-recipient payloads, cancellation, retry, cleanup
+  and feature-off behavior. Native plugin/static and service-boundary checks
+  validate registration and the client/server split.
+- Chromium at 390px and 1440px exercised synthetic Google People responses
+  through the real importer, hashed sync service, results sheet, selection,
+  personalized preview, real clipboard, share cancellation/retry and email
+  launch request. The test also checked user activation and absence of raw
+  recipients in API requests, logs and browser storage. External responses
+  were mocked; this is not proof of live Google OAuth or physical SMS delivery.
+- Live authenticated route rehearsal is blocked on this Windows host by the
+  reviewer preflight's `spawnSync gcloud ENOENT` (the installed launcher is a
+  PowerShell script). No reviewer credentials or shared fixtures were changed.
+- Native export tooling also hits Windows `npx` launching/path-filtering issues.
+  Android compilation is blocked by the existing Google Services configuration
+  lacking a client for `com.hussh.app`. iOS compilation requires Mac/Xcode.
+  Physical device Send/Cancel/return tests remain required before rollout.
+
+Browser sharing invokes `navigator.share` directly on the final tap to retain
+[the Web Share user-activation requirement](https://developer.mozilla.org/en-US/docs/Web/API/Navigator/share#security).
+Web SMS uses the documented number-only
+[Apple SMS URL contract](https://developer.apple.com/library/archive/featuredarticles/iPhoneURLScheme_Reference/SMSLinks/SMSLinks.html),
+with a separate message-copy action.

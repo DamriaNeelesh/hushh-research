@@ -915,6 +915,8 @@ export type HushhContactRecord = {
   displayName?: string | null;
   phoneNumbers: string[];
   emailAddresses?: string[];
+  /** Local source provenance: invalid phone entries are not email-only cards. */
+  hasPhoneEntries?: boolean;
 };
 
 export type HushhContactsReadResult = {

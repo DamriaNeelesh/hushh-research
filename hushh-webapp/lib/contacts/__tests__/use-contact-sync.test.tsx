@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   permissionState: "prompt" as "prompt" | "granted" | "unavailable",
@@ -89,6 +89,8 @@ vi.mock("@/lib/one-location/contact-signals", async (importOriginal) => ({
 
 import { OneLocationContactSyncError } from "@/lib/one-location/contact-signals";
 import { useContactSync } from "@/lib/contacts/use-contact-sync";
+import { ReferralService } from "@/lib/services/referral-service";
+import * as invitationSharing from "@/lib/share/share-link";
 
 /**
  * The branches the Connect page cannot reach.
@@ -153,13 +155,66 @@ beforeEach(() => {
   }));
   mocks.syncSignals.mockResolvedValue(EMPTY_RESULT);
   mocks.contactCheckAllowed = true;
-  mocks.requestContactCheck.mockImplementation(
-    () => mocks.contactCheckAllowed,
-  );
+  mocks.requestContactCheck.mockImplementation(() => mocks.contactCheckAllowed);
   // The hook calls `.catch()` on this directly. A bare vi.fn() returns
   // undefined and throws inside the mount effect, which vitest reports as an
   // unhandled error while the assertions still pass.
   mocks.preloadGoogle.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
+
+it("retains invite rows outside sync results and makes old invite toasts inert after dismissal", async () => {
+  const referral = vi
+    .spyOn(ReferralService, "getSummary")
+    .mockRejectedValue(new Error("unavailable"));
+  const share = vi
+    .spyOn(invitationSharing, "shareLink")
+    .mockResolvedValue("copied");
+  vi.stubEnv("NEXT_PUBLIC_CONTACT_INVITATIONS_ENABLED", "true");
+  mocks.syncSignals.mockImplementation(async (options) => {
+    options.onInviteCandidates?.([
+      {
+        id: "local",
+        displayName: "Private name",
+        classification: "no_match",
+        destinations: [{ kind: "phone", value: "+14155550101" }],
+      },
+    ]);
+    return {
+      ...EMPTY_RESULT,
+      inviteCandidateCount: 1,
+      unmatchedContactCount: 1,
+      checkedContactCount: 1,
+    };
+  });
+  const { result } = setup();
+  await act(async () => {
+    await result.current.sync();
+  });
+  expect(result.current.resultsSheetProps.invitations?.candidates).toHaveLength(
+    1,
+  );
+  expect(JSON.stringify(result.current.result)).not.toContain("Private name");
+  expect(JSON.stringify(mocks.trackEvent.mock.calls)).not.toContain(
+    "+14155550101",
+  );
+  const toastAction = mocks.toastInfo.mock.calls.find(
+    (call) => call[1]?.action?.label === "Invite them",
+  )?.[1].action.onClick;
+  expect(toastAction).toBeTypeOf("function");
+  act(() => result.current.setResultsOpen(false));
+  expect(result.current.resultsSheetProps.invitations?.candidates).toEqual([]);
+  await act(async () => {
+    toastAction();
+  });
+  expect(result.current.resultsOpen).toBe(false);
+  expect(result.current.resultsSheetProps.invitations?.active).toBe(false);
+  expect(referral).not.toHaveBeenCalled();
+  expect(share).not.toHaveBeenCalled();
 });
 
 describe("useContactSync — which source it reads", () => {
@@ -295,7 +350,9 @@ describe("useContactSync — which source it reads", () => {
     act(() => {
       syncPromise = result.current.sync();
     });
-    await waitFor(() => expect(mocks.requestGoogleToken).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mocks.requestGoogleToken).toHaveBeenCalledTimes(1),
+    );
     rerender({ userId: "someone-else" });
     await act(async () => {
       resolveGoogleToken?.("google-token");
