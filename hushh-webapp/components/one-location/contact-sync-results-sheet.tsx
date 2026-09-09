@@ -103,6 +103,9 @@ export function ContactSyncResultsSheet({
       <SheetContent
         side="bottom"
         dragDismiss={false}
+        // The launching menu may restore focus after an async sync opens us.
+        // Keep results visible; outside pointer presses, Escape and Close still dismiss.
+        onFocusOutside={(event) => event.preventDefault()}
         overlayClassName={takeover ? TAKEOVER_OVERLAY_Z_CLASSNAME : undefined}
         className={cn(
           "mx-auto flex max-h-[calc(88dvh-var(--kb-height,0px))] w-full max-w-2xl flex-col rounded-t-[24px] px-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6",

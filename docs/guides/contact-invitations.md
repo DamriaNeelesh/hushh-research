@@ -48,6 +48,37 @@ migration. Older native binaries can still share/copy without the new composer.
   destinations survive search/pagination/review/back only within that session.
   The regular matching result still survives Location onboarding Finish.
 
+## Explicit resync after disconnect
+
+A fresh contact sync reconnects an eligible person the requester previously
+removed. Repeated syncs keep one canonical connection per pair and refresh the
+current list; an already-connected match still participates in that refresh.
+Peer-made disconnects, unknown historical actors, hidden/opted-out profiles,
+and disconnects made after the server began the sync remain protected. A sync
+does not restore revoked location/information grants or named Circle membership.
+
+Migration `205_contact_sync_disconnect_actor.sql` adds nullable actor and
+revocation-episode fields on the existing `connections` authority table.
+Apply it before deploying the updated backend. The timestamp pair also fails
+closed during a mixed-version rollout when an older writer removes a connection.
+The fields share the connection's retention and account-deletion lifecycle;
+they contain server-side account identifiers, never address-book information.
+Postgres remains authoritative; any future Redis invalidation layer must retain
+the same transaction/episode checks.
+
+For earlier removals, run `consent-protocol/scripts/backfill_contact_disconnect_actors.py`
+in dry-run mode first, then `--apply --expected-database NAME` against the
+intended environment. It scans bounded batches and only accepts two agreeing
+historical events for the exact current revocation. Missing or conflicting
+history stays suppressed. Feed is not used as live reconnection authority.
+Roll back backend readers before the matching migration rollback; rollback
+preserves graph rows but removes actor annotations. The invitation rollout flag
+does not control this separate reconnection policy.
+
+Connect retains rows and shows a refresh retry if the list read fails. Location
+waits for a pre-sync read to settle, invalidates, then reads fresh state using the
+current search. Neither recovery rereads contacts or repeats a committed sync.
+
 ## Delivery contract
 
 `HushhInvitations.getCapabilities()` returns `{ sms: boolean }`.
@@ -85,9 +116,11 @@ unavailable handler and older-binary fallback. Exercise Google import and
 email-only recipients on desktop, plus browser share/copy and missing mail/SMS
 handlers. Do not send live invitations from automated tests.
 
-Impact: existing Connect and Location routes only; no endpoint, route, database,
-cache key, PKM or authorization changes. New interfaces are client-local
-recipient callbacks and the native composer plugin. Apple requires individualized
+Impact: existing Connect and Location routes and public request/response shapes
+are preserved. Migration 205 adds disconnect-actor metadata for the explicit
+resync policy above; it must precede deployment of the updated backend. No cache
+keys or PKM contracts change. Invitation interfaces are client-local recipient
+callbacks and the native composer plugin. Apple requires individualized
 contact invitations: [App Review 5.1.2(v)](https://developer.apple.com/app-store/review/guidelines/#data-use-and-sharing).
 
 ## Implementation verification (2026-09-09)
@@ -109,7 +142,8 @@ contact invitations: [App Review 5.1.2(v)](https://developer.apple.com/app-store
   PowerShell script). No reviewer credentials or shared fixtures were changed.
 - Native export tooling also hits Windows `npx` launching/path-filtering issues.
   Android compilation is blocked by the existing Google Services configuration
-  lacking a client for `com.hussh.app`. iOS compilation requires Mac/Xcode.
+  lacking a client for `com.hussh.app`. iOS compilation and native unit tests
+  passed on the GitHub Mac runner for the invitation implementation.
   Physical device Send/Cancel/return tests remain required before rollout.
 
 Browser sharing invokes `navigator.share` directly on the final tap to retain

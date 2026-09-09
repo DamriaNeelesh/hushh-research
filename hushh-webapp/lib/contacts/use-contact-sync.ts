@@ -205,10 +205,8 @@ export type UseContactSyncOptions = {
    * is announced, so the toast never claims a connection the list behind it
    * has not caught up to.
    *
-   * Deliberately not wrapped in a `catch` here. A caller whose refresh failing
-   * should not spoil a successful sync catches it itself -- which is exactly
-   * what the Location hub does for its background refresh and pointedly does
-   * not do for its recipient page.
+   * Display-read failures preserve the completed sync and offer a separate
+   * refresh retry. They must not make a committed connection look failed.
    */
   onConnectionGraphChanged?: () => void | Promise<void>;
   /**
@@ -363,6 +361,8 @@ export function useContactSync(options: UseContactSyncOptions): UseContactSync {
    * ref is set in the same turn as the check that reads it.
    */
   const inFlightRef = useRef(false);
+  const syncGenerationRef = useRef(0);
+  useLayoutEffect(() => () => { syncGenerationRef.current += 1; }, []);
 
   /**
    * True from the moment we hand somebody to the OS settings app until they
@@ -391,6 +391,7 @@ export function useContactSync(options: UseContactSyncOptions): UseContactSync {
   useLayoutEffect(() => {
     const nextUserId = options.userId ?? null;
     if (resultOwnerUserIdRef.current === nextUserId) return;
+    syncGenerationRef.current += 1;
     resultOwnerUserIdRef.current = nextUserId;
     // Matched identities and local contact display names belong to the account
     // that ran the scan. Clear them before a replacement account can paint.
@@ -581,7 +582,7 @@ export function useContactSync(options: UseContactSyncOptions): UseContactSync {
     // Keep the transaction callbacks and initiating user stable. The account
     // phone is the exception: it is deliberately re-read below because verified
     // backend identity can finish hydrating while a picker is open.
-    const { getIdToken, onConnectionGraphChanged, routeId, userId } =
+    const { getIdToken, routeId, userId } =
       optionsRef.current;
     const initiatingUserId = userId ?? null;
     const resolveLatestAccountPhoneNumber =
@@ -612,6 +613,9 @@ export function useContactSync(options: UseContactSyncOptions): UseContactSync {
     if (!requestContactCheck()) return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
+    const syncGeneration = ++syncGenerationRef.current;
+    const syncIsCurrent = () => syncGenerationRef.current === syncGeneration &&
+      (optionsRef.current.userId ?? null) === initiatingUserId;
     const onInviteCandidates = beginInviteSync();
     const inviteSessionIsCurrent = captureInviteSession();
 
@@ -669,6 +673,7 @@ export function useContactSync(options: UseContactSyncOptions): UseContactSync {
         resolveAccountPhoneNumber: resolveLatestAccountPhoneNumber,
       });
       await resolveLatestAccountPhoneNumber();
+      if (!syncIsCurrent()) return;
       const nextStatus: ContactSyncStatus =
         syncResult.matchedUserIds.length > 0 ? "matched" : "empty";
       setResult(syncResult);
@@ -702,8 +707,24 @@ export function useContactSync(options: UseContactSyncOptions): UseContactSync {
           syncResult.mutationOutcomeUnknown)
       ) {
         CacheSyncService.onConnectionGraphMutated(userId);
-        await onConnectionGraphChanged?.();
+        const refreshConnections = async () => {
+          if (!syncIsCurrent()) return false;
+          try {
+            await optionsRef.current.onConnectionGraphChanged?.();
+            return syncIsCurrent();
+          } catch {
+            if (syncIsCurrent()) {
+              toast.info("Contacts synced. Could not refresh connections.", {
+                description: "Your matches are saved. Refresh the list to see the latest connections.",
+                action: { label: "Refresh connections", onClick: () => { void refreshConnections(); } },
+              });
+            }
+            return false;
+          }
+        };
+        if (!await refreshConnections()) return;
       }
+      if (!syncIsCurrent()) return;
       // A partial read must never be reported as a whole one. The web Contact
       // Picker and iOS limited access both return only a hand-picked subset,
       // so "3 people added" would claim the whole address book was searched.

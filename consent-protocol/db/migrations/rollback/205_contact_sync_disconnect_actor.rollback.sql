@@ -1,0 +1,7 @@
+BEGIN;
+-- Roll back application readers first. This removes only actor annotations;
+-- canonical connections, provenance, grants and Circle membership are retained.
+ALTER TABLE connections DROP CONSTRAINT IF EXISTS connections_revocation_actor_pair;
+ALTER TABLE connections DROP COLUMN IF EXISTS revoked_by_at;
+ALTER TABLE connections DROP COLUMN IF EXISTS revoked_by_user_id;
+COMMIT;

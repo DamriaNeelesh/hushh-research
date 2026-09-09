@@ -89,6 +89,7 @@ vi.mock("@/lib/one-location/contact-signals", async (importOriginal) => ({
 
 import { OneLocationContactSyncError } from "@/lib/one-location/contact-signals";
 import { useContactSync } from "@/lib/contacts/use-contact-sync";
+import { createContactGraphReconciler, reconcileContactGraph } from "@/lib/contacts/reconcile-contact-graph";
 import { ReferralService } from "@/lib/services/referral-service";
 import * as invitationSharing from "@/lib/share/share-link";
 
@@ -522,6 +523,87 @@ describe("useContactSync — what it says when a read fails", () => {
 });
 
 describe("useContactSync — what it tells the surface", () => {
+  it("refreshes on every completed resync, including all-already-connected results", async () => {
+    mocks.syncSignals.mockResolvedValue({ ...EMPTY_RESULT, alreadyConnectedCount: 3, matchedUserIds: ["a", "b", "c"] });
+    const { result } = setup();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await act(async () => { await result.current.sync(); });
+      expect(result.current.signal.matchedCount).toBe(3);
+    }
+    expect(mocks.onGraphMutated).toHaveBeenCalledTimes(3);
+    expect(mocks.syncSignals).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains successful matches when refresh fails and retries only the display read", async () => {
+    mocks.syncSignals.mockResolvedValue({ ...EMPTY_RESULT, autoConnectedCount: 1, matchedUserIds: ["a"] });
+    mocks.onGraphMutated.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+    const { result } = setup();
+    await act(async () => { await result.current.sync(); });
+    expect(result.current.signal.status).toBe("matched");
+    expect(result.current.resultsOpen).toBe(true);
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    const retry = mocks.toastInfo.mock.calls.at(-1)?.[1]?.action;
+    expect(retry.label).toBe("Refresh connections");
+    await act(async () => { retry.onClick(); });
+    expect(mocks.onGraphMutated).toHaveBeenCalledTimes(2);
+    expect(mocks.syncSignals).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not announce an old account's completion after an awaited graph refresh", async () => {
+    let finish!: () => void;
+    mocks.onGraphMutated.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    mocks.syncSignals.mockResolvedValue({ ...EMPTY_RESULT, autoConnectedCount: 1, matchedUserIds: ["a"] });
+    const { result, rerender } = renderHook(({ userId }) => useContactSync({
+      routeId: "connect", userId, getIdToken: async () => "token",
+      accountPhoneNumber: "+919000000001", onConnectionGraphChanged: mocks.onGraphMutated,
+    }), { initialProps: { userId: "me" } });
+    let task!: Promise<void>;
+    act(() => { task = result.current.sync(); });
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    rerender({ userId: "other" });
+    await act(async () => { finish(); await task; });
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(result.current.result).toBeNull();
+  });
+
+  it("waits for a pre-mutation Location read and uses the latest search for the fresh read", async () => {
+    let finish!: () => void;
+    const prior = new Promise<void>((resolve) => { finish = resolve; });
+    let query = "old";
+    const reads: string[] = [];
+    const invalidate = vi.fn();
+    const task = reconcileContactGraph({ pendingRead: prior, isCurrent: () => true, invalidate,
+      read: async () => { reads.push(query); },
+    });
+    expect(reads).toEqual([]);
+    query = "latest";
+    finish();
+    await task;
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(reads).toEqual(["latest"]);
+    await reconcileContactGraph({ pendingRead: null, isCurrent: () => false, invalidate, read: async () => { reads.push("stale"); } });
+    expect(reads).toEqual(["latest"]);
+  });
+
+  it("coalesces refresh retries but queues a fresh read after a newer mutation", async () => {
+    let finish!: () => void;
+    const read = vi.fn().mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; })).mockResolvedValue(undefined);
+    const invalidate = vi.fn();
+    const options = { pendingRead: null, isCurrent: () => true, invalidate, read };
+    const reconcile = createContactGraphReconciler();
+    const first = reconcile("owner", options);
+    const retry = reconcile("owner", options);
+    expect(retry).toBe(first);
+    const afterMutation = reconcile("owner", options, true);
+    expect(afterMutation).not.toBe(first);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    finish();
+    await Promise.all([first, retry, afterMutation]);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledTimes(2);
+  });
+
   it("does not refresh the list when the graph did not change", async () => {
     const { result } = setup();
     await waitFor(() => expect(result.current.available).toBe(true));

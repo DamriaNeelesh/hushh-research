@@ -560,7 +560,7 @@ export function describeContactSyncOutcome(
       : "No eligible contacts matched";
   const details = [
     result.matchedUserIds.length === 0
-      ? "ONE users need an exact verified phone match and must remain visible in the Connect directory. Explicit opt-outs and previous disconnects stay protected."
+      ? "ONE users need an exact verified phone match and must remain visible in the Connect directory. Sync again to reconnect people you removed. Other people's disconnects and privacy choices stay protected."
       : null,
     result.requestRequiredCount
       ? result.requestRequiredCount === 1
