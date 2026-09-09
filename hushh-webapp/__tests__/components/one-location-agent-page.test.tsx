@@ -2752,6 +2752,8 @@ describe("OneLocationAgentPage", () => {
       screen.queryByText("Access ends automatically after expiry"),
     ).toBeNull();
 
+    const stateReadsBeforeShare = mockGetState.mock.calls.length;
+    const envelopeWritesBeforeShare = mockStoreEnvelope.mock.calls.length;
     fireEvent.click(startButton);
     await waitFor(() => expect(mockCreateGrant).toHaveBeenCalledTimes(1));
     expect(mockCreateGrant).toHaveBeenCalledWith(
@@ -2763,6 +2765,16 @@ describe("OneLocationAgentPage", () => {
         reason: "On my way",
         shareKind: "share",
       }),
+    );
+    await waitFor(() =>
+      expect(mockStoreEnvelope.mock.calls.length).toBeGreaterThan(
+        envelopeWritesBeforeShare,
+      ),
+    );
+    await waitFor(() =>
+      expect(mockGetState.mock.calls.length).toBeGreaterThan(
+        stateReadsBeforeShare,
+      ),
     );
   });
 
@@ -3255,6 +3267,17 @@ describe("OneLocationAgentPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
     await waitFor(() => expect(mockCreateGrant).toHaveBeenCalledTimes(1));
+    const concurrentShare = resolveLocalOnboardingHandler(
+      "location.share_selected",
+    );
+    expect(concurrentShare).toBeTruthy();
+    await expect(concurrentShare!({ duration_hours: "1" })).resolves.toEqual(
+      expect.objectContaining({
+        status: "blocked",
+        summary: "Your current location share is still being sent.",
+      }),
+    );
+    expect(mockCreateGrant).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Change who can see you" }));
     fireEvent.click(
       screen.getByRole("button", {

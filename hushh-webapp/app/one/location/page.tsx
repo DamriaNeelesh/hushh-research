@@ -4073,12 +4073,6 @@ export function OneLocationAgentPageContent({
         setLoadError(null);
         return;
       }
-      if (shareDeliveryAttemptRef.current) {
-        return {
-          status: "blocked",
-          summary: "Your current location share is still being sent.",
-        };
-      }
       if (refreshInFlightRef.current) {
         return waitForRefresh(refreshInFlightRef.current);
       }
@@ -4939,15 +4933,22 @@ export function OneLocationAgentPageContent({
       const durationPayload = privateShareDurationPayload(
         effectiveDurationHours,
       );
-      // Set on every attempt, so a landing asked for by one share can never
-      // survive into the next one. Taps pass nothing and get the clean hub.
-      shareCompletedDestinationRef.current = landOnAfter ?? null;
       if (!vaultOwnerToken) {
         return {
           status: "blocked",
           summary: "Unlock One before sharing your location.",
         };
       }
+      if (shareDeliveryAttemptRef.current) {
+        return {
+          status: "blocked",
+          summary: "Your current location share is still being sent.",
+        };
+      }
+      // Set on every accepted attempt, so a landing asked for by one share can
+      // never survive into the next one. Blocked duplicate attempts must not
+      // rewrite the destination owned by the delivery already in progress.
+      shareCompletedDestinationRef.current = landOnAfter ?? null;
       if (pendingShareCircleIdsRef.current.size) {
         return {
           status: "blocked",
