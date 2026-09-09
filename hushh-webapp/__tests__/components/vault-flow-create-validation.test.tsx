@@ -416,7 +416,8 @@ describe("VaultFlow create validation", () => {
     expect(
       screen.getByRole("button", { name: "Try passkey again" }),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Passphrase" })).toBeTruthy();
+    expect(screen.getByLabelText("Vault passphrase")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Unlock" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Recovery key" })).toBeTruthy();
 
     rerender(<VaultFlow user={user} onSuccess={onSuccess} />);
@@ -426,5 +427,39 @@ describe("VaultFlow create validation", () => {
       expect.objectContaining({ passkeyRpId: "one.hushh.ai" }),
     );
     expect(onSuccess).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Try passkey again" }));
+    await waitFor(() =>
+      expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it("shares cancellation across overlapping native unlock surfaces", async () => {
+    isNativePlatformMock = true;
+    checkVaultMock.mockResolvedValue(true);
+    getVaultStateMock.mockResolvedValue(
+      vaultState("generated_default_native_passkey_prf", [
+        passphraseWrapper,
+        nativePasskeyWrapper,
+      ]),
+    );
+    unlockGeneratedDefaultVaultMock.mockRejectedValue(
+      "Passkey authentication failed: The operation was canceled by the user",
+    );
+
+    render(
+      <>
+        <VaultFlow user={user} onSuccess={vi.fn()} />
+        <VaultFlow user={user} onSuccess={vi.fn()} />
+      </>,
+    );
+
+    expect(
+      (await screen.findAllByText(
+        "Passkey unlock was cancelled. Use your Vault Key or Recovery Key below.",
+      )).length,
+    ).toBe(2);
+    expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByLabelText("Vault passphrase")).toHaveLength(2);
   });
 });
