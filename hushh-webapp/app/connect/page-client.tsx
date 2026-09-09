@@ -2157,13 +2157,9 @@ export default function ConnectPageClient() {
 
   useLocalOnboardingActionHandler(
     "connect.remove_connection",
-    async (slots) => {
+    async (slots, context) => {
       const spokenName =
         typeof slots.person === "string" ? slots.person.trim() : "";
-      // Set by the card's destructive button and by nothing else. Voice never
-      // carries it, so a spoken sentence can raise this question but can never
-      // answer its own question.
-      const confirmed = slots.confirmed === true;
       const chosenConnectionId =
         typeof slots.connectionId === "string" ? slots.connectionId.trim() : "";
       if (!user) {
@@ -2221,7 +2217,7 @@ export default function ConnectPageClient() {
           };
         }
         const connection = matches[0]!;
-        if (!confirmed) {
+        if (!context?.directiveId && !context?.humanConfirmationToken) {
           // Ask before, not after. A name misheard once is a connection gone
           // with no undo, and this is the one action here where being wrong
           // cannot be walked back.

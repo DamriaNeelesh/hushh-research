@@ -9915,6 +9915,18 @@ export function OneLocationAgentPageContent({
       ? (LOCATION_FLOW_LABELS[openFlow] ?? null)
       : null;
     const actions = LOCATION_VOICE_ACTIONS;
+    const currentLocationState =
+      permission?.state === "unavailable" ||
+      permission?.locationServicesEnabled === false
+        ? "unavailable"
+        : myLocationPoint
+          ? "available"
+          : "unknown";
+    const shareState = locationControl.paused
+      ? "paused"
+      : activeOwnerGrants.length > 0
+        ? "sharing"
+        : "unknown";
     // Location can only be shared with a connection or a circle member, so an
     // account with neither cannot finish either of these flows however long it
     // stays on them. The screen says "no connections" and stops; this is what
@@ -10022,6 +10034,8 @@ export function OneLocationAgentPageContent({
         location_flow: openFlow,
         data_state: dataState,
         permission_state: permission?.state ?? null,
+        current_location_state: currentLocationState,
+        share_state: shareState,
         pending_request_count: pendingOwnerRequests.length,
         connection_count: shareRecipientPool.length,
         circle_count: namedCircles.length,
@@ -10055,12 +10069,16 @@ export function OneLocationAgentPageContent({
     };
   }, [
     busy,
+    activeOwnerGrants.length,
     dataState,
     loadError,
+    locationControl.paused,
+    myLocationPoint,
     mode,
     namedCircles.length,
     pendingOwnerRequests.length,
     permission?.state,
+    permission?.locationServicesEnabled,
     searchParams,
     shareRecipientPool.length,
     // Picking someone clears the dead end, so the metadata has to be rebuilt
@@ -10070,8 +10088,6 @@ export function OneLocationAgentPageContent({
     // frozen number: a stale count is worse than an absent one, because the
     // model states it as fact.
     locationEnabled,
-    locationControl.paused,
-    activeOwnerGrants.length,
     liveShareStatus,
     visibleReceivedGrants.length,
     sosIncident,
@@ -11396,88 +11412,22 @@ export function OneLocationAgentPageContent({
   });
 
   const resolveTriggerSos = useCallback(
-    async (
-      slots: Record<string, unknown>,
-    ): Promise<LocalOnboardingActionResult> => {
-      if (!vaultOwnerToken) {
-        return {
-          status: "blocked" as const,
-          summary: "Unlock One before sending an SMS alert.",
-        };
-      }
-      // Same re-entry guard handleTriggerSos itself enforces -- checked here
-      // too so the person hears why nothing happened, instead of a silent
-      // no-op behind a "succeeded" that never actually sent a second alert.
-      if (sosIncident) {
-        return {
-          status: "blocked" as const,
-          summary:
-            "There is already an SMS running. Stop it before sending another.",
-        };
-      }
-      if (locationPermissionBlocksSharing(permission)) {
-        return {
-          status: "blocked" as const,
-          summary:
-            "Location access is off, so I cannot send an SMS alert with your position.",
-        };
-      }
-      const readyRecipients = smsActionRecipients.filter(
-        isSosShareReadyRecipient,
-      );
-      if (!readyRecipients.length) {
-        return {
-          status: "blocked" as const,
-          summary: sosRecipientReadinessMessage(smsActionRecipients),
-        };
-      }
-      const note = String(slots?.note ?? "").trim() || null;
-      if (slots?.confirmed !== true) {
-        // The highest-consequence action on this surface -- a misheard "yes"
-        // here dispatches a real emergency alert, including a fallback email,
-        // to real people. Every other destructive action on Location gets a
-        // spoken confirmation at most; this one gets the same explicit,
-        // tappable card as removing an emergency contact, but never skips it.
-        // Shared by location.sos_default's "trigger" branch too, so a bare
-        // emergency phrase gets this exact same unconditional confirm card,
-        // never a shortcut past it.
-        const names = formatNameList(
-          readyRecipients.map((r) => recipientLabel(r)),
-        );
-        return {
-          status: "blocked" as const,
-          summary: "Sending an SMS alert needs a confirmation.",
-          data: {
-            [VOICE_CONFIRM_DATA_KEY]: {
-              actionId: "location.trigger_sos",
-              slots: { note: note ?? "", confirmed: true },
-              prompt: `Send an SMS alert to ${names} right now?`,
-              subject: { name: "SMS alert", detail: names },
-              consequence:
-                getKaiActionById("location.trigger_sos")?.meaning ?? null,
-              confirmLabel: "Send SMS",
-            },
-          },
-        };
-      }
-      void handleTriggerSos(note);
+    async (): Promise<LocalOnboardingActionResult> => {
+      // Voice can never send SOS. It may only bring the owner to the governed
+      // review surface; the explicit native Action Button path remains separate
+      // and continues to use its system-confirmed adapter.
+      router.replace(`${ROUTES.ONE_LOCATION}?action=sos`, { scroll: false });
       return {
         status: "succeeded" as const,
-        summary: "Sending your SMS alert now.",
+        summary: "Opening the SOS review screen. Nothing has been sent.",
       };
     },
-    [
-      vaultOwnerToken,
-      sosIncident,
-      permission,
-      smsActionRecipients,
-      handleTriggerSos,
-    ],
+    [router],
   );
 
   useLocalOnboardingActionHandler("location.trigger_sos", resolveTriggerSos);
 
-  useLocalOnboardingActionHandler("location.sos_default", async (slots) => {
+  useLocalOnboardingActionHandler("location.sos_default", async (_slots) => {
     if (!vaultOwnerToken) {
       return {
         status: "blocked" as const,
@@ -11496,7 +11446,7 @@ export function OneLocationAgentPageContent({
       defaultAction = "open";
     }
     if (defaultAction === "trigger") {
-      return resolveTriggerSos(slots);
+      return resolveTriggerSos();
     }
     router.replace(`${ROUTES.ONE_LOCATION}?action=sos`, { scroll: false });
     return {
@@ -11577,7 +11527,7 @@ export function OneLocationAgentPageContent({
 
   useLocalOnboardingActionHandler(
     "location.remove_emergency_contact",
-    async (slots) => {
+    async (slots, context) => {
       const spoken = String(slots?.person ?? "")
         .trim()
         .toLowerCase();
@@ -11624,7 +11574,7 @@ export function OneLocationAgentPageContent({
           summary: "Nobody by that name is one of your emergency contacts.",
         };
       }
-      if (slots?.confirmed !== true) {
+      if (!context?.directiveId && !context?.humanConfirmationToken) {
         // Shown before it happens, not reported after. This list is the one
         // consulted in an emergency, so a name misheard once quietly removes the
         // person who would have been told.
@@ -11635,7 +11585,7 @@ export function OneLocationAgentPageContent({
           data: {
             [VOICE_CONFIRM_DATA_KEY]: {
               actionId: "location.remove_emergency_contact",
-              slots: { person: String(slots?.person ?? ""), confirmed: true },
+              slots: { person: String(slots?.person ?? "") },
               prompt: `Remove ${label} as an emergency contact?`,
               subject: {
                 name: label,
@@ -12097,7 +12047,7 @@ export function OneLocationAgentPageContent({
 
   useLocalOnboardingActionHandler(
     "location.remove_from_circle",
-    async (slots) => {
+    async (slots, context) => {
       const spokenPerson = String(slots?.person ?? "").trim();
       if (!spokenPerson) {
         return {
@@ -12186,7 +12136,7 @@ export function OneLocationAgentPageContent({
           summary: `${member.displayName} owns ${circle.name}, so they cannot be removed from it.`,
         };
       }
-      if (slots?.confirmed !== true) {
+      if (!context?.directiveId && !context?.humanConfirmationToken) {
         // Removing someone from a circle takes away what that circle shared
         // with them. It is not the person's own data to put back, so this is
         // shown before it happens rather than reported afterwards.
@@ -12199,7 +12149,6 @@ export function OneLocationAgentPageContent({
               slots: {
                 person: spokenPerson,
                 circle: String(slots?.circle ?? ""),
-                confirmed: true,
               },
               prompt: `Remove ${member.displayName} from ${circle.name}?`,
               subject: { name: member.displayName, detail: circle.name },
@@ -12295,7 +12244,7 @@ export function OneLocationAgentPageContent({
     }
   });
 
-  useLocalOnboardingActionHandler("location.leave_circle", async (slots) => {
+  useLocalOnboardingActionHandler("location.leave_circle", async (slots, context) => {
     if (!vaultOwnerToken) {
       return {
         status: "blocked" as const,
@@ -12314,7 +12263,7 @@ export function OneLocationAgentPageContent({
         summary: `You own ${circle.name}, so you cannot leave it. Delete it instead, or hand off ownership first.`,
       };
     }
-    if (slots?.confirmed !== true) {
+    if (!context?.directiveId && !context?.humanConfirmationToken) {
       // Leaving takes away what this circle was sharing with the person, and
       // is not always reversible if the owner does not re-invite them.
       return {
@@ -12323,7 +12272,7 @@ export function OneLocationAgentPageContent({
         data: {
           [VOICE_CONFIRM_DATA_KEY]: {
             actionId: "location.leave_circle",
-            slots: { circle: String(slots?.circle ?? ""), confirmed: true },
+            slots: { circle: String(slots?.circle ?? "") },
             prompt: `Leave ${circle.name}?`,
             subject: { name: circle.name, detail: null },
             consequence:
@@ -12347,7 +12296,7 @@ export function OneLocationAgentPageContent({
     };
   });
 
-  useLocalOnboardingActionHandler("location.delete_circle", async (slots) => {
+  useLocalOnboardingActionHandler("location.delete_circle", async (slots, context) => {
     if (!vaultOwnerToken) {
       return {
         status: "blocked" as const,
@@ -12366,14 +12315,14 @@ export function OneLocationAgentPageContent({
         summary: `You cannot delete ${circle.name}. Only its owner can -- leave it instead.`,
       };
     }
-    if (slots?.confirmed !== true) {
+    if (!context?.directiveId && !context?.humanConfirmationToken) {
       return {
         status: "blocked" as const,
         summary: `Deleting ${circle.name} needs a confirmation.`,
         data: {
           [VOICE_CONFIRM_DATA_KEY]: {
             actionId: "location.delete_circle",
-            slots: { circle: String(slots?.circle ?? ""), confirmed: true },
+            slots: { circle: String(slots?.circle ?? "") },
             prompt: `Delete ${circle.name}? Everyone in it loses access through it.`,
             subject: {
               name: circle.name,
@@ -12538,7 +12487,7 @@ export function OneLocationAgentPageContent({
 
   useLocalOnboardingActionHandler(
     "location.delete_saved_location",
-    async (slots) => {
+    async (slots, context) => {
       const spokenLabel = String(slots?.label ?? "").trim();
       if (!vaultKey || !vaultOwnerToken || !auth.userId) {
         return {
@@ -12606,14 +12555,14 @@ export function OneLocationAgentPageContent({
         };
       }
       const resolvedTarget = target;
-      if (slots?.confirmed !== true) {
+      if (!context?.directiveId && !context?.humanConfirmationToken) {
         return {
           status: "blocked" as const,
           summary: `Deleting ${resolvedTarget.label} needs a confirmation.`,
           data: {
             [VOICE_CONFIRM_DATA_KEY]: {
               actionId: "location.delete_saved_location",
-              slots: { label: spokenLabel, confirmed: true },
+              slots: { label: spokenLabel },
               prompt: `Delete the saved place called ${resolvedTarget.label}?`,
               subject: {
                 name: resolvedTarget.label,
