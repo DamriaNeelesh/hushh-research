@@ -117,11 +117,7 @@ import type {
   PlainLocationPoint,
 } from "@/lib/one-location/types";
 import { locationStatusLabel } from "@/lib/one-location/location-readiness";
-import {
-  countSelectedCircleRecipients,
-  isCircleSelectionFullySelected,
-  type CircleRecipientSelection,
-} from "@/lib/one-location/circle-recipient-selection";
+import type { CircleRecipientSelection } from "@/lib/one-location/circle-recipient-selection";
 import type { AutoApproveScope } from "@/lib/one-location/location-control-state";
 import { resolveOwnSmsSystemCircleId } from "@/lib/one-location/system-circles";
 
@@ -422,7 +418,8 @@ export type LocationHubViewModel = {
   /* data lists */
   recipients: OneLocationRecipient[];
   circles: OneLocationCircleSummary[];
-  selectedShareCircleSelection: CircleRecipientSelection | null;
+  selectedShareCircleSelections: CircleRecipientSelection[];
+  pendingShareCircleIds: string[];
   incomingCircleMemberInvites: OneLocationCircleMemberInvite[];
   incomingCircleMemberInvitesLoading: boolean;
   incomingCircleMemberInvitesError: string | null;
@@ -453,6 +450,7 @@ export type LocationHubViewModel = {
   /* composer state */
   recipientSearch: string;
   shareRecipientSearch: string;
+  selectedDirectRecipientIds: string[];
   selectedRecipientIds: string[];
   selectedRequestOwnerIds: string[];
   shareDurationHours: string;
@@ -1040,6 +1038,23 @@ const STICKY_FLOW_ACTION_CLASSNAME =
 function selectedCountCopy(count: number, emptyCopy: string) {
   if (count <= 0) return emptyCopy;
   return `${count} selected`;
+}
+
+function shareAudienceSelectionCopy(circleCount: number, contactCount: number) {
+  if (!circleCount && !contactCount) {
+    return "Choose one or more Circles or contacts.";
+  }
+
+  const parts: string[] = [];
+  if (circleCount) {
+    parts.push(`${circleCount} ${circleCount === 1 ? "Circle" : "Circles"}`);
+  }
+  if (contactCount) {
+    parts.push(
+      `${contactCount} ${contactCount === 1 ? "contact" : "contacts"}`,
+    );
+  }
+  return `${parts.join(" + ")} selected`;
 }
 
 export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
@@ -4979,6 +4994,17 @@ function ShareFlow({
   }, [onEnterShareConfirm, step]);
 
   const filtered = vm.visibleShareRecipients;
+  const selectedCircleByRecipientId = new globalThis.Map<
+    string,
+    CircleRecipientSelection
+  >();
+  for (const selection of vm.selectedShareCircleSelections) {
+    for (const target of selection.ready) {
+      if (!selectedCircleByRecipientId.has(target.recipient.userId)) {
+        selectedCircleByRecipientId.set(target.recipient.userId, selection);
+      }
+    }
+  }
   /**
    * Who can already see you, by recipient — the same `activeOwnerGrants` the
    * Active shares screen lists, read here for the first time.
@@ -5022,13 +5048,15 @@ function ShareFlow({
     r: OneLocationRecipient,
     activeGrant: OneLocationGrant | undefined,
   ) => {
-    const selected = vm.selectedRecipientIds.includes(r.userId);
+    const selected = vm.selectedDirectRecipientIds.includes(r.userId);
+    const includedThroughCircle = selectedCircleByRecipientId.get(r.userId);
     const ready = vm.isRecipientShareReady(r);
     const label = vm.recipientLabel(r);
     return (
       <SettingsRow
         key={r.userId}
         density="compact"
+        textOverflow="truncate"
         disabled={!ready}
         onClick={
           ready
@@ -5038,7 +5066,13 @@ function ShareFlow({
         ariaPressed={ready ? selected : undefined}
         ariaLabel={
           ready
-            ? `${selected ? "Deselect" : "Select"} ${label} for private sharing`
+            ? selected
+              ? includedThroughCircle
+                ? `Remove ${label} as an individual contact; they will still be included through ${includedThroughCircle.circle.name}`
+                : `Deselect ${label} for private sharing`
+              : includedThroughCircle
+                ? `Also select ${label} as an individual contact; already included through ${includedThroughCircle.circle.name}`
+                : `Select ${label} for private sharing`
             : undefined
         }
         leading={
@@ -5069,11 +5103,29 @@ function ShareFlow({
             ) : (
               <ShareCountdownText expiresAt={activeGrant.expiresAt} />
             )
+          ) : includedThroughCircle ? (
+            `Included through ${includedThroughCircle.circle.name}`
           ) : ready ? undefined : (
             "Invite them first"
           )
         }
-        trailing={ready ? <SelectionDot selected={selected} /> : undefined}
+        trailing={
+          ready ? (
+            selected ? (
+              <SelectionDot selected />
+            ) : includedThroughCircle ? (
+              <span
+                aria-label={`Included through ${includedThroughCircle.circle.name}`}
+                className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-full bg-[color:var(--app-accent-surface)] px-2 text-[11px] font-semibold text-[color:var(--app-accent)]"
+              >
+                <UsersRound className="h-3.5 w-3.5" aria-hidden="true" />
+                Circle
+              </span>
+            ) : (
+              <SelectionDot selected={false} />
+            )
+          ) : undefined
+        }
       />
     );
   };
@@ -5147,9 +5199,8 @@ function ShareFlow({
     shareNoteLength > 0 ||
     shareNoteLength >= ONE_LOCATION_SHARE_NOTE_MAX_LENGTH - 20 ||
     shareNoteLimitExceeded;
-  // Picking a Circle selects its ready members in the list below, and those
-  // rows remain individually deselectable. Once one is turned off the recipients
-  // are no longer that Circle, so the Circle row stops reading as selected.
+  // Circles stay atomic in the picker. Their recipients are expanded only for
+  // review and encrypted delivery.
   const shareableCircles = useMemo(
     () => vm.circles.filter((circle) => circle.systemKind !== "trusted"),
     [vm.circles],
@@ -5178,15 +5229,6 @@ function ShareFlow({
       { key: "joined", title: "Joined circles", circles: joined },
     ].filter((group) => group.circles.length > 0);
   }, [shareableCircles]);
-  const shareCircleFullySelected = isCircleSelectionFullySelected(
-    vm.selectedShareCircleSelection,
-    vm.selectedRecipientIds,
-  );
-  const selectedShareCircleRecipientCount = countSelectedCircleRecipients(
-    vm.selectedShareCircleSelection,
-    vm.selectedRecipientIds,
-  );
-
   // Step 2 of 2 — "Details" and the old separate "Consent check" merged.
   //
   // They were split as set-then-confirm, which put a screen transition between
@@ -5377,9 +5419,9 @@ function ShareFlow({
       <TaskFlowHeader
         eyebrow="Step 1 of 2"
         title="Who can see you?"
-        description={selectedCountCopy(
-          selectedReady.length,
-          "Choose a Circle or contact.",
+        description={shareAudienceSelectionCopy(
+          vm.selectedShareCircleSelections.length,
+          vm.selectedDirectRecipientIds.length,
         )}
       />
       {/* Trusted is not a group you share with.
@@ -5405,18 +5447,20 @@ function ShareFlow({
           testId={`one-location-share-circles-${group.key}`}
         >
           {group.circles.map((circle) => {
-              const selected =
-                vm.selectedShareCircleSelection?.circle.id === circle.id &&
-                shareCircleFullySelected;
-              const circleSelectionDescription = selected
-                ? `${selectedShareCircleRecipientCount} selected`
-                : circleMemberCountLabel(circle.memberCount);
+              const selected = vm.selectedShareCircleSelections.some(
+                (selection) => selection.circle.id === circle.id,
+              );
+              const pending = vm.pendingShareCircleIds.includes(circle.id);
+              const circleSelectionDescription = circleMemberCountLabel(
+                circle.memberCount,
+              );
               const circleRole = roleClasses("people");
               return (
                 <SettingsRow
                   key={circle.id}
                   density="compact"
-                  disabled={vm.busy === "shareCircle"}
+                  textOverflow="truncate"
+                  disabled={pending}
                   onClick={() => void vm.onSelectShareCircle(circle.id)}
                   ariaPressed={selected}
                   ariaLabel={`${selected ? "Deselect" : "Select"} the ${circle.name} Circle, ${circleSelectionDescription}`}
@@ -5432,11 +5476,7 @@ function ShareFlow({
                     </span>
                   }
                   title={circle.name}
-                  description={
-                    vm.busy === "shareCircle"
-                      ? "Loading…"
-                      : circleSelectionDescription
-                  }
+                  description={pending ? "Adding…" : circleSelectionDescription}
                   trailing={<SelectionDot selected={selected} />}
                 />
               );
@@ -5521,10 +5561,12 @@ function ShareFlow({
       <div className={STICKY_FLOW_ACTION_CLASSNAME}>
         <Button
           onClick={() => setStep("details")}
-          disabled={!selectedReady.length}
+          disabled={
+            !selectedReady.length || Boolean(vm.pendingShareCircleIds.length)
+          }
           className="h-[52px] w-full rounded-2xl bg-[color:var(--app-accent)] text-[17px] font-semibold leading-[22px] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90 disabled:bg-black/10 disabled:text-black/35 disabled:opacity-100 dark:disabled:bg-white/10 dark:disabled:text-white/35"
         >
-          Continue
+          {vm.pendingShareCircleIds.length ? "Adding Circle…" : "Continue"}
         </Button>
       </div>
     </div>
