@@ -1709,8 +1709,8 @@ function LocalMapPreview({
       className={cn(
         "w-full min-w-0 max-w-full overflow-hidden bg-[color:var(--app-card-surface-default-solid)]",
         nested
-          ? "rounded-[inherit] border-0 shadow-none"
-          : "rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)] shadow-[var(--app-card-shadow-standard)]",
+          ? "rounded-[inherit]"
+          : "rounded-[var(--app-card-radius-standard)] border border-border/70",
       )}
     >
       <div
