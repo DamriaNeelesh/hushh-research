@@ -810,6 +810,7 @@ export function VaultFlow({
         authMethod: generatedWrapper.method,
         passkeyCredentialId: generatedWrapper.passkeyCredentialId,
         passkeyPrfSalt: generatedWrapper.passkeyPrfSalt,
+        passkeyRpId: generatedWrapper.passkeyRpId,
       });
 
       if (!decryptedKey) {
