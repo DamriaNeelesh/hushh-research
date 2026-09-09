@@ -60,9 +60,7 @@ export default function RiaProfilePage() {
   return (
     <RiaPageShell
       title="RIA"
-      icon={null}
       titleRole="agent"
-      showRouteSelector
       nativeTest={{
         routeId: "ria-profile",
         marker: "ria-profile-page",

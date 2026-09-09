@@ -4,7 +4,6 @@ import { ChevronRight, Loader2, UserRound } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
-import { AppPageShell } from "@/components/app-ui/app-page-shell";
 import {
   buildKaiTestClientAccess,
   canShowKaiTestProfile,
@@ -183,31 +182,29 @@ export default function RiaClientsPage() {
   if (personaLoading) return null;
   if (riaCapability === "setup") {
     return (
-      <>
-        <AppPageShell
-          as="main"
-          width="agent"
-          nativeTest={{
-            routeId: "/ria/clients",
-            marker: "native-route-ria-clients",
-            authState: user ? "authenticated" : "pending",
-            dataState: "unavailable-valid",
-          }}
-        />
+      <RiaPageShell
+        title="RIA"
+        titleRole="agent"
+        stackClassName="gap-8"
+        nativeTest={{
+          routeId: "/ria/clients",
+          marker: "native-route-ria-clients",
+          authState: user ? "authenticated" : "pending",
+          dataState: "unavailable-valid",
+        }}
+      >
         <RiaCompatibilityState
           title={RIA_COPY.clients.setupGate.title}
           description={RIA_COPY.clients.setupGate.description}
         />
-      </>
+      </RiaPageShell>
     );
   }
 
   return (
     <RiaPageShell
       title="RIA"
-      icon={null}
       titleRole="agent"
-      showRouteSelector
       stackClassName="gap-8"
       nativeTest={{
         routeId: "/ria/clients",

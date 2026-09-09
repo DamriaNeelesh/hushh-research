@@ -17,7 +17,7 @@ describe("RIA shared header regression contract", () => {
     const riaPicks = read("app/ria/picks/page.tsx");
 
     // `/ria` deliberately remains a thin compatibility redirect. The canonical
-    // workspace routes all inherit the same RIA shell and header contract.
+    // workspace tabs share one RIA shell and header contract.
     expect(riaHome).toContain("ClientRedirect");
     expect(riaHome).toContain("ROUTES.RIA_PROFILE");
     expect(riaProfile).toContain("RiaPageShell");
@@ -91,12 +91,12 @@ describe("RIA shared header regression contract", () => {
     expect(riaPicks).not.toContain("<AppPageHeaderRegion");
     expect(riaClients).not.toContain("<PageHeader");
     expect(riaPicks).not.toContain("<PageHeader");
+    expect(riaClients).toContain('stackClassName="gap-8"');
+    expect(riaPicks).toContain('stackClassName="gap-6"');
     expect(riaShell).toContain(
       '<AppPageHeaderRegion className={cn("pt-2 sm:pt-3", headerClassName)}>',
     );
     expect(riaShell).toContain("<SurfaceStack");
-    expect(riaClients).toContain('stackClassName="gap-8"');
-    expect(riaPicks).toContain('stackClassName="gap-6"');
   });
 
   it("renders the shared RIA route selector under the stable shell header", () => {
@@ -104,13 +104,15 @@ describe("RIA shared header regression contract", () => {
     const riaClients = read("app/ria/clients/page.tsx");
     const riaPicks = read("app/ria/picks/page.tsx");
     const riaShell = read("components/ria/ria-page-shell.tsx");
+    const riaLayout = read("app/ria/layout.tsx");
     const topShellTabs = read("lib/navigation/top-shell-tabs.ts");
     const providers = read("app/providers.tsx");
 
     for (const source of [riaProfile, riaClients, riaPicks]) {
-      expect(source).toContain("showRouteSelector");
       expect(source).not.toContain("RiaRouteSelector");
     }
+    expect(riaLayout).toContain("RiaPrimaryWorkspaceShell");
+    expect(riaShell).toContain("RiaPrimaryWorkspaceContext");
     expect(
       riaShell.indexOf("<AppPageHeaderRegion") <
         riaShell.indexOf("<AppPageContentRegion"),
@@ -130,11 +132,10 @@ describe("RIA shared header regression contract", () => {
     const riaShell = read("components/ria/ria-page-shell.tsx");
 
     expect(riaShell).toContain("icon?: LucideIcon | null");
+    expect(riaShell).toContain('title="RIA"');
 
     for (const source of [riaProfile, riaClients, riaPicks]) {
       expect(source).toContain('title="RIA"');
-      expect(source).toContain("icon={null}");
-      expect(source).toContain("showRouteSelector");
     }
     expect(riaProfile).not.toContain('title="Profile"');
     expect(riaProfile).not.toContain(
