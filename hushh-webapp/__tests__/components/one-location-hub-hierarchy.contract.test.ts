@@ -74,9 +74,14 @@ describe("Location hub hierarchy", () => {
 
   it("uses one shared enter transition when opening and closing focused flows", () => {
     const body = functionBody("LocationRedesignHub");
+    const motionStart = body.indexOf(
+      "usePageEnterAnimation(flowContainerRef",
+    );
+    const motionWindow = body.slice(motionStart, motionStart + 500);
 
-    expect(body).toContain("usePageEnterAnimation(flowContainerRef");
-    expect(body).toMatch(/key:\s*flow,\s*\/\*[\s\S]*?enabled:\s*true,/u);
+    expect(motionStart).toBeGreaterThan(-1);
+    expect(motionWindow).toContain("key: flow");
+    expect(motionWindow).toContain("enabled: true");
     expect(body).toContain(
       '<div ref={flowContainerRef} className="space-y-4 sm:space-y-5">',
     );
@@ -116,5 +121,14 @@ describe("Location hub hierarchy", () => {
     expect(linksBody).toContain("<DurationSelector");
     expect(linksBody).not.toContain("<TemporaryLinkCard");
     expect(linksBody).not.toContain("SUBCARD_SURFACE");
+  });
+
+  it("keeps the People hub focused without the contact-sync explainer", () => {
+    const peopleBody = functionBody("PeopleHub");
+
+    expect(peopleBody).not.toContain("ContactInvitationNotice");
+    expect(source).not.toContain(
+      'import { ContactInvitationNotice } from "@/components/connections/contact-invitation-notice"',
+    );
   });
 });
