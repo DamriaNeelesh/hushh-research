@@ -415,6 +415,8 @@ import {
 } from "@/lib/one-location/eta-recompute";
 import { getApiBaseUrl } from "@/lib/services/api-service";
 import { buildInviteToOneShare } from "@/lib/connect/invite-to-one";
+import { useContactInvitations } from "@/lib/contacts/use-contact-invitations";
+import { createContactGraphReconciler } from "@/lib/contacts/reconcile-contact-graph";
 import { ReferralService } from "@/lib/services/referral-service";
 import { shareLink } from "@/lib/share/share-link";
 import { copyToClipboard } from "@/lib/utils/clipboard";
@@ -2753,7 +2755,13 @@ export function OneLocationAgentPageContent({
     useState<OneLocationContactSignalResult | null>(null);
   const [onboardingContactResult, setOnboardingContactResult] =
     useState<OnboardingContactSyncResult | null>(null);
-  const [contactSyncResultsOpen, setContactSyncResultsOpen] = useState(false);
+  const contactInvitations = useContactInvitations(contactSyncUserId);
+  const { clear: clearContactInvitations, beginSync: beginContactInvites, open: openContactInvitations, captureSession: captureContactInviteSession } = contactInvitations;
+  const [contactSyncResultsOpen, setContactSyncResultsOpenState] = useState(false);
+  const setContactSyncResultsOpen = useCallback((open: boolean) => {
+    if (!open) clearContactInvitations();
+    setContactSyncResultsOpenState(open);
+  }, [clearContactInvitations]);
   const contactResultOwnerUserIdRef = useRef(contactSyncUserId);
   useLayoutEffect(() => {
     if (contactResultOwnerUserIdRef.current === contactSyncUserId) return;
@@ -2764,7 +2772,7 @@ export function OneLocationAgentPageContent({
     setOnboardingContactResult(null);
     setContactSyncResultsOpen(false);
     setContactSignal(INITIAL_CONTACT_SIGNAL_STATE);
-  }, [contactSyncUserId]);
+  }, [contactSyncUserId, setContactSyncResultsOpen]);
   const [activityRange, setActivityRange] =
     useState<OneLocationActivityRange>("30d");
   const [activitySnapshot, setActivitySnapshot] =
@@ -3039,7 +3047,7 @@ export function OneLocationAgentPageContent({
 
   const [focusedSection, setFocusedSection] =
     useState<OneLocationFocusTarget | null>(null);
-  const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const refreshInFlightRef = useRef<Promise<boolean | undefined> | null>(null);
   const workspaceBootstrapUserRef = useRef<string | null>(null);
   const peopleSectionRef = useRef<HTMLElement | null>(null);
   const approvalsSectionRef = useRef<HTMLElement | null>(null);
@@ -3110,10 +3118,12 @@ export function OneLocationAgentPageContent({
       page = 1,
       append = false,
       query = recipientSearch,
+      throwOnError = false,
     }: {
       page?: number;
       append?: boolean;
       query?: string;
+      throwOnError?: boolean;
     } = {}): Promise<void> => {
       if (!vaultOwnerToken) return;
       const requestId = ++recipientPageRequestRef.current;
@@ -3141,9 +3151,10 @@ export function OneLocationAgentPageContent({
         setRecipientPage(result.page);
         setRecipientPageHasMore(result.hasMore);
         setRecipientPageTotalCount(result.totalCount);
-      } catch {
+      } catch (error) {
         // Keep the last safe page (or the bounded local fallback). This display
         // read must never interrupt complete authority-bearing share state.
+        if (throwOnError && requestId === recipientPageRequestRef.current) throw error;
       } finally {
         if (requestId === recipientPageRequestRef.current) {
           setRecipientPageLoading(false);
@@ -3951,7 +3962,12 @@ export function OneLocationAgentPageContent({
    * awaiting cannot stampede.
    */
   const refresh = useCallback(
-    async (options?: { background?: boolean }) => {
+    async (options?: { background?: boolean; throwOnError?: boolean }) => {
+      const waitForRefresh = async (task: Promise<boolean | undefined>) => {
+        if (await task === false && options?.throwOnError) {
+          throw new Error("Could not refresh connections.");
+        }
+      };
       if (!auth.userId) {
         setBusy(null);
         setLoadError("Sign in before loading location sharing.");
@@ -3966,7 +3982,7 @@ export function OneLocationAgentPageContent({
         return;
       }
       if (refreshInFlightRef.current) {
-        return refreshInFlightRef.current;
+        return waitForRefresh(refreshInFlightRef.current);
       }
       const activeUserId = auth.userId;
       const activeUser = auth.user;
@@ -4054,6 +4070,7 @@ export function OneLocationAgentPageContent({
             current.filter((recipientId) => nextRecipientIds.has(recipientId)),
           );
           suppressAutoRecipientSelectionRef.current = false;
+          return true;
         } catch (error) {
           suppressAutoRecipientSelectionRef.current = false;
           // ApiService handles rejected VAULT_OWNER tokens for web and native by
@@ -4067,13 +4084,14 @@ export function OneLocationAgentPageContent({
               ),
             );
           }
+          return false;
         } finally {
           refreshInFlightRef.current = null;
           if (showForegroundLoad) setBusy(null);
         }
       })();
       refreshInFlightRef.current = task;
-      return task;
+      return waitForRefresh(task);
     },
     [
       auth.user,
@@ -6859,6 +6877,40 @@ export function OneLocationAgentPageContent({
     };
   }, []);
 
+  const contactGraphAliveRef = useRef(true);
+  useEffect(() => {
+    contactGraphAliveRef.current = true;
+    return () => { contactGraphAliveRef.current = false; };
+  }, []);
+  const contactGraphReadRef = useRef(async () => {});
+  contactGraphReadRef.current = async () => {
+    await Promise.all([
+      refresh({ background: true, throwOnError: true }),
+      loadRecipientPage({ page: 1, query: recipientSearch, throwOnError: true }),
+    ]);
+  };
+  const contactGraphReconciler = useMemo(() => createContactGraphReconciler(), []);
+  const reconcileSyncedConnections = useCallback(async (owner: string, fresh = false): Promise<void> => {
+    const isCurrent = () => contactGraphAliveRef.current &&
+      contactSyncIdentityRef.current.userId === owner;
+    if (!isCurrent()) return;
+    try {
+      await contactGraphReconciler(owner, {
+        pendingRead: refreshInFlightRef.current,
+        isCurrent,
+        invalidate: () => CacheSyncService.onConnectionGraphMutated(owner),
+        // Read current search and callbacks after the old request settles.
+        read: () => contactGraphReadRef.current(),
+      }, fresh);
+    } catch {
+      if (isCurrent()) toast.info("Contacts synced. Could not refresh connections.", {
+        id: "contact-sync-refresh",
+        description: "Your matches are saved. Retry to update the list.",
+        action: { label: "Refresh connections", onClick: () => { void reconcileSyncedConnections(owner); } },
+      });
+    }
+  }, [contactGraphReconciler]);
+
   const handleSyncOnboardingContacts =
     useCallback(async (): Promise<OnboardingContactSyncResult> => {
       if (contactSyncInFlightRef.current) return { status: "cancelled" };
@@ -6891,6 +6943,7 @@ export function OneLocationAgentPageContent({
       // The inline action, named sheet, Settings return, and hub share one
       // mutation guard even when Finish unmounts the onboarding component.
       contactSyncInFlightRef.current = true;
+      const onInviteCandidates = beginContactInvites();
       setBusy("contactSync");
       try {
         let googleSource: MarketplaceContactSource | undefined;
@@ -6911,6 +6964,8 @@ export function OneLocationAgentPageContent({
         }
 
         const result = await syncOneLocationContactSignals({
+          accountEmail: auth.user?.email,
+          ...(onInviteCandidates ? { onInviteCandidates } : {}),
           // Read the picker/source before Firebase or backend identity can
           // consume the browser tap's transient activation.
           resolveIdToken: () => auth.user!.getIdToken(),
@@ -6937,11 +6992,7 @@ export function OneLocationAgentPageContent({
           (result.autoConnectedCount + result.alreadyConnectedCount > 0 ||
             result.mutationOutcomeUnknown)
         ) {
-          CacheSyncService.onConnectionGraphMutated(auth.userId);
-          await Promise.all([
-            refresh({ background: true }).catch(() => undefined),
-            loadRecipientPage({ page: 1, query: recipientSearch }),
-          ]);
+          await reconcileSyncedConnections(auth.userId, true);
         }
         trackEvent("one_location_contact_signal_synced", {
           route_id: "one_location",
@@ -7012,15 +7063,15 @@ export function OneLocationAgentPageContent({
       }
     }, [
       accountPhoneNumber,
+      beginContactInvites,
+      setContactSyncResultsOpen,
       auth.user,
       auth.userId,
       auth.resolveVerifiedPhoneNumber,
       contactSyncUserId,
       googleContactsFallback,
-      loadRecipientPage,
+      reconcileSyncedConnections,
       requestContactCheck,
-      recipientSearch,
-      refresh,
     ]);
 
   const handleAddOnboardingContact = useCallback(
@@ -7071,7 +7122,7 @@ export function OneLocationAgentPageContent({
    * and has never once been written, and first-touch wins inside it so this
    * cannot overwrite an earlier, truer source.
    */
-  const handleInviteContactCandidates = useCallback(async () => {
+  const prepareContactInvitation = useCallback(async () => {
     rememberLocationInviteSource("contact_sync");
 
     let referralLink = "";
@@ -7095,6 +7146,16 @@ export function OneLocationAgentPageContent({
         }
       : buildInviteToOneShare();
 
+    return share;
+  }, [auth.user]);
+
+  const handleInviteContactCandidates = useCallback(async () => {
+    if (contactInvitations.enabled && contactInvitations.candidates.length) {
+      setContactSyncResultsOpen(true);
+      await openContactInvitations(prepareContactInvitation);
+      return;
+    }
+    const share = await prepareContactInvitation();
     if (!share) {
       // No referral link AND no shareable origin — the same condition that
       // hides the Connect invite row entirely rather than offering a link that
@@ -7112,7 +7173,10 @@ export function OneLocationAgentPageContent({
       if (isShareCancellationError(error)) return;
       toast.error("Could not open the share sheet.");
     }
-  }, [auth.user]);
+  }, [contactInvitations.enabled, contactInvitations.candidates.length, setContactSyncResultsOpen, openContactInvitations, prepareContactInvitation]);
+
+  const contactInviteActionRef = useRef(handleInviteContactCandidates);
+  useLayoutEffect(() => { contactInviteActionRef.current = handleInviteContactCandidates; }, [handleInviteContactCandidates]);
 
   const handleSyncContactSignal = useCallback(async () => {
     if (!auth.user?.getIdToken) {
@@ -7128,6 +7192,8 @@ export function OneLocationAgentPageContent({
     if (!requestContactCheck()) return;
     if (contactSyncInFlightRef.current) return;
     contactSyncInFlightRef.current = true;
+    const onInviteCandidates = beginContactInvites();
+    const inviteSessionIsCurrent = captureContactInviteSession();
     const initiatingUserId = contactSyncUserId;
     const resolveLatestAccountPhoneNumber =
       createContactSyncAccountPhoneResolver({
@@ -7177,6 +7243,8 @@ export function OneLocationAgentPageContent({
       }));
 
       const result = await syncOneLocationContactSignals({
+        accountEmail: auth.user?.email,
+        ...(onInviteCandidates ? { onInviteCandidates } : {}),
         // Preserve transient activation for Chrome Android's Contact Picker;
         // token and phone hydration happen inside the pipeline after reading.
         resolveIdToken: () => auth.user!.getIdToken(),
@@ -7219,11 +7287,7 @@ export function OneLocationAgentPageContent({
         (result.autoConnectedCount + result.alreadyConnectedCount > 0 ||
           result.mutationOutcomeUnknown)
       ) {
-        CacheSyncService.onConnectionGraphMutated(auth.userId);
-        await Promise.all([
-          refresh({ background: true }).catch(() => undefined),
-          loadRecipientPage({ page: 1, query: recipientSearch }),
-        ]);
+        await reconcileSyncedConnections(auth.userId, true);
       }
       // A partial read must never be reported as a whole one. The web Contact
       // Picker and iOS limited access both return only a hand-picked subset,
@@ -7269,7 +7333,7 @@ export function OneLocationAgentPageContent({
                       // connection: `buildInviteToOneShare` documents why, and
                       // an invite that consents on the recipient's behalf is not
                       // an invite.
-                      onClick: () => void handleInviteContactCandidates(),
+                      onClick: () => { if (inviteSessionIsCurrent()) void contactInviteActionRef.current(); },
                     },
                   }
                 : {}),
@@ -7321,18 +7385,18 @@ export function OneLocationAgentPageContent({
     }
   }, [
     accountPhoneNumber,
+    beginContactInvites,
+    captureContactInviteSession,
+    reconcileSyncedConnections,
+    setContactSyncResultsOpen,
     auth.user,
     auth.userId,
     auth.resolveVerifiedPhoneNumber,
     contactSyncUserId,
     contactSignal,
     googleContactsFallback,
-    handleInviteContactCandidates,
     openContactSettingsAndWatch,
-    loadRecipientPage,
     requestContactCheck,
-    recipientSearch,
-    refresh,
   ]);
 
   useEffect(() => {
@@ -12639,6 +12703,7 @@ export function OneLocationAgentPageContent({
   }, [auth.userId]);
 
   const dismissLocationOnboarding = useCallback(async () => {
+    clearContactInvitations();
     if (mode === "setup") {
       await onSetupComplete?.();
       markLocationOnboardingSeen();
@@ -12650,6 +12715,7 @@ export function OneLocationAgentPageContent({
     setLocationOnboardingGate("hidden");
     setLocationOnboardingBusy(false);
   }, [
+    clearContactInvitations,
     clearLocationOnboardingProgress,
     markLocationOnboardingSeen,
     mode,
@@ -12657,6 +12723,7 @@ export function OneLocationAgentPageContent({
   ]);
 
   const skipLocationOnboarding = useCallback(async () => {
+    clearContactInvitations();
     if (mode === "setup") {
       await onSetupSkip?.();
       clearLocationOnboardingProgress();
@@ -12664,6 +12731,7 @@ export function OneLocationAgentPageContent({
     }
     dismissLocationOnboarding();
   }, [
+    clearContactInvitations,
     clearLocationOnboardingProgress,
     dismissLocationOnboarding,
     mode,
@@ -13448,6 +13516,7 @@ export function OneLocationAgentPageContent({
         />
         <ContactSyncResultsSheet
           takeover
+          invitations={contactInvitations}
           open={contactSyncResultsOpen}
           onOpenChange={setContactSyncResultsOpen}
           result={contactSyncResult}
@@ -13845,6 +13914,7 @@ export function OneLocationAgentPageContent({
         </AppPageContentRegion>
         <ContactSyncResultsSheet
           open={contactSyncResultsOpen}
+          invitations={contactInvitations}
           onOpenChange={setContactSyncResultsOpen}
           result={contactSyncResult}
           syncing={busy === "contactSync"}

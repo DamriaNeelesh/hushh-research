@@ -523,6 +523,24 @@ describe("Connect — People", () => {
     );
   });
 
+  it("keeps rows on refresh failure and offers a display-only retry", async () => {
+    const page = { items: [{ connectionId: "c-kept", userId: "u-kept", displayName: "Kept Friend", photoUrl: null }],
+      page: 1, hasMore: false, totalCount: 1, audience: "all" as const };
+    mocks.listConnectionsPage.mockResolvedValueOnce(page)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({ ...page, items: [...page.items,
+        { connectionId: "c-restored", userId: "u-restored", displayName: "Restored Friend", photoUrl: null }], totalCount: 2 });
+    render(<ConnectPageClient />);
+    expect(await screen.findByText("Kept Friend")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh contacts" }));
+    expect(await screen.findByText("Could not refresh connections")).toBeTruthy();
+    expect(screen.getByText("Kept Friend")).toBeTruthy();
+    fireEvent.click(screen.getByText("Could not refresh connections"));
+    expect(await screen.findByText("Restored Friend")).toBeTruthy();
+    expect(screen.queryByText("Could not refresh connections")).toBeNull();
+    expect(screen.getByText("My connections (2)")).toBeTruthy();
+  });
+
   it("blocks Load More while a removal event refreshes page 1", async () => {
     const refreshedPageOne = deferred<TestConnectionPage>();
     const stalePageThree = deferred<TestConnectionPage>();
