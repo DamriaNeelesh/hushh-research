@@ -3632,7 +3632,7 @@ class ConnectionsService:
                     # target may be recognized only through an already-active
                     # edge. New and revoked pairs remain undisclosed.
                     continue
-                elif existing_status == "revoked":
+                elif existing_status == "revoked" and existing is not None:
                     # A fresh explicit sync can undo only this requester's own
                     # earlier disconnect. Episode equality also fails closed
                     # after an older binary writes a newer revocation.
