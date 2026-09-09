@@ -1717,12 +1717,10 @@ function LocalMapPreview({
         className={cn(
           "relative h-48 max-w-full overflow-hidden bg-[color:var(--app-secondary-fill)] sm:h-56",
           // Nested in SharedWithMeCard the preview draws no card of its own, so
-          // THIS element frames the map: a 2px iOS-accent outline rounded to the
-          // container's 14px inner radius on top (so the stroke follows the same
-          // curve the container clips to instead of being sliced by it) and
-          // square on the bottom, where the metadata column continues below.
-          nested &&
-            "rounded-t-[18px] rounded-b-none border-2 border-[color:var(--app-accent)]",
+          // The clipping parent owns the neutral outline. Keeping the nested
+          // map borderless avoids the loud double-frame that previously made
+          // the map look detached from its own metadata.
+          nested && "rounded-t-[18px] rounded-b-none",
         )}
       >
         <LiveMap point={point} viewportResetKey={viewportResetKey} />
@@ -1753,7 +1751,7 @@ function LocalMapPreview({
 
       <div className="space-y-3 p-3.5 sm:p-4">
         <div className="min-w-0">
-          <p className="break-words text-[12px] font-medium text-[color:var(--app-secondary-label)] [overflow-wrap:anywhere]">
+          <p className="break-words text-[13px] font-medium leading-5 text-[color:var(--app-secondary-label)] [overflow-wrap:anywhere]">
             Updated {captured}
             {accuracy ? ` - ${accuracy}` : ""} -{" "}
             {locationSourceLabel(point.sourcePlatform)}

@@ -558,20 +558,30 @@ export function SharedWithMeCard({
     <article
       className={cn(
         SUBCARD_SURFACE,
-        "overflow-hidden rounded-[20px] border border-[color:var(--app-card-border-standard)] p-0 shadow-[var(--app-card-shadow-standard)] dark:shadow-none",
+        "min-w-0 overflow-hidden rounded-[22px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-0 shadow-[var(--app-card-shadow-feature)]",
       )}
     >
-      <div className="space-y-3.5 p-4 sm:p-5">
+      <div className="space-y-3.5 p-4 pb-3 sm:p-5 sm:pb-4">
         <div className="flex items-start gap-3">
-          <Avatar initials={initialsFrom(name)} imageUrl={photoUrl} size={44} />
+          <span className="relative shrink-0" aria-hidden="true">
+            <Avatar
+              initials={initialsFrom(name)}
+              imageUrl={photoUrl}
+              size={46}
+            />
+            <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-[color:var(--app-card-surface-default-solid)] bg-[color:var(--app-success)]" />
+          </span>
           <div className="min-w-0 flex-1 pt-0.5">
-            <RowLabel as="p" className="text-[17px] leading-6">
+            <RowLabel
+              as="p"
+              className="truncate text-[18px] font-semibold leading-6 text-[color:var(--app-label)]"
+            >
               {name}
             </RowLabel>
             <RowDescription
               className={cn(
                 MUTED_TEXT,
-                "mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] leading-5 text-[color:var(--app-secondary-label)]",
+                "mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] font-medium leading-5 text-[color:var(--app-secondary-label)]",
               )}
             >
               {statusLine}
@@ -584,7 +594,7 @@ export function SharedWithMeCard({
           </div>
         ) : null}
         {address || addressLoading || coordinatesFallback ? (
-          <div className="flex items-start gap-2 border-t border-[color:var(--app-separator)] pt-3">
+          <div className="flex min-w-0 items-start gap-2.5 rounded-[14px] bg-[color:var(--app-neutral-fill)] px-3 py-2.5">
             <MapPin
               className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--app-accent)]"
               aria-hidden="true"
@@ -595,7 +605,7 @@ export function SharedWithMeCard({
                 aria-hidden="true"
               />
             ) : (
-              <RowDescription className="min-w-0 break-words text-[14px] leading-5 text-[color:var(--app-secondary-label)]">
+              <RowDescription className="min-w-0 break-words text-[13px] font-medium leading-5 text-[color:var(--app-label)]">
                 {address ?? coordinatesFallback}
               </RowDescription>
             )}
@@ -667,10 +677,15 @@ export function SharedWithMeCard({
       </div>
 
       {canTogglePreview ? (
-        <div className="px-4 pb-3 sm:px-5">
+        <div className="px-4 pb-3 sm:px-5 sm:pb-4">
           <button
             type="button"
-            className="ui-text-button-label -ml-2 inline-flex min-h-10 items-center gap-1.5 rounded-full px-2 text-[color:var(--app-accent)] transition-colors hover:bg-[color:var(--app-accent-tint)] hover:text-[color:var(--app-accent-deep)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:opacity-60"
+            className={cn(
+              "ui-text-button-label inline-flex min-h-11 items-center gap-2 rounded-[13px] px-3.5 text-[color:var(--app-accent)] transition-[background-color,color,transform] duration-200 hover:bg-[color:var(--app-accent-surface-strong)] hover:text-[color:var(--app-accent-deep)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:opacity-60 motion-reduce:transition-none",
+              isPreviewExpanded
+                ? "-ml-2 min-h-10 rounded-full bg-transparent px-2"
+                : "w-full justify-center bg-[color:var(--app-accent-tint)]",
+            )}
             aria-label={
               isPreviewExpanded
                 ? `Collapse shared location from ${name}`
@@ -683,7 +698,9 @@ export function SharedWithMeCard({
           >
             {viewBusy && !isPreviewExpanded ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : null}
+            ) : (
+              <MapPin className="h-4 w-4" aria-hidden="true" />
+            )}
             {isPreviewExpanded ? "Hide map" : "View location"}
             <ChevronDown
               className={cn(
@@ -697,7 +714,7 @@ export function SharedWithMeCard({
       ) : null}
 
       <div id={previewRegionId} hidden={!isPreviewExpanded}>
-        <div className="relative mx-4 overflow-hidden rounded-[16px] border border-[color:var(--app-card-border-standard)] sm:mx-5">
+        <div className="relative mx-3.5 overflow-hidden rounded-[18px] border border-[color:var(--app-card-border-strong)] bg-[color:var(--app-secondary-fill)] sm:mx-5">
           {children}
           {isPreviewExpanded && onRecenter ? (
             <ShellActionSurface
@@ -715,12 +732,12 @@ export function SharedWithMeCard({
       </div>
 
       {message ? (
-        <div className="px-4 pt-3 sm:px-5">
+        <div className="px-4 pt-3.5 sm:px-5">
           <RowDescription
             as="p"
             className={cn(
               MUTED_TEXT,
-              "border-l-2 border-[color:var(--app-accent-border)] pl-3 text-[14px] italic leading-5 text-[color:var(--app-secondary-label)]",
+              "rounded-r-[12px] border-l-2 border-[color:var(--app-accent-border)] bg-[color:var(--app-accent-tint)] py-2 pl-3 pr-2 text-[14px] italic leading-5 text-[color:var(--app-secondary-label)]",
             )}
           >
             “{message}”
@@ -728,37 +745,40 @@ export function SharedWithMeCard({
         </div>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-[color:var(--app-separator)] px-4 py-3 sm:px-5">
-        {canOpenMap ? (
-          <Button
-            asChild
-            variant="ghost"
-            size="sm"
-            className="ui-text-button-label h-11 rounded-full px-0 text-[color:var(--app-accent)] hover:bg-transparent hover:text-[color:var(--app-accent-deep)]"
-          >
-            <a
-              href={mapHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="Open shared location in Google Maps"
+      {canOpenMap || onRemove ? (
+        <div className="mt-4 flex min-w-0 flex-col gap-1 border-t border-[color:var(--app-separator)] px-3 py-2.5 min-[390px]:flex-row min-[390px]:items-center sm:px-4">
+          {canOpenMap ? (
+            <Button
+              asChild
+              variant="ghost"
+              size="sm"
+              className="ui-text-button-label h-11 min-w-0 justify-start rounded-[12px] px-3 text-[color:var(--app-accent)] hover:bg-[color:var(--app-accent-tint)] hover:text-[color:var(--app-accent-deep)] min-[390px]:justify-center"
             >
-              Open in Google Maps
-              <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
-            </a>
-          </Button>
-        ) : null}
-        {onRemove ? (
-          <button
-            type="button"
-            onClick={onRemove}
-            disabled={removeBusy}
-            aria-label={`Remove ${name} from Shared with me`}
-            className="ui-text-button-label inline-flex min-h-11 items-center justify-center rounded-full text-[color:var(--app-destructive)] transition-colors hover:text-[color:var(--app-destructive)]/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
-          >
-            {removeBusy ? "Stopping…" : "Stop viewing"}
-          </button>
-        ) : null}
-      </div>
+              <a
+                href={mapHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Open shared location in Google Maps"
+              >
+                Open in Google Maps
+                <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
+              </a>
+            </Button>
+          ) : null}
+          {onRemove ? (
+            <button
+              type="button"
+              onClick={onRemove}
+              disabled={removeBusy}
+              aria-label={`Remove ${name} from Shared with me`}
+              className="ui-text-button-label inline-flex min-h-11 items-center justify-center rounded-[12px] px-3 text-[color:var(--app-destructive)] transition-colors hover:bg-[color:var(--app-destructive-tint)] hover:text-[color:var(--app-destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
+            >
+              <X className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              {removeBusy ? "Stopping…" : "Stop viewing"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </article>
   );
 }

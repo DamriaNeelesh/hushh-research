@@ -2629,7 +2629,12 @@ function LocationDetailFlow({
     },
     "shared-with-me": {
       title: "Shared with me",
-      description: "People sharing location with you.",
+      description:
+        receivedGrantGroups.length === 1
+          ? "1 person is sharing their location with you."
+          : receivedGrantGroups.length > 1
+            ? `${receivedGrantGroups.length} people are sharing their locations with you.`
+            : "Locations shared with you appear here.",
     },
     "needs-review": {
       title: "Needs review",
@@ -2638,7 +2643,14 @@ function LocationDetailFlow({
   }[kind];
 
   return (
-    <div className="space-y-5" data-testid={`one-location-${kind}`}>
+    <div
+      className={cn(
+        "space-y-5",
+        kind === "shared-with-me" &&
+          "mx-auto w-full max-w-[680px] pb-[max(16px,env(safe-area-inset-bottom))]",
+      )}
+      data-testid={`one-location-${kind}`}
+    >
       <TaskFlowHeader title={copy.title} description={copy.description} />
       {kind === "active-shares" ? (
         ownerGrantGroups.length ? (
