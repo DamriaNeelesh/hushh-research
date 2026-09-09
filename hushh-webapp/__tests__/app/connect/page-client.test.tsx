@@ -857,9 +857,13 @@ describe("Connect — People", () => {
         await screen.findByText("Person 0");
       }
       const before = mocks.searchDirectory.mock.calls.length;
-      act(() => {
-        expect(enter()).toBe(true);
-        enter();
+      // Both directories render "Person 0". That text can still belong to
+      // the previous list while the new sentinel's observer is attaching.
+      await waitFor(() => {
+        act(() => {
+          expect(enter()).toBe(true);
+          enter();
+        });
       });
       await screen.findByText("Person 20");
       expect(screen.getByText("Person 0")).toBeTruthy();
@@ -1793,7 +1797,7 @@ describe("Connect — removing a connection", () => {
     expect(confirm?.consequence).toContain("share");
   });
 
-  it("removes only when the card confirms it", async () => {
+  it("refuses a model-supplied confirmation slot", async () => {
     mocks.listConnections.mockResolvedValue([RASHID]);
     mocks.removeConnection.mockResolvedValue({});
     render(<ConnectPageClient />);
@@ -1807,6 +1811,30 @@ describe("Connect — removing a connection", () => {
         connectionId: "c-1",
         confirmed: true,
       });
+    });
+
+    expect(result).toMatchObject({ status: "blocked" });
+    expect(mocks.removeConnection).not.toHaveBeenCalled();
+  });
+
+  it("removes only after a trusted in-app confirmation", async () => {
+    mocks.listConnections.mockResolvedValue([RASHID]);
+    mocks.removeConnection.mockResolvedValue({});
+    render(<ConnectPageClient />);
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(1));
+
+    const remove = resolveLocalOnboardingHandler("connect.remove_connection");
+    let result: Awaited<ReturnType<NonNullable<typeof remove>>> | undefined;
+    await act(async () => {
+      result = await remove!(
+        {
+          person: "Rashid",
+          connectionId: "c-1",
+        },
+        {
+          humanConfirmationToken: "test-confirmation-token",
+        },
+      );
     });
 
     expect(result).toMatchObject({ status: "succeeded" });
