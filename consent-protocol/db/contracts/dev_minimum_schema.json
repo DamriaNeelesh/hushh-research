@@ -1222,7 +1222,7 @@
       "created_at",
       "updated_at",
       "revoked_at",
-      "revoked_by_user_id",
+      "revoked_by_side",
       "revoked_by_at"
     ]
   }

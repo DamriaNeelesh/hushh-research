@@ -20,7 +20,7 @@ BATCH_SQL = """
 WITH batch AS (
   SELECT id, user_a_id, user_b_id, revoked_at FROM connections
   WHERE status = 'revoked' AND revoked_at IS NOT NULL
-    AND revoked_by_user_id IS NULL AND revoked_by_at IS NULL
+    AND revoked_by_side IS NULL AND revoked_by_at IS NULL
     AND (CAST(:after_id AS UUID) IS NULL OR id > CAST(:after_id AS UUID))
   ORDER BY id LIMIT :batch_size
 )
@@ -41,10 +41,13 @@ LEFT JOIN LATERAL (
 """
 
 APPLY_SQL = """
-UPDATE connections SET revoked_by_user_id = :actor, revoked_by_at = revoked_at
+UPDATE connections SET revoked_by_side = CASE
+    WHEN user_a_id = :actor THEN 'a' WHEN user_b_id = :actor THEN 'b' END,
+  revoked_by_at = revoked_at
 WHERE id = CAST(:id AS UUID) AND status = 'revoked'
+  AND :actor IN (user_a_id, user_b_id)
   AND revoked_at = :observed_revoked_at
-  AND revoked_by_user_id IS NULL AND revoked_by_at IS NULL
+  AND revoked_by_side IS NULL AND revoked_by_at IS NULL
 RETURNING id
 """
 

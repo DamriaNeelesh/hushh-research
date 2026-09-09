@@ -57,12 +57,14 @@ Peer-made disconnects, unknown historical actors, hidden/opted-out profiles,
 and disconnects made after the server began the sync remain protected. A sync
 does not restore revoked location/information grants or named Circle membership.
 
-Migration `205_contact_sync_disconnect_actor.sql` adds nullable actor and
+Migration `205_contact_sync_disconnect_actor.sql` adds nullable actor-side and
 revocation-episode fields on the existing `connections` authority table.
 Apply it before deploying the updated backend. The timestamp pair also fails
 closed during a mixed-version rollout when an older writer removes a connection.
 The fields share the connection's retention and account-deletion lifecycle;
-they contain server-side account identifiers, never address-book information.
+the actor side refers to the existing immutable A/B account columns, never
+address-book information or a mutable account-ID copy. Migration 201 deletion
+guards remain installed on those canonical participant identities.
 Postgres remains authoritative; any future Redis invalidation layer must retain
 the same transaction/episode checks.
 

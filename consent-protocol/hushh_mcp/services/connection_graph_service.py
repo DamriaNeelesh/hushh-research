@@ -499,11 +499,13 @@ class ConnectionGraphService:
                   GREATEST(:requester_user_id, target_user_id)
                 ON CONFLICT (user_a_id, user_b_id) DO UPDATE SET
                   status = 'active', updated_at = NOW(), revoked_at = NULL,
-                  revoked_by_user_id = NULL, revoked_by_at = NULL
+                  revoked_by_side = NULL, revoked_by_at = NULL
                 WHERE connections.status = 'active'
                   OR (
                     connections.status = 'revoked'
-                    AND connections.revoked_by_user_id = :requester_user_id
+                    AND connections.revoked_by_side = CASE
+                      WHEN connections.user_a_id = :requester_user_id THEN 'a'
+                      WHEN connections.user_b_id = :requester_user_id THEN 'b' END
                     AND connections.revoked_by_at = connections.revoked_at
                     AND connections.revoked_at < CAST(:sync_started_at AS TIMESTAMPTZ)
                     AND EXISTS (

@@ -3,7 +3,8 @@
 Unit doubles protect most edge cases, but they cannot execute PostgreSQL's
 ``UNNEST``/``digest`` matcher or the set-based graph writes. Point
 ``CONTACT_SYNC_POSTGRES_TEST_URL`` at a disposable PostgreSQL database to run
-this test. Every fixture lives in a unique schema that is removed afterward.
+these tests. Directory/lock fixtures use unique schemas. The full resync
+fixture creates and removes a dedicated database to run real deletion guards.
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ from unittest.mock import patch
 import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import IntegrityError
 
 from hushh_mcp.services.connection_graph_service import (
     activate_contact_sync_connections_bulk,
@@ -61,11 +64,14 @@ class _LiveMatcher(RIAIAMService):
         return None
 
 
-async def _prepare_schema(schema: str) -> None:
-    connection = await asyncpg.connect(POSTGRES_URL)
+async def _prepare_schema(
+    schema: str, *, postgres_url: str = POSTGRES_URL, full_deletion_guards: bool = False
+) -> None:
+    connection = await asyncpg.connect(postgres_url)
     try:
         await connection.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
-        await connection.execute(f'CREATE SCHEMA "{schema}"')
+        if schema != "public":
+            await connection.execute(f'CREATE SCHEMA "{schema}"')
         await connection.execute(f'SET search_path TO "{schema}", public')
         await connection.execute(
             """
@@ -162,9 +168,22 @@ async def _prepare_schema(schema: str) -> None:
             encoding="utf-8"
         )
         await connection.execute(migration)
-        await connection.execute(
-            (ROOT / "db/migrations/205_contact_sync_disconnect_actor.sql").read_text()
-        )
+        actor_migration = (ROOT / "db/migrations/205_contact_sync_disconnect_actor.sql").read_text()
+        if full_deletion_guards:
+            # Use the complete, unmodified migration in a fresh database's
+            # public schema, including its catalog installer and DDL trigger.
+            await connection.execute("CREATE TABLE vault_keys (user_id TEXT PRIMARY KEY)")
+            await connection.execute(
+                (ROOT / "db/migrations/201_account_deletion_tombstones.sql").read_text()
+            )
+        else:
+            # Directory-policy/lock tests deliberately isolate migration 200
+            # from account-deletion locking. The full resync test below applies
+            # both complete migrations in public, without this scoped exclusion.
+            actor_migration = actor_migration.replace(
+                "SELECT install_account_deletion_write_guards();", ""
+            )
+        await connection.execute(actor_migration)
         await connection.executemany(
             """
             INSERT INTO actor_profiles (
@@ -499,10 +518,24 @@ def test_disconnect_waiting_on_graph_lock_wins_over_older_sync_cutoff() -> None:
     reason="set CONTACT_SYNC_POSTGRES_TEST_URL to a disposable PostgreSQL database",
 )
 def test_explicit_resync_disconnect_episodes_and_backfill_on_postgres() -> None:
-    schema = f"contact_resync_{uuid.uuid4().hex}"
-    engine = create_engine(POSTGRES_URL.replace("postgresql://", "postgresql+psycopg2://", 1))
+    schema = "public"
+    database = f"codex_contact_resync_{uuid.uuid4().hex}"
+    admin_engine = create_engine(
+        make_url(POSTGRES_URL).set(drivername="postgresql+psycopg2"),
+        isolation_level="AUTOCOMMIT",
+    )
+    url = make_url(POSTGRES_URL).set(database=database)
+    engine = create_engine(url.set(drivername="postgresql+psycopg2"))
     try:
-        asyncio.run(_prepare_schema(schema))
+        with admin_engine.connect() as admin:
+            admin.exec_driver_sql(f'CREATE DATABASE "{database}"')
+        asyncio.run(
+            _prepare_schema(
+                schema,
+                postgres_url=url.render_as_string(hide_password=False),
+                full_deletion_guards=True,
+            )
+        )
         with engine.begin() as connection:
             connection.execute(text(f'SET LOCAL search_path TO "{schema}", public'))
             connection.execute(
@@ -565,6 +598,27 @@ def test_explicit_resync_disconnect_episodes_and_backfill_on_postgres() -> None:
                 patch.object(service, "_end_one_location_circle_memberships") as teardown,
             ):
                 assert sync()["matchedCount"] == 3
+                guard_args = (
+                    connection.execute(
+                        text("""
+                    SELECT encode(tgargs, 'escape') FROM pg_trigger
+                    WHERE tgrelid='connections'::regclass AND NOT tgisinternal
+                      AND tgname LIKE 'trg_reject_deleted_account_%'
+                """)
+                    )
+                    .scalars()
+                    .all()
+                )
+                assert guard_args and all(
+                    "user_a_id" in args and "user_b_id" in args and "revoked_by" not in args
+                    for args in guard_args
+                )
+                with pytest.raises(IntegrityError, match="account identity reference is immutable"):
+                    with connection.begin_nested():
+                        connection.execute(
+                            text("UPDATE connections SET user_a_id='a_reparented' WHERE id=:id"),
+                            {"id": edge("manish")["id"]},
+                        )
                 removed_id = str(edge("manish")["id"])
                 circle_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
                 connection.execute(
@@ -601,7 +655,7 @@ def test_explicit_resync_disconnect_episodes_and_backfill_on_postgres() -> None:
                     ).scalar_one()
                     == 2
                 )
-                assert edge("manish")["revoked_by_user_id"] == "owner"
+                assert edge("manish")["revoked_by_side"] == "b"
                 assert edge("manish")["revoked_by_at"] == edge("manish")["revoked_at"]
                 restored = sync()
                 assert (
@@ -626,7 +680,7 @@ def test_explicit_resync_disconnect_episodes_and_backfill_on_postgres() -> None:
                     ).scalar_one()
                     == 6
                 )
-                assert edge("manish")["revoked_by_user_id"] is None
+                assert edge("manish")["revoked_by_side"] is None
                 assert (
                     connection.execute(
                         text(
@@ -639,7 +693,27 @@ def test_explicit_resync_disconnect_episodes_and_backfill_on_postgres() -> None:
                 # Peer intent and idempotent removal preserve the original actor.
                 assert service.remove_connection("parth", str(edge("parth")["id"]))["removed"] == 1
                 assert service.remove_connection("owner", str(edge("parth")["id"]))["removed"] == 0
-                assert edge("parth")["revoked_by_user_id"] == "parth"
+                assert edge("parth")["revoked_by_side"] == "b"
+                assert sync()["suppressedCount"] == 1
+
+                # Each side may reverse its own removal. Alternating actors
+                # changes relationship metadata while participant IDs stay fixed.
+                owner_lookup = _lookup("owner", "+919000000001")
+                assert (
+                    service.sync_contact_matches(
+                        "parth",
+                        phone_lookups=[owner_lookup],
+                        matches=[{"lookup_id": "owner", "user_id": "owner"}],
+                        sync_started_at=service.begin_contact_sync(),
+                    )["autoConnectedCount"]
+                    == 1
+                )
+                assert edge("parth")["revoked_by_side"] is None
+                service.remove_connection("owner", str(edge("parth")["id"]))
+                assert edge("parth")["revoked_by_side"] == "a"
+                assert sync()["autoConnectedCount"] == 1
+                service.remove_connection("parth", str(edge("parth")["id"]))
+                assert edge("parth")["revoked_by_side"] == "b"
                 assert sync()["suppressedCount"] == 1
 
                 # The transaction began before this cutoff; clock_timestamp,
@@ -683,7 +757,7 @@ def test_explicit_resync_disconnect_episodes_and_backfill_on_postgres() -> None:
                 # Historical actor backfill requires both exact-episode events.
                 connection.execute(
                     text(
-                        "UPDATE connections SET revoked_by_user_id=NULL, revoked_by_at=NULL, revoked_at=NOW() WHERE id=:id"
+                        "UPDATE connections SET revoked_by_side=NULL, revoked_by_at=NULL, revoked_at=NOW() WHERE id=:id"
                     ),
                     {"id": edge("manish")["id"]},
                 )
@@ -758,10 +832,25 @@ def test_explicit_resync_disconnect_episodes_and_backfill_on_postgres() -> None:
             connection.exec_driver_sql(up.replace("BEGIN;", "").replace("COMMIT;", ""))
             assert (
                 connection.execute(
-                    text("SELECT COUNT(*) FROM connections WHERE revoked_by_user_id IS NOT NULL")
+                    text("SELECT COUNT(*) FROM connections WHERE revoked_by_side IS NOT NULL")
                 ).scalar_one()
                 == 0
             )
+            # Real root deletion still forbids recreating a canonical pair.
+            connection.execute(text("DELETE FROM actor_profiles WHERE user_id='manish'"))
+            with pytest.raises(IntegrityError, match="account identity is deleted"):
+                with connection.begin_nested():
+                    connection.execute(
+                        text(
+                            "INSERT INTO connections(user_a_id,user_b_id) VALUES ('manish','zz_person')"
+                        )
+                    )
     finally:
         engine.dispose()
-        asyncio.run(_drop_schema(schema))
+        assert (
+            database.startswith("codex_contact_resync_")
+            and len(database) == len("codex_contact_resync_") + 32
+        )
+        with admin_engine.connect() as admin:
+            admin.exec_driver_sql(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
+        admin_engine.dispose()

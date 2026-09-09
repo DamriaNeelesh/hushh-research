@@ -3409,7 +3409,10 @@ class ConnectionsService:
                 SELECT
                   connection.id, connection.user_a_id, connection.user_b_id,
                   connection.status, connection.revoked_at,
-                  connection.revoked_by_user_id, connection.revoked_by_at,
+                  CASE connection.revoked_by_side
+                    WHEN 'a' THEN connection.user_a_id
+                    WHEN 'b' THEN connection.user_b_id
+                  END AS revoked_by_user_id, connection.revoked_by_at,
                   CASE
                     WHEN connection.user_a_id = :requester_id THEN connection.user_b_id
                     ELSE connection.user_a_id
@@ -3822,7 +3825,9 @@ class ConnectionsService:
                 WITH episode AS MATERIALIZED (SELECT clock_timestamp() AS revoked_at)
                 UPDATE connections
                 SET status = 'revoked', revoked_at = episode.revoked_at, updated_at = NOW(),
-                    revoked_by_user_id = :actor_user_id, revoked_by_at = episode.revoked_at
+                    revoked_by_side = CASE WHEN user_a_id = :actor_user_id THEN 'a'
+                      WHEN user_b_id = :actor_user_id THEN 'b' END,
+                    revoked_by_at = episode.revoked_at
                 FROM episode
                 WHERE id = :id AND status = 'active'
                 RETURNING id, connections.revoked_at
@@ -3842,7 +3847,9 @@ class ConnectionsService:
                     """
                     UPDATE connections
                     SET status = 'revoked', revoked_at = :episode,
-                        revoked_by_at = :episode, revoked_by_user_id = :actor,
+                        revoked_by_at = :episode,
+                        revoked_by_side = CASE WHEN user_a_id = :actor THEN 'a'
+                          WHEN user_b_id = :actor THEN 'b' END,
                         updated_at = NOW()
                     WHERE id = :id
                     RETURNING id
