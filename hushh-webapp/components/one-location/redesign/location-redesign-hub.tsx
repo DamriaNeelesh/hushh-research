@@ -1093,7 +1093,10 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   // re-triggers it (#5430).
   usePageEnterAnimation(flowContainerRef, {
     key: flow,
-    enabled: flow !== "none",
+    // The hub is also a destination: closing a focused flow should settle back
+    // into it with the same page-enter beat used when opening that flow. This
+    // removes the hard cut that made Location feel unlike the One home roster.
+    enabled: true,
   });
   const liveShareDurationTriggerRef = useRef<HTMLElement | null>(null);
   const openLiveShareDuration = (
@@ -1711,7 +1714,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   /* Hub (Now | People | Links)                                        */
   /* ----------------------------------------------------------------- */
   return renderLocationSurface(
-    <div className="space-y-4 sm:space-y-5">
+    <div ref={flowContainerRef} className="space-y-4 sm:space-y-5">
       <PageHeader
         title={<PageTitle as="span">Location</PageTitle>}
         leading={<LocationHeaderIconTile />}

@@ -2480,8 +2480,8 @@ export function OneLocationAgentPageContent({
     state: OneLocationState;
   } | null>(() => {
     if (!auth.userId) return null;
-    const snapshot = OneLocationStateResource.peek(auth.userId);
-    return snapshot ? { userId: auth.userId, state: snapshot.data } : null;
+    const snapshot = OneLocationStateResource.readPresentation(auth.userId);
+    return snapshot ? { userId: auth.userId, state: snapshot } : null;
   });
   // A previous account's state must never survive an auth transition, even for
   // one render. The resource is scoped to the signed-in owner and memory-only.
@@ -2497,8 +2497,8 @@ export function OneLocationAgentPageContent({
     const key = OneLocationStateResource.key(userId);
     const cache = CacheService.getInstance();
     const applySnapshot = () => {
-      const snapshot = OneLocationStateResource.peek(userId);
-      setStateEntry(snapshot ? { userId, state: snapshot.data } : null);
+      const snapshot = OneLocationStateResource.readPresentation(userId);
+      setStateEntry(snapshot ? { userId, state: snapshot } : null);
     };
 
     applySnapshot();

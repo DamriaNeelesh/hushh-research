@@ -1131,12 +1131,12 @@ describe("OneLocationAgentPage", () => {
     // snapshot cannot leak into the next test's initial render.
     const { CacheService } = await import("@/lib/services/cache-service");
     CacheService.getInstance().clear();
-    // Clearing the cache does not clear the resource's in-flight map. A test
-    // that leaves a request pending would otherwise hand its dead promise to
-    // the next test, which then never calls getState at all.
+    // Clear both the presentation snapshot and in-flight resource state. A
+    // test that leaves a request pending must not hand its dead promise or
+    // visible stale snapshot to the next test.
     const { OneLocationStateResource } =
       await import("@/lib/one-location/one-location-state-resource");
-    OneLocationStateResource.invalidate("user_a");
+    OneLocationStateResource.discard("user_a");
     const { forgetOneLocationControlPreference } =
       await import("@/lib/one-location/location-control-state");
     forgetOneLocationControlPreference("user_a");
@@ -4387,6 +4387,27 @@ describe("OneLocationAgentPage", () => {
         screen.getByRole("button", { name: /^Share location$/i }),
       ).toBeTruthy(),
     );
+  });
+
+  it("keeps cached Location content mounted while an invalidated snapshot revalidates", async () => {
+    window.localStorage.setItem("one_location_onboarding_v2:user_a", "1");
+    const { OneLocationStateResource } =
+      await import("@/lib/one-location/one-location-state-resource");
+    OneLocationStateResource.write("user_a", locationState());
+    mockGetState.mockImplementationOnce(() => new Promise(() => undefined));
+
+    render(<OneLocationAgentPage />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Location" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("Loading location...")).toBeNull();
+
+    act(() => OneLocationStateResource.invalidate("user_a"));
+
+    expect(screen.getByRole("heading", { name: "Location" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Share location$/i })).toBeTruthy();
+    expect(screen.queryByText("Loading location...")).toBeNull();
   });
 
   it("renders public and private invite controls", async () => {

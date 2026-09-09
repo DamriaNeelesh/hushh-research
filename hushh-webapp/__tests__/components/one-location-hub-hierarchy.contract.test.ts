@@ -72,6 +72,17 @@ describe("Location hub hierarchy", () => {
     }
   });
 
+  it("uses one shared enter transition when opening and closing focused flows", () => {
+    const body = functionBody("LocationRedesignHub");
+
+    expect(body).toContain("usePageEnterAnimation(flowContainerRef");
+    expect(body).toMatch(/key:\s*flow,\s*\/\*[\s\S]*?enabled:\s*true,/u);
+    expect(body).toContain(
+      '<div ref={flowContainerRef} className="space-y-4 sm:space-y-5">',
+    );
+    expect(body).toContain("ref={flowContainerRef}");
+  });
+
   it("uses the central Location tab registry for the in-hub tabs and pager", () => {
     const body = functionBody("LocationRedesignHub");
     const tabsWindow = body.slice(
