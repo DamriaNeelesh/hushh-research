@@ -1707,22 +1707,22 @@ function LocalMapPreview({
   return (
     <div
       className={cn(
-        "w-full min-w-0 max-w-full overflow-hidden bg-[color:var(--app-card-surface-default-solid)]",
+        "w-full min-w-0 max-w-full overflow-hidden bg-[color:var(--app-card-surface-default-solid)] shadow-[var(--app-card-shadow-standard)]",
         nested
-          ? "rounded-[inherit]"
-          : "rounded-[var(--app-card-radius-standard)] border border-border/70",
+          ? "rounded-[inherit] border-0"
+          : "rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)]",
       )}
     >
       <div
         className={cn(
-          "relative h-48 max-w-full overflow-hidden bg-[#e5e5ea] sm:h-56 dark:bg-[#111113]",
+          "relative h-56 max-w-full overflow-hidden bg-[color:var(--app-secondary-fill)] sm:h-64",
           // Nested in SharedWithMeCard the preview draws no card of its own, so
           // THIS element frames the map: a 2px iOS-accent outline rounded to the
           // container's 14px inner radius on top (so the stroke follows the same
           // curve the container clips to instead of being sliced by it) and
           // square on the bottom, where the metadata column continues below.
           nested &&
-            "rounded-t-[14px] rounded-b-none border-2 border-[color:var(--app-accent)]",
+            "rounded-t-[18px] rounded-b-none border-2 border-[color:var(--app-accent)]",
         )}
       >
         <LiveMap point={point} viewportResetKey={viewportResetKey} />
@@ -1751,9 +1751,9 @@ function LocalMapPreview({
         </div>
       </div>
 
-      <div className="space-y-3 p-3">
+      <div className="space-y-3 p-4 sm:p-5">
         <div className="min-w-0">
-          <p className="break-words text-[12px] font-medium text-muted-foreground [overflow-wrap:anywhere]">
+          <p className="break-words text-[12px] font-medium text-[color:var(--app-secondary-label)] [overflow-wrap:anywhere]">
             Updated {captured}
             {accuracy ? ` - ${accuracy}` : ""} -{" "}
             {locationSourceLabel(point.sourcePlatform)}
@@ -1761,8 +1761,8 @@ function LocalMapPreview({
         </div>
 
         {point.drive ? (
-          <div className="rounded-[12px] border border-sky-500/30 bg-sky-500/[0.08] p-3">
-            <p className="flex items-center gap-1.5 text-[12px] font-semibold text-sky-700 dark:text-sky-300">
+          <div className="rounded-[14px] border border-[color:var(--app-accent-border)] bg-[color:var(--app-accent-tint)] p-3">
+            <p className="flex items-center gap-1.5 text-[12px] font-semibold text-[color:var(--app-accent-deep)] dark:text-[color:var(--app-accent)]">
               <Route className="h-3.5 w-3.5" aria-hidden="true" />
               Driving to {point.drive.destination.label}
             </p>
@@ -1797,7 +1797,7 @@ function LocalMapPreview({
       {isStale ? (
         <div
           role="status"
-          className="mx-3 mb-3 flex min-w-0 flex-col gap-2 rounded-[12px] border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[12px] font-medium text-amber-800 sm:flex-row sm:items-center sm:justify-between dark:text-amber-100"
+          className="mx-4 mb-4 flex min-w-0 flex-col gap-2 rounded-[14px] border border-[color:var(--app-warning-border)] bg-[color:var(--app-warning-tint)] px-3.5 py-3 text-[12px] font-medium text-[color:var(--app-warning-deep)] sm:flex-row sm:items-center sm:justify-between dark:text-[color:var(--app-warning-bright)]"
         >
           <span className="flex min-w-0 items-start gap-2">
             <AlertTriangle

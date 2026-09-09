@@ -555,142 +555,157 @@ export function SharedWithMeCard({
   };
 
   return (
-    <div className={cn(SUBCARD_SURFACE, "space-y-3 rounded-[18px] p-4 shadow-none")}>
-      <div className="flex items-start gap-3">
-        <Avatar initials={initialsFrom(name)} imageUrl={photoUrl} size={40} />
-        <div className="min-w-0 flex-1">
-          <RowLabel as="p">
-            {name}
-          </RowLabel>
-          <RowDescription
-            className={cn(
-              MUTED_TEXT,
-              "mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5",
-            )}
-          >
-            {statusLine}
-          </RowDescription>
-        </div>
-      </div>
-      {shareLanes}
-      {address || addressLoading || coordinatesFallback ? (
-        <div className="flex items-start gap-1.5">
-          <MapPin
-            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--app-tertiary-label)]"
-            aria-hidden="true"
-          />
-          {addressLoading && !address ? (
-            <span
-              className="mt-0.5 h-3.5 w-40 max-w-full animate-pulse rounded bg-muted"
-              aria-hidden="true"
-            />
-          ) : (
-            <RowDescription className={cn(MUTED_TEXT, "min-w-0 break-words")}>
-              {address ?? coordinatesFallback}
+    <article
+      className={cn(
+        SUBCARD_SURFACE,
+        "overflow-hidden rounded-[24px] border border-[color:var(--app-card-border-standard)] p-0 shadow-[var(--app-card-shadow-feature)] transition-shadow duration-200",
+        isPreviewExpanded && "shadow-[var(--app-card-shadow-feature)]",
+      )}
+    >
+      <div className="space-y-4 p-5 sm:p-6">
+        <div className="flex items-start gap-3.5">
+          <div className="shrink-0 rounded-[16px] bg-[color:var(--app-accent-tint)] p-0.5">
+            <Avatar initials={initialsFrom(name)} imageUrl={photoUrl} size={46} />
+          </div>
+          <div className="min-w-0 flex-1 pt-0.5">
+            <RowLabel as="p" className="text-[18px] leading-6">
+              {name}
+            </RowLabel>
+            <RowDescription
+              className={cn(
+                MUTED_TEXT,
+                "mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[14px] leading-5",
+              )}
+            >
+              {statusLine}
             </RowDescription>
-          )}
+          </div>
         </div>
-      ) : null}
-      {viewStatus ? (
-        viewStatus.tone === "waiting" ? (
-          // Deliberately not `role="alert"`, not amber, not an icon that reads
-          // as a problem. Nothing is wrong: the share is live and the first
-          // point simply has not arrived. `aria-live="polite"` announces it
-          // once without interrupting, which is what a status is.
-          <RowDescription
-            as="p"
-            aria-live="polite"
-            className={cn(MUTED_TEXT, "flex items-start gap-1.5")}
-          >
-            <Clock3
-              className="mt-0.5 h-3.5 w-3.5 shrink-0"
+        {shareLanes ? (
+          <div className="rounded-[16px] border border-[color:var(--app-separator)] bg-[color:var(--app-neutral-fill)] px-3.5 py-3">
+            {shareLanes}
+          </div>
+        ) : null}
+        {address || addressLoading || coordinatesFallback ? (
+          <div className="flex items-start gap-2 rounded-[16px] border border-[color:var(--app-separator)] bg-[color:var(--app-neutral-fill)] px-3.5 py-3">
+            <MapPin
+              className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--app-accent)]"
               aria-hidden="true"
             />
-            <span className="min-w-0 break-words">
-              Waiting for their first update…
-            </span>
-          </RowDescription>
-        ) : (
-          // Five hand-mixed hexes stood here. #ff9f0a is the iOS DARK-mode
-          // orange used as a light-mode literal, and the 0.08 wash sat under
-          // the light token and roughly half the dark one, so the banner
-          // nearly vanished in dark. The warning role already encodes the
-          // light/dark pairing this was reaching for by hand.
-          <div
-            role="alert"
-            className={cn(
-              "flex flex-col gap-2.5 rounded-[var(--app-card-radius-compact)] border p-3 sm:flex-row sm:items-center sm:justify-between",
-              warningRole.tile,
-              warningRole.border,
-            )}
-          >
-            <div className="flex items-start gap-2">
-              <AlertTriangle
-                className={cn("mt-0.5 h-4 w-4 shrink-0", warningRole.glyph)}
+            {addressLoading && !address ? (
+              <span
+                className="mt-0.5 h-4 w-40 max-w-full animate-pulse rounded bg-muted"
                 aria-hidden="true"
               />
-              <HelperText
-                as="p"
-                className={cn(
-                  "min-w-0 break-words [overflow-wrap:anywhere]",
-                  warningRole.glyph,
-                )}
-              >
-                {viewStatus.message}
-              </HelperText>
-            </div>
-            {onAskReshare ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onAskReshare}
-                isLoading={askReshareBusy}
-                className={cn(
-                  "w-full shrink-0 rounded-full bg-[color:var(--app-card-surface-default-solid)] sm:w-auto",
-                  warningRole.border,
-                  warningRole.glyph,
-                )}
-              >
-                Ask to refresh
-              </Button>
-            ) : null}
-          </div>
-        )
-      ) : null}
-      {canTogglePreview ? (
-        <button
-          type="button"
-          className="ui-text-button-label inline-flex min-h-11 items-center gap-1.5 rounded-full text-[color:var(--app-accent)] transition-colors hover:text-[color:var(--app-accent-deep)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:opacity-60"
-          aria-label={
-            isPreviewExpanded
-              ? `Collapse shared location from ${name}`
-              : `View shared location from ${name}`
-          }
-          aria-expanded={isPreviewExpanded}
-          aria-controls={previewRegionId}
-          disabled={viewBusy && !isPreviewExpanded}
-          onClick={togglePreview}
-        >
-          {viewBusy && !isPreviewExpanded ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          ) : null}
-          {isPreviewExpanded ? "Hide map" : "View location"}
-          <ChevronDown
-            className={cn(
-              "h-4 w-4 transition-transform duration-200",
-              isPreviewExpanded && "rotate-180",
+            ) : (
+              <RowDescription className={cn(MUTED_TEXT, "min-w-0 break-words text-[14px] leading-5")}>
+                {address ?? coordinatesFallback}
+              </RowDescription>
             )}
-            aria-hidden="true"
-          />
-        </button>
+          </div>
+        ) : null}
+        {viewStatus ? (
+          viewStatus.tone === "waiting" ? (
+            // Deliberately not `role="alert"`, not amber, not an icon that reads
+            // as a problem. Nothing is wrong: the share is live and the first
+            // point simply has not arrived. `aria-live="polite"` announces it
+            // once without interrupting, which is what a status is.
+            <div className="flex items-start gap-2 rounded-[16px] border border-[color:var(--app-separator)] bg-[color:var(--app-neutral-fill)] px-3.5 py-3">
+              <Clock3
+                className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--app-secondary-label)]"
+                aria-hidden="true"
+              />
+              <RowDescription
+                as="p"
+                aria-live="polite"
+                className={cn(MUTED_TEXT, "min-w-0 break-words text-[14px] leading-5")}
+              >
+                Waiting for their first update…
+              </RowDescription>
+            </div>
+          ) : (
+            // The warning role encodes the light/dark pairing so this recovery
+            // state stays readable in both themes.
+            <div
+              role="alert"
+              className={cn(
+                "flex flex-col gap-2.5 rounded-[16px] border p-3.5 sm:flex-row sm:items-center sm:justify-between",
+                warningRole.tile,
+                warningRole.border,
+              )}
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle
+                  className={cn("mt-0.5 h-4 w-4 shrink-0", warningRole.glyph)}
+                  aria-hidden="true"
+                />
+                <HelperText
+                  as="p"
+                  className={cn(
+                    "min-w-0 break-words [overflow-wrap:anywhere]",
+                    warningRole.glyph,
+                  )}
+                >
+                  {viewStatus.message}
+                </HelperText>
+              </div>
+              {onAskReshare ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onAskReshare}
+                  isLoading={askReshareBusy}
+                  className={cn(
+                    "w-full shrink-0 rounded-full bg-[color:var(--app-card-surface-default-solid)] sm:w-auto",
+                    warningRole.border,
+                    warningRole.glyph,
+                  )}
+                >
+                  Ask to refresh
+                </Button>
+              ) : null}
+            </div>
+          )
+        ) : null}
+      </div>
+
+      {canTogglePreview ? (
+        <div className="px-5 pb-4 sm:px-6">
+          <button
+            type="button"
+            className="ui-text-button-label inline-flex min-h-11 items-center gap-2 rounded-full bg-[color:var(--app-accent-tint)] px-4 text-[color:var(--app-accent)] transition-colors hover:bg-[color:var(--app-accent-surface-strong)] hover:text-[color:var(--app-accent-deep)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:opacity-60"
+            aria-label={
+              isPreviewExpanded
+                ? `Collapse shared location from ${name}`
+                : `View shared location from ${name}`
+            }
+            aria-expanded={isPreviewExpanded}
+            aria-controls={previewRegionId}
+            disabled={viewBusy && !isPreviewExpanded}
+            onClick={togglePreview}
+          >
+            {viewBusy && !isPreviewExpanded ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : null}
+            {isPreviewExpanded ? "Hide map" : "View location"}
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 transition-transform duration-200",
+                isPreviewExpanded && "rotate-180",
+              )}
+              aria-hidden="true"
+            />
+          </button>
+        </div>
       ) : null}
+
       <div id={previewRegionId} hidden={!isPreviewExpanded}>
-        <div className="relative overflow-hidden rounded-[14px]">
+        <div className="relative mx-5 overflow-hidden rounded-[18px] border border-[color:var(--app-separator)] sm:mx-6">
           {children}
           {isPreviewExpanded && onRecenter ? (
             <ShellActionSurface
               variant="icon"
-              className="absolute right-2 top-2 z-10 h-11 w-11 bg-[color:var(--app-card-surface-default-solid)]/90 backdrop-blur"
+              className="absolute right-3 top-3 z-10 h-11 w-11 bg-[color:var(--app-card-surface-default-solid)]/90 shadow-[var(--app-card-shadow-standard)] backdrop-blur"
               aria-label={`Recenter map on ${name}'s location`}
               aria-controls={previewRegionId}
               title="Recenter map"
@@ -701,18 +716,22 @@ export function SharedWithMeCard({
           ) : null}
         </div>
       </div>
+
       {message ? (
-        <RowDescription
-          as="p"
-          className={cn(
-            MUTED_TEXT,
-            "rounded-[12px] bg-[color:var(--app-neutral-fill)] px-3 py-2",
-          )}
-        >
-          “{message}”
-        </RowDescription>
+        <div className="px-5 pt-4 sm:px-6">
+          <RowDescription
+            as="p"
+            className={cn(
+              MUTED_TEXT,
+              "rounded-[14px] bg-[color:var(--app-neutral-fill)] px-3.5 py-3 text-[14px] leading-5",
+            )}
+          >
+            “{message}”
+          </RowDescription>
+        </div>
       ) : null}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+
+      <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-[color:var(--app-separator)] px-5 py-3.5 sm:px-6">
         {canOpenMap ? (
           <Button
             asChild
@@ -743,7 +762,7 @@ export function SharedWithMeCard({
           </button>
         ) : null}
       </div>
-    </div>
+    </article>
   );
 }
 

@@ -2639,7 +2639,21 @@ function LocationDetailFlow({
 
   return (
     <div className="space-y-5" data-testid={`one-location-${kind}`}>
-      <TaskFlowHeader title={copy.title} description={copy.description} />
+      {kind === "shared-with-me" ? (
+        <div className="rounded-[24px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-5 shadow-[var(--app-card-shadow-feature)] sm:p-6">
+          <div className="flex items-start gap-3.5">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)]">
+              <UsersRound className="h-5 w-5" aria-hidden="true" />
+            </span>
+            <TaskFlowHeader title={copy.title} description={copy.description} />
+          </div>
+          <p className="mt-4 border-t border-[color:var(--app-separator)] pt-3 text-[13px] leading-5 text-[color:var(--app-secondary-label)]">
+            Live shares stay private to you and the person sharing them.
+          </p>
+        </div>
+      ) : (
+        <TaskFlowHeader title={copy.title} description={copy.description} />
+      )}
       {kind === "active-shares" ? (
         ownerGrantGroups.length ? (
           <SettingsGroup separatorInset>
