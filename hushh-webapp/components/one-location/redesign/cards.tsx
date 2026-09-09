@@ -558,23 +558,20 @@ export function SharedWithMeCard({
     <article
       className={cn(
         SUBCARD_SURFACE,
-        "overflow-hidden rounded-[24px] border border-[color:var(--app-card-border-standard)] p-0 shadow-[var(--app-card-shadow-feature)] transition-shadow duration-200",
-        isPreviewExpanded && "shadow-[var(--app-card-shadow-feature)]",
+        "overflow-hidden rounded-[20px] border border-[color:var(--app-card-border-standard)] p-0 shadow-[var(--app-card-shadow-standard)] dark:shadow-none",
       )}
     >
-      <div className="space-y-4 p-5 sm:p-6">
-        <div className="flex items-start gap-3.5">
-          <div className="shrink-0 rounded-[16px] bg-[color:var(--app-accent-tint)] p-0.5">
-            <Avatar initials={initialsFrom(name)} imageUrl={photoUrl} size={46} />
-          </div>
+      <div className="space-y-3.5 p-4 sm:p-5">
+        <div className="flex items-start gap-3">
+          <Avatar initials={initialsFrom(name)} imageUrl={photoUrl} size={44} />
           <div className="min-w-0 flex-1 pt-0.5">
-            <RowLabel as="p" className="text-[18px] leading-6">
+            <RowLabel as="p" className="text-[17px] leading-6">
               {name}
             </RowLabel>
             <RowDescription
               className={cn(
                 MUTED_TEXT,
-                "mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[14px] leading-5",
+                "mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] leading-5 text-[color:var(--app-secondary-label)]",
               )}
             >
               {statusLine}
@@ -582,12 +579,12 @@ export function SharedWithMeCard({
           </div>
         </div>
         {shareLanes ? (
-          <div className="rounded-[16px] border border-[color:var(--app-separator)] bg-[color:var(--app-neutral-fill)] px-3.5 py-3">
+          <div className="rounded-[14px] bg-[color:var(--app-neutral-fill)] px-3.5 py-2.5">
             {shareLanes}
           </div>
         ) : null}
         {address || addressLoading || coordinatesFallback ? (
-          <div className="flex items-start gap-2 rounded-[16px] border border-[color:var(--app-separator)] bg-[color:var(--app-neutral-fill)] px-3.5 py-3">
+          <div className="flex items-start gap-2 border-t border-[color:var(--app-separator)] pt-3">
             <MapPin
               className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--app-accent)]"
               aria-hidden="true"
@@ -598,7 +595,7 @@ export function SharedWithMeCard({
                 aria-hidden="true"
               />
             ) : (
-              <RowDescription className={cn(MUTED_TEXT, "min-w-0 break-words text-[14px] leading-5")}>
+              <RowDescription className="min-w-0 break-words text-[14px] leading-5 text-[color:var(--app-secondary-label)]">
                 {address ?? coordinatesFallback}
               </RowDescription>
             )}
@@ -610,7 +607,7 @@ export function SharedWithMeCard({
             // as a problem. Nothing is wrong: the share is live and the first
             // point simply has not arrived. `aria-live="polite"` announces it
             // once without interrupting, which is what a status is.
-            <div className="flex items-start gap-2 rounded-[16px] border border-[color:var(--app-separator)] bg-[color:var(--app-neutral-fill)] px-3.5 py-3">
+            <div className="flex items-start gap-2 rounded-[14px] bg-[color:var(--app-neutral-fill)] px-3.5 py-3">
               <Clock3
                 className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--app-secondary-label)]"
                 aria-hidden="true"
@@ -618,7 +615,7 @@ export function SharedWithMeCard({
               <RowDescription
                 as="p"
                 aria-live="polite"
-                className={cn(MUTED_TEXT, "min-w-0 break-words text-[14px] leading-5")}
+                className="min-w-0 break-words text-[14px] leading-5 text-[color:var(--app-secondary-label)]"
               >
                 Waiting for their first update…
               </RowDescription>
@@ -629,7 +626,7 @@ export function SharedWithMeCard({
             <div
               role="alert"
               className={cn(
-                "flex flex-col gap-2.5 rounded-[16px] border p-3.5 sm:flex-row sm:items-center sm:justify-between",
+                "flex flex-col gap-2.5 rounded-[14px] border p-3 sm:flex-row sm:items-center sm:justify-between",
                 warningRole.tile,
                 warningRole.border,
               )}
@@ -656,7 +653,7 @@ export function SharedWithMeCard({
                   onClick={onAskReshare}
                   isLoading={askReshareBusy}
                   className={cn(
-                    "w-full shrink-0 rounded-full bg-[color:var(--app-card-surface-default-solid)] sm:w-auto",
+                    "w-full shrink-0 rounded-full bg-transparent sm:w-auto",
                     warningRole.border,
                     warningRole.glyph,
                   )}
@@ -670,10 +667,10 @@ export function SharedWithMeCard({
       </div>
 
       {canTogglePreview ? (
-        <div className="px-5 pb-4 sm:px-6">
+        <div className="px-4 pb-3 sm:px-5">
           <button
             type="button"
-            className="ui-text-button-label inline-flex min-h-11 items-center gap-2 rounded-full bg-[color:var(--app-accent-tint)] px-4 text-[color:var(--app-accent)] transition-colors hover:bg-[color:var(--app-accent-surface-strong)] hover:text-[color:var(--app-accent-deep)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:opacity-60"
+            className="ui-text-button-label -ml-2 inline-flex min-h-10 items-center gap-1.5 rounded-full px-2 text-[color:var(--app-accent)] transition-colors hover:bg-[color:var(--app-accent-tint)] hover:text-[color:var(--app-accent-deep)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:opacity-60"
             aria-label={
               isPreviewExpanded
                 ? `Collapse shared location from ${name}`
@@ -700,7 +697,7 @@ export function SharedWithMeCard({
       ) : null}
 
       <div id={previewRegionId} hidden={!isPreviewExpanded}>
-        <div className="relative mx-5 overflow-hidden rounded-[18px] border border-[color:var(--app-separator)] sm:mx-6">
+        <div className="relative mx-4 overflow-hidden rounded-[16px] border border-[color:var(--app-card-border-standard)] sm:mx-5">
           {children}
           {isPreviewExpanded && onRecenter ? (
             <ShellActionSurface
@@ -718,12 +715,12 @@ export function SharedWithMeCard({
       </div>
 
       {message ? (
-        <div className="px-5 pt-4 sm:px-6">
+        <div className="px-4 pt-3 sm:px-5">
           <RowDescription
             as="p"
             className={cn(
               MUTED_TEXT,
-              "rounded-[14px] bg-[color:var(--app-neutral-fill)] px-3.5 py-3 text-[14px] leading-5",
+              "border-l-2 border-[color:var(--app-accent-border)] pl-3 text-[14px] italic leading-5 text-[color:var(--app-secondary-label)]",
             )}
           >
             “{message}”
@@ -731,7 +728,7 @@ export function SharedWithMeCard({
         </div>
       ) : null}
 
-      <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-[color:var(--app-separator)] px-5 py-3.5 sm:px-6">
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-[color:var(--app-separator)] px-4 py-3 sm:px-5">
         {canOpenMap ? (
           <Button
             asChild

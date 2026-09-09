@@ -1707,15 +1707,15 @@ function LocalMapPreview({
   return (
     <div
       className={cn(
-        "w-full min-w-0 max-w-full overflow-hidden bg-[color:var(--app-card-surface-default-solid)] shadow-[var(--app-card-shadow-standard)]",
+        "w-full min-w-0 max-w-full overflow-hidden bg-[color:var(--app-card-surface-default-solid)]",
         nested
-          ? "rounded-[inherit] border-0"
-          : "rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)]",
+          ? "rounded-[inherit] border-0 shadow-none"
+          : "rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)] shadow-[var(--app-card-shadow-standard)]",
       )}
     >
       <div
         className={cn(
-          "relative h-56 max-w-full overflow-hidden bg-[color:var(--app-secondary-fill)] sm:h-64",
+          "relative h-48 max-w-full overflow-hidden bg-[color:var(--app-secondary-fill)] sm:h-56",
           // Nested in SharedWithMeCard the preview draws no card of its own, so
           // THIS element frames the map: a 2px iOS-accent outline rounded to the
           // container's 14px inner radius on top (so the stroke follows the same
@@ -1751,7 +1751,7 @@ function LocalMapPreview({
         </div>
       </div>
 
-      <div className="space-y-3 p-4 sm:p-5">
+      <div className="space-y-3 p-3.5 sm:p-4">
         <div className="min-w-0">
           <p className="break-words text-[12px] font-medium text-[color:var(--app-secondary-label)] [overflow-wrap:anywhere]">
             Updated {captured}
@@ -1778,7 +1778,7 @@ function LocalMapPreview({
               asChild
               variant="outline"
               size="sm"
-              className="h-10 w-full min-w-0 rounded-full border-[color:var(--app-accent-border)] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)] hover:bg-[color:var(--app-accent-surface-strong)] dark:text-[color:var(--app-accent-deep)]"
+              className="h-10 w-full min-w-0 rounded-full border-[color:var(--app-accent-border)] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)] hover:bg-[color:var(--app-accent-surface-strong)]"
             >
               <a
                 href={directionsUrl}
@@ -1797,7 +1797,7 @@ function LocalMapPreview({
       {isStale ? (
         <div
           role="status"
-          className="mx-4 mb-4 flex min-w-0 flex-col gap-2 rounded-[14px] border border-[color:var(--app-warning-border)] bg-[color:var(--app-warning-tint)] px-3.5 py-3 text-[12px] font-medium text-[color:var(--app-warning-deep)] sm:flex-row sm:items-center sm:justify-between dark:text-[color:var(--app-warning-bright)]"
+          className="mx-3.5 mb-3.5 flex min-w-0 flex-col gap-2 rounded-[14px] border border-[color:var(--app-warning-border)] bg-[color:var(--app-warning-tint)] px-3.5 py-3 text-[12px] font-medium text-[color:var(--app-warning-deep)] sm:flex-row sm:items-center sm:justify-between dark:text-[color:var(--app-warning-bright)]"
         >
           <span className="flex min-w-0 items-start gap-2">
             <AlertTriangle
