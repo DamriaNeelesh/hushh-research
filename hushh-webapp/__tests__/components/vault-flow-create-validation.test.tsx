@@ -73,6 +73,7 @@ type TestVaultWrapper = {
   iv: string;
   passkeyCredentialId?: string;
   passkeyPrfSalt?: string;
+  passkeyRpId?: string;
 };
 
 type TestVaultState = {
@@ -95,6 +96,7 @@ const passkeyWrapper: TestVaultWrapper = {
   iv: "iv-passkey",
   passkeyCredentialId: "credential-1",
   passkeyPrfSalt: "passkey-salt",
+  passkeyRpId: "one.hushh.ai",
 };
 
 const nativePasskeyWrapper: TestVaultWrapper = {
@@ -104,6 +106,7 @@ const nativePasskeyWrapper: TestVaultWrapper = {
   iv: "iv-native-passkey",
   passkeyCredentialId: "native-credential-1",
   passkeyPrfSalt: "native-passkey-salt",
+  passkeyRpId: "one.hushh.ai",
 };
 
 function vaultState(
@@ -419,6 +422,9 @@ describe("VaultFlow create validation", () => {
     rerender(<VaultFlow user={user} onSuccess={onSuccess} />);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(1);
+    expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledWith(
+      expect.objectContaining({ passkeyRpId: "one.hushh.ai" }),
+    );
     expect(onSuccess).not.toHaveBeenCalled();
   });
 });
