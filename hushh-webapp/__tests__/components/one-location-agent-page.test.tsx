@@ -3184,10 +3184,44 @@ describe("OneLocationAgentPage", () => {
     expect(mockStoreEnvelope).not.toHaveBeenCalled();
   });
 
-  it("revokes a grant that resolves after the share composer is cancelled", async () => {
+  it("retries revoking a grant that resolves after the composer is cancelled", async () => {
+    const circleSummary = {
+      id: "circle_during_delivery",
+      name: "Delivery Circle",
+      kind: "family" as const,
+      role: "owner" as const,
+      memberCount: 1,
+      memberLimit: 20,
+    };
     mockGetState.mockResolvedValue({
       ...locationState(),
       ownerGrants: [],
+      circles: [circleSummary],
+    });
+    mockGetCircle.mockResolvedValue({
+      ...circleSummary,
+      members: [
+        {
+          userId: "user_a",
+          displayName: "Me",
+          role: "owner",
+          phoneVerified: true,
+          secureLocationReady: true,
+          canReceiveLocation: true,
+          keyId: "owner-key",
+          publicKeyJwk: { kty: "EC" },
+        },
+        {
+          userId: "user_b",
+          displayName: "Trusted B",
+          role: "member",
+          phoneVerified: true,
+          secureLocationReady: true,
+          canReceiveLocation: true,
+          keyId: "key_b",
+          publicKeyJwk: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+        },
+      ],
     });
     const createdGrant = {
       id: "grant_cancelled_during_create",
@@ -3209,26 +3243,45 @@ describe("OneLocationAgentPage", () => {
         }),
     );
 
-    render(<OneLocationAgentPage />);
+    const { rerender } = render(<OneLocationAgentPage />);
     await skipLocationEntryFlow();
     await waitFor(() => expect(mockGetState).toHaveBeenCalled());
     await openShareConfirmStep();
     mockStoreEnvelope.mockClear();
     mockRevokeGrant.mockClear();
+    mockRevokeGrant
+      .mockRejectedValueOnce(new Error("Temporary revoke failure"))
+      .mockResolvedValueOnce({});
 
     fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
     await waitFor(() => expect(mockCreateGrant).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change who can see you" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Select the Delivery Circle Circle, 1 member",
+      }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Sharing…" }),
+    ).toBeDisabled();
+
+    // Simulate the app-chrome / OS back action that closes the focused flow.
+    mockUseSearchParams.mockReturnValue(new URLSearchParams("action=share"));
+    rerender(<OneLocationAgentPage />);
+    mockUseSearchParams.mockReturnValue(new URLSearchParams());
+    rerender(<OneLocationAgentPage />);
+    expect(
+      await screen.findByRole("heading", { name: "Location" }),
+    ).toBeTruthy();
     await act(async () => {
       resolveGrant?.(createdGrant);
     });
 
-    await waitFor(() =>
-      expect(mockRevokeGrant).toHaveBeenCalledWith({
+    await waitFor(() => expect(mockRevokeGrant).toHaveBeenCalledTimes(2));
+    expect(mockRevokeGrant).toHaveBeenLastCalledWith({
         vaultOwnerToken: "vault-token",
         grantId: createdGrant.id,
-      }),
-    );
+    });
     expect(mockStoreEnvelope).not.toHaveBeenCalled();
   });
 

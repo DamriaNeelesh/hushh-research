@@ -2783,12 +2783,20 @@ export function OneLocationAgentPageContent({
   const pendingShareCircleIdsRef = useRef<Set<string>>(new Set());
   const shareComposerGenerationRef = useRef(0);
   const shareAudienceOwnerUserIdRef = useRef(auth.userId);
+  const shareDeliveryAttemptRef = useRef<symbol | null>(null);
+  const [shareDeliveryPending, setShareDeliveryPending] = useState(false);
+  const shareComposerMountedRef = useRef(true);
   useEffect(
-    () => () => {
-      // Pending location capture / encryption belongs to this mounted composer.
-      // Invalidating the generation prevents route or auth-guard unmounts from
-      // completing a share with credentials captured by a screen that is gone.
-      shareComposerGenerationRef.current += 1;
+    () => {
+      shareComposerMountedRef.current = true;
+      return () => {
+        shareComposerMountedRef.current = false;
+        // Pending location capture / encryption belongs to this mounted
+        // composer. Invalidating the generation prevents route or auth-guard
+        // unmounts from completing a share with credentials captured by a
+        // screen that is gone.
+        shareComposerGenerationRef.current += 1;
+      };
     },
     [],
   );
@@ -2905,6 +2913,8 @@ export function OneLocationAgentPageContent({
     // check in handleSelectNamedCircleForShare.
     shareAudienceOwnerUserIdRef.current = auth.userId;
     shareComposerGenerationRef.current += 1;
+    shareDeliveryAttemptRef.current = null;
+    setShareDeliveryPending(false);
     pendingShareCircleIdsRef.current.clear();
     setPendingShareCircleIds((current) => (current.length ? [] : current));
     setBusy((current) =>
@@ -4063,6 +4073,12 @@ export function OneLocationAgentPageContent({
         setLoadError(null);
         return;
       }
+      if (shareDeliveryAttemptRef.current) {
+        return {
+          status: "blocked",
+          summary: "Your current location share is still being sent.",
+        };
+      }
       if (refreshInFlightRef.current) {
         return waitForRefresh(refreshInFlightRef.current);
       }
@@ -5036,11 +5052,36 @@ export function OneLocationAgentPageContent({
           summary: "Sharing needs device Location permission.",
         };
       }
+      const shareDeliveryAttempt = Symbol("one-location-share-delivery");
+      shareDeliveryAttemptRef.current = shareDeliveryAttempt;
+      setShareDeliveryPending(true);
       setShareError(null);
       setBusy("share");
       let successCount = 0;
       let recipientFailureCount = 0;
       let lastRecipientError: unknown = null;
+      const revokeCancelledGrant = async (
+        grant: OneLocationGrant,
+      ): Promise<boolean> => {
+        const retryDelaysMs = [0, 250, 750] as const;
+        for (const retryDelayMs of retryDelaysMs) {
+          if (retryDelayMs) await wait(retryDelayMs);
+          try {
+            await OneLocationService.revokeGrant({
+              vaultOwnerToken,
+              grantId: grant.id,
+            });
+            return true;
+          } catch {
+            // Continue through the bounded cleanup retries. This cleanup is
+            // deliberately independent of the abandoned composer generation.
+          }
+        }
+        toast.error(
+          "Sharing was cancelled, but One could not finish removing a pending share. Please check Active shares.",
+        );
+        return false;
+      };
       try {
         const readiness = await ensureForegroundLocationReady({
           capturePoint: true,
@@ -5090,10 +5131,7 @@ export function OneLocationAgentPageContent({
                 sourceCircleId: target.sourceCircleId,
               });
               if (!shareAttemptIsCurrent()) {
-                await OneLocationService.revokeGrant({
-                  vaultOwnerToken,
-                  grantId: createdGrant.id,
-                }).catch(() => null);
+                await revokeCancelledGrant(createdGrant);
                 return;
               }
               await publishEnvelopeWithRetry(
@@ -5104,20 +5142,14 @@ export function OneLocationAgentPageContent({
                 () => !shareAttemptIsCurrent(),
               );
               if (!shareAttemptIsCurrent()) {
-                await OneLocationService.revokeGrant({
-                  vaultOwnerToken,
-                  grantId: createdGrant.id,
-                }).catch(() => null);
+                await revokeCancelledGrant(createdGrant);
                 return;
               }
               successCount += 1;
             } catch (error) {
               if (!shareAttemptIsCurrent()) {
                 if (createdGrant) {
-                  await OneLocationService.revokeGrant({
-                    vaultOwnerToken,
-                    grantId: createdGrant.id,
-                  }).catch(() => null);
+                  await revokeCancelledGrant(createdGrant);
                 }
                 return;
               }
@@ -5191,6 +5223,12 @@ export function OneLocationAgentPageContent({
         setShareError(message);
         return { status: "failed", summary: message };
       } finally {
+        if (shareDeliveryAttemptRef.current === shareDeliveryAttempt) {
+          shareDeliveryAttemptRef.current = null;
+          if (shareComposerMountedRef.current) {
+            setShareDeliveryPending(false);
+          }
+        }
         if (shareAttemptIsCurrent()) {
           setBusy((current) => (current === "share" ? null : current));
         }
@@ -10044,6 +10082,7 @@ export function OneLocationAgentPageContent({
 
   const canShare = Boolean(
     vaultOwnerToken &&
+    !shareDeliveryPending &&
     !pendingShareCircleIds.length &&
     selectedShareRecipients.length &&
     shareReadySelectedRecipients.length &&
@@ -13824,6 +13863,7 @@ export function OneLocationAgentPageContent({
   const locationHubVm: LocationHubViewModel = {
     userId: auth.userId ?? null,
     canShare,
+    shareDeliveryPending,
     busy,
     revokingGrantId,
     withdrawingRequestId,
