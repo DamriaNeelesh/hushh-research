@@ -2806,6 +2806,58 @@ describe("OneLocationAgentPage", () => {
     );
   });
 
+  it("groups shareable Circles into Your circles and Joined circles", async () => {
+    mockGetState.mockResolvedValue({
+      ...locationState(),
+      circles: [
+        {
+          id: "circle-owned",
+          name: "Weekend crew",
+          kind: "friends" as const,
+          role: "owner" as const,
+          memberCount: 4,
+          memberLimit: 20,
+        },
+        {
+          id: "circle-joined",
+          name: "Riya's SMS Circle",
+          kind: "other" as const,
+          role: "member" as const,
+          systemKind: "sms" as const,
+          isSystem: true,
+          memberCount: 3,
+          memberLimit: 20,
+        },
+        {
+          id: "circle-trusted",
+          name: "Trusted Circle",
+          kind: "other" as const,
+          role: "owner" as const,
+          systemKind: "trusted" as const,
+          isSystem: true,
+          memberCount: 8,
+          memberLimit: 20,
+        },
+      ],
+    });
+
+    render(<OneLocationAgentPage />);
+    await skipLocationEntryFlow();
+    await waitFor(() => expect(mockGetState).toHaveBeenCalled());
+    await openSharePersonStep();
+
+    const owned = await screen.findByTestId("one-location-share-circles-owned");
+    const joined = screen.getByTestId("one-location-share-circles-joined");
+
+    expect(within(owned).getByText("Your circles")).toBeTruthy();
+    expect(within(owned).getByText("Weekend crew")).toBeTruthy();
+    expect(within(owned).queryByText("Riya's SMS Circle")).toBeNull();
+    expect(within(joined).getByText("Joined circles")).toBeTruthy();
+    expect(within(joined).getByText("Riya's SMS Circle")).toBeTruthy();
+    expect(within(joined).queryByText("Weekend crew")).toBeNull();
+    expect(screen.queryByText("Trusted Circle")).toBeNull();
+  });
+
   it("keeps a selected Circle count scoped to its members when extra people are added", async () => {
     const readyRecipient = locationState().recipients[0]!;
     const makeReadyRecipient = (userId: string, displayName: string) => ({

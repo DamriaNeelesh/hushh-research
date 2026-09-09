@@ -3720,53 +3720,19 @@ function circleFlowErrorMessage(error: unknown, fallback: string): string {
     : fallback;
 }
 
-function CircleIdentityStack({
-  circles,
-}: {
-  circles: readonly OneLocationCircleSummary[];
-}) {
-  const visible = circles.slice(0, 3);
-  const fallback = visible.length
-    ? visible
-    : [
-        {
-          id: "circle-summary-fallback",
-          name: "Circles",
-          memberCount: 0,
-        } as OneLocationCircleSummary,
-      ];
+function CircleCategoryIcon() {
+  const role = roleClasses("people");
   return (
     <span
       aria-hidden="true"
-      className="flex h-11 w-[54px] shrink-0 items-center"
+      className={cn(
+        "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px]",
+        role.tile,
+        role.glyph,
+      )}
+      data-testid="one-location-circle-category-icon"
     >
-      {fallback.map((circle, index) => {
-        const isSmsCircle = circle.systemKind === "sms";
-        const isTrustedCircle = circle.systemKind === "trusted";
-        const initials = circleInitials(circle.name);
-        return (
-          <span
-            key={`${circle.id}-${index}`}
-            className={cn(
-              "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border-2 border-[color:var(--app-primary-surface)] text-[13px] font-semibold shadow-sm",
-              index > 0 && "-ml-6",
-              isSmsCircle
-                ? "bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)]"
-                : "bg-[#E5E5EA] text-[#6E6E73] dark:bg-[rgba(142,142,147,0.28)] dark:text-[#F2F2F7]",
-            )}
-          >
-            {isSmsCircle ? (
-              <SmsTextIcon className="text-[10px] font-bold tracking-[-0.2px]" />
-            ) : isTrustedCircle ? (
-              <ShieldCheck className="h-[17px] w-[17px]" />
-            ) : initials ? (
-              initials
-            ) : (
-              <UsersRound className="h-[17px] w-[17px]" />
-            )}
-          </span>
-        );
-      })}
+      <UsersRound className="h-[18px] w-[18px]" strokeWidth={2.1} />
     </span>
   );
 }
@@ -3782,7 +3748,7 @@ function CircleSummaryGroup({
   onOpenCircles: () => void;
   onOpenInvitations: () => void;
 }) {
-  const { personal, created, joined } = personalCircleSummary(circles);
+  const { created, joined } = personalCircleSummary(circles);
   const summary = personalCircleCountLabel({ created, joined });
   const invitationTitle =
     invitationCount === 1 ? "Circle invitation" : "Circle invitations";
@@ -3801,7 +3767,7 @@ function CircleSummaryGroup({
           "[@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
         )}
       >
-        <CircleIdentityStack circles={personal.length ? personal : circles} />
+        <CircleCategoryIcon />
         <span className="min-w-0">
           <span className="block text-[16px] font-semibold leading-[21px] tracking-[-0.2px] text-foreground">
             Circles
@@ -5188,6 +5154,30 @@ function ShareFlow({
     () => vm.circles.filter((circle) => circle.systemKind !== "trusted"),
     [vm.circles],
   );
+  const shareCircleGroups = useMemo(() => {
+    const ownedSystem: OneLocationCircleSummary[] = [];
+    const ownedNamed: OneLocationCircleSummary[] = [];
+    const joined: OneLocationCircleSummary[] = [];
+
+    for (const circle of shareableCircles) {
+      if (circle.role !== "owner") {
+        joined.push(circle);
+      } else if (circle.systemKind === "sms" || circle.isSystem) {
+        ownedSystem.push(circle);
+      } else {
+        ownedNamed.push(circle);
+      }
+    }
+
+    return [
+      {
+        key: "owned",
+        title: "Your circles",
+        circles: [...ownedSystem, ...ownedNamed],
+      },
+      { key: "joined", title: "Joined circles", circles: joined },
+    ].filter((group) => group.circles.length > 0);
+  }, [shareableCircles]);
   const shareCircleFullySelected = isCircleSelectionFullySelected(
     vm.selectedShareCircleSelection,
     vm.selectedRecipientIds,
@@ -5406,17 +5396,15 @@ function ShareFlow({
        * invite step already filters the same way. Only this picker is
        * narrowed: the People tab, SOS contacts and the SMS flow still list
        * every Circle. */}
-      {shareableCircles.length ? (
+      {shareCircleGroups.map((group) => (
         <SettingsGroup
-          title="Circles"
+          key={group.key}
+          title={group.title}
           separatorInset
           className="[&>div:first-child]:mt-0"
+          testId={`one-location-share-circles-${group.key}`}
         >
-          {[...shareableCircles]
-            .sort((a, b) =>
-              a.name === "SMS Circle" ? 1 : b.name === "SMS Circle" ? -1 : 0,
-            )
-            .map((circle) => {
+          {group.circles.map((circle) => {
               const selected =
                 vm.selectedShareCircleSelection?.circle.id === circle.id &&
                 shareCircleFullySelected;
@@ -5454,7 +5442,7 @@ function ShareFlow({
               );
             })}
         </SettingsGroup>
-      ) : null}
+      ))}
       <PersonSearchInput
         value={vm.shareRecipientSearch}
         onChange={vm.setShareRecipientSearch}
