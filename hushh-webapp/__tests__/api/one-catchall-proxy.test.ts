@@ -25,6 +25,20 @@ beforeEach(async () => {
 });
 
 describe("/api/one/[...path] proxy", () => {
+  it("preserves the empty response when no Location onboarding run exists", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    const request = new NextRequest("http://localhost:3000/api/one/workflows/location/onboarding/runs/active", {
+      headers: { Authorization: "Bearer fixture", "x-request-id": "location-empty-run" },
+    });
+    const response = await route.GET(request, {
+      params: Promise.resolve({ path: ["workflows", "location", "onboarding", "runs", "active"] }),
+    });
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("x-request-id")).toBe("location-empty-run");
+  });
+
   it("preserves DELETE command authority and keeps bodyless manual requests compatible", async () => {
     const upstream = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       new Response(JSON.stringify({ checkedOut: true }), { headers: { "Content-Type": "application/json" } }));

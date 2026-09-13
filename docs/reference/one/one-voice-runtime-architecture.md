@@ -55,6 +55,8 @@ Unconnected people enter Connect's existing scope review through the exact `revi
 
 The command binds its stable step/operation to the workflow run before effects. A narrowly scoped `owner_requested_workflow` receipt authorizes only that run's private draft. Its finalization token and stable commit identity travel through the existing PKM coordinator, web/native service and v5 transaction. The writer appends the stable run place without normalizing or discarding existing records; an unrecognized saved-place record blocks the append for review. Place, circle and completion receipts remain the workflow owner's proof. Staging a draft, returning a locations array or opening the hub is insufficient. Lost finalization responses reconcile the same run/commit rather than saving another default place.
 
+Returning from the OS permission prompt refreshes the current interaction without advancing its admission sequence. An unchanged foreground read cannot supersede the permission settlement already in flight. Run revisions reject stale projections; cancellation and owner changes still invalidate late responses.
+
 ## API and persistence
 
 The command path uses the existing One namespace:
@@ -65,6 +67,8 @@ The command path uses the existing One namespace:
 - `/api/one/action-proposals`: owner-bound list, checkpoint, resolve, admit, confirm, claim, execute, settle, resume and cancel lifecycle.
 
 Web uses the existing authenticated API proxy; native uses the same service boundary. Both require the current vault-owner authority. This milestone follows **unlock first**: an account must already have a vault. Initial pre-vault setup remains available through its existing tap flow; an unlock dialog cannot create a missing vault.
+
+The active-onboarding read returns HTTP 204 when no unfinished run exists. The web proxy preserves that status with an empty body and private, no-store headers; it must not serialize JSON into a bodyless response or turn the empty state into a gateway failure.
 
 `one_adk_sessions`, under `one.location.commands.v1`, stores metadata and a client-vault AES-GCM capsule. The platform's outer session encryption is an additional layer, not ownership authority. Persisted continuations contain validated action inputs and a normalized unresolved intent, not raw audio, transcription, credentials or vault keys. Checkpoints precede effects and gates. Completion, cancellation and expiry remove the capsule. The existing retention job and command reads purge expired capsules after 24 hours.
 

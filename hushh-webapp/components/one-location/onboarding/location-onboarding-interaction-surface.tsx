@@ -503,10 +503,12 @@ export function OneLocationInteractionSurfaceProvider({
     return owner;
   }, [ownerIsCurrent, renderedOwnerGeneration, renderedUserId]);
 
-  const captureRenderedRequest = useCallback((): RequestSnapshot => {
+  const captureRenderedRequest = useCallback((advanceAdmission = true): RequestSnapshot => {
     return {
       ...captureRenderedOwner(),
-      admissionSequence: ++admissionSequenceRef.current,
+      admissionSequence: advanceAdmission
+        ? ++admissionSequenceRef.current
+        : admissionSequenceRef.current,
     };
   }, [captureRenderedOwner]);
 
@@ -830,7 +832,11 @@ export function OneLocationInteractionSurfaceProvider({
   const refreshOnForeground = useCallback(() => {
     let request: RequestSnapshot;
     try {
-      request = captureRenderedRequest();
+      // Returning from an OS permission prompt observes the current task;
+      // it must not supersede the user interaction still awaiting settlement.
+      // Same-run revisions reject stale reads, while owner and interaction
+      // generations still reject reads after cancellation or a newer task.
+      request = captureRenderedRequest(false);
     } catch {
       return;
     }

@@ -509,6 +509,31 @@ it("keeps the page usable during permission and rejects a late permission result
   ).toBe(false);
 });
 
+it("continues permission settlement when a foreground read returns the earlier run", async () => {
+  h.permission.mockResolvedValue({ state: "prompt", locationServicesEnabled: true });
+  let settleOffer!: (result: LocationOnboardingRunResultV1) => void;
+  h.settle.mockImplementationOnce(() => new Promise((resolve) => { settleOffer = resolve; }));
+  render(<App />);
+  fireEvent.click(screen.getByText("Begin command"));
+  await screen.findByText("Allow Location access");
+  fireEvent.click(screen.getByRole("button", { name: "Location setup: Continue", exact: true }));
+  await waitFor(() => expect(h.settle).toHaveBeenCalledWith(expect.objectContaining({ result: "request_permission" })));
+
+  const permissionRun = h.settle.mock.calls[0][0].run;
+  h.get.mockResolvedValueOnce({ schemaVersion: "one.location_onboarding_run_result.v1", run: permissionRun, directive: permissionRun.pendingDirective, waitingReason: null });
+  const rememberedBefore = vi.mocked(OneLocationOnboardingRunClient.rememberProjection).mock.calls.length;
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  fireEvent(document, new Event("visibilitychange"));
+  await waitFor(() => expect(OneLocationOnboardingRunClient.rememberProjection).toHaveBeenCalledTimes(rememberedBefore + 1));
+  h.permission.mockResolvedValue({ state: "granted", locationServicesEnabled: true });
+  await act(async () => { settleOffer(projection("one.location.permission_result.v2", 2)); });
+
+  await waitFor(() => expect(h.capture).toHaveBeenCalledTimes(1));
+  await screen.findByText(/Location setup complete/);
+  expect(h.requestPermission).toHaveBeenCalledTimes(1);
+  expect(h.save).toHaveBeenCalledTimes(1);
+});
+
 it("locking during native permission pauses the run and unlock never automatically resumes it", async () => {
   h.permission.mockResolvedValue({
     state: "prompt",
