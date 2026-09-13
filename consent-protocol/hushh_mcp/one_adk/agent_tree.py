@@ -1225,7 +1225,15 @@ async def ask_consent_agent(
     tool_context: ToolContext,
     target: Literal["consent", "connections"] = "consent",
 ) -> dict[str, Any]:
-    """Ask Nav's Consent Center or its Connections child.
+    """Hand a trusted-people or relationship change to the Connections specialist, or a consent-review request to Nav.
+
+    Consent questions -- what is waiting, what is shared, what was asked for,
+    asking, denying, revoking, withdrawing -- are answered by One's own tools
+    (list_pending_information_requests, list_active_grants,
+    list_my_outgoing_information_requests, discover_person_information,
+    propose_information_request, run_app_action). Do not send those here.
+    Use target "connections" to add or remove a trusted person or change a
+    relationship. Use target "consent" only for a review Nav specifically owns.
 
     One semantically selects ``target``.  This function only validates that
     selection and preserves the authored hierarchy: ``consent`` reaches Nav;
