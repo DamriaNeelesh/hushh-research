@@ -82,8 +82,7 @@ export function IntroStep({ onLogin }: { onLogin?: () => void }) {
           <FigmaIllustration variant="intro" className={styles.illustration} />
 
           <div className={styles.hero}>
-            {/* The artwork contains the visible mark; this hidden text preserves
-                the existing heading and voice/test accessibility contract. */}
+            {/* Figma 145:6108 is a separate emoji, not part of the source image. */}
             <span aria-hidden="true" className={styles.quietMark}>
               🤫
             </span>
@@ -116,9 +115,9 @@ export function IntroStep({ onLogin }: { onLogin?: () => void }) {
               aria-label="Claim your One"
               className={styles.cta}
             >
-              <span className="relative z-0 inline-flex items-center gap-2">
+              <span className={`relative z-0 inline-flex items-center gap-2 ${styles.ctaLabel}`}>
                 Create your One
-                <span aria-hidden>&rarr;</span>
+                <span aria-hidden className={styles.ctaArrow}>&rarr;</span>
               </span>
               <MaterialRipple variant="gradient" effect="fill" className="z-10" />
             </button>

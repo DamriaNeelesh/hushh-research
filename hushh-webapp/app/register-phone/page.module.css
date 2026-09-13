@@ -215,3 +215,292 @@
 .recaptcha {
   display: none;
 }
+
+.existingBackdrop,
+.existingBurst {
+  display: contents;
+}
+
+.hushhVisual,
+.figmaBackGlyph {
+  display: none;
+}
+
+/* Refine only the light phone-entry step. OTP and linked-phone surfaces keep
+   their existing composition and the same mounted verification flow. */
+:global(html:not(.dark)) .refinedScreen {
+  --phone-safe-top: max(env(safe-area-inset-top, 0px), var(--app-safe-area-top-effective, 0px));
+  --phone-safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--app-safe-area-bottom-effective, 0px));
+  --phone-font: "SF Pro", -apple-system, BlinkMacSystemFont, sans-serif;
+  --phone-keyboard-inset: 0px;
+  height: calc(100dvh - var(--app-scroll-bottom-pad, 0px) - var(--phone-keyboard-inset)) !important;
+  min-height: calc(100svh - var(--app-scroll-bottom-pad, 0px) - var(--phone-keyboard-inset)) !important;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  scroll-padding-block: calc(var(--phone-safe-top) + 68px) calc(var(--phone-safe-bottom) + 24px);
+  background: #f6f5fc;
+}
+
+/* Mobile web already resizes its dynamic viewport; subtract the bridge inset
+   only in Capacitor, whose Keyboard.resize is intentionally "none". */
+:global(html.native-keyboard-inset:not(.dark)) .refinedScreen {
+  --phone-keyboard-inset: var(--kb-height, 0px);
+}
+
+:global(html:not(.dark)) .refinedScreen .existingBackdrop,
+:global(html:not(.dark)) .refinedScreen .existingBurst {
+  display: none;
+}
+
+:global(html:not(.dark)) .refinedScreen .safeBack,
+:global(html:not(.dark)) .refinedScreen .safeAccount {
+  top: calc(var(--phone-safe-top) + 12px);
+}
+
+:global(html:not(.dark)) .refinedScreen .safeBack {
+  /* Figma 185:2696: (23, 72), 44 × 44; 10pt below the 62pt top inset. */
+  top: calc(var(--phone-safe-top) + 10px);
+  left: max(23px, calc((100vw - 402px) / 2 + 23px));
+  width: 44px;
+  height: 44px;
+  border-radius: 100px;
+  border: 0;
+  box-shadow: none;
+  background: #fcfbfe;
+}
+
+:global(html:not(.dark)) .refinedScreen .originalBackGlyph {
+  display: none;
+}
+
+:global(html:not(.dark)) .refinedScreen .figmaBackGlyph {
+  display: block;
+  width: 10px;
+  height: 17px;
+  background: url("/onboarding/figma/auth-back-chevron.svg") center / contain no-repeat;
+}
+
+:global(html:not(.dark)) .refinedScreen .safeAccount {
+  right: max(24px, calc((100vw - 402px) / 2 + 24px));
+}
+
+:global(html:not(.dark)) .refinedScreen .accountControl {
+  width: 44px;
+  height: 44px;
+}
+
+:global(html:not(.dark)) .refinedScreen .flowContent {
+  height: auto !important;
+  min-height: 100% !important;
+  max-width: 402px;
+  justify-content: flex-start;
+  padding: calc(var(--phone-safe-top) + 88px) 24px calc(var(--phone-safe-bottom) + 32px);
+}
+
+:global(html:not(.dark)) .refinedScreen .flowStack {
+  gap: 32px;
+  padding: 0;
+}
+
+:global(html:not(.dark)) .refinedScreen .flowHeading {
+  gap: 24px;
+}
+
+:global(html:not(.dark)) .refinedScreen .hushhVisual {
+  display: grid;
+  flex: none;
+  width: 72px;
+  height: 72px;
+  place-items: center;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 64px;
+  line-height: 1;
+  user-select: none;
+}
+
+:global(html:not(.dark)) .refinedScreen .flowTitle {
+  --foundation-title1-size: 27px;
+  --foundation-title1-line: 32px;
+  --foundation-title1-weight: 700;
+  --foundation-title1-tracking: -0.45px;
+  margin: 0;
+  width: 100%;
+  font-family: var(--phone-font);
+  white-space: normal;
+  text-wrap: balance;
+}
+
+:global(html:not(.dark)) .refinedScreen [data-phone-mandate-input-region] {
+  max-width: none;
+}
+
+:global(html:not(.dark)) .refinedScreen [data-figma-phone-step="phone"] [data-slot="field-set"] {
+  gap: 32px !important;
+}
+
+:global(html:not(.dark)) .refinedScreen [data-figma-phone-fields] {
+  gap: 24px !important;
+}
+
+:global(html:not(.dark)) .refinedScreen [data-figma-phone-field] {
+  gap: 8px !important;
+}
+
+:global(html:not(.dark)) .refinedScreen [data-figma-phone-field] [data-slot="field-label"] {
+  padding-inline-start: 0;
+}
+
+/* The page supplies empty helper copy. An empty flex item otherwise inserts
+   two section gaps between the phone field and its submit action. */
+:global(html:not(.dark)) .refinedScreen [data-figma-phone-helper]:empty {
+  display: none;
+}
+
+:global(html:not(.dark)) .refinedScreen [data-figma-phone-primary] {
+  max-inline-size: none !important;
+}
+
+:global(html:not(.dark)) .refinedScreen input {
+  scroll-margin-block: 80px;
+}
+
+/* Dark phone entry reuses the verified light flow metrics. */
+:global(html.dark) .refinedScreen {
+  --phone-safe-top: max(env(safe-area-inset-top, 0px), var(--app-safe-area-top-effective, 0px));
+  --phone-safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--app-safe-area-bottom-effective, 0px));
+  --phone-font: "SF Pro", -apple-system, BlinkMacSystemFont, sans-serif;
+  --phone-keyboard-inset: 0px;
+  height: calc(100dvh - var(--app-scroll-bottom-pad, 0px) - var(--phone-keyboard-inset)) !important;
+  min-height: calc(100svh - var(--app-scroll-bottom-pad, 0px) - var(--phone-keyboard-inset)) !important;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  scroll-padding-block: calc(var(--phone-safe-top) + 68px) calc(var(--phone-safe-bottom) + 24px);
+  background: #000;
+}
+
+/* Mobile web already resizes its dynamic viewport; subtract the bridge inset
+   only in Capacitor, whose Keyboard.resize is intentionally "none". */
+:global(html.native-keyboard-inset.dark) .refinedScreen {
+  --phone-keyboard-inset: var(--kb-height, 0px);
+}
+
+:global(html.dark) .refinedScreen .existingBackdrop,
+:global(html.dark) .refinedScreen .existingBurst {
+  display: none;
+}
+
+:global(html.dark) .refinedScreen .safeBack,
+:global(html.dark) .refinedScreen .safeAccount {
+  top: calc(var(--phone-safe-top) + 12px);
+}
+
+:global(html.dark) .refinedScreen .safeBack {
+  /* Figma 185:2696: (23, 72), 44 × 44; 10pt below the 62pt top inset. */
+  top: calc(var(--phone-safe-top) + 10px);
+  left: max(23px, calc((100vw - 402px) / 2 + 23px));
+  width: 44px;
+  height: 44px;
+  border-radius: 100px;
+  border: 0;
+  box-shadow: none;
+  background: #111;
+}
+
+:global(html.dark) .refinedScreen .originalBackGlyph {
+  display: none;
+}
+
+:global(html.dark) .refinedScreen .figmaBackGlyph {
+  display: block;
+  width: 10px;
+  height: 17px;
+  background: url("/onboarding/figma/auth-back-chevron.svg") center / contain no-repeat;
+  filter: brightness(0) invert(1);
+}
+
+:global(html.dark) .refinedScreen .safeAccount {
+  right: max(24px, calc((100vw - 402px) / 2 + 24px));
+}
+
+:global(html.dark) .refinedScreen .accountControl {
+  width: 44px;
+  height: 44px;
+}
+
+:global(html.dark) .refinedScreen .flowContent {
+  height: auto !important;
+  min-height: 100% !important;
+  max-width: 402px;
+  justify-content: flex-start;
+  padding: calc(var(--phone-safe-top) + 88px) 24px calc(var(--phone-safe-bottom) + 32px);
+}
+
+:global(html.dark) .refinedScreen .flowStack {
+  gap: 32px;
+  padding: 0;
+}
+
+:global(html.dark) .refinedScreen .flowHeading {
+  gap: 24px;
+}
+
+:global(html.dark) .refinedScreen .hushhVisual {
+  display: grid;
+  flex: none;
+  width: 72px;
+  height: 72px;
+  place-items: center;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 64px;
+  line-height: 1;
+  user-select: none;
+}
+
+:global(html.dark) .refinedScreen .flowTitle {
+  --foundation-title1-size: 27px;
+  --foundation-title1-line: 32px;
+  --foundation-title1-weight: 700;
+  --foundation-title1-tracking: -0.45px;
+  margin: 0;
+  width: 100%;
+  font-family: var(--phone-font);
+  white-space: normal;
+  text-wrap: balance;
+}
+
+:global(html.dark) .refinedScreen [data-phone-mandate-input-region] {
+  max-width: none;
+}
+
+:global(html.dark) .refinedScreen [data-figma-phone-step="phone"] [data-slot="field-set"] {
+  gap: 32px !important;
+}
+
+:global(html.dark) .refinedScreen [data-figma-phone-fields] {
+  gap: 24px !important;
+}
+
+:global(html.dark) .refinedScreen [data-figma-phone-field] {
+  gap: 8px !important;
+}
+
+:global(html.dark) .refinedScreen [data-figma-phone-field] [data-slot="field-label"] {
+  padding-inline-start: 0;
+}
+
+/* The page supplies empty helper copy. An empty flex item otherwise inserts
+   two section gaps between the phone field and its submit action. */
+:global(html.dark) .refinedScreen [data-figma-phone-helper]:empty {
+  display: none;
+}
+
+:global(html.dark) .refinedScreen [data-figma-phone-primary] {
+  max-inline-size: none !important;
+}
+
+:global(html.dark) .refinedScreen input {
+  scroll-margin-block: 80px;
+}
+
+:global(html.dark) .refinedScreen [data-slot="input-group"] { background: #1c1c1e !important; border: 0 !important; }
+:global(html.dark) .refinedScreen .primaryAction { background: #0088ff !important; font-weight: 510 !important; }

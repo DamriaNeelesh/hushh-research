@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { ArrowLeft, Shield } from "lucide-react";
+import lightStyles from "./AuthStepLight.module.css";
 import { OneArcIllustration } from "@/components/onboarding/OneArcIllustration";
 import { AuthService } from "@/lib/services/auth-service";
 import { ApiService } from "@/lib/services/api-service";
@@ -990,14 +991,14 @@ export function AuthStep({
 
   return (
     <main
-      className="relative w-full overflow-hidden bg-white dark:bg-[#000000]"
+      className={cn("relative w-full overflow-hidden bg-white dark:bg-[#000000]", lightStyles.shell)}
       style={{
         height: "calc(100dvh - var(--app-scroll-bottom-pad, 0px))",
         minHeight: "calc(100svh - var(--app-scroll-bottom-pad, 0px))",
       }}
       data-testid="auth-step-primary"
     >
-      <OnboardingHeroBackground />
+      <div className={lightStyles.existingBackdrop}><OnboardingHeroBackground /></div>
       <NativeTestBeacon
         routeId="/login"
         marker="native-route-login"
@@ -1030,13 +1031,14 @@ export function AuthStep({
         data-voice-control-id={
           activeLegalDoc || providerBusy ? undefined : "auth_back"
         }
-        className="fixed left-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50 grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] disabled:pointer-events-none disabled:opacity-40 dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15"
+        className={cn("fixed left-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50 grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] disabled:pointer-events-none disabled:opacity-40 dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15", lightStyles.back)}
       >
-        <ArrowLeft className="h-[18px] w-[18px]" strokeWidth={2} />
+        <ArrowLeft className={cn("h-[18px] w-[18px]", lightStyles.existingBackIcon)} strokeWidth={2} />
+        <Image src="/onboarding/figma/auth-back-chevron.svg" alt="" width={10} height={17} unoptimized className={lightStyles.backGlyph} />
       </button>
 
       <div
-        className="relative mx-auto flex w-full max-w-[440px] flex-col justify-center px-4"
+        className={cn("relative mx-auto flex w-full max-w-[440px] flex-col justify-center px-4", lightStyles.content)}
         style={{
           height: "calc(100dvh - var(--app-scroll-bottom-pad, 0px))",
           minHeight: "calc(100svh - var(--app-scroll-bottom-pad, 0px))",
@@ -1044,24 +1046,32 @@ export function AuthStep({
         data-auth-content-block
       >
         <div
-          className="flex w-full flex-none flex-col items-center gap-5 px-2 text-center"
+          className={cn("flex w-full flex-none flex-col items-center gap-5 px-2 text-center", lightStyles.clusters)}
           data-auth-signin-clusters
         >
-          <div className="flex w-full flex-col items-center gap-3">
-            <OneArcIllustration />
+          <div className={cn("flex w-full flex-col items-center gap-3", lightStyles.hero)}>
+            <div className={lightStyles.existingIllustration}><OneArcIllustration /></div>
+            <div className={lightStyles.illustration} aria-hidden="true">
+              <div className={lightStyles.imageCrop}>
+                <Image src="/onboarding/figma/screen-7-art.png" alt="" width={1536} height={1024} priority unoptimized draggable={false} className={lightStyles.darkArtwork} />
+                <Image src="/onboarding/figma/screen-3-art.png" alt="" width={950} height={1698} priority unoptimized draggable={false} />
+              </div>
+              <span className={lightStyles.glow} />
+              <span className={lightStyles.emoji}>🤫</span>
+            </div>
 
             <h1
               role="heading"
               aria-level={1}
               aria-label="Welcome to One"
-              className="whitespace-nowrap font-bold text-[25px] sm:text-[27px] leading-[32px] tracking-[-0.5px] text-[#17130C] dark:text-[#F2F2F7]"
+              className={cn("whitespace-nowrap font-bold text-[25px] sm:text-[27px] leading-[32px] tracking-[-0.5px] text-[#17130C] dark:text-[#F2F2F7]", lightStyles.title)}
             >
               Welcome to One
               <span className="text-[#387BF5]">.</span>
             </h1>
           </div>
 
-          <div className="relative mx-auto w-full max-w-[344px] space-y-3.5">
+          <div className={cn("relative mx-auto w-full max-w-[344px] space-y-3.5", lightStyles.actions)}>
             <div className="space-y-3" data-auth-provider-actions>
               {providerAttempt?.phase === "attention_required" ? (
                 <p
@@ -1076,7 +1086,11 @@ export function AuthStep({
                 <AuthProviderButton
                   key={option.id}
                   label={option.label}
-                  icon={option.icon}
+                  icon={<>
+                    <span className={lightStyles.existingProviderIcon}>{option.icon}</span>
+                    {option.id === "apple" && <Image src="/onboarding/figma/auth-apple-dark.png" alt="" width={37} height={37} unoptimized className={lightStyles.darkAppleIcon} />}
+                    <Image src={option.id === "apple" ? "/onboarding/figma/auth-apple-light.png" : "/onboarding/figma/google.png"} alt="" width={option.id === "apple" ? 41 : 46} height={23} unoptimized className={cn(lightStyles.providerIcon, option.id === "apple" ? lightStyles.appleIcon : lightStyles.googleIcon)} />
+                  </>}
                   onClick={() => {
                     void option.onClick();
                   }}
@@ -1084,6 +1098,7 @@ export function AuthStep({
                   voiceControlId={`auth_${option.id}`}
                   className={cn(
                     option.id === "apple" ? APPLE_BTN_CLASS : GOOGLE_BTN_CLASS,
+                    lightStyles.providerButton,
                   )}
                 />
               ))}
@@ -1102,12 +1117,14 @@ export function AuthStep({
         </div>
       </div>
 
-      <div className="absolute inset-x-4 bottom-5 z-10 flex justify-center">
+      <div className={cn("absolute inset-x-4 bottom-5 z-10 flex justify-center", lightStyles.footer)}>
         <div
-          className="flex items-center gap-3.5 text-left max-w-[24rem]"
+          className={cn("flex items-center gap-3.5 text-left max-w-[24rem]", lightStyles.legalRow)}
           data-auth-supporting-content
         >
-          <HandshakePrivacyIcon className="h-[26px] w-[32px] shrink-0" />
+          <span className={lightStyles.existingPrivacyIcon}><HandshakePrivacyIcon className="h-[26px] w-[32px] shrink-0" /></span>
+          <Image src="/onboarding/figma/privacy-light-auth.svg" alt="" width={32.245548} height={25.76586} unoptimized className={lightStyles.privacyIcon} />
+          <Image src="/onboarding/figma/privacy-dark.svg" alt="" width={32.245548} height={25.76586} unoptimized className={lightStyles.darkPrivacyIcon} />
           <p className="text-xs sm:text-[13px] leading-[1.35] text-[#8E8E93] dark:text-white/90">
             By continuing you agree to our{" "}
             <br />
