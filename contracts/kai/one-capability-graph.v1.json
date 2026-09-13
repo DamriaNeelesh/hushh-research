@@ -35880,7 +35880,7 @@
         }
       ],
       "platform": "ios",
-      "projection_digest": "c5a3431968c4d2bc3ce49fa7f4b5e222b871de2a7c1643cc3fb2809687484223",
+      "projection_digest": "2c50f58f594747581800bab0df6e9e429603035e887d5c9008699b7ce38ae1c8",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -35899,7 +35899,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "d6c9cba48241d3b0fcc96b8612bf3b9a15b122b6d476c3d6302663043043ef9c"
       },
-      "source_revision": "f0d84e300bb39de3",
+      "source_revision": "6448b901792d40a4",
       "supported_entrypoints": [
         "typed",
         "voice",
@@ -37417,7 +37417,7 @@
       ]
     },
     "schema_version": "one.capability_platform_projection.v1",
-    "source_revision": "f0d84e300bb39de3",
+    "source_revision": "6448b901792d40a4",
     "web": {
       "actions": [
         {
@@ -37460,7 +37460,7 @@
         }
       ],
       "platform": "web",
-      "projection_digest": "6a923f23922de497bd79781b6639f57ec56ae7269c413b92d25a97e41ccc931c",
+      "projection_digest": "ad8843ca6152865265d7345c2bff12cc384f2ce4299c7c2b2daa92f02922fe43",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -37479,7 +37479,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "d6c9cba48241d3b0fcc96b8612bf3b9a15b122b6d476c3d6302663043043ef9c"
       },
-      "source_revision": "f0d84e300bb39de3",
+      "source_revision": "6448b901792d40a4",
       "supported_entrypoints": [
         "typed",
         "voice"
@@ -39036,7 +39036,7 @@
       "renderer_key": "one_location_workflow_card"
     }
   ],
-  "revision": "f0d84e300bb39de3",
+  "revision": "6448b901792d40a4",
   "schema_version": "one.capability_graph.v1",
   "screens": [
     {
@@ -39749,6 +39749,7 @@
         "location.checkout_nearby",
         "location.confirm_nearby_check_in",
         "location.create_circle",
+        "location.create_public_link",
         "location.decline_circle_invite",
         "location.decline_request",
         "location.delete_circle",
@@ -39779,12 +39780,15 @@
         "location.remove_from_circle",
         "location.rename_circle",
         "location.resume_updates",
+        "location.revoke_public_link",
         "location.save_current_location",
         "location.select_ask_recipient",
         "location.select_share_recipient",
         "location.send_check_in",
         "location.send_request",
         "location.set_auto_share",
+        "location.set_ghost_mode",
+        "location.share_public_link",
         "location.share_selected",
         "location.sos_default",
         "location.stop_share",
@@ -40723,10 +40727,12 @@
   "semantic_diff": {
     "added": [],
     "breaking": [],
-    "changed": [],
+    "changed": [
+      "screens:screen:/one/location"
+    ],
     "compatible": [],
     "deprecated": [],
-    "from_revision": "af57e85f060b7a4e",
+    "from_revision": "f0d84e300bb39de3",
     "migrated": [],
     "removed": []
   },
@@ -43103,12 +43109,12 @@
     "location_onboarding_runtime": "2183415176b2493df200aac6ee6035f3e9e19dfb0a0bf93dbd3698a1af1d6d15",
     "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
     "product_agent_registry": "49cb39b76eb39b529bec9c8f8d0bfa3c05185255546339bec80e7cab13027186",
-    "route_orchestration_index": "39bedd22b12f99d1a5f434d6271d5da7f5896868ddc7b1626ee40348846e357b",
+    "route_orchestration_index": "43959ca5acf753a3149b1ce1f45b8589df0c4431749d689d57757f7b96666949",
     "service_knowledge_packages": "d6c9cba48241d3b0fcc96b8612bf3b9a15b122b6d476c3d6302663043043ef9c"
   },
-  "source_revision": "f0d84e300bb39de3",
+  "source_revision": "6448b901792d40a4",
   "workflow_revision_compatibility": {
-    "current_graph_revision": "f0d84e300bb39de3",
+    "current_graph_revision": "6448b901792d40a4",
     "schema_version": "one.workflow_revision_compatibility.v1",
     "workflows": [
       {
@@ -43116,7 +43122,8 @@
           "511758965444c3bb",
           "55a233b9b6e923ea",
           "af42538767aa6642",
-          "af57e85f060b7a4e"
+          "af57e85f060b7a4e",
+          "f0d84e300bb39de3"
         ],
         "migration_required_graph_revisions": [],
         "rejected_graph_revisions": [],
@@ -43129,7 +43136,8 @@
           "511758965444c3bb",
           "55a233b9b6e923ea",
           "af42538767aa6642",
-          "af57e85f060b7a4e"
+          "af57e85f060b7a4e",
+          "f0d84e300bb39de3"
         ],
         "migration_required_graph_revisions": [],
         "rejected_graph_revisions": [],
@@ -43142,7 +43150,8 @@
           "511758965444c3bb",
           "55a233b9b6e923ea",
           "af42538767aa6642",
-          "af57e85f060b7a4e"
+          "af57e85f060b7a4e",
+          "f0d84e300bb39de3"
         ],
         "migration_required_graph_revisions": [],
         "rejected_graph_revisions": [],
@@ -43155,7 +43164,8 @@
           "511758965444c3bb",
           "55a233b9b6e923ea",
           "af42538767aa6642",
-          "af57e85f060b7a4e"
+          "af57e85f060b7a4e",
+          "f0d84e300bb39de3"
         ],
         "migration_required_graph_revisions": [],
         "rejected_graph_revisions": [],
@@ -43168,7 +43178,8 @@
           "511758965444c3bb",
           "55a233b9b6e923ea",
           "af42538767aa6642",
-          "af57e85f060b7a4e"
+          "af57e85f060b7a4e",
+          "f0d84e300bb39de3"
         ],
         "migration_required_graph_revisions": [],
         "rejected_graph_revisions": [],
@@ -43181,7 +43192,8 @@
           "511758965444c3bb",
           "55a233b9b6e923ea",
           "af42538767aa6642",
-          "af57e85f060b7a4e"
+          "af57e85f060b7a4e",
+          "f0d84e300bb39de3"
         ],
         "migration_required_graph_revisions": [],
         "rejected_graph_revisions": [],
@@ -43194,7 +43206,8 @@
           "511758965444c3bb",
           "55a233b9b6e923ea",
           "af42538767aa6642",
-          "af57e85f060b7a4e"
+          "af57e85f060b7a4e",
+          "f0d84e300bb39de3"
         ],
         "migration_required_graph_revisions": [],
         "rejected_graph_revisions": [],
