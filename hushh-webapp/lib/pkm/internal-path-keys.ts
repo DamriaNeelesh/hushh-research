@@ -23,7 +23,7 @@
  * the memory-card graph. Same precedent as `humanize-segment.ts`.
  */
 
-import contract from "@/../contracts/pkm/internal-path-keys.v1.json";
+import contract from "@/contracts/pkm/internal-path-keys.v1.json";
 
 const INTERNAL_KEYS: ReadonlySet<string> = new Set(
   (contract.internal_keys as string[]).map((key) => key.trim().toLowerCase()),
