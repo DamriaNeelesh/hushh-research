@@ -4,7 +4,11 @@ from copy import deepcopy
 
 import pytest
 
-from scripts.generate_capability_graph import _workflow_change_is_additive
+from scripts.generate_capability_graph import (
+    _merge_workflow_predecessor,
+    _workflow_change_is_additive,
+    _workflow_revision_compatibility,
+)
 
 
 def graphs():
@@ -48,6 +52,54 @@ def test_added_app_result_preserves_old_clients_and_authored_tail():
     after["workflows"][0]["command_completion_action_ids"] = ["location.resume_updates"]
     assert _workflow_change_is_additive(before, after, "workflows:workflow.setup.location")
     assert not _workflow_change_is_additive(before, before, "workflows:workflow.setup.location")
+
+
+def test_merged_workflow_history_preserves_both_compatible_branches():
+    before, after = graphs()
+    before["revision"] = "shipped"
+    after["revision"] = "candidate"
+    before["workflow_revision_compatibility"] = _workflow_revision_compatibility(None, before, {})
+    prior = before["workflow_revision_compatibility"]["workflows"][0]
+    prior["compatible_graph_revisions"] = ["older_shipped"]
+    after["workflow_revision_compatibility"] = _workflow_revision_compatibility(None, after, {})
+    after["workflow_revision_compatibility"]["workflows"][0]["compatible_graph_revisions"] = [
+        "repair_branch"
+    ]
+    _merge_workflow_predecessor(after, before)
+    _merge_workflow_predecessor(after, before)
+    assert after["workflow_revision_compatibility"]["workflows"][0][
+        "compatible_graph_revisions"
+    ] == ["older_shipped", "repair_branch", "shipped"]
+
+
+@pytest.mark.parametrize(
+    "conflict", ["authority", "rejected", "migration_required", "cross_policy", "current_revision"]
+)
+def test_merged_workflow_history_cannot_override_authority_or_revision_policy(conflict):
+    before, after = graphs()
+    before["revision"] = "shipped"
+    after["revision"] = "candidate"
+    after["workflow_revision_compatibility"] = _workflow_revision_compatibility(None, after, {})
+    if conflict == "authority":
+        after["workflows"][0]["settlement_proof"] = "client_says_success"
+    elif conflict in {"rejected", "migration_required"}:
+        after["workflow_revision_compatibility"]["workflows"][0][f"{conflict}_graph_revisions"] = [
+            "shipped"
+        ]
+    else:
+        before["workflow_revision_compatibility"] = _workflow_revision_compatibility(
+            None, before, {}
+        )
+        before["workflow_revision_compatibility"]["workflows"][0]["rejected_graph_revisions"] = [
+            "older" if conflict == "cross_policy" else "candidate"
+        ]
+        after["workflow_revision_compatibility"]["workflows"][0][
+            "migration_required_graph_revisions"
+        ] = ["older"]
+    original = deepcopy(after)
+    with pytest.raises(RuntimeError):
+        _merge_workflow_predecessor(after, before)
+    assert after == original
 
 
 @pytest.mark.parametrize(

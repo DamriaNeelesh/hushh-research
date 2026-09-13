@@ -5,6 +5,8 @@ export const ONE_LOCATION_WORKFLOW_CARD_CATALOG = {
   "graphRevision": "f0d84e300bb39de3",
   "compatibleGraphRevisions": [
     "511758965444c3bb",
+    "55a233b9b6e923ea",
+    "af42538767aa6642",
     "af57e85f060b7a4e"
   ],
   "workflowId": "workflow.setup.location",

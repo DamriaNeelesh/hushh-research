@@ -557,7 +557,77 @@ def _workflow_revision_compatibility(
     }
 
 
-def build_payload() -> dict[str, Any]:
+def _read_workflow_predecessor(ref: str) -> dict[str, Any]:
+    """Import only a committed ancestor, never an arbitrary compatibility claim."""
+
+    resolved = subprocess.run(  # noqa: S603 - fixed git executable/arguments
+        ["git", "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}"],  # noqa: S607
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(  # noqa: S603 - fixed git executable/arguments
+        ["git", "merge-base", "--is-ancestor", resolved, "HEAD"],  # noqa: S607
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    )
+    relative = OUTPUTS[0].relative_to(REPO_ROOT).as_posix()
+    completed = subprocess.run(  # noqa: S603 - fixed git executable/arguments
+        ["git", "show", f"{resolved}:{relative}"],  # noqa: S607
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
+    if not isinstance(payload, dict) or not payload.get("revision"):
+        raise RuntimeError("Workflow predecessor has no generated graph revision.")
+    return payload
+
+
+def _merge_workflow_predecessor(graph: dict[str, Any], predecessor: dict[str, Any]) -> None:
+    """Preserve a merged branch's history only after proving its workflow semantics."""
+
+    current = _workflow_by_id(graph)
+    compatibility = deepcopy(graph["workflow_revision_compatibility"])
+    entries = {entry["workflow_id"]: entry for entry in compatibility["workflows"]}
+    for workflow_id, old in _workflow_by_id(predecessor).items():
+        new = current.get(workflow_id)
+        semantic_id = f"workflows:{workflow_id}"
+        equal = _semantic_index({"workflows": [old]}) == _semantic_index(
+            {"workflows": [new] if new else []}
+        )
+        if not equal and not _workflow_change_is_additive(predecessor, graph, semantic_id):
+            raise RuntimeError(f"Workflow predecessor is not compatible: {workflow_id}")
+        entry = entries[workflow_id]
+        prior = _previous_workflow_compatibility(predecessor, workflow_id)
+        for field in (
+            "compatible_graph_revisions",
+            "migration_required_graph_revisions",
+            "rejected_graph_revisions",
+        ):
+            revisions = set(_clean_revisions(entry.get(field)) + _clean_revisions(prior.get(field)))
+            if field == "compatible_graph_revisions":
+                revisions.add(str(predecessor["revision"]))
+                revisions.discard(str(graph["revision"]))
+            entry[field] = sorted(revisions)
+        compatible = set(entry["compatible_graph_revisions"])
+        migration_required = set(entry["migration_required_graph_revisions"])
+        rejected = set(entry["rejected_graph_revisions"])
+        if (
+            compatible & (migration_required | rejected)
+            or migration_required & rejected
+            or str(graph["revision"]) in migration_required | rejected
+        ):
+            raise RuntimeError(
+                f"Workflow predecessor conflicts with revision policy: {workflow_id}"
+            )
+    graph["workflow_revision_compatibility"] = compatibility
+
+
+def build_payload(*, workflow_predecessor_refs: tuple[str, ...] = ()) -> dict[str, Any]:
     previous = _read_previous()
     deprecations = _load_evolution_deprecations()
     graph = compile_capability_graph_from_sources()
@@ -596,6 +666,8 @@ def build_payload() -> dict[str, Any]:
         graph,
         semantic_diff,
     )
+    for ref in workflow_predecessor_refs:
+        _merge_workflow_predecessor(graph, _read_workflow_predecessor(ref))
     return graph
 
 
@@ -604,8 +676,14 @@ def main() -> int:
     parser.add_argument(
         "--check", action="store_true", help="fail when a committed mirror is stale"
     )
+    parser.add_argument(
+        "--workflow-predecessor-ref",
+        action="append",
+        default=[],
+        help="preserve a merged ancestor's workflow history after semantic compatibility proof",
+    )
     args = parser.parse_args()
-    payload = build_payload()
+    payload = build_payload(workflow_predecessor_refs=tuple(args.workflow_predecessor_ref))
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     stale = []
     for output in OUTPUTS:
