@@ -324,8 +324,8 @@ describe("AuthProvider terminal session invalidation", () => {
       forceRefresh ? refresh.promise : Promise.resolve("persisted-token"),
     );
     mocks.apiGetAccountSessionStatus.mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: "Service unavailable" }), {
-        status: 503,
+      new Response(JSON.stringify({ detail: "Invalid Firebase ID token" }), {
+        status: 401,
       }),
     );
 
@@ -651,8 +651,8 @@ describe("AuthProvider terminal session invalidation", () => {
       forceRefresh ? refresh.promise : Promise.resolve("persisted-token"),
     );
     mocks.apiGetAccountSessionStatus.mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: "Service unavailable" }), {
-        status: 503,
+      new Response(JSON.stringify({ detail: "Invalid Firebase ID token" }), {
+        status: 401,
       }),
     );
 
@@ -712,6 +712,36 @@ describe("AuthProvider terminal session invalidation", () => {
     ).toBeInTheDocument();
   });
 
+  it("automatically recovers a fail-closed session after a transient outage", async () => {
+    renderProvider();
+    await screen.findByText("Vault content for account-owner");
+    vi.useFakeTimers();
+    mocks.apiGetAccountSessionStatus.mockRejectedValueOnce(
+      new TypeError("Failed to fetch"),
+    );
+
+    act(() => {
+      emitLifecycle("background");
+      emitLifecycle("active");
+    });
+    await act(async () => Promise.resolve());
+
+    expect(screen.getByText("Verification required")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Vault content for account-owner"),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(
+      screen.getByText("Vault content for account-owner"),
+    ).toBeInTheDocument();
+    expect(mocks.apiGetAccountSessionStatus).toHaveBeenCalledTimes(3);
+    expect(mocks.authServiceSignOut).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: "HTML with a 200 status",
@@ -745,12 +775,14 @@ describe("AuthProvider terminal session invalidation", () => {
           { status: 200 },
         ),
     },
+    {
+      name: "a missing backend route",
+      response: () => Response.json({ detail: "Not Found" }, { status: 404 }),
+    },
   ])("keeps protected UI sealed for $name", async ({ response }) => {
     renderProvider();
     await screen.findByText("Vault content for account-owner");
-    mocks.apiGetAccountSessionStatus
-      .mockResolvedValueOnce(response())
-      .mockResolvedValueOnce(response());
+    mocks.apiGetAccountSessionStatus.mockResolvedValueOnce(response());
 
     act(() => {
       emitLifecycle("background");
@@ -763,7 +795,7 @@ describe("AuthProvider terminal session invalidation", () => {
     expect(
       screen.queryByText("Vault content for account-owner"),
     ).not.toBeInTheDocument();
-    expect(mocks.apiGetAccountSessionStatus).toHaveBeenCalledTimes(3);
+    expect(mocks.apiGetAccountSessionStatus).toHaveBeenCalledTimes(2);
     expect(mocks.authServiceSignOut).not.toHaveBeenCalled();
   });
 
@@ -1059,7 +1091,7 @@ describe("AuthProvider terminal session invalidation", () => {
     expect(screen.getByText("Checking session")).toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_001);
+      await vi.advanceTimersByTimeAsync(60_001);
     });
     expect(screen.getByText("Verification required")).toBeInTheDocument();
     expect(

@@ -35,6 +35,7 @@ import {
 } from "@/lib/one-location/place-rating-consent";
 import { recordVisitNote } from "@/lib/one-location/visit-notes";
 import {
+  trackOneLocationJourneyAction,
   trackReviewHandoffOpened,
   trackVisitRated,
 } from "@/lib/observability/location-events";
@@ -1588,6 +1589,11 @@ export function NearbyCheckInSheet({
         return;
       }
       if (!hasCheckInAccuracy(freshPoint)) {
+        trackOneLocationJourneyAction({
+          action: "nearby_check_in_result",
+          result: "expected_error",
+          routeId: "one_location_check_in",
+        });
         setPoint(null);
         setLocationRecovery(isNative() ? "app-settings" : null);
         setLocationError(
@@ -1612,6 +1618,11 @@ export function NearbyCheckInSheet({
         return;
       }
       publishState(next);
+      trackOneLocationJourneyAction({
+        action: "nearby_check_in_result",
+        result: "success",
+        routeId: "one_location_check_in",
+      });
       setViewState("active");
       setCompletedCheckIn(null);
       setAddTimeOpen(false);
@@ -1632,6 +1643,11 @@ export function NearbyCheckInSheet({
         return;
       }
       const details = OneLocationService.nearbyCheckInErrorDetails(error);
+      trackOneLocationJourneyAction({
+        action: "nearby_check_in_result",
+        result: "error",
+        routeId: "one_location_check_in",
+      });
       if (details.retryLocation) {
         setPoint(null);
         setLocationError(details.message);
@@ -1714,13 +1730,17 @@ export function NearbyCheckInSheet({
     mutationInFlightRef.current = true;
     setBusy("check-in");
     const current = () => ownerEpochRef.current === expectedOwnerEpoch && presenceMutationGenerationRef.current === generation;
+    let accuracyUnavailable = false;
     try {
       const completed = await performNearbyCheckIn({
         placeId: binding.placeId, durationMinutes: binding.durationMinutes, allowConnectionRequests: binding.allowConnectionRequests,
         consentAccepted: true, consentVersion: binding.consentVersion, operationId: context.operationId, signal: context.signal, current,
         capture: async () => {
           const point = await captureCurrentPosition({ fresh: true });
-          if (!hasCheckInAccuracy(point)) throw Error("A precise location reading is needed before check-in.");
+          if (!hasCheckInAccuracy(point)) {
+            accuracyUnavailable = true;
+            throw Error("A precise location reading is needed before check-in.");
+          }
           return point;
         },
         save: (point) => OneLocationService.checkInNearby({ vaultOwnerToken, placeId: binding.placeId, point,
@@ -1732,8 +1752,22 @@ export function NearbyCheckInSheet({
       setViewState(completed.state.presence ? "active" : "setup");
       setCompletedCheckIn(null); setAddTimeOpen(false); setAddTimeBusy(null);
       setAutomaticPlaces([]); setSearchResults([]); setSelectedPlaceId(""); setSearch("");
+      trackOneLocationJourneyAction({
+        action: "nearby_check_in_result",
+        result: "success",
+        routeId: "one_location_check_in",
+        entrySurface: "agent",
+      });
       return { status: "succeeded", summary: `Check-in saved at ${binding.placeLabel} for ${binding.durationMinutes} minutes.` };
     } catch (error) {
+      if (current() && !context.signal?.aborted) {
+        trackOneLocationJourneyAction({
+          action: "nearby_check_in_result",
+          result: accuracyUnavailable ? "expected_error" : "error",
+          routeId: "one_location_check_in",
+          entrySurface: "agent",
+        });
+      }
       return { status: "failed", summary: OneLocationService.nearbyCheckInErrorDetails(error).message };
     } finally {
       if (current()) { mutationInFlightRef.current = false; setBusy(null); }
