@@ -14,7 +14,7 @@ import { SessionVerificationRecovery } from "@/components/auth/session-verificat
 import { NativeTestBeacon } from "@/components/app-ui/native-test-beacon";
 import { OnboardingHeroBackground } from "@/components/onboarding/OnboardingHeroBackground";
 import { useStepProgress } from "@/lib/progress/step-progress-context";
-import { isAndroid } from "@/lib/capacitor/platform";
+import { isAndroid, isWeb } from "@/lib/capacitor/platform";
 import { Icon } from "@/lib/morphy-ux/ui";
 import { morphyToast } from "@/lib/morphy-ux/morphy";
 import { cn } from "@/lib/utils";
@@ -1031,7 +1031,7 @@ export function AuthStep({
         data-voice-control-id={
           activeLegalDoc || providerBusy ? undefined : "auth_back"
         }
-        className={cn("fixed left-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50 grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] disabled:pointer-events-none disabled:opacity-40 dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15", lightStyles.back)}
+        className={cn("fixed left-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50 grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] disabled:pointer-events-none disabled:opacity-40 dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15", lightStyles.back, isWeb() && lightStyles.webBack)}
       >
         <ArrowLeft className={cn("h-[18px] w-[18px]", lightStyles.existingBackIcon)} strokeWidth={2} />
         <Image src="/onboarding/figma/auth-back-chevron.svg" alt="" width={10} height={17} unoptimized className={lightStyles.backGlyph} />

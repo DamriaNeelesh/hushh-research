@@ -423,6 +423,19 @@
   box-shadow: none;
   background: url("/onboarding/figma/auth-back-dark.svg") center / 43px 43px no-repeat;
 }
+
+/* Browser web uses the same safe-area top offset as Verify Phone. AuthStep
+   applies this class only when Capacitor resolves to the web platform. */
+:global(html:not(.dark)) .webBack,
+:global(html.dark) .webBack {
+  top: calc(
+    max(
+      env(safe-area-inset-top, 0px),
+      var(--app-safe-area-top-effective, 0px)
+    ) + 10px
+  );
+}
+
 @media (max-width: 360px) {
   :global(html.dark) .footer { padding-left: 48px; }
 }
