@@ -71,8 +71,8 @@ import {
   snapshotValidatedAuthSessionOwner,
   type AuthSessionVerificationRequiredDetail,
 } from "@/lib/auth/session-owner";
+import { ACCOUNT_SESSION_VALIDATION_BUDGET_MS } from "@/lib/auth/account-session-policy";
 import { shouldSkipAmbientIdentityHydrationForAutomation } from "@/lib/testing/native-test";
-import { resolveSlowRequestTimeoutMs } from "@/lib/utils/request-timeouts";
 
 // Pre-compute platform check to avoid dynamic imports in callbacks
 const IS_NATIVE = typeof window !== "undefined" && Capacitor.isNativePlatform();
@@ -82,17 +82,7 @@ const IS_NATIVE = typeof window !== "undefined" && Capacitor.isNativePlatform();
 // privacy generation always bypasses this window.
 const ACTIVE_SESSION_VALIDATION_DEBOUNCE_MS = 10_000;
 const WEB_AUTH_OBSERVER_WATCHDOG_MS = 10_000;
-// A local backend can reach UAT through the Cloud SQL proxy, but a slow
-// liveness probe must not leave every protected route on an indefinite loader.
-// An unavailable result enters the existing locked recovery surface; it never
-// unlocks or publishes protected information.
-const ACCOUNT_SESSION_VALIDATION_BUDGET_MS = resolveSlowRequestTimeoutMs(
-  8_000,
-  {
-    developmentFloorMs: 8_000,
-    overrideEnvKey: "HUSHH_ACCOUNT_SESSION_VALIDATION_TIMEOUT_MS",
-  },
-);
+const SESSION_VERIFICATION_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 30_000] as const;
 const NATIVE_SESSION_PRIVACY_READ_BUDGET_MS = 2_000;
 const ACCOUNT_DELETION_REPROBE_DEFAULT_DELAY_MS = 2_000;
 const ACCOUNT_DELETION_REPROBE_MAX_DELAY_MS = 2_000;
@@ -730,10 +720,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
             // A cached token can be stale for benign reasons. Revalidate it
             // through Firebase, then ask the backend once more before making a
             // terminal decision.
+          } else {
+            // Retrying the same unavailable endpoint with a fresh token cannot
+            // establish account liveness and doubles load during an outage. Keep
+            // the privacy gate closed and let the bounded recovery loop retry.
+            return { outcome: "unavailable" };
           }
         } catch {
-          // A transport/backend outage is not evidence of deletion. Fall back
-          // to Firebase's own forced validation below.
+          // A transport/backend outage is not evidence of deletion, and a
+          // Firebase refresh is not a substitute for the deletion tombstone
+          // contract. Preserve identity while keeping protected UI sealed.
+          return { outcome: "unavailable" };
         }
       }
 
@@ -1257,6 +1254,49 @@ export function AuthProvider({ children }: AuthProviderProps) {
     },
     [validateAccountSession, clearDeferredAuthGate],
   );
+
+  useEffect(() => {
+    if (!sessionVerificationRequired || !userId) return;
+
+    let cancelled = false;
+    let attempt = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleRetry = () => {
+      const delay =
+        SESSION_VERIFICATION_RETRY_DELAYS_MS[
+          Math.min(attempt, SESSION_VERIFICATION_RETRY_DELAYS_MS.length - 1)
+        ];
+      retryTimer = globalThis.setTimeout(() => {
+        retryTimer = null;
+        if (cancelled) return;
+
+        const canReachBackend =
+          document.visibilityState === "visible" && navigator.onLine !== false;
+        if (!canReachBackend) {
+          attempt += 1;
+          scheduleRetry();
+          return;
+        }
+
+        void validateActiveSession({ force: true }).finally(() => {
+          if (cancelled || !authGateRef.current.sessionVerificationRequired) {
+            return;
+          }
+          attempt += 1;
+          scheduleRetry();
+        });
+      }, delay);
+    };
+
+    // Availability failures stay fail-closed, but no longer require a customer
+    // to repeatedly press Try again after a transient backend/proxy incident.
+    scheduleRetry();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) globalThis.clearTimeout(retryTimer);
+    };
+  }, [sessionVerificationRequired, userId, validateActiveSession]);
 
   useEffect(() => {
     const handleAuthInvalidated = (event: Event) => {

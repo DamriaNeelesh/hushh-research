@@ -233,7 +233,7 @@ describe("AuthProvider native privacy generations", () => {
     const stalledRestore = deferred<User | null>();
     mocks.restoreNativeSession.mockReturnValueOnce(stalledRestore.promise);
     render(<AuthProvider><SessionProbe /></AuthProvider>);
-    await act(async () => { await vi.advanceTimersByTimeAsync(8_001); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_001); });
     expect(screen.getByText("Verification required")).toBeInTheDocument();
     expect(screen.queryByText("Checking session")).not.toBeInTheDocument();
     expect(mocks.authServiceSignOut).not.toHaveBeenCalled();
@@ -499,8 +499,7 @@ describe("AuthProvider native privacy generations", () => {
     const unavailable = deferred<Response>();
     mocks.restoreNativeSession.mockResolvedValue(makeUser());
     mocks.apiGetAccountSessionStatus.mockResolvedValueOnce(activeSessionResponse())
-      .mockReturnValueOnce(unavailable.promise)
-      .mockResolvedValueOnce(Response.json({}, { status: 503 }));
+      .mockReturnValueOnce(unavailable.promise);
     render(<AuthProvider><SessionProbe /></AuthProvider>);
     await screen.findByText("Native content for native-account-owner");
     const owner = snapshotValidatedAuthSessionOwner();
@@ -515,7 +514,7 @@ describe("AuthProvider native privacy generations", () => {
     expect(screen.getByText("Checking session")).toBeInTheDocument();
     await act(async () => unavailable.resolve(Response.json({}, { status: 503 })));
     await screen.findByText("Verification required");
-    expect(mocks.apiGetAccountSessionStatus).toHaveBeenCalledTimes(3);
+    expect(mocks.apiGetAccountSessionStatus).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId("published-user")).toHaveTextContent("native-account-owner");
     expect(mocks.authServiceSignOut).not.toHaveBeenCalled();
   });
