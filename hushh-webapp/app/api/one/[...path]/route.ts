@@ -73,9 +73,9 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
     if (voiceTurnIdHeader) headers.set("X-Voice-Turn-Id", voiceTurnIdHeader);
 
     let body: BodyInit | undefined;
-    if (request.method !== "GET" && request.method !== "DELETE") {
+    if (request.method !== "GET" && request.method !== "HEAD") {
       headers.set("Content-Type", contentType || "application/json");
-      body = await request.text();
+      body = (await request.text()) || undefined;
     }
 
     // Agent chat is an SSE connection. An AbortSignal.timeout stays attached to

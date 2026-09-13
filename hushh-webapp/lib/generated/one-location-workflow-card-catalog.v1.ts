@@ -2,8 +2,10 @@
 // Do not edit by hand; update CapabilityGraphV1 and regenerate.
 export const ONE_LOCATION_WORKFLOW_CARD_CATALOG = {
   "schemaVersion": "one.location_workflow_card_catalog.v1",
-  "graphRevision": "511758965444c3bb",
-  "compatibleGraphRevisions": [],
+  "graphRevision": "af57e85f060b7a4e",
+  "compatibleGraphRevisions": [
+    "511758965444c3bb"
+  ],
   "workflowId": "workflow.setup.location",
   "workflowVersion": 2,
   "renderSurface": "render.one_location_workflow_card",
@@ -807,6 +809,12 @@ export const ONE_LOCATION_WORKFLOW_CARD_CATALOG = {
           "buttonRole": null
         },
         {
+          "result": "draft_prepared",
+          "labelKey": "one.location.result.draft_prepared.label",
+          "presentation": "app_result",
+          "buttonRole": null
+        },
+        {
           "result": "skip_place",
           "labelKey": "one.location.result.skip_place.label",
           "presentation": "button",
@@ -868,6 +876,68 @@ export const ONE_LOCATION_WORKFLOW_CARD_CATALOG = {
               },
               "result": {
                 "const": "vault_unavailable",
+                "type": "string"
+              },
+              "runRevision": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "runRevision",
+              "leaseId",
+              "result",
+              "draftMetadata"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "draftMetadata": {
+                "additionalProperties": false,
+                "properties": {
+                  "digest": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "expiresAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "revision": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "runId": {
+                    "pattern": "^run_[a-z0-9]{16,96}$",
+                    "type": "string"
+                  },
+                  "schemaVersion": {
+                    "const": "one.location.pre_vault.draft_metadata.v1",
+                    "type": "string"
+                  },
+                  "status": {
+                    "const": "staged",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "digest",
+                  "status",
+                  "expiresAt",
+                  "runId",
+                  "revision"
+                ],
+                "type": "object"
+              },
+              "leaseId": {
+                "pattern": "^loclease_[a-z0-9]{16,96}$",
+                "type": "string"
+              },
+              "result": {
+                "const": "draft_prepared",
                 "type": "string"
               },
               "runRevision": {
