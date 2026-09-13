@@ -59,12 +59,14 @@ from hushh_mcp.one_adk.action_tools import (
     get_current_time,
     get_location_circle_members,
     journey_for_specialist_request,
+    list_active_grants,
     list_app_actions,
     list_available_models,
     list_location_shared_with_me,
     list_my_connections,
     list_my_location_circles,
     list_my_location_shares,
+    list_my_outgoing_information_requests,
     list_my_outgoing_location_requests,
     list_pending_connection_requests,
     list_pending_information_requests,
@@ -1223,7 +1225,15 @@ async def ask_consent_agent(
     tool_context: ToolContext,
     target: Literal["consent", "connections"] = "consent",
 ) -> dict[str, Any]:
-    """Ask Nav's Consent Center or its Connections child.
+    """Hand a trusted-people or relationship change to the Connections specialist, or a consent-review request to Nav.
+
+    Consent questions -- what is waiting, what is shared, what was asked for,
+    asking, denying, revoking, withdrawing -- are answered by One's own tools
+    (list_pending_information_requests, list_active_grants,
+    list_my_outgoing_information_requests, discover_person_information,
+    propose_information_request, run_app_action). Do not send those here.
+    Use target "connections" to add or remove a trusted person or change a
+    relationship. Use target "consent" only for a review Nav specifically owns.
 
     One semantically selects ``target``.  This function only validates that
     selection and preserves the authored hierarchy: ``consent`` reaches Nav;
@@ -1572,6 +1582,8 @@ def _one_roster_tools(*, specialist_model: Any | None = None, tool_mode: str = "
         read_my_profile_status,
         discover_person_information,
         list_available_models,
+        list_active_grants,
+        list_my_outgoing_information_requests,
         list_pending_information_requests,
         propose_information_request,
         set_preferred_model,
