@@ -37,8 +37,6 @@ tests/test_vault_keys_metadata.py
 tests/test_one_location_routes.py
 tests/services/test_one_location_agent_service.py
 tests/test_one_capability_runtime_router_mount.py
-tests/test_location_command_relay.py
-tests/services/test_location_command_runtime.py
 tests/services/test_location_brain_semantic_retrieval.py
 tests/services/test_location_circle_direct_executor.py
 tests/services/test_location_circle_name_interaction.py
@@ -155,6 +153,11 @@ tests/test_account_deletion_tombstone_migration.py
 tests/test_account_deletion_release_workflow.py
 tests/test_cloud_run_image_resolution.py
 
+# First-party document renewal: expiry is not revocation, but revoked lineage
+# can never renew or regain authority through a later grant/duplicate token.
+tests/test_vault_owner_token_renewal.py
+tests/test_internal_vault_owner_token_validation.py
+
 # Contact discovery.
 #
 # `POST /api/marketplace/contacts/match` answers "is the person behind this
@@ -230,3 +233,9 @@ tests/test_scope_catalog_self_corrects_stale_rows.py
 tests/services/test_structure_decision_is_the_models.py
 tests/services/test_intent_frame_is_the_models.py
 tests/test_agent_stage_skips_are_visible.py
+
+# Location command semantics, retirement and atomic recovery lifecycle.
+tests/operons/location/test_location_command.py
+tests/test_location_command_routes.py
+tests/services/test_location_command_postgres.py
+tests/test_kai_local_runtime.py

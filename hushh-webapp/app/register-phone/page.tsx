@@ -8,7 +8,8 @@ import { toast } from "sonner";
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
 import { NativeRouteMarker } from "@/components/app-ui/native-route-marker";
 import { PhoneVerificationFlow } from "@/components/auth/phone-verification-flow";
-import { FigmaIllustration } from "@/components/onboarding/FigmaOnboardingPrimitives";
+import { OneArcIllustration } from "@/components/onboarding/OneArcIllustration";
+import { OnboardingHeroBackground } from "@/components/onboarding/OnboardingHeroBackground";
 import { VaultLockGuard } from "@/components/vault/vault-lock-guard";
 import {
   DropdownMenu,
@@ -309,9 +310,14 @@ export function PhoneMandatePageContent() {
 
   const shell = (
     <main
-      className={styles.shell}
+      className={cn("relative w-full overflow-hidden bg-white dark:bg-[#000000]", verificationStep === "phone" && styles.refinedScreen)}
+      style={{
+        height: "calc(100dvh - var(--app-scroll-bottom-pad, 0px))",
+        minHeight: "calc(100svh - var(--app-scroll-bottom-pad, 0px))",
+      }}
       data-testid="phone-mandate-screen"
     >
+      <div className={styles.existingBackdrop}><OnboardingHeroBackground /></div>
       <NativeRouteMarker
         routeId={ROUTES.PHONE_MANDATE}
         marker="native-route-register-phone"
@@ -319,82 +325,86 @@ export function PhoneMandatePageContent() {
         dataState="loaded"
       />
 
-      <div className={styles.composition}>
-        {/* Top bar: back + account actions */}
-        <div className={styles.topBar}>
-          <button
-            type="button"
-            aria-label="Go back"
-            onClick={() => router.back()}
-            className={cn(
-              styles.backButton,
-              "transition-transform active:scale-95",
-            )}
+      {/* Top bar: back + account actions anchored consistently */}
+      <button
+        type="button"
+        aria-label="Go back"
+        onClick={() => router.back()}
+        className={cn("fixed left-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50 grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15", styles.safeBack)}
+      >
+        <ChevronLeft className={cn("h-[18px] w-[18px]", styles.originalBackGlyph)} strokeWidth={2} />
+        <span aria-hidden="true" className={styles.figmaBackGlyph} />
+      </button>
+
+      <div className={cn("fixed right-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50", styles.safeAccount)}>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="Account actions"
+              className={cn("grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15", styles.accountControl)}
+            >
+              <MoreHorizontal className="h-[18px] w-[18px]" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => void handleSignOut()}>
+              <LogOut className="h-4 w-4 text-current" />
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      <div
+        className={cn("relative mx-auto flex w-full max-w-[440px] flex-col justify-center px-4", styles.flowContent)}
+        style={{
+          height: "calc(100dvh - var(--app-scroll-bottom-pad, 0px))",
+          minHeight: "calc(100svh - var(--app-scroll-bottom-pad, 0px))",
+        }}
+      >
+        <div className={cn("flex w-full flex-none flex-col items-center gap-5 px-2 text-center", styles.flowStack)}>
+          <div className={cn("flex w-full flex-col items-center gap-3", styles.flowHeading)}>
+            <div className={styles.existingBurst}><OneArcIllustration /></div>
+            <span className={styles.hushhVisual} aria-hidden="true">🤫</span>
+
+            <h1
+              role="heading"
+              aria-level={1}
+              aria-label={
+                verificationStep === "code"
+                  ? "Enter verification code"
+                  : "Verify your phone number"
+              }
+              className={cn("whitespace-nowrap font-bold text-[25px] sm:text-[27px] leading-[32px] tracking-[-0.5px] text-[#17130C] dark:text-[#F2F2F7]", styles.flowTitle)}
+            >
+              {verificationStep === "code"
+                ? "Enter verification code"
+                : "Verify your phone number"}
+            </h1>
+          </div>
+
+          <div
+            data-phone-mandate-input-region="true"
+            className="relative mx-auto w-full max-w-[344px] text-left"
           >
-            <ChevronLeft className="h-5 w-5" />
-          </button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Account actions"
-                className={cn(
-                  styles.accountButton,
-                  "transition-transform active:scale-95",
-                )}
-              >
-                <MoreHorizontal className="h-5 w-5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => void handleSignOut()}>
-                <LogOut className="h-4 w-4 text-current" />
-                Sign out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-
-        <FigmaIllustration variant="phone" className={styles.hero} />
-        <h1
-          role="heading"
-          aria-level={1}
-          aria-label={
-            verificationStep === "code"
-              ? "Enter verification code"
-              : "Verify your phone number"
-          }
-          className={styles.title}
-        >
-          {verificationStep === "code"
-            ? "Enter verification code"
-            : "Verify your phone number"}
-        </h1>
-
-        {/* The active field group owns the keyboard clearance. The keyboard
-            plugin leaves the WebView frame stable, so padding—not a `dvh`
-            resize—keeps both the number and OTP fields visibly above iOS and
-            Android keyboards. Tiny screens may scroll this one form region. */}
-        <div
-          data-phone-mandate-input-region="true"
-          className={styles.inputRegion}
-        >
-          <PhoneVerificationFlow
-            key={user.uid}
-            mode="link"
-            currentPhoneNumber={phoneNumber}
-            startVerification={startPhoneVerification}
-            confirmVerification={confirmPhoneVerification}
-            onCompleted={continueToNextRoute}
-            onContinueExisting={continueToNextRoute}
-            onStepChange={setVerificationStep}
-            sendCodeLabel="Send a verification code"
-            confirmLabel="Verify"
-            primaryActionClassName={styles.primaryAction}
-            className={styles.phoneForm}
-            helperText=""
-          />
-          <div id="recaptcha-container" className={cn("mt-3 min-h-0", styles.recaptcha)} />
+            <PhoneVerificationFlow
+              key={user.uid}
+              mode="link"
+              currentPhoneNumber={phoneNumber}
+              startVerification={startPhoneVerification}
+              confirmVerification={confirmPhoneVerification}
+              onCompleted={continueToNextRoute}
+              onContinueExisting={continueToNextRoute}
+              onStepChange={setVerificationStep}
+              sendCodeLabel="Send a verification code"
+              confirmLabel="Verify"
+              primaryActionClassName={styles.primaryAction}
+              className={styles.phoneForm}
+              helperText=""
+            />
+            <div id="recaptcha-container" className={cn("mt-3 min-h-0", styles.recaptcha)} />
+          </div>
         </div>
       </div>
     </main>
