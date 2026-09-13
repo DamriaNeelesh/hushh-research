@@ -169,9 +169,17 @@
 }
 
 /* The Figma text layers include four leading spaces. Preserve their actual
- * font advance rather than approximating that advance with pixel padding. */
+ * font advance rather than approximating that advance with pixel padding.
+ *
+ * The empty alternative text after the slash matters. Generated content is
+ * part of an element's accessible name, so without it this button is named
+ * "    Continue with Apple" -- four non-breaking spaces first. VoiceOver read
+ * them, and the native UI test's exact-match query for the button stopped
+ * finding it, which is how the failure surfaced: `testAccountNotFoundRecovery
+ * ReturnsToLogin` timing out on a button that was on screen the whole time.
+ * WebKit honours the alt clause since iOS 17.4. */
 :global(html:not(.dark)) .providerButton > span:first-child > span::before {
-  content: "\00a0\00a0\00a0\00a0";
+  content: "\00a0\00a0\00a0\00a0" / "";
   white-space: pre;
 }
 
@@ -347,12 +355,15 @@
 }
 :global(html.dark) .providerButton > span:first-child { position: static; width: 100%; }
 :global(html.dark) .providerButton > span:first-child > span { gap: 0; }
+/* Same leading-space fidelity as the light rule above, and the same empty
+ * alternative text for the same reason: these spaces are visual, not part of
+ * the button's name. */
 :global(html.dark) .providerButton > span:first-child > span::before {
-  content: "\00a0\00a0\00a0\00a0";
+  content: "\00a0\00a0\00a0\00a0" / "";
   white-space: pre;
 }
 :global(html.dark) .providerButton:has(.googleIcon) > span:first-child > span::before {
-  content: "\00a0\00a0\00a0\00a0\00a0\00a0";
+  content: "\00a0\00a0\00a0\00a0\00a0\00a0" / "";
 }
 :global(html.dark) .darkAppleIcon {
   display: block;
