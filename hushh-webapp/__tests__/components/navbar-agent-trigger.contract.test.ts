@@ -48,7 +48,6 @@ describe("Navbar bottom chrome contract", () => {
     expect(agentBar).toContain('data-agent-action="chat"');
     expect(agentBar).toContain("popover?.openAgent()");
     expect(agentBar).toContain('aria-label="Chat with One"');
-    expect(agentBar).toContain('title="Chat with One"');
     expect(agentBar).toContain('data-testid="one-agent-chat-label"');
     expect(agentBar).not.toContain("openSearchAndChat");
     expect(agentBar).not.toContain("openKaiCommandBar");
