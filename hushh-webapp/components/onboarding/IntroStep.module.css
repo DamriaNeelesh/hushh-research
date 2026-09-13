@@ -227,16 +227,23 @@
   }
 }
 
-/* Figma's dark screen is a 402x874 composition. Keep its internal coordinates
-   intact at that reference size, then scale the complete composition as one
-   unit when a phone is narrower or shorter. This prevents the artwork, slogan,
-   privacy note, and CTA from drifting independently across viewports. */
+/* Dark frame 194:2950 uses physical-screen coordinates (402 × 874).
+   Preserve its composition at the reference width; short windows scroll
+   instead of shrinking type, artwork and touch targets independently. */
+:global(.dark) .shell {
+  --intro-scale: min(1, calc(100vw / 402px));
+  --intro-font: "SF Pro", -apple-system, BlinkMacSystemFont, sans-serif;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 :global(.dark) .stage {
-  max-width: 402px;
-  padding: 0;
   display: flex;
   justify-content: center;
-  overflow: hidden;
+  flex: none;
+  max-width: none;
+  min-height: calc(874px * var(--intro-scale));
+  padding: 0;
 }
 
 :global(.dark) .composition {
@@ -245,20 +252,18 @@
   flex: none;
   width: 402px;
   height: 874px;
-  transform: scale(
-    min(
-      1,
-      calc(100vw / 402px),
-      calc((100svh - var(--app-scroll-bottom-pad, 0px)) / 874px)
-    )
-  );
+  transform: scale(var(--intro-scale));
   transform-origin: top center;
 }
 
 :global(.dark) .brand {
   top: 89px;
+  left: 153px;
+  transform: none;
 }
 
+/* The source PNG includes the floating tiles, envelope, light and 🤫.
+   Keep its 3:2 canvas and authored offset; do not add a second emoji. */
 :global(.dark) .illustration {
   top: 140px;
   margin-left: 3.5px;
@@ -266,21 +271,36 @@
 
 :global(.dark) .title {
   top: 465px;
+  left: 90px;
+  width: 221.000763px;
+  height: 90.830093px;
+  transform: none;
 }
 
-:global(.dark) .tagline {
-  top: 576px;
+:global(.dark) .tagline,
+:global(.dark) .subtitle {
   left: 76px;
   right: auto;
   width: 250px;
+  font-family: var(--intro-font);
+  color: #fff;
+  letter-spacing: 0;
+}
+
+:global(.dark) .tagline {
+  top: 575.997559px;
+  height: 23px;
+  font-size: 19px;
+  font-weight: 590;
+  line-height: 23px;
 }
 
 :global(.dark) .subtitle {
   top: 602px;
-  left: 76px;
-  right: auto;
-  width: 250px;
+  height: 16px;
   font-size: 13px;
+  font-weight: 400;
+  line-height: 16px;
 }
 
 :global(.dark) .footer {
@@ -293,6 +313,32 @@
   top: 716px;
   left: 90px;
   width: 233px;
+  height: 26px;
+}
+
+:global(.dark) .privacy > div {
+  width: 233px;
+  max-width: none;
+  height: 26px;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12.029842px;
+  font-family: var(--intro-font);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 13px;
+  color: #bfbfbf;
+}
+
+:global(.dark) .privacy img {
+  width: 32.245548px;
+  height: 25.76586px;
+}
+
+:global(.dark) .privacy span {
+  flex: none;
+  width: 188.724258px;
+  height: 26px;
 }
 
 :global(.dark) .cta {
@@ -303,6 +349,38 @@
   max-width: none;
   min-height: 52px;
   height: 52px;
+  padding: 16px 20px;
+  overflow: visible;
+  border-radius: 1000px;
+  background: transparent;
+  color: #fff;
+  font-family: var(--intro-font);
+  font-size: 17px;
+  font-weight: 510;
+  line-height: 18px;
+  letter-spacing: 0;
+}
+
+/* Exact frame-8 BG export includes the glass rendered over its black
+   backdrop. The label and existing ripple remain live interactive elements. */
+:global(.dark) .cta::before {
+  position: absolute;
+  inset: -0.5px;
+  content: "";
+  pointer-events: none;
+  background: url("/onboarding/figma/intro-dark-cta-material.png") center / 100% 100% no-repeat;
+  border-radius: inherit;
+}
+
+:global(.dark) .ctaLabel {
+  display: block;
+  width: 155px;
+  height: 18px;
+  white-space: nowrap;
+}
+
+:global(.dark) .ctaArrow::before {
+  content: "\00a0";
 }
 
 :global(.dark) .links {
@@ -313,4 +391,193 @@
   .cta {
     transition: none;
   }
+}
+
+/* Light frame 144:6039 is a 402 × 874 composition, measured from the
+   physical screen origin. Scale only for width; short windows scroll the
+   complete composition instead of moving the footer over the hero. Native
+   status/home chrome stays OS-owned (62pt top / 34pt bottom in the target). */
+:global(html:not(.dark)) .shell {
+  --intro-scale: min(1, calc(100vw / 402px));
+  --intro-font: "SF Pro", -apple-system, BlinkMacSystemFont, sans-serif;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+:global(html:not(.dark)) .stage {
+  display: flex;
+  justify-content: center;
+  flex: none;
+  max-width: none;
+  min-height: calc(874px * var(--intro-scale));
+  padding: 0;
+}
+
+:global(html:not(.dark)) .composition {
+  position: relative;
+  display: block;
+  flex: none;
+  width: 402px;
+  height: 874px;
+  transform: scale(var(--intro-scale));
+  transform-origin: top center;
+}
+
+:global(html:not(.dark)) .brand {
+  top: 89px;
+  left: 153px;
+  transform: none;
+}
+
+:global(html:not(.dark)) .illustration {
+  top: 107px;
+  left: 70px;
+  width: 287px;
+  height: 360px;
+  aspect-ratio: auto;
+  overflow: hidden;
+  transform: none;
+}
+
+/* Inverse of the Figma CROP matrix [[1,0,0],[0,.7044250369,.0531641543]].
+   Both axes are explicit: using contain or the PNG's natural aspect ratio
+   changes the authored crop. The nine tiles and box are baked into this PNG. */
+:global(html:not(.dark)) .illustration img {
+  position: absolute;
+  top: -7.54717%;
+  left: 0;
+  width: 100%;
+  height: 141.95975%;
+  max-width: none;
+  object-fit: fill;
+}
+
+:global(html:not(.dark)) .quietMark {
+  top: 373px;
+  left: 182px;
+  width: 45px;
+  height: 53px;
+  overflow: visible;
+  clip: auto;
+  font-family: var(--intro-font), "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+  font-size: 44.695049px;
+  font-weight: 510;
+  line-height: 52.582409px;
+  letter-spacing: -1.130522px;
+  text-align: left;
+  color: #000;
+}
+
+:global(html:not(.dark)) .title {
+  top: 465px;
+  left: 90px;
+  width: 221.000763px;
+  height: 90.830093px;
+  transform: none;
+}
+
+:global(html:not(.dark)) .tagline,
+:global(html:not(.dark)) .subtitle {
+  left: 76px;
+  right: auto;
+  width: 250px;
+  font-family: var(--intro-font);
+  color: #000;
+  letter-spacing: 0;
+}
+
+:global(html:not(.dark)) .tagline {
+  top: 575.997559px;
+  height: 23px;
+  font-size: 19px;
+  font-weight: 590;
+  line-height: 23px;
+}
+
+:global(html:not(.dark)) .subtitle {
+  top: 602px;
+  height: 16px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+:global(html:not(.dark)) .footer {
+  inset: 0;
+  display: block;
+}
+
+:global(html:not(.dark)) .privacy {
+  position: absolute;
+  top: 716px;
+  left: 90px;
+  width: 233px;
+  height: 26px;
+}
+
+:global(html:not(.dark)) .privacy > div {
+  width: 233px;
+  max-width: none;
+  height: 26px;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12.029842px;
+  font-family: var(--intro-font);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 13px;
+  color: #76829d;
+}
+
+:global(html:not(.dark)) .privacy img {
+  width: 32.245548px;
+  height: 25.76586px;
+}
+
+:global(html:not(.dark)) .privacy span {
+  flex: none;
+  width: 188.724258px;
+  height: 26px;
+}
+
+:global(html:not(.dark)) .cta {
+  position: absolute;
+  top: 759px;
+  left: 36px;
+  width: 330px;
+  max-width: none;
+  min-height: 52px;
+  height: 52px;
+  padding: 16px 20px;
+  overflow: visible;
+  border-radius: 1000px;
+  background: transparent;
+  color: #fff;
+  font-family: var(--intro-font);
+  font-size: 17px;
+  font-weight: 510;
+  line-height: 18px;
+  letter-spacing: 0;
+}
+
+/* Exported BG instance includes the authored half-point backing outside the
+   330 × 52 control. Text and the existing ripple/handler remain live HTML. */
+:global(html:not(.dark)) .cta::before {
+  position: absolute;
+  inset: -0.5px;
+  content: "";
+  pointer-events: none;
+  background: url("/onboarding/figma/intro-cta-material.png") center / 100% 100% no-repeat;
+  border-radius: inherit;
+}
+
+:global(html:not(.dark)) .ctaLabel {
+  display: block;
+  width: 155px;
+  height: 18px;
+  white-space: nowrap;
+}
+
+:global(html:not(.dark)) .ctaArrow::before {
+  content: "\00a0";
 }

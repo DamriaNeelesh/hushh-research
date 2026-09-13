@@ -24,12 +24,12 @@ describe("/register-phone safe-area shell contract", () => {
     expect(routeContract).toContain('"route": "/register-phone"');
     expect(routeContract).toContain('"persistentChrome": "none"');
     expect(source).not.toContain("var(--onboarding-agent-bar-clearance)");
-    expect(source).not.toContain("--app-scroll-bottom-pad");
     expect(source).not.toContain("--phone-mandate-agent-bar-clearance");
     expect(source).toContain('data-phone-mandate-input-region="true"');
     expect(styles).toContain("block-size: 100dvh");
     expect(styles).toContain("min-block-size: 100svh");
-    expect(styles).toContain("bottom: var(--kb-height, 0px)");
+    expect(styles).toContain("--phone-keyboard-inset: var(--kb-height, 0px)");
+    expect(styles).toContain("html.native-keyboard-inset:not(.dark)");
     expect(styles).toContain("overflow-y: auto");
   });
 
@@ -47,7 +47,7 @@ describe("/register-phone safe-area shell contract", () => {
     expect(source).not.toContain("Delete account");
   });
 
-  it("uses the measured Figma phone composition and shared primary CTA", () => {
+  it("keeps the shared verification flow while refining only phone entry", () => {
     const source = readFileSync(
       join(process.cwd(), "app/register-phone/page.tsx"),
       "utf8",
@@ -57,14 +57,15 @@ describe("/register-phone safe-area shell contract", () => {
       "utf8",
     );
 
-    expect(source).not.toContain("🤫");
+    expect(source).toContain("🤫");
     expect(source).not.toContain("one-quiet-emoji.png");
     expect(source).toContain('sendCodeLabel="Send a verification code"');
     expect(source).toContain("primaryActionClassName={styles.primaryAction}");
-    expect(styles).toContain("max-inline-size: 402px");
-    expect(styles).toContain("inline-size: min(357px");
-    expect(styles).toContain("top: clamp(406px, 105.97vw, 426px)");
-    expect(styles).toContain("max-inline-size: 330px");
-    expect(styles).toContain("min-block-size: clamp(48px, 12.935vw, 52px)");
+    expect(source).toContain('verificationStep === "phone" && styles.refinedScreen');
+    expect(source.match(/<PhoneVerificationFlow\b/g)).toHaveLength(1);
+    expect(source).toContain("key={user.uid}");
+    expect(styles).toContain(":global(html:not(.dark)) .refinedScreen");
+    expect(styles).toContain(".existingBurst");
+    expect(styles).toContain("white-space: normal");
   });
 });

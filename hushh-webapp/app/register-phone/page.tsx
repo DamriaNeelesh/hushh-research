@@ -310,14 +310,14 @@ export function PhoneMandatePageContent() {
 
   const shell = (
     <main
-      className="relative w-full overflow-hidden bg-white dark:bg-[#000000]"
+      className={cn("relative w-full overflow-hidden bg-white dark:bg-[#000000]", verificationStep === "phone" && styles.refinedScreen)}
       style={{
         height: "calc(100dvh - var(--app-scroll-bottom-pad, 0px))",
         minHeight: "calc(100svh - var(--app-scroll-bottom-pad, 0px))",
       }}
       data-testid="phone-mandate-screen"
     >
-      <OnboardingHeroBackground />
+      <div className={styles.existingBackdrop}><OnboardingHeroBackground /></div>
       <NativeRouteMarker
         routeId={ROUTES.PHONE_MANDATE}
         marker="native-route-register-phone"
@@ -330,18 +330,19 @@ export function PhoneMandatePageContent() {
         type="button"
         aria-label="Go back"
         onClick={() => router.back()}
-        className="fixed left-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50 grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15"
+        className={cn("fixed left-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50 grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15", styles.safeBack)}
       >
-        <ChevronLeft className="h-[18px] w-[18px]" strokeWidth={2} />
+        <ChevronLeft className={cn("h-[18px] w-[18px]", styles.originalBackGlyph)} strokeWidth={2} />
+        <span aria-hidden="true" className={styles.figmaBackGlyph} />
       </button>
 
-      <div className="fixed right-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50">
+      <div className={cn("fixed right-4 top-[calc(max(var(--app-safe-area-top-effective),0.75rem))] z-50", styles.safeAccount)}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
               aria-label="Account actions"
-              className="grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15"
+              className={cn("grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-[#1d1d1f]/70 transition-colors hover:bg-black/[0.08] dark:bg-white/10 dark:text-white/80 dark:hover:bg-white/15", styles.accountControl)}
             >
               <MoreHorizontal className="h-[18px] w-[18px]" />
             </button>
@@ -356,15 +357,16 @@ export function PhoneMandatePageContent() {
       </div>
 
       <div
-        className="relative mx-auto flex w-full max-w-[440px] flex-col justify-center px-4"
+        className={cn("relative mx-auto flex w-full max-w-[440px] flex-col justify-center px-4", styles.flowContent)}
         style={{
           height: "calc(100dvh - var(--app-scroll-bottom-pad, 0px))",
           minHeight: "calc(100svh - var(--app-scroll-bottom-pad, 0px))",
         }}
       >
-        <div className="flex w-full flex-none flex-col items-center gap-5 px-2 text-center">
-          <div className="flex w-full flex-col items-center gap-3">
-            <OneArcIllustration />
+        <div className={cn("flex w-full flex-none flex-col items-center gap-5 px-2 text-center", styles.flowStack)}>
+          <div className={cn("flex w-full flex-col items-center gap-3", styles.flowHeading)}>
+            <div className={styles.existingBurst}><OneArcIllustration /></div>
+            <span className={styles.hushhVisual} aria-hidden="true">🤫</span>
 
             <h1
               role="heading"
@@ -374,7 +376,7 @@ export function PhoneMandatePageContent() {
                   ? "Enter verification code"
                   : "Verify your phone number"
               }
-              className="whitespace-nowrap font-bold text-[25px] sm:text-[27px] leading-[32px] tracking-[-0.5px] text-[#17130C] dark:text-[#F2F2F7]"
+              className={cn("whitespace-nowrap font-bold text-[25px] sm:text-[27px] leading-[32px] tracking-[-0.5px] text-[#17130C] dark:text-[#F2F2F7]", styles.flowTitle)}
             >
               {verificationStep === "code"
                 ? "Enter verification code"
