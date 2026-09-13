@@ -73,17 +73,11 @@ import {
   snapshotValidatedAuthSessionOwner,
   dispatchAuthSessionVerificationRequired,
 } from "@/lib/auth/session-owner";
-import { resolveSlowRequestTimeoutMs } from "@/lib/utils/request-timeouts";
+import { ACCOUNT_SESSION_STATUS_REQUEST_TIMEOUT_MS } from "@/lib/auth/account-session-policy";
 import { isVaultSessionEpochCurrent, snapshotVaultSessionEpoch } from "@/lib/vault/session-epoch";
 
 const AUTH_REFRESH_RETRY_HEADER = "X-Hushh-Auth-Refresh-Retry";
 const VAULT_LOCK_REQUESTED_EVENT = "vault-lock-requested";
-// Keep this aligned with AuthProvider's bounded recovery path. A timed-out
-// liveness probe is availability uncertainty, not proof of an invalid account.
-const ACCOUNT_SESSION_STATUS_TIMEOUT_MS = resolveSlowRequestTimeoutMs(8_000, {
-  developmentFloorMs: 10_000,
-  overrideEnvKey: "HUSHH_ACCOUNT_SESSION_VALIDATION_TIMEOUT_MS",
-});
 
 type VaultOwnerAuthFailure = {
   shouldLockVault: boolean;
@@ -1929,7 +1923,7 @@ export class ApiService {
           "TimeoutError",
         ),
       );
-    }, ACCOUNT_SESSION_STATUS_TIMEOUT_MS);
+    }, ACCOUNT_SESSION_STATUS_REQUEST_TIMEOUT_MS);
 
     try {
       return await apiFetch("/api/account/session-status", {

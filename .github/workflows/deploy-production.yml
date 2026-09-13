@@ -151,35 +151,70 @@ jobs:
             exit 1
           fi
 
+      - name: Capture predeploy Cloud Run state
+        id: predeploy-state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! gcloud run services describe "${{ env.BACKEND_SERVICE }}" \
+            --project="${{ env.GCP_PROJECT_ID }}" \
+            --region="${{ env.GCP_REGION }}" \
+            --format=json > /tmp/prod-backend-predeploy-service.json 2>/dev/null; then
+            printf '{}\n' > /tmp/prod-backend-predeploy-service.json
+          fi
+          if ! gcloud run services describe "${{ env.FRONTEND_SERVICE }}" \
+            --project="${{ env.GCP_PROJECT_ID }}" \
+            --region="${{ env.GCP_REGION }}" \
+            --format=json > /tmp/prod-frontend-predeploy-service.json 2>/dev/null; then
+            printf '{}\n' > /tmp/prod-frontend-predeploy-service.json
+          fi
+
+          backend_state="$(python3 scripts/ci/resolve-cloud-run-serving-state.py \
+            --service-json /tmp/prod-backend-predeploy-service.json \
+            --allow-missing \
+            --github-output "$GITHUB_OUTPUT" \
+            --output-prefix backend)"
+          frontend_state="$(python3 scripts/ci/resolve-cloud-run-serving-state.py \
+            --service-json /tmp/prod-frontend-predeploy-service.json \
+            --allow-missing \
+            --github-output "$GITHUB_OUTPUT" \
+            --output-prefix frontend)"
+
+          backend_revision="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])' <<<"${backend_state}")"
+          frontend_revision="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])' <<<"${frontend_state}")"
+          backend_sha=""
+          if [ -n "${backend_revision}" ]; then
+            backend_sha="$(gcloud run revisions describe "${backend_revision}" \
+              --project="${{ env.GCP_PROJECT_ID }}" \
+              --region="${{ env.GCP_REGION }}" \
+              --format='value(metadata.labels.deploy-sha)' 2>/dev/null || true)"
+          fi
+          frontend_sha=""
+          if [ -n "${frontend_revision}" ]; then
+            frontend_sha="$(gcloud run revisions describe "${frontend_revision}" \
+              --project="${{ env.GCP_PROJECT_ID }}" \
+              --region="${{ env.GCP_REGION }}" \
+              --format='value(metadata.labels.deploy-sha)' 2>/dev/null || true)"
+          fi
+
+          echo "backend_sha=${backend_sha}" >> "$GITHUB_OUTPUT"
+          echo "frontend_sha=${frontend_sha}" >> "$GITHUB_OUTPUT"
+          echo "Predeploy backend serving revision: ${backend_revision:-none}"
+          echo "Predeploy frontend serving revision: ${frontend_revision:-none}"
+
       - name: Resolve deployment scope
         id: scope
         shell: bash
         run: |
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            SCOPE="${{ github.event.inputs.scope }}"
-          else
-            SCOPE="all"
-          fi
-
-          case "$SCOPE" in
-            backend)
-              DEPLOY_BACKEND=true
-              DEPLOY_FRONTEND=false
-              ;;
-            frontend)
-              DEPLOY_BACKEND=false
-              DEPLOY_FRONTEND=true
-              ;;
-            *)
-              SCOPE="all"
-              DEPLOY_BACKEND=true
-              DEPLOY_FRONTEND=true
-              ;;
-          esac
-
-          echo "scope=$SCOPE" >> "$GITHUB_OUTPUT"
-          echo "deploy_backend=$DEPLOY_BACKEND" >> "$GITHUB_OUTPUT"
-          echo "deploy_frontend=$DEPLOY_FRONTEND" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          python3 scripts/ci/resolve-deploy-scope.py \
+            --requested-scope "${{ github.event.inputs.scope }}" \
+            --target-sha "${{ github.event.inputs.sha }}" \
+            --backend-base-sha "${{ steps.predeploy-state.outputs.backend_sha }}" \
+            --frontend-base-sha "${{ steps.predeploy-state.outputs.frontend_sha }}" \
+            --github-output "$GITHUB_OUTPUT" \
+            --json
 
       - name: Block production migration 201 until lifecycle rollout controls exist
         if: steps.scope.outputs.deploy_backend == 'true'
@@ -190,38 +225,6 @@ jobs:
             echo "::error title=Production account-deletion boundary is not activated::Migration 201 requires the production deletion fence, pinned bridge revision, fresh Scheduler AttemptFinished evidence, and legacy revision drain before any backend deploy. Use the governed UAT rollout only until those production controls land."
             exit 1
           fi
-
-      - name: Capture predeploy Cloud Run state
-        id: predeploy-state
-        shell: bash
-        run: |
-          set -euo pipefail
-          backend_revision="$(gcloud run services describe "${{ env.BACKEND_SERVICE }}" \
-            --project="${{ env.GCP_PROJECT_ID }}" \
-            --region="${{ env.GCP_REGION }}" \
-            --format='value(status.traffic[0].revisionName)' 2>/dev/null || true)"
-          backend_url="$(gcloud run services describe "${{ env.BACKEND_SERVICE }}" \
-            --project="${{ env.GCP_PROJECT_ID }}" \
-            --region="${{ env.GCP_REGION }}" \
-            --format='value(status.url)' 2>/dev/null || true)"
-          frontend_revision="$(gcloud run services describe "${{ env.FRONTEND_SERVICE }}" \
-            --project="${{ env.GCP_PROJECT_ID }}" \
-            --region="${{ env.GCP_REGION }}" \
-            --format='value(status.traffic[0].revisionName)' 2>/dev/null || true)"
-          frontend_url="$(gcloud run services describe "${{ env.FRONTEND_SERVICE }}" \
-            --project="${{ env.GCP_PROJECT_ID }}" \
-            --region="${{ env.GCP_REGION }}" \
-            --format='value(status.url)' 2>/dev/null || true)"
-          echo "backend_revision=${backend_revision}" >> "$GITHUB_OUTPUT"
-          echo "backend_url=${backend_url}" >> "$GITHUB_OUTPUT"
-          echo "frontend_revision=${frontend_revision}" >> "$GITHUB_OUTPUT"
-          echo "frontend_url=${frontend_url}" >> "$GITHUB_OUTPUT"
-          # Rollback target is the revision currently SERVING traffic (status.traffic),
-          # not latestReadyRevisionName - the latest Ready revision can be a newer,
-          # broken-but-Ready revision (e.g. a crash-looped one left behind by a prior
-          # failed deploy), which would make auto-rollback revert to the broken one.
-          echo "Predeploy backend serving revision: ${backend_revision:-none}"
-          echo "Predeploy frontend serving revision: ${frontend_revision:-none}"
 
       - name: Set up Python + uv runtime
         uses: ./consent-protocol/.github/actions/setup-python-uv
@@ -625,6 +628,21 @@ jobs:
           bash scripts/ci/cloudrun-http-health.sh \
             "${{ steps.frontend-url.outputs.url }}" "/" 3 30 5 200
 
+      - name: Verify production account-session contract
+        id: health-account-session-contract
+        if: steps.promote-traffic.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The session-status endpoint is a mandatory cross-service contract for
+          # every restored web session. With no bearer token, a compatible backend
+          # must reject the request as 401. A 404 proves frontend/backend version
+          # skew and must roll the selected release back instead of stranding users
+          # behind the fail-closed reconnect screen.
+          bash scripts/ci/cloudrun-http-health.sh \
+            "${{ env.CONSENT_API_PUBLIC_ORIGIN }}" "/api/account/session-status" 3 30 5 401
+
       - name: Verify production native passkey domain associations
         id: verify-passkey-associations
         if: steps.scope.outputs.deploy_frontend == 'true' && steps.promote-traffic.outcome == 'success'
@@ -645,6 +663,7 @@ jobs:
           DEPLOY_FRONTEND: ${{ steps.scope.outputs.deploy_frontend }}
           HEALTH_BACKEND: ${{ steps.health-backend.outcome }}
           HEALTH_FRONTEND: ${{ steps.health-frontend.outcome }}
+          ACCOUNT_SESSION_CONTRACT_OUTCOME: ${{ steps.health-account-session-contract.outcome }}
           PARITY_OUTCOME: ${{ steps.verify-parity.outcome }}
           CONNECTED_SYSTEMS_OUTCOME: ${{ steps.verify-connected-systems.outcome }}
           PROMOTE_OUTCOME: ${{ steps.promote-traffic.outcome }}
@@ -657,6 +676,7 @@ jobs:
           upstream_failed=false
           backend_failure=false
           frontend_failure=false
+          account_session_contract_failed=false
           parity_failed=false
           connected_systems_failed=false
           promote_failed=false
@@ -680,6 +700,18 @@ jobs:
           fi
           if [ "$DEPLOY_FRONTEND" = "true" ] && [ "$HEALTH_FRONTEND" = "failure" ]; then
             frontend_failure=true
+          fi
+          if [ "$ACCOUNT_SESSION_CONTRACT_OUTCOME" != "success" ]; then
+            account_session_contract_failed=true
+            # The compatibility check observes the combined serving pair. Revert
+            # every service changed by this release so traffic returns to the
+            # previously proven pair.
+            if [ "$DEPLOY_BACKEND" = "true" ]; then
+              backend_failure=true
+            fi
+            if [ "$DEPLOY_FRONTEND" = "true" ]; then
+              frontend_failure=true
+            fi
           fi
           if [ "$PARITY_OUTCOME" = "failure" ]; then
             parity_failed=true
@@ -726,7 +758,8 @@ jobs:
              || [ "$promote_failed" = "true" ] \
              || [ "$backend_provenance_failed" = "true" ] \
              || [ "$frontend_provenance_failed" = "true" ] \
-             || [ "$passkey_associations_failed" = "true" ]; then
+             || [ "$passkey_associations_failed" = "true" ] \
+             || [ "$account_session_contract_failed" = "true" ]; then
             release_failed=true
           fi
 
@@ -734,6 +767,7 @@ jobs:
             echo "upstream_failed=$upstream_failed"
             echo "backend_failure=$backend_failure"
             echo "frontend_failure=$frontend_failure"
+            echo "account_session_contract_failed=$account_session_contract_failed"
             echo "parity_failed=$parity_failed"
             echo "connected_systems_failed=$connected_systems_failed"
             echo "promote_failed=$promote_failed"
@@ -743,7 +777,7 @@ jobs:
             echo "release_failed=$release_failed"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Release classification: release_failed=$release_failed upstream_failed=$upstream_failed backend_failure=$backend_failure frontend_failure=$frontend_failure parity_failed=$parity_failed connected_systems_failed=$connected_systems_failed promote_failed=$promote_failed backend_provenance_failed=$backend_provenance_failed frontend_provenance_failed=$frontend_provenance_failed passkey_associations_failed=$passkey_associations_failed"
+          echo "Release classification: release_failed=$release_failed upstream_failed=$upstream_failed backend_failure=$backend_failure frontend_failure=$frontend_failure account_session_contract_failed=$account_session_contract_failed parity_failed=$parity_failed connected_systems_failed=$connected_systems_failed promote_failed=$promote_failed backend_provenance_failed=$backend_provenance_failed frontend_provenance_failed=$frontend_provenance_failed passkey_associations_failed=$passkey_associations_failed"
 
       - name: Roll back backend revision
         id: rollback-backend
