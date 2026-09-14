@@ -310,7 +310,7 @@ export function PhoneMandatePageContent() {
 
   const shell = (
     <main
-      className={cn("relative w-full overflow-hidden bg-white dark:bg-[#000000]", verificationStep === "phone" && styles.refinedScreen)}
+      className={cn("relative w-full overflow-hidden bg-white dark:bg-[#000000]", verificationStep === "phone" && styles.refinedScreen, verificationStep === "code" && styles.codeScreen)}
       style={{
         height: "calc(100dvh - var(--app-scroll-bottom-pad, 0px))",
         minHeight: "calc(100svh - var(--app-scroll-bottom-pad, 0px))",
@@ -365,7 +365,11 @@ export function PhoneMandatePageContent() {
       >
         <div className={cn("flex w-full flex-none flex-col items-center gap-5 px-2 text-center", styles.flowStack)}>
           <div className={cn("flex w-full flex-col items-center gap-3", styles.flowHeading)}>
-            <div className={styles.existingBurst}><OneArcIllustration /></div>
+            {verificationStep === "code" ? (
+              <span role="img" aria-label="Hushh" className={styles.codeIcon}>🤫</span>
+            ) : (
+              <div className={styles.existingBurst}><OneArcIllustration /></div>
+            )}
             <span className={styles.hushhVisual} aria-hidden="true">🤫</span>
 
             <h1
@@ -373,13 +377,13 @@ export function PhoneMandatePageContent() {
               aria-level={1}
               aria-label={
                 verificationStep === "code"
-                  ? "Enter verification code"
+                  ? "Enter your code"
                   : "Verify your phone number"
               }
               className={cn("whitespace-nowrap font-bold text-[25px] sm:text-[27px] leading-[32px] tracking-[-0.5px] text-[#17130C] dark:text-[#F2F2F7]", styles.flowTitle)}
             >
               {verificationStep === "code"
-                ? "Enter verification code"
+                ? "Enter your code"
                 : "Verify your phone number"}
             </h1>
           </div>
@@ -398,7 +402,8 @@ export function PhoneMandatePageContent() {
               onContinueExisting={continueToNextRoute}
               onStepChange={setVerificationStep}
               sendCodeLabel="Send a verification code"
-              confirmLabel="Verify"
+              confirmLabel="Confirm"
+              codePresentation="onboarding"
               primaryActionClassName={styles.primaryAction}
               className={styles.phoneForm}
               helperText=""
