@@ -516,7 +516,11 @@
 }
 
 :global(html:not(.dark)) .privacy > div {
-  width: 233px;
+  /* Preserve the authored center/minimum geometry, but allow device font
+     metrics to widen the row instead of wrapping the first sentence. */
+  width: max-content;
+  min-width: 233px;
+  flex-shrink: 0;
   max-width: none;
   height: 26px;
   align-items: flex-start;
@@ -536,7 +540,8 @@
 
 :global(html:not(.dark)) .privacy span {
   flex: none;
-  width: 188.724258px;
+  width: max-content;
+  min-width: 188.724258px;
   height: 26px;
 }
 
