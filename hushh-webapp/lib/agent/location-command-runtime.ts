@@ -97,6 +97,7 @@ type Admission = {
     | "resume_preparation_required";
   continuation?: CommandContinuationProof;
   workflow?: unknown;
+  workflow_finalize_renewed?: boolean;
   directive?: Directive;
   gate?: CommandGate;
   route?: string;
@@ -1499,6 +1500,16 @@ export class LocationCommandRuntime {
         run_id: result.run.runId,
       },
     };
+    if (
+      admission.workflow_finalize_renewed === true &&
+      result.run.pendingDirective?.contractId === "one.location.awaiting_vault_finalize.v2" &&
+      result.run.pkmFinalizeAuthorization &&
+      !result.run.evidence.place
+    ) {
+      // The server has fenced every older attempt under the writer's run lock.
+      // Keep the same encrypted draft; only the acknowledged new attempt may run.
+      run.workflow.commitDispatched = false;
+    }
     await this.checkpoint();
     this.check(generation);
     this.show({ phase: "gate", message: "Completing Location setup…" });
@@ -1520,18 +1531,14 @@ export class LocationCommandRuntime {
 
   reviewWorkflowSave(runId: string): void {
     if (!this.isWorkflowActive(runId)) return;
-    const route = getKaiActionById("location.save_current_location")?.command
-      ?.review_route;
-    if (!route)
-      throw new Error("The saved-place review screen is unavailable.");
     this.ports.pauseWorkflow?.();
     this.localGate = null;
-    this.admission = { status: "reconcile", review_route: route };
+    this.admission = null;
     this.show({
       phase: "gate",
       message:
-        "The save outcome could not be verified. Review your saved places; this task will not save another place.",
-      gate: { kind: "navigation", route, message: "Review saved places" },
+        "The save outcome could not be verified. Resume to check the saved task and safely continue.",
+      gate: { kind: "unavailable", message: "Resume Location setup" },
     });
   }
 

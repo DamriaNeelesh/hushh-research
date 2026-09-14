@@ -546,6 +546,7 @@ async def _admission(user: str, proposal_id: str, payload: StepRequest, *, renew
                 {
                     "status": "workflow",
                     "workflow": location_run_result(result),
+                    "workflow_finalize_renewed": result.get("finalize_retry_fenced") is True,
                     "checkpoint": _public(state),
                 },
                 state,

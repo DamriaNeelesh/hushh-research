@@ -115,7 +115,7 @@ export function LocationCommandDeviceBridge() {
       startOrResume: async () => {
         const runId = command.workflowResult?.run.runId;
         const owner = active(runId);
-        return OneLocationOnboardingRunClient.get(runId!, { bearerToken: owner.vaultOwnerToken });
+        return OneLocationOnboardingRunClient.get(runId!, { expectedUserId: owner.userId });
       },
       settle: async (input) => {
         active(input.run?.runId);
@@ -226,7 +226,7 @@ export function LocationCommandDeviceBridge() {
         }
         if (staged.commitDispatched) {
           // An uncertain write is reconciled, never speculatively sent again.
-          const result = await OneLocationOnboardingRunClient.get(run.runId, { bearerToken: authority.vaultOwnerToken });
+          const result = await OneLocationOnboardingRunClient.get(run.runId, { expectedUserId: authority.userId });
           active(run.runId);
           if (!result.run.evidence.place) throw new LocationSaveOutcomeUnknown();
           return result;
@@ -253,7 +253,7 @@ export function LocationCommandDeviceBridge() {
           await runtime.markWorkflowCommitDispatched(run.runId, false);
           throw new Error("Your saved places changed. Resume to retry with the current information.");
         }
-        const result = await OneLocationOnboardingRunClient.get(run.runId, { bearerToken: authority.vaultOwnerToken });
+        const result = await OneLocationOnboardingRunClient.get(run.runId, { expectedUserId: authority.userId });
         active(run.runId);
         if (!result.run.evidence.place) throw new LocationSaveOutcomeUnknown();
         await runtime.clearWorkflowDraft(run.runId);
@@ -340,6 +340,7 @@ export function LocationCommandDeviceBridge() {
     const activeDirective = surface?.directive;
     if (!activeDirective || activeDirective.authority !== "server" || !vault.isVaultUnlocked
       || activeDirective.run.runId !== command.workflowResult?.run.runId
+      || activeDirective.run.revision < command.workflowResult.run.revision
       || !command.command.isWorkflowActive(activeDirective.run.runId, commandGeneration)) return;
     const directive = activeDirective.serverDirective;
     const run = activeDirective.run;

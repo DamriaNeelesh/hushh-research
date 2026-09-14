@@ -609,6 +609,29 @@ def test_bootstrap_reuses_an_owned_circle_and_never_rotates_its_code() -> None:
     assert calls[1][1]["rotate"] is False
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_owned_circle", [False, True])
+async def test_onboarding_adapter_uses_the_real_bootstrap_contract(monkeypatch, has_owned_circle):
+    from hushh_mcp.services import one_location_circle_service
+    from hushh_mcp.services.location_onboarding_runtime import OneLocationCircleProvisioningAdapter
+
+    owned = (
+        [{"id": CIRCLE_ID, "name": "Existing Family", "role": "owner"}] if has_owned_circle else []
+    )
+    service, calls = _bootstrap_probe(owned)
+    monkeypatch.setattr(one_location_circle_service, "OneLocationCircleService", lambda: service)
+    adapter = OneLocationCircleProvisioningAdapter(hmac_key="synthetic-circle-evidence-key")
+
+    result = await adapter.provision_personal_circle(user_id="owner-user", run_id="run_synthetic")
+
+    assert result.status == "verified"
+    assert result.evidence_digest
+    assert [name for name, _ in calls] == (
+        ["list", "code"] if has_owned_circle else ["list", "create", "code"]
+    )
+    assert calls[-1][1]["rotate"] is False
+
+
 def test_bootstrap_ignores_circles_the_caller_only_joined() -> None:
     service, calls = _bootstrap_probe(
         [{"id": "joined-circle", "name": "Someone Else", "role": "member"}]

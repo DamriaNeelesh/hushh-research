@@ -57,7 +57,7 @@ async def test_consumed_workflow_admission_continues_exact_run_without_client_cl
     )
     monkeypatch.setattr(routes, "_context", lambda _: {"context_revision": "ctx"})
     monkeypatch.setattr(routes._ledger, "command_outcome", AsyncMock(return_value=outcome))
-    reconcile = AsyncMock(return_value={"run_id": "run_existing"})
+    reconcile = AsyncMock(return_value={"run_id": "run_existing", "finalize_retry_fenced": renew})
     monkeypatch.setattr(routes, "reconcile_command_workflow", reconcile)
     monkeypatch.setattr(routes, "location_run_result", lambda value: value)
     issued = AsyncMock()
@@ -67,7 +67,38 @@ async def test_consumed_workflow_admission_continues_exact_run_without_client_cl
     )
     assert result["status"] == "workflow" and result["workflow"]["run_id"] == "run_existing"
     assert reconcile.call_args.kwargs["resume"] is renew
+    assert result["workflow_finalize_renewed"] is renew
     issued.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True])
+async def test_only_explicit_resume_requests_private_save_renewal(monkeypatch, resume):
+    service = SimpleNamespace(
+        get=AsyncMock(return_value={"run_id": "run_existing"}),
+        advance_reserved_run=AsyncMock(
+            return_value={"run_id": "run_existing", "finalize_retry_fenced": True}
+        ),
+        run_store=SimpleNamespace(get=AsyncMock(return_value=None)),
+    )
+    monkeypatch.setattr(binding, "get_location_onboarding_runtime_service", lambda: service)
+    monkeypatch.setattr(binding, "workflow_revision_arguments", lambda: {})
+    await binding.reconcile_command_workflow(
+        ledger=SimpleNamespace(),
+        user_id="owner",
+        command_id="command",
+        step=0,
+        outcome={"command_effect": "workflow", "workflow_run_id": "run_existing"},
+        resume=resume,
+    )
+    if resume:
+        service.advance_reserved_run.assert_awaited_once_with(
+            user_id="owner", run_id="run_existing", renew_finalizer=True
+        )
+        service.get.assert_not_called()
+    else:
+        service.get.assert_awaited_once_with(user_id="owner", run_id="run_existing")
+        service.advance_reserved_run.assert_not_called()
 
 
 @pytest.mark.asyncio

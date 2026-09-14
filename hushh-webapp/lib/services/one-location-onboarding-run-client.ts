@@ -558,7 +558,9 @@ function parsePkmFinalizeAuthorization(
     draftRef,
     draftDigest,
     expectedCommitId: expectedCommitId.toLowerCase(),
-    expiresAt: new Date(expiresAt).toISOString(),
+    // This is an authority binding, not a display timestamp. JavaScript Date
+    // drops PostgreSQL microseconds and would change the capability on return.
+    expiresAt,
   };
 }
 

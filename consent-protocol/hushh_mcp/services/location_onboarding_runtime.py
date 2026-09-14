@@ -845,7 +845,6 @@ class OneLocationCircleProvisioningAdapter:
                 OneLocationCircleService().bootstrap_first_circle,
                 user_id=user_id,
                 name="My Circle",
-                capability_run_id=run_id,
             )
         except Exception:  # noqa: BLE001 - domain detail must not enter workflow output/logs
             logger.info("location_onboarding_circle_provisioning_unavailable")
@@ -1541,6 +1540,7 @@ class LocationOnboardingLedgerStore:
         contract: LocationStepContractV2,
         resume_surface_id: str | None = None,
         ttl_seconds: int = 300,
+        renew_finalizer: bool = False,
     ) -> tuple[CapabilityRunV1, LocationInteractionLeaseV1]:
         if contract.surface_id == "one.location.paused.v2":
             if (
@@ -1564,8 +1564,14 @@ class LocationOnboardingLedgerStore:
                 and (resume_surface_id is None or active.resume_surface_id == resume_surface_id)
                 and hmac.compare_digest(active.allowed_actions_digest, expected_digest)
             ):
-                return run, active
-            raise LocationOnboardingConflictError("Location interaction lease is inconsistent.")
+                if not renew_finalizer:
+                    return run, active
+                if contract.surface_id != "one.location.awaiting_vault_finalize.v2":
+                    raise LocationOnboardingAuthorityError(
+                        "Only an unfinished private save can renew its attempt."
+                    )
+            else:
+                raise LocationOnboardingConflictError("Location interaction lease is inconsistent.")
 
         lease_id = f"loclease_{uuid4().hex}"
         directive_id = f"locdirective_{uuid4().hex}"
@@ -2512,6 +2518,7 @@ class LocationOnboardingRuntimeService:
         run_id: str,
         graph_revision: str,
         full_guide_requested: bool = False,
+        renew_finalizer: bool = False,
         compatible_graph_revisions: Iterable[str] = (),
         migration_required_graph_revisions: Iterable[str] = (),
         rejected_graph_revisions: Iterable[str] = (),
@@ -2531,8 +2538,20 @@ class LocationOnboardingRuntimeService:
         run, waiting_reason = await self._drive_automatic_steps(
             run, full_guide_requested=full_guide_requested
         )
-        run, lease = await self._ensure_interaction(run)
-        return await self._projection(run, lease=lease, waiting_reason=waiting_reason)
+        previous_revision = run.revision
+        run, lease = await self._ensure_interaction(run, renew_finalizer=renew_finalizer)
+        result = await self._projection(run, lease=lease, waiting_reason=waiting_reason)
+        # Explicit command recovery advances the existing run under the same
+        # row lock as the atomic writer. Older in-flight attempts cannot write
+        # after this acknowledged fence; ordinary reads never rotate authority.
+        result["finalize_retry_fenced"] = bool(
+            renew_finalizer
+            and run.revision > previous_revision
+            and lease is not None
+            and lease.surface_id == "one.location.awaiting_vault_finalize.v2"
+            and result.get("pkm_finalize_authorization")
+        )
+        return result
 
     async def get(
         self,
@@ -3340,7 +3359,7 @@ class LocationOnboardingRuntimeService:
         return verified
 
     async def _ensure_interaction(
-        self, run: CapabilityRunV1
+        self, run: CapabilityRunV1, *, renew_finalizer: bool = False
     ) -> tuple[CapabilityRunV1, LocationInteractionLeaseV1 | None]:
         if run.status in _TERMINAL_STATUSES or run.status in {
             "authorized",
@@ -3374,6 +3393,10 @@ class LocationOnboardingRuntimeService:
         contract = _SURFACE_CONTRACTS.get(surface_id or "")
         if contract is None:
             return run, None
+        if renew_finalizer and contract.surface_id == "one.location.awaiting_vault_finalize.v2":
+            return await self.ledger_store.issue_lease(
+                run=run, contract=contract, renew_finalizer=True
+            )
         return await self.ledger_store.issue_lease(run=run, contract=contract)
 
     async def _projection(

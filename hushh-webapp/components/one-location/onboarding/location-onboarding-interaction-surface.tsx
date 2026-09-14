@@ -601,7 +601,16 @@ export function OneLocationInteractionSurfaceProvider({
       ) {
         return;
       }
-      const admissionSequence = ++admissionSequenceRef.current;
+      // Binding callbacks to the same server presentation is not a new
+      // interaction. Advancing admission here would discard an in-flight
+      // settlement as soon as the device bridge renders its callbacks.
+      const samePresentation = serverPresentationMatchesExactly(
+        directiveRef.current,
+        createServerLocationInteractionDirective(result),
+      );
+      const admissionSequence = samePresentation
+        ? committedAdmissionSequenceRef.current
+        : ++admissionSequenceRef.current;
       commitServerResult(result, {
         actions: { byResult: options.onResult },
         admissionSequence,

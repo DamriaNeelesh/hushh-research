@@ -1679,14 +1679,12 @@ async def get_metadata(
 
         if resolved_index is None:
             encrypted_data = await pkm_service.get_encrypted_data(user_id)
-            domain_rows = (
+            domain_query = (
                 pkm_service.db.table("pkm_blobs")
                 .select("domain,content_revision,updated_at")
                 .eq("user_id", user_id)
-                .execute()
-                .data
-                or []
             )
+            domain_rows = (await asyncio.to_thread(domain_query.execute)).data or []
             if encrypted_data is None and not domain_rows:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
