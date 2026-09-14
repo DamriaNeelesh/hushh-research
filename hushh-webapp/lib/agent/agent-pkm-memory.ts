@@ -360,6 +360,12 @@ export async function addToPKM(params: {
   vaultOwnerToken: string;
   source?: string;
   confirmation: PkmWriteAuthorization;
+  /**
+   * Opt-in for constrained imports whose cards are simple, independent field
+   * extensions. A single encrypted write per domain avoids serially loading
+   * and rewriting the same domain for every field.
+   */
+  batchSimpleDomainExtensions?: boolean;
 }): Promise<AgentPkmSaveResult> {
   // Writes to a single domain must stay ordered: each write reads and merges
   // the result of the preceding one. Independent domains have no such
@@ -542,6 +548,103 @@ export async function addToPKM(params: {
     }
   };
 
+  const isSimpleDomainExtension = (card: AgentPkmPreviewCard): boolean => {
+    if (isReservedPkmCard(card)) return false;
+    if (card.write_mode !== "can_save" && card.write_mode !== "confirm_first") {
+      return false;
+    }
+    if (
+      automatic &&
+      (card.write_mode !== "can_save" ||
+        (card.sharing_impact?.active_recipient_count || 0) > 0)
+    ) {
+      return false;
+    }
+    const mergeMode = readString(card.merge_mode || card.merge_decision?.merge_mode)
+      .toLowerCase();
+    if (mergeMode !== "create_entity" && mergeMode !== "extend_entity") {
+      return false;
+    }
+    const payload = toRecord(card.candidate_payload);
+    if (!resolveCardTargetDomain(card) || Object.keys(payload).length === 0) {
+      return false;
+    }
+    const containsEntityCollection = (value: unknown): boolean => {
+      if (!value || typeof value !== "object") return false;
+      if (Array.isArray(value)) return value.some(containsEntityCollection);
+      return Object.entries(value as Record<string, unknown>).some(
+        ([key, nested]) => key === "entities" || containsEntityCollection(nested),
+      );
+    };
+    return !containsEntityCollection(payload);
+  };
+
+  const mergeRecords = (
+    base: Record<string, unknown>,
+    incoming: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    const next = { ...base };
+    for (const [key, value] of Object.entries(incoming)) {
+      const current = next[key];
+      if (
+        current &&
+        value &&
+        typeof current === "object" &&
+        !Array.isArray(current) &&
+        typeof value === "object" &&
+        !Array.isArray(value)
+      ) {
+        next[key] = mergeRecords(
+          current as Record<string, unknown>,
+          value as Record<string, unknown>,
+        );
+      } else {
+        next[key] = value;
+      }
+    }
+    return next;
+  };
+
+  const saveSimpleDomainBatch = async (
+    domain: string,
+    entries: Array<[number, AgentPkmPreviewCard]>,
+  ): Promise<void> => {
+    const payload = entries.reduce(
+      (merged, [, card]) => mergeRecords(merged, toRecord(card.candidate_payload)),
+      {} as Record<string, unknown>,
+    );
+    const result = await PkmWriteCoordinator.saveMergedDomain({
+      userId: params.userId,
+      domain,
+      vaultKey: params.vaultKey,
+      vaultOwnerToken: params.vaultOwnerToken,
+      // Batching is restricted below to an explicit owner confirmation. The
+      // merged-domain coordinator intentionally does not accept auto-save
+      // authority because one commit can contain multiple reviewed facts.
+      confirmation: params.confirmation as PkmUserConfirmation,
+      build: () => ({
+        domainData: payload,
+        // This is non-sensitive operational metadata. The source text and
+        // individual PKM paths deliberately stay out of the summary.
+        summary: {
+          source: params.source || "agent_chat",
+          batched_card_count: entries.length,
+        },
+      }),
+    });
+    for (const [index, card] of entries) {
+      results[index] = {
+        cardId: card.card_id || "agent_pkm_card",
+        domain,
+        scope: resolveCardScope(card),
+        sharingPosture: resolveCardSharingPosture(card),
+        success: result.success,
+        message: result.message,
+        result,
+      };
+    }
+  };
+
   const domainQueues = new Map<string, Array<[number, AgentPkmPreviewCard]>>();
   params.cards.forEach((card, index) => {
     // Invalid domains receive their own queue so a malformed card never
@@ -552,7 +655,34 @@ export async function addToPKM(params: {
     domainQueues.set(domain, queue);
   });
 
-  const queues = Array.from(domainQueues.values());
+  const batchedIndexes = new Set<number>();
+  if (params.batchSimpleDomainExtensions && !automatic) {
+    const batches = [...domainQueues.entries()].filter(
+      ([domain, queue]) =>
+        !domain.startsWith("__invalid_") &&
+        queue.length > 1 &&
+        queue.every(([, card]) => isSimpleDomainExtension(card)),
+    );
+    let nextBatchIndex = 0;
+    const batchWorker = async (): Promise<void> => {
+      while (nextBatchIndex < batches.length) {
+        const batch = batches[nextBatchIndex++];
+        if (!batch) return;
+        const [domain, queue] = batch;
+        await saveSimpleDomainBatch(domain, queue);
+        queue.forEach(([index]) => batchedIndexes.add(index));
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(maxParallelDomainWrites, batches.length) }, () =>
+        batchWorker(),
+      ),
+    );
+  }
+
+  const queues = Array.from(domainQueues.values())
+    .map((queue) => queue.filter(([index]) => !batchedIndexes.has(index)))
+    .filter((queue) => queue.length > 0);
   let nextQueueIndex = 0;
   const worker = async (): Promise<void> => {
     while (nextQueueIndex < queues.length) {

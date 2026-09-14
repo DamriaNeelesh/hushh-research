@@ -426,6 +426,16 @@ function isConsentWorkspaceRoute(pathname: string): boolean {
   );
 }
 
+function isOneLocationWorkspaceRoute(pathname: string): boolean {
+  const normalized = String(pathname || "")
+    .trim()
+    .toLowerCase();
+  return (
+    normalized === ROUTES.ONE_LOCATION ||
+    normalized.startsWith(`${ROUTES.ONE_LOCATION}/`)
+  );
+}
+
 function isOneLocationNotificationType(value: unknown): boolean {
   return String(value || "")
     .trim()
@@ -1757,7 +1767,18 @@ export function ConsentNotificationProvider({
   ]);
 
   useEffect(() => {
-    if (!user?.uid || !isVaultUnlocked || !fcmInitStatus) return;
+    // A full Location-state read is a Location-workspace repair operation, not
+    // a global notification bootstrap. FCM continues to update Feed state on
+    // every route; this fallback reconciliation waits until the owner opens
+    // the workspace that consumes the state.
+    if (
+      !user?.uid ||
+      !isVaultUnlocked ||
+      !fcmInitStatus ||
+      !isOneLocationWorkspaceRoute(pathname)
+    ) {
+      return;
+    }
 
     const reconcileWhenVisible = () => {
       if (
@@ -1799,6 +1820,7 @@ export function ConsentNotificationProvider({
     deliveryMode,
     fcmInitStatus,
     isVaultUnlocked,
+    pathname,
     reconcileOneLocationNotifications,
     user?.uid,
   ]);

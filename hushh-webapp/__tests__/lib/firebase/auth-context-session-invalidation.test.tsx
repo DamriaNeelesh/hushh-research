@@ -314,7 +314,7 @@ describe("AuthProvider terminal session invalidation", () => {
     expect(mocks.routerReplace).toHaveBeenCalledWith("/");
   });
 
-  it("force-refreshes an existing session on foreground and gates stale children while checking", async () => {
+  it("force-refreshes an existing session on web foreground without unmounting the current screen", async () => {
     const refresh = deferred<string | null>();
     renderProvider();
 
@@ -337,10 +337,10 @@ describe("AuthProvider terminal session invalidation", () => {
     await waitFor(() => {
       expect(currentUser.getIdToken).toHaveBeenCalledWith(true);
     });
-    expect(screen.getByText("Checking session")).toBeInTheDocument();
+    expect(screen.queryByText("Checking session")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("Vault content for account-owner"),
-    ).not.toBeInTheDocument();
+      screen.getByText("Vault content for account-owner"),
+    ).toBeInTheDocument();
 
     await act(async () => {
       refresh.resolve("fresh-token");
@@ -365,7 +365,7 @@ describe("AuthProvider terminal session invalidation", () => {
     await waitFor(() => {
       expect(mocks.apiGetAccountSessionStatus).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByText("Vault content for account-owner")).toBeInTheDocument();
+    expect(screen.queryByText("Checking session")).not.toBeInTheDocument();
 
     act(() => {
       window.dispatchEvent(new Event("pageshow"));
@@ -422,7 +422,7 @@ describe("AuthProvider terminal session invalidation", () => {
     expect(mocks.cacheSignedOut).toHaveBeenCalledWith("account-owner");
   });
 
-  it("keeps Vault sealed while an in-flight deletion commits, then reports account not found", async () => {
+  it("signs out when an in-flight deletion commits after web foreground validation", async () => {
     renderProvider();
     await screen.findByText("Vault content for account-owner");
     mocks.apiGetAccountSessionStatus
@@ -448,10 +448,8 @@ describe("AuthProvider terminal session invalidation", () => {
       emitLifecycle("active");
     });
 
-    expect(screen.getByText("Checking session")).toBeInTheDocument();
-    expect(
-      screen.queryByText("Vault content for account-owner"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Checking session")).not.toBeInTheDocument();
+    expect(screen.getByText("Vault content for account-owner")).toBeInTheDocument();
     await waitFor(() => {
       expect(mocks.authServiceSignOut).toHaveBeenCalledTimes(1);
     });
@@ -460,7 +458,7 @@ describe("AuthProvider terminal session invalidation", () => {
     );
   });
 
-  it("releases the gate only when the deletion transaction authoritatively rolls back", async () => {
+  it("keeps the screen mounted when the deletion transaction authoritatively rolls back", async () => {
     renderProvider();
     await screen.findByText("Vault content for account-owner");
     mocks.apiGetAccountSessionStatus
@@ -481,7 +479,7 @@ describe("AuthProvider terminal session invalidation", () => {
       emitLifecycle("active");
     });
 
-    expect(screen.getByText("Checking session")).toBeInTheDocument();
+    expect(screen.queryByText("Checking session")).not.toBeInTheDocument();
     expect(
       await screen.findByText("Vault content for account-owner"),
     ).toBeInTheDocument();
@@ -489,7 +487,7 @@ describe("AuthProvider terminal session invalidation", () => {
     expect(mocks.routerReplace).not.toHaveBeenCalled();
   });
 
-  it("fails closed when an in-flight deletion remains unresolved after one bounded re-probe", async () => {
+  it("fails closed when an in-flight deletion remains unresolved after one bounded web re-probe", async () => {
     renderProvider();
     await screen.findByText("Vault content for account-owner");
     const deletionInProgress = () =>
@@ -508,7 +506,7 @@ describe("AuthProvider terminal session invalidation", () => {
       emitLifecycle("active");
     });
 
-    expect(screen.getByText("Checking session")).toBeInTheDocument();
+    expect(screen.queryByText("Checking session")).not.toBeInTheDocument();
     await waitFor(() => {
       expect(mocks.authServiceSignOut).toHaveBeenCalledTimes(1);
     });
@@ -637,7 +635,7 @@ describe("AuthProvider terminal session invalidation", () => {
     }
   });
 
-  it("does not let the initial auth watchdog release a later validation gate", async () => {
+  it("does not let the initial auth watchdog interrupt a later web validation", async () => {
     vi.useFakeTimers();
     const refresh = deferred<string | null>();
     renderProvider();
@@ -660,10 +658,10 @@ describe("AuthProvider terminal session invalidation", () => {
       emitLifecycle("background");
       emitLifecycle("active");
     });
-    expect(screen.getByText("Checking session")).toBeInTheDocument();
+    expect(screen.queryByText("Checking session")).not.toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(10_001));
-    expect(screen.getByText("Checking session")).toBeInTheDocument();
+    expect(screen.queryByText("Checking session")).not.toBeInTheDocument();
 
     await act(async () => {
       refresh.resolve("fresh-token");
@@ -1088,7 +1086,7 @@ describe("AuthProvider terminal session invalidation", () => {
       emitLifecycle("background");
       emitLifecycle("active");
     });
-    expect(screen.getByText("Checking session")).toBeInTheDocument();
+    expect(screen.getByText("Vault content for account-owner")).toBeInTheDocument();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_001);
@@ -1129,22 +1127,31 @@ describe("AuthProvider foreground revalidation gate", () => {
     expect(mocks.authServiceSignOut).not.toHaveBeenCalled();
   });
 
-  it("still raises the gate immediately on a native background to active", async () => {
-    // The deferral is scoped to web focus on purpose. A lifecycle resume is the
-    // moment the account-deletion probe runs, and vault content must not be on
-    // screen while that is undecided.
+  it("keeps the screen mounted for a slow web app foreground validation", async () => {
+    // Browser visibility enters through InteractionRuntime's lifecycle
+    // coordinator, not only window focus. A slow result must not unmount an
+    // active WebAuthn ceremony and turn a successful Touch ID prompt into a
+    // passphrase fallback.
     renderProvider();
     await screen.findByText("Vault content for account-owner");
-    mocks.apiGetAccountSessionStatus.mockResolvedValueOnce(activeSessionResponse());
-
+    const status = deferred<Response>();
+    mocks.apiGetAccountSessionStatus.mockReturnValueOnce(status.promise);
     act(() => {
       emitLifecycle("background");
       emitLifecycle("active");
     });
 
-    expect(screen.getByText("Checking session")).toBeInTheDocument();
+    await act(async () => Promise.resolve());
+    expect(mocks.apiGetAccountSessionStatus).toHaveBeenCalled();
+    expect(screen.queryByText("Checking session")).not.toBeInTheDocument();
     expect(
-      await screen.findByText("Vault content for account-owner"),
+      screen.getByText("Vault content for account-owner"),
     ).toBeInTheDocument();
+
+    await act(async () => {
+      status.resolve(activeSessionResponse());
+      await status.promise;
+    });
+    expect(screen.getByText("Vault content for account-owner")).toBeInTheDocument();
   });
 });

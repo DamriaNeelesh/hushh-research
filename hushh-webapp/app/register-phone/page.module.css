@@ -504,3 +504,72 @@
 
 :global(html.dark) .refinedScreen [data-slot="input-group"] { background: #1c1c1e !important; border: 0 !important; }
 :global(html.dark) .refinedScreen .primaryAction { background: #0088ff !important; font-weight: 510 !important; }
+
+/* Code entry uses the shared flow; backgrounds and fixed controls stay owned
+   by the existing route. Only this step receives the reference composition. */
+.codeScreen {
+  overflow-y: auto;
+  scroll-padding-top: 72px;
+}
+.codeScreen .flowContent {
+  height: auto !important;
+  min-height: 100% !important;
+  justify-content: flex-start;
+  padding: calc(max(var(--app-safe-area-top-effective, 0px), env(safe-area-inset-top, 0px)) + 66px) 16px max(24px, var(--app-safe-area-bottom-effective, 0px));
+}
+.codeScreen .flowStack { padding: 0; gap: 18px; }
+.codeScreen .flowHeading { gap: 22px; }
+.codeIcon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 80px;
+  height: 100px;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 64px;
+  line-height: 1;
+  user-select: none;
+}
+.codeScreen .flowTitle {
+  font-size: clamp(27px, 7.5vw, 32px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.8px;
+  white-space: normal;
+}
+.codeScreen [data-phone-mandate-input-region] { max-width: none; }
+.codeScreen [data-slot="field-set"] { gap: 24px !important; }
+.codeScreen [data-figma-otp-intro] { font-size: 15px; line-height: 20px; }
+.codeScreen [data-figma-otp-intro] > span { font-weight: 400; color: inherit; }
+.codeScreen [data-figma-otp-field] > label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.codeScreen [data-figma-otp-field] > div > div { gap: 5px; }
+.codeScreen [data-figma-otp-field] > div > div > div {
+  min-width: 0;
+  height: 52px;
+  border-radius: 18px;
+  font-weight: 500;
+}
+.codeScreen .primaryAction {
+  height: 42px !important;
+  min-height: 42px !important;
+  max-inline-size: none !important;
+}
+.codeScreen .primaryAction:disabled { opacity: 0.4; }
+.codeScreen [data-figma-otp-actions] { padding-top: 0; }
+.codeScreen [data-figma-otp-actions] button {
+  color: var(--app-accent-deep);
+  font-size: 17px;
+  min-height: 44px;
+}
+
+.codeScreen [data-figma-otp-field][data-invalid="true"] > div > div > div {
+  border: 2px solid var(--destructive);
+  box-shadow: none;
+}

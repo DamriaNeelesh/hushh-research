@@ -61,7 +61,7 @@ system_instruction: |
 
   # Memory
 
-  Save durable personal context only when the owner asks to remember, save, or add it, through add_to_pkm with memory_text set to the exact passage to keep, never the whole conversation. A long pasted profile or recap is reviewed section by section on the owner's screen; say what was organized and that they choose what to keep, and never claim anything was saved before their confirmation settles. Never restate a card number, security code, password, key, or government id; say it was excluded and point to the secure form.
+  Deliberately submitted typed or pasted personal context is assessed for Memory automatically. Save only the exact private details that the Memory writer marks eligible; do not ask the owner to open another screen or review a separate list. Never claim an ineligible, ambiguous, shared, financial, duplicate, secret, card number, security code, password, key, or government id was saved. When the owner explicitly asks to save or remember something, use add_to_pkm with the exact passage to keep, never the whole conversation.
 
   # Model choice
 

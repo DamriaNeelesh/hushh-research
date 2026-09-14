@@ -48,7 +48,9 @@ describe("prepareScopedGmailInformationRequestDraft", () => {
         forceRefresh: true,
       }),
     );
-    expect(prepared.body).toContain("Postal code · address · postal code: 10001");
+    expect(prepared.body).toContain("My **Postal code** is **10001**.");
+    expect(prepared.body).not.toContain("identity");
+    expect(prepared.body).not.toContain("address · postal");
     expect(prepared.body).not.toContain("1 Private Street");
     expect(prepared.body).not.toContain("private-passport-number");
   });
@@ -109,6 +111,152 @@ describe("prepareScopedGmailInformationRequestDraft", () => {
     expect(prepared.body).toContain("Akshat Kumar");
     expect(prepared.body).toContain("IIT Bombay");
     expect(prepared.unavailableLabels).toEqual([]);
+  });
+
+  it("loads one PKM segment once for every exact field it contains", async () => {
+    pkmMocks.getStaleFirst.mockResolvedValue({
+      data: {
+        identity_profile: {
+          full_name: "Akshat Kumar",
+          education: {
+            institution: "IIT Bombay",
+            department: "Mechanical Engineering",
+            programme: "Dual Degree",
+          },
+        },
+      },
+    });
+
+    const prepared = await prepareScopedGmailInformationRequestDraft({
+      workflow: {
+        requested_field_labels: ["name", "education information"],
+        candidate_scopes: [
+          {
+            scope: "attr.identity.identity_profile.full_name",
+            domain: "identity",
+            label: "Full name",
+            segment_ids: ["identity_profile"],
+            canonical_field_ids: ["identity.identity_profile.full_name"],
+          },
+          {
+            scope: "attr.identity.identity_profile.education.institution",
+            domain: "identity",
+            label: "Educational institution",
+            segment_ids: ["identity_profile"],
+            canonical_field_ids: ["identity.identity_profile.education.institution"],
+          },
+          {
+            scope: "attr.identity.identity_profile.education.department",
+            domain: "identity",
+            label: "Education department",
+            segment_ids: ["identity_profile"],
+            canonical_field_ids: ["identity.identity_profile.education.department"],
+          },
+          {
+            scope: "attr.identity.identity_profile.education.programme",
+            domain: "identity",
+            label: "Education programme",
+            segment_ids: ["identity_profile"],
+            canonical_field_ids: ["identity.identity_profile.education.programme"],
+          },
+        ],
+      },
+      userId: "user-1",
+      vaultKey: "vault-key",
+      vaultOwnerToken: "owner-token",
+    });
+
+    expect(pkmMocks.getStaleFirst).toHaveBeenCalledTimes(1);
+    expect(prepared.body).toContain("My name is **Akshat Kumar**.");
+    expect(prepared.body).toContain(
+      "I am pursuing **Dual Degree** in **Mechanical Engineering** at **IIT Bombay**.",
+    );
+    expect(prepared.body).not.toContain("identity_profile");
+  });
+
+  it("creates a recipient-safe, rich KYC paragraph from approved facts", async () => {
+    pkmMocks.getStaleFirst.mockImplementation(({ domain }: { domain: string }) =>
+      Promise.resolve(
+        domain === "location"
+          ? { data: { profile: { school_location: "Delhi" } } }
+          : {
+              data: {
+                identity_profile: {
+                  full_name: "Akshat Kumar",
+                  education: {
+                    academic_status: "5th-year Dual Degree student",
+                    department: "Mechanical Engineering",
+                    institution: "IIT Bombay",
+                    programme: "Dual Degree",
+                  },
+                },
+              },
+            },
+      ),
+    );
+
+    const prepared = await prepareScopedGmailInformationRequestDraft({
+      workflow: {
+        requested_field_labels: ["name", "education details", "school location"],
+        candidate_scopes: [
+          {
+            scope: "attr.identity.identity_profile.full_name",
+            domain: "identity",
+            label: "Full name",
+            segment_ids: ["identity_profile"],
+            canonical_field_ids: ["identity.identity_profile.full_name"],
+          },
+          {
+            scope: "attr.identity.identity_profile.education.academic_status",
+            domain: "identity",
+            label: "Academic status",
+            segment_ids: ["identity_profile"],
+            canonical_field_ids: ["identity.identity_profile.education.academic_status"],
+          },
+          {
+            scope: "attr.identity.identity_profile.education.department",
+            domain: "identity",
+            label: "Department",
+            segment_ids: ["identity_profile"],
+            canonical_field_ids: ["identity.identity_profile.education.department"],
+          },
+          {
+            scope: "attr.identity.identity_profile.education.institution",
+            domain: "identity",
+            label: "Institution",
+            segment_ids: ["identity_profile"],
+            canonical_field_ids: ["identity.identity_profile.education.institution"],
+          },
+          {
+            scope: "attr.identity.identity_profile.education.programme",
+            domain: "identity",
+            label: "Programme",
+            segment_ids: ["identity_profile"],
+            canonical_field_ids: ["identity.identity_profile.education.programme"],
+          },
+          {
+            scope: "attr.location.profile.school_location",
+            domain: "location",
+            label: "School location",
+            segment_ids: ["profile"],
+          },
+        ],
+      },
+      userId: "user-1",
+      vaultKey: "vault-key",
+      vaultOwnerToken: "owner-token",
+    });
+
+    expect(pkmMocks.getStaleFirst).toHaveBeenCalledTimes(2);
+    expect(prepared.body).toContain(
+      "My name is **Akshat Kumar**. I am currently a **5th-year Dual Degree student**.",
+    );
+    expect(prepared.body).toContain(
+      "I am pursuing **Dual Degree** in **Mechanical Engineering** at **IIT Bombay**.",
+    );
+    expect(prepared.body).toContain("I completed my schooling in **Delhi**.");
+    expect(prepared.body).not.toContain("identity profile");
+    expect(prepared.body).not.toContain("attr.");
   });
 
   it("handles deep nesting correctly", async () => {
