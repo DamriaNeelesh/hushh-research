@@ -323,7 +323,11 @@ describe("VaultFlow create validation", () => {
     expect(unlockButton.disabled).toBe(true);
     expect(screen.getByText("Use another method")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Passkey" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Recovery key" })).toBeTruthy();
+    const recoveryButton = screen.getByRole("button", { name: "Recovery key" });
+    expect(recoveryButton).toHaveClass("min-h-11", "rounded-none");
+    expect(recoveryButton).not.toHaveClass("w-full");
+    expect(recoveryButton).not.toHaveClass("border");
+    expect(screen.getByLabelText("Vault passphrase")).toHaveClass("rounded-none");
     expect(document.querySelector("[data-vault-flow-icon]")).toHaveClass(
       "bg-[color:var(--app-accent-tint)]",
     );

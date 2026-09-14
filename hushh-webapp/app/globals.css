@@ -594,6 +594,7 @@ textarea {
   --app-radius-md: 14px;
   --app-radius-lg: 18px;
   --app-radius-pill: 9999px;
+  --app-input-radius: var(--app-radius-lg);
 
   /* Shadow elevation scale — Apple iCloud single-shadow model */
   --theme-color-fillSecondary: rgba(120, 120, 128, 0.36);

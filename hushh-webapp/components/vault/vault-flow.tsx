@@ -100,6 +100,14 @@ interface VaultFlowProps {
 
 const VAULT_ALTERNATIVE_BUTTON_CLASS =
   "min-h-11 h-auto whitespace-normal rounded-full border border-[color:var(--app-accent-border)] px-3 py-2 text-[13px] leading-snug font-medium sm:text-[14px] !bg-[color:var(--app-accent-tint)] !text-[color:var(--app-accent-deep)] hover:!bg-[color:var(--app-accent-surface-strong)]";
+const VAULT_COMPACT_ALTERNATIVE_BUTTON_CLASS =
+  "min-h-9 h-9 whitespace-nowrap rounded-full border border-[color:var(--app-accent-border)] px-3 text-[13px] font-semibold !bg-[color:var(--app-accent-tint)] !text-[color:var(--app-accent-deep)] hover:!bg-[color:var(--app-accent-surface-strong)]";
+const VAULT_RECOVERY_LINK_CLASS =
+  "min-h-11 h-auto self-start rounded-none px-0 py-2 text-[13px] font-medium leading-5 !text-[color:var(--app-accent)] underline-offset-4 hover:underline focus-visible:rounded-[var(--app-radius-sm)]";
+const VAULT_INPUT_SHELL_CLASS =
+  "flex h-14 items-center gap-3 rounded-[var(--app-input-radius)] border-[1.5px] bg-black/[0.02] px-4 transition-[border-color,box-shadow] dark:bg-white/[0.04] focus-within:border-[color:var(--app-accent)] focus-within:ring-4 focus-within:ring-[color:var(--app-accent-ring)]";
+const VAULT_INPUT_CONTROL_CLASS =
+  "h-auto min-h-0 min-w-0 flex-1 rounded-none border-0 bg-transparent px-0 py-0 text-[16px] text-foreground caret-[color:var(--app-accent)] outline-none shadow-none focus-visible:border-transparent focus-visible:ring-0 placeholder:text-foreground/35";
 
 // A passkey cancellation is a normal user decision, not an application
 // failure. Keep it in the credential surface so the user can choose a
@@ -597,11 +605,6 @@ export function VaultFlow({
     showVaultKeyAlternative ||
     showPasskeyFallbackAlternative ||
     showRecoveryAlternative;
-  const unlockAlternativeCount = [
-    showVaultKeyAlternative,
-    showPasskeyFallbackAlternative,
-    showRecoveryAlternative,
-  ].filter(Boolean).length;
   const finalizeUnlock = useCallback(async (decryptedKey: string, attempt: VaultUnlockAttempt): Promise<boolean> => {
     if (!isCurrentAttempt(attempt)) {
       return false;
@@ -1524,70 +1527,68 @@ export function VaultFlow({
                 <Label htmlFor="passphrase" className="type-footnote font-medium text-muted-foreground">
                   Passphrase
                 </Label>
-                <div
-                  className={cn(
-                    "flex h-14 items-center gap-3 rounded-2xl border-[1.5px] bg-black/[0.02] px-4 transition-[border-color,box-shadow] dark:bg-white/[0.04]",
-                    "focus-within:border-[color:var(--app-accent)] focus-within:ring-4 focus-within:ring-[color:var(--app-accent-ring)]",
-                    passphrase
-                      ? "border-[color:var(--app-accent)]"
-                      : "border-black/10 dark:border-white/15",
-                  )}
-                >
-                  <Icon icon={Key} size={18} className="shrink-0 text-foreground/50" />
-                  <input
-                    id="passphrase"
-                    type={showPassphrase ? "text" : "password"}
-                    placeholder="Create passphrase"
-                    value={passphrase}
-                    onChange={(e) => setPassphrase(e.target.value)}
-                    autoFocus
-                    autoComplete="new-password"
-                    className="min-w-0 flex-1 bg-transparent text-[16px] text-foreground caret-[color:var(--app-accent)] outline-none placeholder:text-foreground/35"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassphrase((prev) => !prev)}
-                    className="shrink-0 p-1 text-foreground/50 transition-colors hover:text-foreground focus:outline-none"
-                    aria-label={showPassphrase ? "Hide passphrase" : "Show passphrase"}
-                    title={showPassphrase ? "Hide passphrase" : "Show passphrase"}
+                  <div
+                    className={cn(
+                      VAULT_INPUT_SHELL_CLASS,
+                      passphrase
+                        ? "border-[color:var(--app-accent)]"
+                        : "border-black/10 dark:border-white/15",
+                    )}
                   >
-                    <Icon icon={showPassphrase ? EyeOff : Eye} size={18} />
-                  </button>
-                </div>
+                    <Icon icon={Key} size={18} className="shrink-0 text-foreground/50" />
+                    <Input
+                      id="passphrase"
+                      type={showPassphrase ? "text" : "password"}
+                      placeholder="Create passphrase"
+                      value={passphrase}
+                      onChange={(e) => setPassphrase(e.target.value)}
+                      autoFocus
+                      autoComplete="new-password"
+                      className={VAULT_INPUT_CONTROL_CLASS}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassphrase((prev) => !prev)}
+                      className="shrink-0 p-1 text-foreground/50 transition-colors hover:text-foreground focus:outline-none"
+                      aria-label={showPassphrase ? "Hide passphrase" : "Show passphrase"}
+                      title={showPassphrase ? "Hide passphrase" : "Show passphrase"}
+                    >
+                      <Icon icon={showPassphrase ? EyeOff : Eye} size={18} />
+                    </button>
+                  </div>
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="confirm" className="type-footnote font-medium text-muted-foreground">
                   Confirm passphrase
                 </Label>
-                <div
-                  className={cn(
-                    "flex h-14 items-center gap-3 rounded-2xl border-[1.5px] bg-black/[0.02] px-4 transition-[border-color,box-shadow] dark:bg-white/[0.04]",
-                    "focus-within:border-[color:var(--app-accent)] focus-within:ring-4 focus-within:ring-[color:var(--app-accent-ring)]",
-                    confirmPassphrase
-                      ? "border-[color:var(--app-accent)]"
-                      : "border-black/10 dark:border-white/15",
-                  )}
-                >
-                  <Icon icon={Key} size={18} className="shrink-0 text-foreground/50" />
-                  <input
-                    id="confirm"
-                    type={showConfirmPassphrase ? "text" : "password"}
-                    placeholder="Confirm passphrase"
-                    value={confirmPassphrase}
-                    onChange={(e) => setConfirmPassphrase(e.target.value)}
-                    autoComplete="new-password"
-                    className="min-w-0 flex-1 bg-transparent text-[16px] text-foreground caret-[color:var(--app-accent)] outline-none placeholder:text-foreground/35"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowConfirmPassphrase((prev) => !prev)}
-                    className="shrink-0 p-1 text-foreground/50 transition-colors hover:text-foreground focus:outline-none"
-                    aria-label={showConfirmPassphrase ? "Hide passphrase" : "Show passphrase"}
-                    title={showConfirmPassphrase ? "Hide passphrase" : "Show passphrase"}
+                  <div
+                    className={cn(
+                      VAULT_INPUT_SHELL_CLASS,
+                      confirmPassphrase
+                        ? "border-[color:var(--app-accent)]"
+                        : "border-black/10 dark:border-white/15",
+                    )}
                   >
-                    <Icon icon={showConfirmPassphrase ? EyeOff : Eye} size={18} />
-                  </button>
-                </div>
+                    <Icon icon={Key} size={18} className="shrink-0 text-foreground/50" />
+                    <Input
+                      id="confirm"
+                      type={showConfirmPassphrase ? "text" : "password"}
+                      placeholder="Confirm passphrase"
+                      value={confirmPassphrase}
+                      onChange={(e) => setConfirmPassphrase(e.target.value)}
+                      autoComplete="new-password"
+                      className={VAULT_INPUT_CONTROL_CLASS}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassphrase((prev) => !prev)}
+                      className="shrink-0 p-1 text-foreground/50 transition-colors hover:text-foreground focus:outline-none"
+                      aria-label={showConfirmPassphrase ? "Hide passphrase" : "Show passphrase"}
+                      title={showConfirmPassphrase ? "Hide passphrase" : "Show passphrase"}
+                    >
+                      <Icon icon={showConfirmPassphrase ? EyeOff : Eye} size={18} />
+                    </button>
+                  </div>
                 {createPassphraseHelperText && (
                   <p className="text-xs font-medium text-destructive" role="status">
                     {createPassphraseHelperText}
@@ -1686,15 +1687,14 @@ export function VaultFlow({
                   </Label>
                   <div
                     className={cn(
-                      "flex h-14 items-center gap-3 rounded-2xl border-[1.5px] bg-black/[0.02] px-4 transition-[border-color,box-shadow] dark:bg-white/[0.04]",
-                      "focus-within:border-[color:var(--app-accent)] focus-within:ring-4 focus-within:ring-[color:var(--app-accent-ring)]",
+                      VAULT_INPUT_SHELL_CLASS,
                       passphrase
                         ? "border-[color:var(--app-accent)]"
                         : "border-black/10 dark:border-white/15",
                     )}
                   >
                     <Icon icon={Key} size={18} className="shrink-0 text-foreground/50" />
-                    <input
+                    <Input
                       id="unlock-passphrase"
                       type={showPassphrase ? "text" : "password"}
                       placeholder="Enter passphrase"
@@ -1706,7 +1706,7 @@ export function VaultFlow({
                       }
                       autoFocus
                       autoComplete="current-password"
-                      className="min-w-0 flex-1 bg-transparent text-[16px] text-foreground caret-[color:var(--app-accent)] outline-none placeholder:text-foreground/35"
+                      className={VAULT_INPUT_CONTROL_CLASS}
                     />
                     <button
                       type="button"
@@ -1786,19 +1786,13 @@ export function VaultFlow({
                 {showUnlockOtherMethods ? (
                   <div className="space-y-1.5 pt-1">
                     <p className="type-footnote font-medium text-muted-foreground">Use another method</p>
-                    <div
-                      className={cn(
-                        "grid gap-2",
-                        unlockAlternativeCount === 1 ? "grid-cols-1" : "grid-cols-2",
-                      )}
-                    >
+                    <div className="flex flex-wrap gap-2">
                       {showVaultKeyAlternative ? (
                         <Button
                           variant="none"
                           effect="fade"
-                          size="default"
-                          fullWidth
-                          className={VAULT_ALTERNATIVE_BUTTON_CLASS}
+                          size="sm"
+                          className={VAULT_COMPACT_ALTERNATIVE_BUTTON_CLASS}
                           data-testid="vault-use-passphrase-instead"
                           onClick={() => {
                             switchUnlockMethod();
@@ -1813,9 +1807,8 @@ export function VaultFlow({
                         <Button
                           variant="none"
                           effect="fade"
-                          size="default"
-                          fullWidth
-                          className={VAULT_ALTERNATIVE_BUTTON_CLASS}
+                          size="sm"
+                          className={VAULT_COMPACT_ALTERNATIVE_BUTTON_CLASS}
                           onClick={() => {
                             switchUnlockMethod();
                             setPassphrase("");
@@ -1828,11 +1821,11 @@ export function VaultFlow({
                       ) : null}
                       {showRecoveryAlternative ? (
                         <Button
-                          variant="none"
-                          effect="fade"
-                          size="default"
-                          fullWidth
-                          className={VAULT_ALTERNATIVE_BUTTON_CLASS}
+                          variant="link"
+                          size="sm"
+                          showRipple={false}
+                          className={VAULT_RECOVERY_LINK_CLASS}
+                          data-testid="vault-use-recovery-key"
                           onClick={() => {
                             switchUnlockMethod();
                             setStep("recovery");
@@ -1871,7 +1864,7 @@ export function VaultFlow({
                   autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="characters"
-                  className="h-12 rounded-[14px] px-4 font-mono text-[16px]"
+                  className="h-14 px-4 font-mono text-[16px]"
                 />
               </div>
               <div className="flex flex-col gap-2 pt-2">
