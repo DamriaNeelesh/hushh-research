@@ -53,11 +53,11 @@ if ! gcloud iam service-accounts describe "${SCHEDULER_SERVICE_ACCOUNT_EMAIL}" \
 fi
 
 # Cloud Scheduler's Google-managed service agent receives the project-scoped
-# roles/cloudscheduler.serviceAgent grant when the API is enabled. That grant
-# lets Scheduler mint the OIDC token for this client service account. Do not
-# mutate this service account's IAM policy as part of every application deploy:
-# it is unnecessary and requires iam.serviceAccounts.setIamPolicy, which the
-# constrained UAT deploy identity deliberately does not hold.
+# roles/cloudscheduler.serviceAgent grant when the API is enabled. That role is
+# what lets Scheduler mint an OIDC token for this client service account. The
+# deployer needs iam.serviceAccounts.actAs to attach the identity to the job,
+# but an application deploy must not mutate the client account's IAM policy or
+# require iam.serviceAccounts.setIamPolicy.
 
 URI="${BACKEND_URL%/}/api/one/email/information-requests/scan-enabled"
 BODY="{\"max_users\":${MAX_USERS}}"
