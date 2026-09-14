@@ -191,7 +191,8 @@
     "216_location_command_membership_receipts.sql",
     "217_location_command_effect_receipts.sql",
     "218_location_command_audience_receipts.sql",
-    "219_location_presence_rating_visit.sql"
+    "219_location_presence_rating_visit.sql",
+    "220_gmail_personal_information_request_initial_inbox_scan.sql"
   ],
   "environment_overlays": {
     "uat": [
@@ -332,7 +333,8 @@
       "216_location_command_membership_receipts.sql",
       "217_location_command_effect_receipts.sql",
       "218_location_command_audience_receipts.sql",
-      "219_location_presence_rating_visit.sql"
+      "219_location_presence_rating_visit.sql",
+      "220_gmail_personal_information_request_initial_inbox_scan.sql"
     ],
     "pkm": [
       "030_pkm_cutover.sql",
