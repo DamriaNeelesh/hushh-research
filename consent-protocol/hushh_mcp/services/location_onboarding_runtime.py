@@ -845,7 +845,6 @@ class OneLocationCircleProvisioningAdapter:
                 OneLocationCircleService().bootstrap_first_circle,
                 user_id=user_id,
                 name="My Circle",
-                capability_run_id=run_id,
             )
         except Exception:  # noqa: BLE001 - domain detail must not enter workflow output/logs
             logger.info("location_onboarding_circle_provisioning_unavailable")

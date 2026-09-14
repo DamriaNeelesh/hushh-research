@@ -424,6 +424,36 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("continues a permission settlement while the bridge binds its rendered callbacks", async () => {
+  const settle = h.settle.getMockImplementation()!;
+  let releasePermission!: () => void;
+  const permissionResponse = new Promise<void>((resolve) => {
+    releasePermission = resolve;
+  });
+  h.settle.mockImplementation(async (input) => {
+    if (input.result === "permission_granted") await permissionResponse;
+    return settle(input);
+  });
+  render(<App />);
+  fireEvent.click(screen.getByText("Begin command"));
+  await waitFor(() =>
+    expect(h.settle).toHaveBeenCalledWith(
+      expect.objectContaining({ result: "permission_granted" }),
+    ),
+  );
+  // A real network response arrives after the rendered directive's effects.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  await act(async () => {
+    releasePermission();
+  });
+  await waitFor(() => expect(h.save).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(window.location.pathname).toBe("/one/location"));
+  expect(h.capture).toHaveBeenCalledTimes(1);
+  expect(checkpoint.capsule).toBeNull();
+});
+
 it("mounts the real workflow owners and finishes only after save proof and Location-on", async () => {
   render(<App />);
   fireEvent.click(screen.getByText("Begin command"));
