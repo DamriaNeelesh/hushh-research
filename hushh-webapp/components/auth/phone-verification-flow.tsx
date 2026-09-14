@@ -3,6 +3,7 @@
 import {
   type CSSProperties,
   type FormEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -55,6 +56,7 @@ import {
   kaiAppHelperClassName,
 } from "@/components/kai/shared/kai-typography";
 import { FigmaCountryFlag } from "@/components/onboarding/FigmaOnboardingPrimitives";
+import { CountryPicker } from "@/components/auth/country-picker";
 import { cn } from "@/lib/utils";
 import { ROUTES } from "@/lib/navigation/routes";
 import { usePublishVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
@@ -113,7 +115,8 @@ type PhoneVerificationFlowProps = {
   codePresentation?: "default" | "onboarding";
   primaryActionClassName?: string;
   className?: string;
-  helperText?: string;
+  helperText?: ReactNode;
+  phonePresentation?: "default" | "compact";
   style?: CSSProperties;
   onStepChange?: (step: VerificationStep) => void;
 };
@@ -366,6 +369,7 @@ export function PhoneVerificationFlow({
   primaryActionClassName,
   className,
   helperText,
+  phonePresentation = "default",
   style,
   onStepChange,
 }: PhoneVerificationFlowProps) {
@@ -1043,6 +1047,7 @@ export function PhoneVerificationFlow({
       onSubmit={handleSubmit}
       data-figma-phone-flow="true"
       data-figma-phone-step={step}
+      data-phone-presentation={phonePresentation}
     >
       <FieldSet>
       {step === "phone" ? (
@@ -1055,6 +1060,20 @@ export function PhoneVerificationFlow({
               >
                 Country code
               </FieldLabel>
+              {phonePresentation === "compact" ? (
+                <CountryPicker
+                  open={countryComboboxOpen}
+                  onOpenChange={(open) => {
+                    setCountryComboboxOpen(open);
+                    if (open) setCountryQuery("");
+                  }}
+                  query={countryQuery}
+                  onQueryChange={setCountryQuery}
+                  options={filteredCountryOptions}
+                  selected={selectedCountryOption ?? DEFAULT_PHONE_COUNTRY_OPTION}
+                  onSelect={handleCountrySelection}
+                />
+              ) : (
               <Combobox
                 open={countryComboboxOpen}
                 onOpenChange={(open) => {
@@ -1128,7 +1147,9 @@ export function PhoneVerificationFlow({
                           DEFAULT_PHONE_COUNTRY_OPTION.value
                         }
                       />
-                      <span className="min-w-0 truncate">{selectedCountryDisplayLabel}</span>
+                      <span className="min-w-0 truncate">
+                        {selectedCountryDisplayLabel}
+                      </span>
                     </span>
                   ) : null}
                 </ComboboxInput>
@@ -1159,6 +1180,7 @@ export function PhoneVerificationFlow({
                   </ComboboxList>
                 </ComboboxContent>
               </Combobox>
+              )}
             </Field>
 
             <Field className="gap-2" data-figma-phone-field="number">
