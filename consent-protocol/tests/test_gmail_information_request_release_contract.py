@@ -42,15 +42,22 @@ def test_uat_deploy_wires_the_personal_gmail_monitor_identity() -> None:
     assert "deploy/gmail/setup_personal_information_request_monitor_scheduler.sh" in workflow
 
 
-def _run_setup(tmp_path: Path, *, existing_job: bool = False, **overrides: str):
+def _run_setup(
+    tmp_path: Path,
+    *,
+    existing_job: bool = False,
+    existing_account: bool | None = None,
+    **overrides: str,
+):
     """Exercise the real shell adapter against strict local CLI contracts."""
+    account_exists = existing_job if existing_account is None else existing_account
     state_path = tmp_path / "state.json"
     calls_path = tmp_path / "calls.jsonl"
     state_path.write_text(
         json.dumps(
             {
                 "accounts": [f"{_workflow_identity()}@{PROJECT}.iam.gserviceaccount.com"]
-                if existing_job
+                if account_exists
                 else [],
                 "job": {} if existing_job else None,
             }
@@ -122,6 +129,20 @@ def test_scheduler_does_not_mutate_the_client_service_account_policy() -> None:
     setup = SETUP.read_text(encoding="utf-8")
     assert "iam service-accounts add-iam-policy-binding" not in setup
     assert "roles/iam.serviceAccountTokenCreator" not in setup
+
+
+def test_scheduler_recovers_when_account_exists_but_job_does_not(tmp_path: Path) -> None:
+    result, calls, state = _run_setup(
+        tmp_path,
+        existing_account=True,
+        existing_job=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not any(call[:3] == ["iam", "service-accounts", "create"] for call in calls)
+    assert any(call[:4] == ["scheduler", "jobs", "create", "http"] for call in calls)
+    assert state["job"]["oidc-service-account-email"] == (
+        f"{_workflow_identity()}@{PROJECT}.iam.gserviceaccount.com"
+    )
 
 
 @pytest.mark.parametrize("existing_job", [False, True])
