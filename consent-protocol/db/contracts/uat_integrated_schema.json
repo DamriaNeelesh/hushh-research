@@ -1,6 +1,6 @@
 {
   "contract_name": "uat_integrated_schema",
-  "expected_migration_version": 219,
+  "expected_migration_version": 220,
   "migration_version_policy": "exact",
   "required_functions": [
     "resolve_feed_counterpart_user_id",
@@ -623,6 +623,7 @@
       "scan_lease_expires_at",
       "last_scan_attempted_at",
       "last_scan_completed_at",
+      "initial_inbox_scan_completed_at",
       "created_at",
       "updated_at"
     ],
