@@ -52,12 +52,12 @@ if ! gcloud iam service-accounts describe "${SCHEDULER_SERVICE_ACCOUNT_EMAIL}" \
     --display-name="Personal Gmail monitor scheduler" >/dev/null
 fi
 
-PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
-SCHEDULER_SERVICE_AGENT="service-${PROJECT_NUMBER}@gcp-sa-cloudscheduler.iam.gserviceaccount.com"
-gcloud iam service-accounts add-iam-policy-binding "${SCHEDULER_SERVICE_ACCOUNT_EMAIL}" \
-  --project="${PROJECT_ID}" \
-  --member="serviceAccount:${SCHEDULER_SERVICE_AGENT}" \
-  --role="roles/iam.serviceAccountTokenCreator" >/dev/null
+# Cloud Scheduler's Google-managed service agent receives the project-scoped
+# roles/cloudscheduler.serviceAgent grant when the API is enabled. That grant
+# lets Scheduler mint the OIDC token for this client service account. Do not
+# mutate this service account's IAM policy as part of every application deploy:
+# it is unnecessary and requires iam.serviceAccounts.setIamPolicy, which the
+# constrained UAT deploy identity deliberately does not hold.
 
 URI="${BACKEND_URL%/}/api/one/email/information-requests/scan-enabled"
 BODY="{\"max_users\":${MAX_USERS}}"

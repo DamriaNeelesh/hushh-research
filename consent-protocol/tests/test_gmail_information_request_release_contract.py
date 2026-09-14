@@ -129,6 +129,10 @@ def test_scheduler_create_and_update_keep_the_same_oidc_identity(tmp_path, exist
     assert result.returncode == 0, result.stderr
     verb = "update" if existing_job else "create"
     assert any(call[:4] == ["scheduler", "jobs", verb, "http"] for call in calls)
+    assert not any(
+        call[:3] == ["iam", "service-accounts", "add-iam-policy-binding"] for call in calls
+    )
+    assert not any(call[:2] == ["projects", "describe"] for call in calls)
     assert state["job"]["oidc-service-account-email"] == (
         f"{_workflow_identity()}@{PROJECT}.iam.gserviceaccount.com"
     )
