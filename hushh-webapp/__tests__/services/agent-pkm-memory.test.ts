@@ -24,9 +24,11 @@ vi.mock("@/lib/pkm/pkm-domain-resource", () => ({
 }));
 
 const pkmSavePreparedDomainMock = vi.fn();
+const pkmSaveMergedDomainMock = vi.fn();
 vi.mock("@/lib/services/pkm-write-coordinator", () => ({
   PkmWriteCoordinator: {
     savePreparedDomain: (...args: unknown[]) => pkmSavePreparedDomainMock(...args),
+    saveMergedDomain: (...args: unknown[]) => pkmSaveMergedDomainMock(...args),
   },
 }));
 
@@ -94,6 +96,12 @@ describe("agent PKM memory helpers", () => {
       },
     });
     pkmSavePreparedDomainMock.mockResolvedValue({
+      success: true,
+      saveState: "saved",
+      message: "Saved",
+      fullBlob: {},
+    });
+    pkmSaveMergedDomainMock.mockResolvedValue({
       success: true,
       saveState: "saved",
       message: "Saved",
@@ -591,6 +599,68 @@ describe("agent PKM memory helpers", () => {
         { cardId: "preference-1", success: true },
         { cardId: "education-1", success: true },
         { cardId: "preference-2", success: true },
+      ],
+    });
+  });
+
+  it("batches simple KYC fields for one domain into one encrypted write", async () => {
+    const result = await addToPKM({
+      userId: "user_1",
+      cards: [
+        {
+          card_id: "kyc-name",
+          source_text: "My name is Akshat Kumar.",
+          write_mode: "can_save",
+          merge_mode: "extend_entity",
+          target_domain: "identity",
+          primary_json_path: "identity_profile.full_name",
+          candidate_payload: { identity_profile: { full_name: "Akshat Kumar" } },
+          structure_decision: { target_domain: "identity" },
+        },
+        {
+          card_id: "kyc-institution",
+          source_text: "I study at IIT Bombay.",
+          write_mode: "can_save",
+          merge_mode: "extend_entity",
+          target_domain: "identity",
+          primary_json_path: "identity_profile.education.institution",
+          candidate_payload: {
+            identity_profile: { education: { institution: "IIT Bombay" } },
+          },
+          structure_decision: { target_domain: "identity" },
+        },
+      ],
+      sourceMessage: "KYC profile",
+      vaultKey: "vault_key",
+      vaultOwnerToken: "owner-token",
+      source: "kyc_identity_onboarding",
+      confirmation: {
+        confirmedByUser: true,
+        surface: "web",
+        source: "kyc_identity_onboarding",
+      },
+      batchSimpleDomainExtensions: true,
+    });
+
+    expect(pkmSavePreparedDomainMock).not.toHaveBeenCalled();
+    expect(pkmSaveMergedDomainMock).toHaveBeenCalledTimes(1);
+    const write = pkmSaveMergedDomainMock.mock.calls[0]?.[0] as {
+      domain: string;
+      build: () => { domainData: Record<string, unknown> };
+    };
+    expect(write.domain).toBe("identity");
+    expect(write.build().domainData).toEqual({
+      identity_profile: {
+        full_name: "Akshat Kumar",
+        education: { institution: "IIT Bombay" },
+      },
+    });
+    expect(result).toMatchObject({
+      saved: 2,
+      failed: 0,
+      results: [
+        { cardId: "kyc-name", success: true },
+        { cardId: "kyc-institution", success: true },
       ],
     });
   });

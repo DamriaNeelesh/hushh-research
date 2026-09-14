@@ -505,6 +505,8 @@ export async function ingestNaturalLanguagePkm(params: {
   confirmation: PkmWriteAuthorization;
   writePolicy?: PkmNaturalLanguageWritePolicy;
   memoryProfile?: PkmNaturalLanguageMemoryProfile;
+  /** See addToPKM: only constrained profile imports opt into this write path. */
+  batchSimpleDomainExtensions?: boolean;
   onProgress?: (progress: PkmNaturalLanguagePreparationProgress) => void;
 }): Promise<PkmNaturalLanguageIngestionResult> {
   const startedAt = performance.now();
@@ -525,6 +527,7 @@ export async function ingestNaturalLanguagePkm(params: {
     vaultOwnerToken: params.vaultOwnerToken,
     source: params.source,
     confirmation: params.confirmation,
+    batchSimpleDomainExtensions: params.batchSimpleDomainExtensions,
   });
   logIngestion("completed", {
     ingestion_id: prepared.ingestionId,
