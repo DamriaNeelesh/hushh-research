@@ -128,6 +128,42 @@ const TRANSIENT_BROWSER_CONSOLE_ERRORS = [
   "useInsertionEffect must not schedule updates.",
 ];
 
+function isTruthyEnvValue(value) {
+  return ["1", "true", "yes", "on"].includes(
+    String(value || "").trim().toLowerCase(),
+  );
+}
+
+const localConsentSseDisabled =
+  process.env.CONSENT_WEB_FALLBACK_ENABLED !== undefined
+    ? !isTruthyEnvValue(process.env.CONSENT_WEB_FALLBACK_ENABLED)
+    : process.env.CONSENT_SSE_ENABLED !== undefined &&
+      !isTruthyEnvValue(process.env.CONSENT_SSE_ENABLED);
+const localRiaIdentityUnavailable = !String(
+  process.env.RIA_IDENTITY_BASE_URL || "",
+).trim();
+
+function isExpectedLocalOptionalResponseFailure(value) {
+  if (
+    !appOrigin.startsWith("http://localhost:") &&
+    !appOrigin.startsWith("http://127.0.0.1:")
+  ) {
+    return false;
+  }
+  if (
+    localConsentSseDisabled &&
+    value.includes("410 GET ") &&
+    value.includes("/api/consent/events/")
+  ) {
+    return true;
+  }
+  return (
+    localRiaIdentityUnavailable &&
+    value.includes("503 POST ") &&
+    value.includes("/api/ria/claim/lookup")
+  );
+}
+
 const DYNAMIC_ROUTE_FIXTURES = {
   "/one/setup/[capability]": {
     path: "/one/setup/gmail",
@@ -203,6 +239,11 @@ const ROUTE_OVERRIDES = {
 };
 
 const REDIRECT_EXPECTATIONS = {
+  "/one/profile/regulatory": {
+    path: "/one/profile/regulatory",
+    allowedPathnames: ["/ria/profile", "/ria/onboarding"],
+    allowedRouteIds: ["/ria/profile", "/ria/onboarding"],
+  },
   "/": {
     path: "/",
     expectedPathname: "/one",
@@ -1321,6 +1362,22 @@ function assertNoIssues(route, viewport, issues) {
       return false;
     }
     if (
+      value.includes(
+        "Failed to load resource: the server responded with a status of 410",
+      ) &&
+      issues.responseFailures.some(isExpectedLocalOptionalResponseFailure)
+    ) {
+      return false;
+    }
+    if (
+      value.includes(
+        "Failed to load resource: the server responded with a status of 503",
+      ) &&
+      issues.responseFailures.some(isExpectedLocalOptionalResponseFailure)
+    ) {
+      return false;
+    }
+    if (
       value === "Failed to load resource: net::ERR_FAILED" &&
       issues.requestFailures.some((failure) =>
         TRANSIENT_BACKGROUND_REQUEST_FAILURES.some((pattern) =>
@@ -1358,7 +1415,7 @@ function assertNoIssues(route, viewport, issues) {
         (value) =>
           !TRANSIENT_BACKGROUND_RESPONSE_FAILURES.some((pattern) =>
             value.includes(pattern),
-          ),
+          ) && !isExpectedLocalOptionalResponseFailure(value),
       )
       .map((value) => `response:${value}`),
   ];

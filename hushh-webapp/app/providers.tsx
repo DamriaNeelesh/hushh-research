@@ -96,7 +96,15 @@ import {
   INTERNAL_APP_NAVIGATION_REQUEST_EVENT,
   type InternalAppNavigationRequest,
 } from "@/lib/utils/browser-navigation";
-import { PROFILE_PANE_OPEN_EVENT } from "@/lib/navigation/profile-pane";
+import {
+  PROFILE_PANE_OPEN_EVENT,
+  PROFILE_PANE_ROOT_LOCATION,
+  openProfilePane,
+  clearProfilePaneQuery,
+  closeProfilePane,
+  resolveProfilePaneUrlState,
+  type ProfilePaneLocation,
+} from "@/lib/navigation/profile-pane";
 
 interface ProvidersProps {
   children: ReactNode;
@@ -134,10 +142,14 @@ function AppShellFrame({ children }: ProvidersProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { isAuthenticated, loading: authLoading } = useAuth();
-  const [profilePaneOpen, setProfilePaneOpen] = useState(false);
-  const isProfileRoute =
-    pathname === ROUTES.PROFILE || pathname.startsWith(`${ROUTES.PROFILE}/`);
+  const { isAuthenticated, loading: authLoading, userId } = useAuth();
+  const [profilePaneResume, setProfilePaneResume] = useState<{
+    ownerId: string | null;
+    location: ProfilePaneLocation;
+  }>({
+    ownerId: null,
+    location: PROFILE_PANE_ROOT_LOCATION,
+  });
   // Destination crossings behind the shared back contract. Recorded here
   // because this frame renders for every route, including chrome-less ones,
   // and a screen with no top bar can still be where a destination was entered
@@ -240,7 +252,16 @@ function AppShellFrame({ children }: ProvidersProps) {
   const hideGlobalChrome =
     !topShellMetrics.shellVisible || hidesPersistentChrome;
   const profilePaneEnabled =
-    isAuthenticated && !authLoading && !hidesPersistentChrome && !isProfileRoute;
+    isAuthenticated && !authLoading && !hidesPersistentChrome;
+  const profilePaneUrlState = useMemo(
+    () => resolveProfilePaneUrlState(searchParams),
+    [searchParams],
+  );
+  const profilePaneResumeLocation =
+    profilePaneResume.ownerId === userId
+      ? profilePaneResume.location
+      : PROFILE_PANE_ROOT_LOCATION;
+  const profilePaneOpen = profilePaneEnabled && profilePaneUrlState.open;
   const isFullscreenTopFlow = routeLayoutMode === "flow";
   const shouldLockFullscreenRoot = isFullscreenTopFlow || hidesPersistentChrome;
   const isFoundationRoute = isFoundationPublicRoute(pathname);
@@ -390,15 +411,41 @@ function AppShellFrame({ children }: ProvidersProps) {
   }, [topShellScrollResetKey]);
 
   useEffect(() => {
-    if (isProfileRoute || !profilePaneEnabled) {
-      setProfilePaneOpen(false);
-    }
-  }, [isProfileRoute, profilePaneEnabled]);
+    setProfilePaneResume((current) => {
+      if (current.ownerId !== userId) {
+        return {
+          ownerId: userId,
+          location: profilePaneUrlState.open
+            ? profilePaneUrlState.location
+            : PROFILE_PANE_ROOT_LOCATION,
+        };
+      }
+      return profilePaneUrlState.open
+        ? { ownerId: userId, location: profilePaneUrlState.location }
+        : current;
+    });
+  }, [profilePaneUrlState, userId]);
+
+  useEffect(() => {
+    if (authLoading || isAuthenticated || !profilePaneUrlState.open) return;
+    clearProfilePaneQuery(pathname || ROUTES.ONE_HOME, searchParams);
+  }, [
+    authLoading,
+    isAuthenticated,
+    pathname,
+    profilePaneUrlState.open,
+    searchParams,
+  ]);
 
   useEffect(() => {
     const handleProfilePaneOpen = () => {
       if (!profilePaneEnabled) return;
-      setProfilePaneOpen(true);
+      if (profilePaneUrlState.open) return;
+      openProfilePane(
+        pathname || ROUTES.ONE_HOME,
+        searchParams,
+        profilePaneResumeLocation,
+      );
     };
     window.addEventListener(PROFILE_PANE_OPEN_EVENT, handleProfilePaneOpen);
     return () => {
@@ -407,7 +454,21 @@ function AppShellFrame({ children }: ProvidersProps) {
         handleProfilePaneOpen,
       );
     };
-  }, [profilePaneEnabled]);
+  }, [pathname, profilePaneEnabled, profilePaneResumeLocation, profilePaneUrlState.open, searchParams]);
+
+  const handleProfilePaneOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      if (!profilePaneUrlState.open) {
+        openProfilePane(
+          pathname || ROUTES.ONE_HOME,
+          searchParams,
+          profilePaneResumeLocation,
+        );
+      }
+      return;
+    }
+    closeProfilePane(pathname || ROUTES.ONE_HOME, searchParams);
+  };
 
   useEffect(() => {
     const handleInternalNavigation = (event: Event) => {
@@ -565,7 +626,7 @@ function AppShellFrame({ children }: ProvidersProps) {
               <AppBottomShell model={bottomShellModel} />
               <ProfilePane
                 open={profilePaneOpen}
-                onOpenChange={setProfilePaneOpen}
+                onOpenChange={handleProfilePaneOpenChange}
               />
               {/* This bridge owns one post-unlock reconciliation for the whole
                 app. Keeping it outside the route Suspense boundary prevents

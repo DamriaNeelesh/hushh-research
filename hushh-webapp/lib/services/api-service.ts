@@ -59,6 +59,7 @@ import {
   resolveRuntimeBackendUrl,
   resolveRuntimeFrontendUrl,
 } from "@/lib/runtime/settings";
+import { shouldSkipAuthMailForAutomation } from "@/lib/testing/native-test";
 import { sanitizeErrorMessage } from "@/lib/services/error-sanitizer";
 import {
   AUTH_ACCOUNT_NOT_FOUND_BACKEND_CODE,
@@ -1643,6 +1644,8 @@ export class ApiService {
       idToken?: string;
     },
   ): Promise<boolean> {
+    if (shouldSkipAuthMailForAutomation()) return false;
+
     try {
       const idToken = options?.idToken || (await this.getFirebaseToken());
       if (!idToken) return false;

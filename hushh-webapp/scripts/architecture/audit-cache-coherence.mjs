@@ -708,7 +708,7 @@ function linkageInvariants() {
     ["lib/cache/cache-sync-service.ts", "bumpPkmInvalidationEpoch"],
     ["lib/pkm/use-pkm-domain-change-revision.ts", "currentPkmInvalidationEpoch"],
     ["components/profile/pkm-natural-panel.tsx", "usePkmDomainChangeRevision"],
-    ["app/profile/profile-workspace-page.tsx", "currentPkmInvalidationEpoch"],
+    ["components/profile/profile-workspace-page.tsx", "currentPkmInvalidationEpoch"],
   ];
   for (const [relPath, needle] of epochLinks) {
     const source = readSource(relPath);

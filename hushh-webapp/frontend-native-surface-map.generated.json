@@ -6549,7 +6549,7 @@
       "route_contract": {
         "mode": "standard",
         "exemption_reason": null,
-        "shell_verification_file": "app/one/profile/security/devices/page.tsx",
+        "shell_verification_file": "components/profile/trusted-devices-page.tsx",
         "shell_verification_includes": [
           "AppPageShell",
           "AppPageHeaderRegion",
@@ -6595,9 +6595,9 @@
         ]
       },
       "shell": {
-        "app_page_shell": true,
-        "page_header": true,
-        "settings_ui": true,
+        "app_page_shell": false,
+        "page_header": false,
+        "settings_ui": false,
         "shared_loader": false,
         "back_button_pattern": "shared-shell"
       },
@@ -9469,5 +9469,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "c0cc947908d7b6035f879cfc78355ddcdec3bbc4d3bff4cce362e12a7b6d3db9"
+  "content_sha256": "917d6684791a0e9329db55d6c03f25deffeae79bda900c5d8b5c94317fb7cd82"
 }

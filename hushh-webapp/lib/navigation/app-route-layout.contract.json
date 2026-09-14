@@ -3258,7 +3258,7 @@
     "route": "/one/profile/security/devices",
     "mode": "standard",
     "shellVerification": {
-      "file": "app/one/profile/security/devices/page.tsx",
+      "file": "components/profile/trusted-devices-page.tsx",
       "includes": [
         "AppPageShell",
         "AppPageHeaderRegion",
