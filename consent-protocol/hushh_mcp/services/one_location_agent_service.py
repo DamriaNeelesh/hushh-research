@@ -1124,6 +1124,21 @@ class OneLocationAgentService:
         result = get_db().execute_raw(sql, params or {})
         return result.data or []
 
+    @staticmethod
+    def _location_read_worker_limit(*, max_workers: int) -> int:
+        """Bound read fan-out to the SQLAlchemy pool's usable capacity."""
+        pool_size = _bounded_int_env("DB_SQLALCHEMY_POOL_SIZE", default=5, minimum=1, maximum=32)
+        # Keep one pooled connection available for session/auth and other
+        # foreground work while Location assembles its full state projection.
+        default_workers = max(1, pool_size - 1)
+        worker_limit = _bounded_int_env(
+            "ONE_LOCATION_READ_MAX_WORKERS",
+            default=default_workers,
+            minimum=1,
+            maximum=pool_size,
+        )
+        return min(max_workers, worker_limit)
+
     def _run_read_queries_parallel(
         self,
         tasks: list[tuple[str, str, dict[str, Any]]],
@@ -1156,8 +1171,16 @@ class OneLocationAgentService:
         """
         if not tasks:
             return {}
+        # ``execute_raw`` checks a connection out of SQLAlchemy's shared
+        # QueuePool for every task.  The local runtime deliberately has a
+        # two-connection pool, so the historical fixed fan-out of eight made
+        # this read wait on itself and starve unrelated request work.  Reserve
+        # one pooled connection for the rest of the process, and let an
+        # operator tighten the limit further without changing code.
         results: dict[str, list[dict[str, Any]]] = {}
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(tasks))) as pool:
+        with ThreadPoolExecutor(
+            max_workers=min(self._location_read_worker_limit(max_workers=max_workers), len(tasks))
+        ) as pool:
             future_to_key = {
                 pool.submit(contextvars.copy_context().run, self._execute_many, sql, params): key
                 for key, sql, params in tasks

@@ -59,12 +59,11 @@ import {
 } from "@/components/agent/email-delivery-history-card";
 import { bucketEmailDeliveryTimelineItems } from "@/lib/agent/agent-chat-email-delivery-timeline";
 import { ShellActionSurface } from "@/components/app-ui/shell-action-surface";
-import { AgentPkmReviewPanel } from "@/components/agent/agent-pkm-review-panel";
 import { loadPkmAgentLabContext } from "@/lib/profile/pkm-agent-lab-capture";
 import { AgentPkmContextStore } from "@/lib/agent/agent-pkm-context-store";
 import { SecureCardAddForm } from "@/components/wallet/secure-card-add-form";
 import { SecureCardReveal } from "@/components/wallet/secure-card-reveal";
-import { detectLikelyPan, redactLikelyPans, countLikelyPans } from "@/lib/wallet/pan-paste-guard";
+import { detectLikelyPan } from "@/lib/wallet/pan-paste-guard";
 import {
   WalletService,
   type WalletCardSecrets,
@@ -120,9 +119,7 @@ import {
   clearAgentPkmContext,
   formatAgentPkmSaveSummary,
   getPkmAutoSaveCards,
-  getPkmConfirmationCards,
   getIgnoredPkmCards,
-  isReservedPkmCard,
   loadAgentPkmContext,
   peekAgentPkmContext,
   warmAgentPkmContext,
@@ -209,6 +206,14 @@ import {
   SerialAgentOperationQueue,
   type QueuedAgentPrompt,
 } from "@/lib/agent/agent-chat-prompt-queue";
+import {
+  combineAttachmentAndComposerText,
+  createPendingTextAttachment,
+  getTextAttachmentTitle,
+  mergePastedText,
+  shouldCaptureLargePaste,
+  type PendingTextAttachment,
+} from "@/lib/agent/large-text-attachment";
 import type { AppRuntimeState } from "@/lib/voice/voice-types";
 import { getVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
@@ -238,13 +243,6 @@ type AgentMessage = {
   thought?: string;
   sources?: AgentSource[];
   structuredExperience?: AgentStructuredExperience | null;
-};
-
-const LONG_PROMPT_ATTACHMENT_CHARS = 8_000;
-
-type PendingLongPromptAttachment = {
-  text: string;
-  byteSize: number;
 };
 
 type EmailDeliveryTimelineItem = EmailDeliveryHistoryItem & {
@@ -287,16 +285,6 @@ function settleVisibleStreamEvents(
     event.status === "running" ? { ...event, status } : event,
   );
 }
-
-type AgentPkmReview = {
-  id: string;
-  turnId: string;
-  sourceMessage: string;
-  cards: AgentPkmPreviewCard[];
-  saving: boolean;
-  /** Cards the owner still wants saved; starts as every reviewable card. */
-  selectedCardIds?: Set<string>;
-};
 
 type AgentPkmActivity = {
   id: string;
@@ -415,6 +403,14 @@ function getGmailEmailDraftPayload(
   const instruction =
     typeof event.slots.request === "string" ? event.slots.request.trim() : "";
   return instruction ? { instruction } : null;
+}
+
+/** Metadata-only context for a Gmail KYC handoff. Gmail content never enters chat. */
+function gmailKycRequestSummary(request: GmailInformationRequestHandoff): string {
+  const labels = request.requested_field_labels
+    .map((label) => label.trim())
+    .filter(Boolean);
+  return labels.length ? labels.join(", ") : "KYC details";
 }
 
 export function getCalendarDirectiveFromToolEvent(
@@ -1418,12 +1414,11 @@ export function AgentChatWorkspace({
 
   const [input, setInput] = useState("");
   const [longPromptAttachment, setLongPromptAttachment] =
-    useState<PendingLongPromptAttachment | null>(null);
+    useState<PendingTextAttachment | null>(null);
   // Which model runs this person's agent. The catalog is served, so a new
   // generation appears here without a client release.
   const [modelPreference, setModelPreference] = useState<ModelPreference | null>(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
-  const [composerPurpose, setComposerPurpose] = useState<"memory" | "chat" | null>(null);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedAgentPrompt[]>([]);
   const [editingQueuedPromptId, setEditingQueuedPromptId] = useState<
     string | null
@@ -1487,7 +1482,6 @@ export function AgentChatWorkspace({
   >([]);
   const [activeFrontendToolCount, setActiveFrontendToolCount] = useState(0);
   const [activePkmToolCount, setActivePkmToolCount] = useState(0);
-  const [pkmReviews, setPkmReviews] = useState<AgentPkmReview[]>([]);
   const [walletWidgets, setWalletWidgets] = useState<AgentWalletWidget[]>([]);
   const [pkmAutoSavePolicy, setPkmAutoSavePolicy] =
     useState<AgentPkmAutoSavePolicy>(DEFAULT_AGENT_PKM_AUTO_SAVE_POLICY);
@@ -1527,7 +1521,6 @@ export function AgentChatWorkspace({
     new SerialAgentOperationQueue<QueuedWorkspaceOperation>(),
   );
   const calendarActionIdsRef = useRef<Set<string>>(new Set());
-  const savingPkmReviewIdsRef = useRef<Set<string>>(new Set());
   const handoffPromptSubmitRef = useRef<
     ((prompt: string) => Promise<void>) | null
   >(null);
@@ -1796,7 +1789,9 @@ export function AgentChatWorkspace({
     !voiceActive &&
     !emailDraftOpen &&
     !isGmailKycSaving &&
-    (input.trim().length > 0 || longPromptAttachment !== null);
+    // Do not trim a potentially very large expanded attachment on every
+    // keystroke. The submit path performs the authoritative empty check.
+    (input.length > 0 || longPromptAttachment !== null);
   const canToggleVoice =
     agentVoiceEnabled && !isVoiceConnecting && !emailDraftOpen;
   const historyInteractionDisabled =
@@ -1827,9 +1822,7 @@ export function AgentChatWorkspace({
     // agent, never with a bare verb.
     if (isPuppySurface) {
       if (
-        activeActionRun?.phase === "awaiting_confirmation" ||
-        pkmReviews.length > 0 ||
-        emailDraftOpen
+        activeActionRun?.phase === "awaiting_confirmation" || emailDraftOpen
       ) {
         // Blocked on the person, not working: its confirmation lives in the
         // hidden transcript, so saying "working" would leave them waiting on
@@ -1879,7 +1872,6 @@ export function AgentChatWorkspace({
     emailDraftOpen,
     isPuppySurface,
     isToolWorking,
-    pkmReviews.length,
     isStreaming,
     isVoiceConnecting,
     isVaultUnlocked,
@@ -1896,7 +1888,7 @@ export function AgentChatWorkspace({
       behavior: "smooth",
       block: "end",
     });
-  }, [emailDraftOpen, messages, pkmReviews, pendingSpecialistDirective]);
+  }, [emailDraftOpen, messages, pendingSpecialistDirective]);
 
   // Put One's transcript back where the reader left it after a look at Puppy.
   // `useLayoutEffect` and not `useEffect`, so the correction lands in the same
@@ -2102,7 +2094,6 @@ export function AgentChatWorkspace({
     setIsStreaming(false);
     setActiveFrontendToolCount(0);
     setActivePkmToolCount(0);
-    setPkmReviews([]);
     setWalletWidgets([]);
     updateConversationId(null);
     setConversations([]);
@@ -2133,7 +2124,6 @@ export function AgentChatWorkspace({
     setMessages([createGreetingMessage()]);
     setInput("");
     setIsLoadingHistory(false);
-    setPkmReviews([]);
     setWalletWidgets([]);
     setPendingAppAction(null);
     setAppActionBusy(false);
@@ -2174,27 +2164,44 @@ export function AgentChatWorkspace({
     async (
       request: GmailInformationRequestHandoff,
       assistantMessageId: string,
+      options: { retryCandidateResolution?: boolean } = {},
     ) => {
       if (!user?.uid || !vaultKey || !vaultOwnerToken) return;
 
       setIsGmailKycSaving(true);
       try {
-        const firebaseIdToken = await user.getIdToken();
-        const refreshed = await GmailInformationRequestsService.refreshCandidates({
-          firebaseIdToken,
-          vaultOwnerToken,
-          workflowId: request.workflow_id,
-        });
-        const workflow = {
-          ...request,
-          candidate_scopes: refreshed.candidate_scopes,
-        };
-        const draft = await prepareScopedGmailInformationRequestDraft({
+        let workflow = request;
+        let draft = await prepareScopedGmailInformationRequestDraft({
           workflow,
           userId: user.uid,
           vaultKey,
           vaultOwnerToken,
         });
+        // The scan already supplied exact candidates. Re-resolving them for
+        // every click adds a slow metadata round trip without making the
+        // initial draft safer. Only retry after a just-completed PKM write
+        // failed to satisfy one of those candidates.
+        if (
+          options.retryCandidateResolution &&
+          (!draft.body || draft.unavailableLabels.length > 0)
+        ) {
+          const firebaseIdToken = await user.getIdToken();
+          const refreshed = await GmailInformationRequestsService.refreshCandidates({
+            firebaseIdToken,
+            vaultOwnerToken,
+            workflowId: request.workflow_id,
+          });
+          workflow = {
+            ...request,
+            candidate_scopes: refreshed.candidate_scopes,
+          };
+          draft = await prepareScopedGmailInformationRequestDraft({
+            workflow,
+            userId: user.uid,
+            vaultKey,
+            vaultOwnerToken,
+          });
+        }
         const unavailableLabels = draft.unavailableLabels
           .map((label) => label.trim())
           .filter(Boolean);
@@ -2216,7 +2223,10 @@ export function AgentChatWorkspace({
         }
 
         setGmailKycMissingLabels([]);
-        setEmailDraftInstruction("Reply to this Gmail KYC request");
+        const requestSummary = gmailKycRequestSummary(workflow);
+        setEmailDraftInstruction(
+          `Replying to the selected Gmail request. Requested: ${requestSummary}.`,
+        );
         setEmailDraftInitialValue({
           to: "",
           cc: "",
@@ -2230,7 +2240,7 @@ export function AgentChatWorkspace({
         setEmailDraftOpen(true);
         updateMessage(assistantMessageId, (message) => ({
           ...message,
-          text: "I found the matching private details. Your editable Gmail reply is ready below.",
+          text: "I found the matching private details. Your editable reply to the selected Gmail request is ready below.",
           status: "done",
         }));
       } catch {
@@ -2254,6 +2264,12 @@ export function AgentChatWorkspace({
     const timestamp = formatNow();
     const userMessageId = `gmail-kyc-details-${request.workflow_id}-${Date.now()}`;
     const assistantMessageId = `${userMessageId}-assistant`;
+    const missingLabels = gmailKycMissingLabels.length > 0
+      ? gmailKycMissingLabels
+      : request.requested_field_labels;
+    // The person has already answered this prompt. Clear it before the PKM
+    // write begins so the disabled composer never asks for the same details.
+    setGmailKycMissingLabels([]);
     appendMessage({
       id: userMessageId,
       role: "user",
@@ -2265,7 +2281,7 @@ export function AgentChatWorkspace({
     appendMessage({
       id: assistantMessageId,
       role: "assistant",
-      text: "Saving those details privately and preparing the Gmail reply…",
+      text: `Saving those details privately and preparing a reply to the selected Gmail request for ${gmailKycRequestSummary(request)}…`,
       timestamp,
       status: "streaming",
       ephemeral: true,
@@ -2282,9 +2298,16 @@ export function AgentChatWorkspace({
       if (!saved.success) {
         throw new Error(saved.message || "One could not save those private details.");
       }
-      setGmailKycMissingLabels([]);
-      await prepareGmailKycReply(request, assistantMessageId);
+      updateMessage(assistantMessageId, (message) => ({
+        ...message,
+        text: "Finding the matching private details and preparing the reply in the original Gmail thread…",
+        status: "streaming",
+      }));
+      await prepareGmailKycReply(request, assistantMessageId, {
+        retryCandidateResolution: true,
+      });
     } catch (error) {
+      setGmailKycMissingLabels(missingLabels);
       updateMessage(assistantMessageId, (message) => ({
         ...message,
         text:
@@ -2444,16 +2467,13 @@ export function AgentChatWorkspace({
       setGmailKycReplyRequest(gmailInformationRequest);
       setGmailKycEmailDraftWorkflowId(null);
       setGmailKycMissingLabels([]);
-      const requestedFields = gmailInformationRequest.requested_field_labels
-        .map((label) => label.trim())
-        .filter(Boolean)
-        .join(", ");
+      const requestedFields = gmailKycRequestSummary(gmailInformationRequest);
       setMessages((current) => [
         ...current,
         {
           id: handoffMessageId,
           role: "assistant",
-          text: `I reviewed a Gmail KYC request asking for ${requestedFields || "KYC details"}. I’ll check the matching private details and prepare a reply in the original Gmail thread.`,
+          text: `I’m replying in the selected Gmail thread. This request asks for: ${requestedFields}. I’ll use only matching private details, and you can review the response before it sends.`,
           timestamp,
           status: "done",
           ephemeral: true,
@@ -2806,7 +2826,6 @@ export function AgentChatWorkspace({
       setEmailDraftInitialValue(null);
       setEmailDraftAnchorMessageId(null);
       setEmailDeliveryHistory([]);
-      setPkmReviews([]);
       setWalletWidgets([]);
     setWalletWidgets([]);
       setPendingSpecialistDirective(null);
@@ -2958,41 +2977,6 @@ export function AgentChatWorkspace({
     ],
   );
 
-  const handleDismissPkmReview = useCallback(
-    (reviewId: string) => {
-      const review = pkmReviews.find((item) => item.id === reviewId);
-      if (review) {
-        appendDebugEvent(review.turnId, "pkm_review_dismissed", {
-          review_id: review.id,
-          candidate_count: review.cards.length,
-        });
-      }
-      setPkmReviews((current) =>
-        current.filter((item) => item.id !== reviewId),
-      );
-    },
-    [appendDebugEvent, pkmReviews],
-  );
-
-  const togglePkmReviewCards = useCallback(
-    (reviewId: string, cardIds: string[], selected: boolean) => {
-      setPkmReviews((current) =>
-        current.map((review) => {
-          if (review.id !== reviewId || review.saving) return review;
-          const next = new Set(
-            review.selectedCardIds ?? review.cards.map((card) => card.card_id),
-          );
-          for (const cardId of cardIds) {
-            if (selected) next.add(cardId);
-            else next.delete(cardId);
-          }
-          return { ...review, selectedCardIds: next };
-        }),
-      );
-    },
-    [],
-  );
-
   /**
    * Reveal one card from the chat list widget. Decryption happens here, on the
    * owner's device, and the secrets go straight into a reveal widget: they are
@@ -3060,124 +3044,6 @@ export function AgentChatWorkspace({
       })();
     },
     [conversationId, getVaultOwnerToken, messageRatings],
-  );
-
-  const handleSavePkmReview = useCallback(
-    (reviewId: string) => {
-      if (savingPkmReviewIdsRef.current.has(reviewId)) return;
-      const review = pkmReviews.find((item) => item.id === reviewId);
-      const token = getVaultOwnerToken();
-      if (!review || !user?.uid || !vaultKey || !token) {
-        toast.error("Unlock your vault before saving to Memory.");
-        return;
-      }
-
-      savingPkmReviewIdsRef.current.add(reviewId);
-      setPkmReviews((current) =>
-        current.map((item) =>
-          item.id === reviewId ? { ...item, saving: true } : item,
-        ),
-      );
-      setActivePkmToolCount((count) => count + 1);
-      appendDebugEvent(review.turnId, "pkm_review_save_start", {
-        review_id: review.id,
-        candidate_count: review.cards.length,
-      });
-
-      const saveInBackground = async () => {
-        try {
-          const selectedCards = review.selectedCardIds
-            ? review.cards.filter((card) => review.selectedCardIds!.has(card.card_id))
-            : review.cards;
-          const result = await addToPKM({
-            userId: user.uid,
-            cards: selectedCards,
-            sourceMessage: review.sourceMessage,
-            vaultKey,
-            vaultOwnerToken: token,
-            source: "agent_chat_review",
-            confirmation: {
-              confirmedByUser: true,
-              surface: "chat",
-              source: "agent_chat_review_button",
-              sharingImpactAcknowledged: review.cards.some(
-                (card) =>
-                  (card.sharing_impact?.active_recipient_count || 0) > 0,
-              ),
-            },
-          });
-          appendDebugEvent(review.turnId, "pkm_review_save_result", result);
-          trackEvent("agent_pkm_save_confirmation_completed", {
-            route_id: "agent",
-            result: result.saved > 0 ? "success" : "expected_error",
-            saved_count_bucket: toPkmFactCountBucket(result.saved),
-            failed_count_bucket: toPkmFactCountBucket(result.failed),
-            has_active_recipients: review.cards.some(
-              (card) => (card.sharing_impact?.active_recipient_count || 0) > 0,
-            ),
-          });
-          if (result.saved > 0) {
-            const saveReceipt = formatAgentPkmSaveSummary(result);
-            setMessages((current) => [
-              ...current,
-              {
-                id: `pkm-save-receipt-${Date.now()}`,
-                role: "assistant",
-                text: saveReceipt,
-                timestamp: formatNow(),
-                status: "done",
-              },
-            ]);
-            setPkmReviews((current) =>
-              current.filter((item) => item.id !== reviewId),
-            );
-            // addToPKM invalidates the local PKM context. Do not rehydrate the
-            // entire encrypted vault here: the next KYC turn selects only its
-            // relevant identity segments.
-            toast.success("Saved to Memory.");
-            return;
-          }
-
-          setPkmReviews((current) =>
-            current.map((item) =>
-              item.id === reviewId ? { ...item, saving: false } : item,
-            ),
-          );
-          toast.error(formatAgentPkmSaveSummary(result));
-        } catch (error) {
-          const message =
-            error instanceof Error && error.message
-              ? error.message
-              : "Failed to save this memory.";
-          appendDebugEvent(review.turnId, "pkm_review_save_failed", {
-            message,
-          });
-          trackEvent("agent_pkm_save_confirmation_completed", {
-            route_id: "agent",
-            result: "error",
-            saved_count_bucket: "none",
-            failed_count_bucket: toPkmFactCountBucket(review.cards.length),
-            has_active_recipients: review.cards.some(
-              (card) => (card.sharing_impact?.active_recipient_count || 0) > 0,
-            ),
-          });
-          setPkmReviews((current) =>
-            current.map((item) =>
-              item.id === reviewId ? { ...item, saving: false } : item,
-            ),
-          );
-          toast.error(message);
-        } finally {
-          savingPkmReviewIdsRef.current.delete(reviewId);
-          setActivePkmToolCount((count) => Math.max(0, count - 1));
-        }
-      };
-
-      window.setTimeout(() => {
-        void saveInBackground();
-      }, 0);
-    },
-    [appendDebugEvent, getVaultOwnerToken, pkmReviews, user?.uid, vaultKey],
   );
 
   /**
@@ -3258,42 +3124,7 @@ export function AgentChatWorkspace({
               // KYC lookup refreshes just the changed identity segments.
             }
             if (result.failed > 0) {
-              const failedIds = new Set(
-                result.results
-                  .filter((item) => !item.success)
-                  .map((item) => item.cardId),
-              );
-              const failedCards = params.cards.filter((card) =>
-                failedIds.has(card.card_id),
-              );
-              if (failedCards.length > 0) {
-                setPkmReviews((current) => {
-                  const existing = current.find(
-                    (review) => review.turnId === params.turnId,
-                  );
-                  if (!existing) {
-                    return [
-                      ...current,
-                      {
-                        id: `${params.turnId}-pkm-review`,
-                        turnId: params.turnId,
-                        sourceMessage: params.sourceMessage,
-                        cards: failedCards,
-                        saving: false,
-                      },
-                    ];
-                  }
-                  const cards = [...existing.cards, ...failedCards].filter(
-                    (card, index, all) =>
-                      all.findIndex(
-                        (candidate) => candidate.card_id === card.card_id,
-                      ) === index,
-                  );
-                  return current.map((review) =>
-                    review.id === existing.id ? { ...review, cards } : review,
-                  );
-                });
-              }
+              toast.error("Some eligible details could not be saved. Nothing else was added.");
             }
           } catch (error) {
             const message =
@@ -3336,19 +3167,10 @@ export function AgentChatWorkspace({
               allowEmpty: true,
             });
             const autoSaveCards = getPkmAutoSaveCards(prepared.cards);
-            const reviewCards = getPkmConfirmationCards(prepared.cards);
-            if (reviewCards.length > 0) {
-              setPkmReviews((current) => [
-                ...current.filter((review) => review.turnId !== params.turnId),
-                {
-                  id: `${params.turnId}-pkm-review`,
-                  turnId: params.turnId,
-                  sourceMessage: params.sourceMessage,
-                  cards: reviewCards,
-                  saving: false,
-                },
-              ]);
-            }
+            // Chat's automatic lane saves only the semantic gate's eligible
+            // cards. Ambiguous, sensitive, shared, and financial candidates
+            // are intentionally skipped instead of interrupting the chat with
+            // a second review workflow.
             saveEligiblePkmCardsInBackground({
               turnId: params.turnId,
               sourceMessage: params.sourceMessage,
@@ -3414,6 +3236,7 @@ export function AgentChatWorkspace({
     const debugTurnId = `agent_turn_${turnId}`;
     const assistantMessageId = `msg-${turnId}-assistant`;
     const executedToolCalls = new Set<string>();
+    let pkmToolHandledFullTurn = false;
     let toolStatusMessageId: string | null = null;
     let pkmStatusItemId: string | null = null;
     let turnPkmContext = EMPTY_PKM_CONTEXT;
@@ -3543,6 +3366,7 @@ export function AgentChatWorkspace({
         toolEvent.slots.source_text.trim()
           ? toolEvent.slots.source_text.trim()
           : text;
+      pkmToolHandledFullTurn = sourceText === text;
 
       setActivePkmToolCount((count) => count + 1);
       appendDebugEvent(debugTurnId, "pkm_tool_preview_start", {
@@ -3569,52 +3393,39 @@ export function AgentChatWorkspace({
           onProgress: ({ chunkIndex, chunkCount, cardCount, phase }) => {
             upsertPkmStatusMessage(
               phase === "prepared"
-                ? `Organized ${cardCount} memory ${cardCount === 1 ? "section" : "sections"} for review.`
+                ? `Found ${cardCount} ${cardCount === 1 ? "detail" : "details"} that can be saved.`
                 : `Organizing memory ${Math.min(chunkIndex + 1, chunkCount)} of ${chunkCount}…`,
               phase === "prepared" ? "done" : "streaming",
             );
           },
         });
-        const confirmationCards = getPkmConfirmationCards(preview.cards);
+        const autoSaveCards = getPkmAutoSaveCards(preview.cards);
         const ignoredCards = getIgnoredPkmCards(preview.cards);
 
         appendDebugEvent(debugTurnId, "pkm_tool_preview_result", {
           model: preview.preview.model,
           used_fallback: preview.preview.used_fallback,
           total_cards: preview.cards.length,
-          confirmation_count: confirmationCards.length,
+          eligible_count: autoSaveCards.length,
           ignored_count: ignoredCards.length,
           preview_summary: preview.preview.preview_summary || null,
           cards: preview.cards,
         });
 
-        if (
-          confirmationCards.length > 0 &&
-          latestVisibleTurnIdRef.current === debugTurnId
-        ) {
-          setPkmReviews((current) => [
-            ...current.filter((review) => review.turnId !== debugTurnId),
-            {
-              id: `${debugTurnId}-pkm-review`,
-              turnId: debugTurnId,
-              sourceMessage: sourceText,
-              cards: confirmationCards,
-              saving: false,
-            },
-          ]);
-          appendDebugEvent(debugTurnId, "pkm_tool_review_required", {
-            candidate_count: confirmationCards.length,
-            cards: confirmationCards,
+        if (autoSaveCards.length > 0) {
+          saveEligiblePkmCardsInBackground({
+            turnId: debugTurnId,
+            sourceMessage: sourceText,
+            cards: autoSaveCards,
+            policy: pkmAutoSavePolicy,
           });
           upsertPkmStatusMessage(
-            "One found a memory that needs your review before saving.",
+            "Saving eligible details privately…",
             "done",
           );
-        }
-
-        if (confirmationCards.length === 0) {
+        } else {
           upsertPkmStatusMessage(
-            "I didn't find a memory to save from that.",
+            "No new details were eligible to save.",
             "done",
           );
         }
@@ -3648,7 +3459,7 @@ export function AgentChatWorkspace({
           actionId: toolEvent.actionId,
           label: toolEvent.label,
           routeBefore: pathname,
-          resultSummary: "Memory review prepared.",
+          resultSummary: "Eligible details are being saved privately.",
         };
       }
 
@@ -4204,7 +4015,7 @@ export function AgentChatWorkspace({
       // Only facts deliberately typed into the normal composer are eligible
       // for automatic capture. Assistant output, tool events, and Gmail
       // content never enter this client-side proposal path.
-      if (options.source === "typed") {
+      if (options.source === "typed" && !pkmToolHandledFullTurn) {
         captureEligiblePkmFactsInBackground({
           turnId: debugTurnId,
           sourceMessage: text,
@@ -4671,147 +4482,6 @@ export function AgentChatWorkspace({
     enqueueWorkspaceOperation(operation);
   };
 
-  const enqueueMemoryImport = (textInput: string, removedCardNumbers = 0) => {
-    const sourceText = textInput.trim();
-    if (!sourceText) return;
-    enqueueWorkspaceOperation({
-      id: `memory-import-${crypto.randomUUID()}`,
-      run: async () => {
-        const token = getVaultOwnerToken();
-        if (!user?.uid || !vaultKey || !token) {
-          toast.error("Unlock your vault before reviewing a Memory import.");
-          return;
-        }
-        const turnId = `memory-import-${Date.now()}`;
-        const assistantMessageId = `${turnId}-assistant`;
-        appendMessage({
-          id: `${turnId}-user`,
-          role: "user",
-          text: "Review this pasted profile for Memory",
-          timestamp: formatNow(),
-          status: "done",
-          ephemeral: true,
-        });
-        appendMessage({
-          id: assistantMessageId,
-          role: "assistant",
-          text: "",
-          timestamp: formatNow(),
-          status: "streaming",
-          ephemeral: true,
-          streamEvents: [{
-            id: `${turnId}-activity`,
-            label: "Memory",
-            message: "Organizing the pasted profile into reviewable sections…",
-            status: "running",
-            createdAtMs: Date.now(),
-          }],
-        });
-        setIsChatLoading(true);
-        try {
-          const context = await loadAgentPkmContext({
-            userId: user.uid,
-            message: sourceText,
-            vaultOwnerToken: token,
-            vaultKey,
-          });
-          // Existing manifests let the structurer land facts in scopes that
-          // already exist; the duplicate check reads this session's decrypted
-          // working set and never leaves the device.
-          const labContext = await loadPkmAgentLabContext({
-            userId: user.uid,
-            vaultOwnerToken: token,
-          }).catch(() => null);
-          const prepared = await prepareNaturalLanguagePkm({
-            userId: user.uid,
-            message: sourceText,
-            currentDomains: context.domains,
-            currentManifests: Object.values(labContext?.manifests || {}).filter(Boolean),
-            findDuplicate: (candidate) =>
-              AgentPkmContextStore.findLocalDuplicate({ userId: user.uid, candidate }),
-            vaultOwnerToken: token,
-            source: "agent_chat_profile_import",
-            onProgress: ({ chunkIndex, chunkCount, cardCount, phase }) => {
-              upsertMessageStreamEvent(assistantMessageId, {
-                id: `${turnId}-activity`,
-                label: "Memory",
-                message: phase === "prepared"
-                  ? `Organized ${cardCount} sections for review.`
-                  : `Organizing section group ${Math.min(chunkIndex + 1, chunkCount)} of ${chunkCount}…`,
-                status: phase === "prepared" ? "done" : "running",
-                createdAtMs: Date.now(),
-              });
-            },
-          });
-          const reviewableCards = prepared.cards.filter(
-            (card) => !isReservedPkmCard(card) && card.write_mode !== "do_not_save",
-          );
-          if (!reviewableCards.length) {
-            throw new Error("No durable profile details were found to review.");
-          }
-          setPkmReviews((current) => [
-            ...current,
-            {
-              id: `${turnId}-review`,
-              turnId,
-              sourceMessage: sourceText,
-              cards: reviewableCards,
-              saving: false,
-            },
-          ]);
-          const ignoredBlockCount = prepared.sourceCoverage.filter(
-            (block) => block.disposition === "intentionally_ignored",
-          ).length;
-          const reviewBlockCount = prepared.sourceCoverage.filter(
-            (block) => block.disposition === "review_required",
-          ).length;
-          const failedBlockCount = prepared.sourceCoverage.filter(
-            (block) => block.disposition === "failed",
-          ).length;
-          const duplicateCount = prepared.sourceCoverage.reduce(
-            (total, block) => total + (block.duplicateCount || 0),
-            0,
-          );
-          const excludedSecretCount = prepared.sourceCoverage.reduce(
-            (total, block) => total + (block.excludedSecretCount || 0),
-            0,
-          );
-          const plural = (count: number, one: string, many: string) => (count === 1 ? one : many);
-          const parts = [
-            `I organized ${reviewableCards.length} ${plural(reviewableCards.length, "item", "items")} from ${prepared.sourceCoverage.length} ${plural(prepared.sourceCoverage.length, "section", "sections")}, grouped by where each would live.`,
-            reviewBlockCount ? `${reviewBlockCount} ${plural(reviewBlockCount, "section needs", "sections need")} your decision.` : "",
-            duplicateCount ? `${duplicateCount} ${plural(duplicateCount, "item is", "items are")} already in Memory and ${plural(duplicateCount, "was", "were")} left out.` : "",
-            removedCardNumbers ? `${removedCardNumbers} card ${plural(removedCardNumbers, "number was", "numbers were")} removed on this device before analysis and never sent; use the secure Wallet form for cards.` : "",
-            excludedSecretCount ? `${excludedSecretCount} ${plural(excludedSecretCount, "item looks", "items look")} like a card number, password, or id and ${plural(excludedSecretCount, "was", "were")} excluded; use the secure Wallet form for cards.` : "",
-            failedBlockCount ? `${failedBlockCount} ${plural(failedBlockCount, "section", "sections")} could not be prepared; paste ${plural(failedBlockCount, "it", "them")} again on ${plural(failedBlockCount, "its", "their")} own.` : "",
-            ignoredBlockCount ? `${ignoredBlockCount} ${plural(ignoredBlockCount, "section was", "sections were")} intentionally excluded.` : "",
-            "Keep or skip each item, then save.",
-          ].filter(Boolean);
-          updateMessage(assistantMessageId, (message) => ({
-            ...message,
-            text: parts.join(" "),
-            status: "done",
-          }));
-        } catch (error) {
-          upsertMessageStreamEvent(assistantMessageId, {
-            id: `${turnId}-activity`,
-            label: "Memory",
-            message: "The profile could not be prepared safely.",
-            status: "error",
-            createdAtMs: Date.now(),
-          });
-          updateMessage(assistantMessageId, (message) => ({
-            ...message,
-            text: error instanceof Error ? error.message : "The profile could not be prepared safely.",
-            status: "error",
-          }));
-        } finally {
-          setIsChatLoading(false);
-        }
-      },
-    });
-  };
-
   const editQueuedPrompt = (id: string, textInput: string) => {
     const text = textInput.trim();
     if (!text) return;
@@ -4915,36 +4585,18 @@ export function AgentChatWorkspace({
     });
   };
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const draftText = input.trim();
+  const submitComposerText = async () => {
     const attachment = longPromptAttachment;
-    if (draftText.length >= LONG_PROMPT_ATTACHMENT_CHARS && !attachment) {
-      setLongPromptAttachment({
-        text: draftText,
-        byteSize: new TextEncoder().encode(draftText).byteLength,
-      });
-      setInput("");
-      setComposerPurpose(null);
-      setComposerExpanded(false);
-      return;
-    }
-    const text = attachment?.text ?? draftText;
-    if (!text || isLoadingHistory || isVoiceConnecting || voiceActive) return;
+    const draftText = input;
+    const attachmentText = attachment?.isExpanded ? draftText : attachment?.text ?? null;
+    const text = combineAttachmentAndComposerText({
+      attachmentText,
+      composerText: attachment?.isExpanded ? "" : draftText,
+    });
+    if (!text.trim() || isLoadingHistory || isVoiceConnecting || voiceActive) return;
     setInput("");
     setLongPromptAttachment(null);
     setComposerExpanded(false);
-    const purpose = composerPurpose;
-    setComposerPurpose(null);
-    // The memory-import path sends plaintext to the PKM structuring API, so
-    // the card-number paste guard must run here too, not only in runAgentTurn.
-    // A long recap is not thrown away for one card line: the number is
-    // redacted on this device before anything leaves it, and the summary says
-    // so. A plain chat message carrying a card number is still blocked.
-    if (purpose === "memory" && detectLikelyPan(text)) {
-      enqueueMemoryImport(redactLikelyPans(text), countLikelyPans(text));
-      return;
-    }
     if (detectLikelyPan(text)) {
       appendMessage({
         id: `msg-${Date.now()}-pan-blocked`,
@@ -4966,19 +4618,63 @@ export function AgentChatWorkspace({
       await submitGmailKycDetails(text);
       return;
     }
-    if (purpose === "memory") {
-      enqueueMemoryImport(text);
-      return;
-    }
     enqueuePrompt(text);
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await submitComposerText();
   };
 
   const handleComposerPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
     const pasted = event.clipboardData.getData("text");
-    if (pasted.length >= 1_200 || pasted.split(/\r?\n/).length >= 12) {
-      setComposerPurpose("memory");
-      setComposerExpanded(true);
+    if (!shouldCaptureLargePaste(pasted)) return;
+    event.preventDefault();
+    const nextComposerText = mergePastedText({
+      currentText: input,
+      pastedText: pasted,
+      selectionStart: event.currentTarget.selectionStart,
+      selectionEnd: event.currentTarget.selectionEnd,
+    });
+    const nextText = longPromptAttachment?.isExpanded
+      ? nextComposerText
+      : combineAttachmentAndComposerText({
+          attachmentText: longPromptAttachment?.text ?? null,
+          composerText: nextComposerText,
+        });
+    setLongPromptAttachment(createPendingTextAttachment(nextText));
+    setInput("");
+    setComposerExpanded(false);
+  };
+
+  const openLongPromptAttachment = () => {
+    const attachment = longPromptAttachment;
+    if (!attachment) return;
+    const text = combineAttachmentAndComposerText({
+      attachmentText: attachment.text,
+      composerText: input,
+    });
+    setInput(text);
+    setLongPromptAttachment(createPendingTextAttachment(text, true));
+    setComposerExpanded(true);
+    requestAnimationFrame(() => composerTextareaRef.current?.focus());
+  };
+
+  const collapseComposer = () => {
+    if (longPromptAttachment?.isExpanded) {
+      setLongPromptAttachment(createPendingTextAttachment(input));
+      setInput("");
     }
+    setComposerExpanded(false);
+  };
+
+  const removeLongPromptAttachment = () => {
+    // A collapsed card has a separate companion instruction in the composer.
+    // Removing the card must not discard that instruction. Once opened, the
+    // editor is the attachment itself, so clearing it removes the attachment.
+    if (longPromptAttachment?.isExpanded) setInput("");
+    setLongPromptAttachment(null);
+    setComposerExpanded(false);
   };
 
   handoffPromptSubmitRef.current = async (prompt: string) => {
@@ -5096,6 +4792,11 @@ export function AgentChatWorkspace({
           onSendStarted={handleEmailSendStarted}
           onSent={handleEmailSent}
           onSendFailed={handleEmailSendFailed}
+          sourceBoundContext={
+            gmailKycReplyRequest
+              ? `This request asks for: ${gmailKycRequestSummary(gmailKycReplyRequest)}.`
+              : undefined
+          }
           sourceBoundReply={
             workflowId
               ? {
@@ -5159,7 +4860,6 @@ export function AgentChatWorkspace({
       toast.error("No previous message found to retry.");
       return;
     }
-    setPkmReviews([]);
     setWalletWidgets([]);
     // Pre-vault / anonymous turns go through the informational intro tier, which
     // runAgentTurn early-returns on (no vault access). Route the retry to the
@@ -5302,6 +5002,7 @@ export function AgentChatWorkspace({
         className="border-transparent bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent-hover)] disabled:bg-black/[0.06] disabled:text-[rgba(0,0,0,0.36)] dark:disabled:bg-white/[0.08] dark:disabled:text-zinc-500"
         disabled={!canSend}
         aria-label="Send message"
+        title="Send message"
       >
         <Send className="h-4 w-4" />
       </ShellActionSurface>
@@ -5766,19 +5467,6 @@ export function AgentChatWorkspace({
                     ? renderEmailDraftCard()
                     : null}
                 </Fragment>
-              ))}
-
-              {pkmReviews.map((review) => (
-                <AgentPkmReviewPanel
-                  key={review.id}
-                  cards={review.cards}
-                  saving={review.saving}
-                  selectedCardIds={review.selectedCardIds}
-                  onToggleCard={(cardId, selected) => togglePkmReviewCards(review.id, [cardId], selected)}
-                  onToggleGroup={(cardIds, selected) => togglePkmReviewCards(review.id, cardIds, selected)}
-                  onSave={() => void handleSavePkmReview(review.id)}
-                  onDismiss={() => handleDismissPkmReview(review.id)}
-                />
               ))}
 
               {walletWidgets.map((widget) =>
@@ -6571,66 +6259,46 @@ export function AgentChatWorkspace({
                 <>
                   {longPromptAttachment ? (
                     <div
-                      className="mb-2 flex items-center justify-between gap-3 rounded-[18px] border border-[color:var(--app-accent-ring)] bg-[color:var(--app-accent-soft)] px-3 py-2 text-sm"
-                      data-testid="agent-chat-long-prompt-attachment"
+                      className="relative mb-2 rounded-[18px] border border-foreground/[0.12] bg-foreground/[0.045] p-3 pr-11 text-sm"
+                      data-testid="agent-chat-text-attachment"
                     >
-                      <div className="flex min-w-0 items-center gap-2">
+                      <button
+                        type="button"
+                        className="flex w-full min-w-0 items-center gap-2 text-left outline-none focus-visible:rounded-lg focus-visible:ring-2 focus-visible:ring-[color:var(--app-focus-ring)]"
+                        aria-expanded={longPromptAttachment.isExpanded}
+                        aria-label={
+                          longPromptAttachment.isExpanded
+                            ? "Text attachment open for editing"
+                            : "Open text attachment to view and edit"
+                        }
+                        onClick={() => {
+                          if (longPromptAttachment.isExpanded) {
+                            collapseComposer();
+                            return;
+                          }
+                          openLongPromptAttachment();
+                        }}
+                      >
                         <FileText className="h-4 w-4 shrink-0" aria-hidden="true" />
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">long-prompt.txt</p>
-                          <p className="text-xs text-muted-foreground">
-                            {(longPromptAttachment.byteSize / 1024).toFixed(1)} KB · sent as one message
-                          </p>
-                        </div>
-                      </div>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium">
+                            {getTextAttachmentTitle(longPromptAttachment.text)}
+                          </span>
+                          <span className="block text-xs text-muted-foreground">
+                            Pasted text · {(longPromptAttachment.byteSize / 1024).toFixed(1)} KB{longPromptAttachment.isExpanded ? " · editing" : ""}
+                          </span>
+                        </span>
+                      </button>
                       <Button
                         type="button"
                         size="icon"
                         variant="ghost"
-                        className="h-8 w-8 shrink-0"
-                        aria-label="Remove long prompt attachment"
-                        onClick={() => setLongPromptAttachment(null)}
+                        className="absolute right-2 top-2 h-8 w-8"
+                        aria-label="Remove text attachment"
+                        onClick={removeLongPromptAttachment}
                       >
                         <X className="h-4 w-4" />
                       </Button>
-                    </div>
-                  ) : null}
-                  {composerPurpose ? (
-                    <div
-                      className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-[18px] bg-[color:var(--app-accent-soft)] px-3 py-2 text-xs shadow-[0_14px_34px_-28px_var(--app-accent-deep)]"
-                      role="status"
-                      aria-live="polite"
-                      data-testid="agent-chat-paste-purpose"
-                    >
-                      <span className="font-medium text-foreground">
-                        Long paste detected — choose where it belongs.
-                      </span>
-                      <div className="inline-flex items-center gap-1 rounded-lg bg-background/70 p-1">
-                        <button
-                          type="button"
-                          className={cn(
-                            "rounded-md px-2.5 py-1.5 font-medium transition-colors",
-                            composerPurpose === "memory"
-                              ? "bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]"
-                              : "text-muted-foreground hover:text-foreground",
-                          )}
-                          onClick={() => setComposerPurpose("memory")}
-                        >
-                          Review for Memory
-                        </button>
-                        <button
-                          type="button"
-                          className={cn(
-                            "rounded-md px-2.5 py-1.5 font-medium transition-colors",
-                            composerPurpose === "chat"
-                              ? "bg-foreground text-background"
-                              : "text-muted-foreground hover:text-foreground",
-                          )}
-                          onClick={() => setComposerPurpose("chat")}
-                        >
-                          Send as chat
-                        </button>
-                      </div>
                     </div>
                   ) : null}
                   {composerExpanded ? (
@@ -6662,11 +6330,12 @@ export function AgentChatWorkspace({
                           isLoadingHistory ||
                           isVoiceConnecting ||
                           emailDraftOpen ||
-                          isGmailKycSaving ||
-                          longPromptAttachment !== null
+                          isGmailKycSaving
                         }
                         placeholder={
-                          gmailKycMissingLabels.length > 0
+                          isGmailKycSaving && gmailKycReplyRequest
+                            ? "Preparing your reply to the selected Gmail request…"
+                            : gmailKycMissingLabels.length > 0
                             ? `Reply with: ${gmailKycMissingLabels.join(", ")}`
                             : "Write a longer message..."
                         }
@@ -6679,7 +6348,7 @@ export function AgentChatWorkspace({
                         className="absolute right-2 top-2 h-8 w-8 rounded-lg text-muted-foreground"
                         aria-label="Collapse message editor"
                         title="Collapse"
-                        onClick={() => setComposerExpanded(false)}
+                        onClick={collapseComposer}
                       >
                         <Minimize2 className="h-4 w-4" />
                       </Button>
@@ -6718,11 +6387,12 @@ export function AgentChatWorkspace({
                             isLoadingHistory ||
                             isVoiceConnecting ||
                             emailDraftOpen ||
-                            isGmailKycSaving ||
-                            longPromptAttachment !== null
+                            isGmailKycSaving
                           }
                           placeholder={
-                            gmailKycMissingLabels.length > 0
+                            isGmailKycSaving && gmailKycReplyRequest
+                              ? "Preparing your reply to the selected Gmail request…"
+                              : gmailKycMissingLabels.length > 0
                               ? `Reply with: ${gmailKycMissingLabels.join(", ")}`
                               : "Message One..."
                           }

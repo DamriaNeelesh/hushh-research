@@ -126,12 +126,13 @@ describe("EmailDraftCard", () => {
     render(
       <EmailDraftCard
         initialInstruction="Reply to this Gmail KYC request"
+        sourceBoundContext="This request asks for: full name and educational institution."
         initialDraft={{
           to: "",
           cc: "",
           bcc: "",
           subject: "",
-          body: "Hello,\n\nHere are the requested details.",
+          body: "Hello,\n\nMy name is **Akshat Kumar**.",
         }}
         getAuth={getAuth}
         onRequireVault={vi.fn()}
@@ -144,6 +145,9 @@ describe("EmailDraftCard", () => {
     expect(screen.getByTestId("one-email-draft-source-bound-notice")).toHaveTextContent(
       "original Gmail thread",
     );
+    expect(screen.getByTestId("one-email-draft-source-bound-notice")).toHaveTextContent(
+      "full name and educational institution",
+    );
     expect(screen.queryByTestId("one-email-draft-to")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("one-email-draft-send"));
@@ -153,7 +157,10 @@ describe("EmailDraftCard", () => {
       expect.objectContaining({
         firebaseIdToken: "firebase-token",
         vaultOwnerToken: "vault-owner-token",
-        draft: expect.objectContaining({ body: expect.stringContaining("Hello") }),
+        draft: expect.objectContaining({
+          body: expect.stringContaining("Hello"),
+          htmlBody: expect.stringContaining("<strong>Akshat Kumar</strong>"),
+        }),
       }),
     );
     expect(EmailDeliveryService.prepare).not.toHaveBeenCalled();
