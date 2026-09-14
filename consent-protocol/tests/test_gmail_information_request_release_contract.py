@@ -19,3 +19,5 @@ def test_uat_deploy_wires_the_personal_gmail_monitor_identity() -> None:
         "env.GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_SCHEDULER_SERVICE_ACCOUNT_ID "
         "}}@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com"
     ) in workflow
+    assert "Activate personal Gmail monitor" in workflow
+    assert "deploy/gmail/setup_personal_information_request_monitor_scheduler.sh" in workflow

@@ -1812,6 +1812,20 @@ jobs:
             | tee /tmp/uat-account-deletion-fence-removal.log
           echo "activated=true" >> "$GITHUB_OUTPUT"
 
+      - name: Activate personal Gmail monitor
+        id: activate-personal-gmail-monitor
+        if: steps.classify-uat-release.outputs.release_failed == 'false' && steps.scope.outputs.deploy_backend == 'true'
+        shell: bash
+        env:
+          BACKEND_URL: ${{ env.CONSENT_API_PUBLIC_ORIGIN }}
+          PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+          SCHEDULER_LOCATION: ${{ env.GCP_REGION }}
+          SCHEDULER_SERVICE_ACCOUNT_NAME: ${{ env.GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_SCHEDULER_SERVICE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          bash deploy/gmail/setup_personal_information_request_monitor_scheduler.sh \
+            | tee /tmp/uat-personal-gmail-monitor-scheduler-setup.log
+
       - name: Resolve final Cloud Run state
         if: always()
         id: final-state
@@ -1855,7 +1869,8 @@ jobs:
 
           if [ "${{ steps.classify-uat-release.outputs.release_failed }}" != "true" ]; then
             if [ "${{ steps.scope.outputs.deploy_backend }}" = "true" ] \
-               && [ "${{ steps.activate-account-deletion.outcome }}" != "success" ]; then
+               && { [ "${{ steps.activate-account-deletion.outcome }}" != "success" ] \
+                 || [ "${{ steps.activate-personal-gmail-monitor.outcome }}" != "success" ]; }; then
               STATUS="blocked"
             else
               STATUS="healthy"
