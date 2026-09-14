@@ -31,6 +31,7 @@ from hushh_mcp.one_adk.agent_tree import (
     build_one_text_agent,
 )
 from hushh_mcp.one_adk.agui_action_tools import action_id_from_tool_name
+from hushh_mcp.one_adk.agui_turn_timing import HEAD_INTRO, HEAD_ONE, TimedADKAgent
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.request_secrets import store_request_secret
 from hushh_mcp.services.action_gateway import get_action_gateway_action, list_action_gateway_actions
@@ -142,8 +143,9 @@ _intro_capabilities = {
     "multiAgent": {"supported": False, "delegation": False, "handoffs": False},
     "humanInTheLoop": {"supported": False, "interrupts": False},
 }
-_agent = ADKAgent.from_app(
+_agent = TimedADKAgent.from_app(
     _app,
+    head=HEAD_ONE,
     user_id_extractor=_user_id,
     session_service=_session_service,
     use_in_memory_services=True,
@@ -151,8 +153,9 @@ _agent = ADKAgent.from_app(
     emit_messages_snapshot=True,
     capabilities=_authenticated_capabilities,
 )
-_intro_agent = ADKAgent.from_app(
+_intro_agent = TimedADKAgent.from_app(
     _intro_app,
+    head=HEAD_INTRO,
     user_id_extractor=_user_id,
     # Anonymous and Firebase-only pre-vault turns intentionally remain
     # ephemeral. Durable history begins only after VAULT_OWNER authority is
