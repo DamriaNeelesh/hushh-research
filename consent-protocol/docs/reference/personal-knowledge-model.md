@@ -242,14 +242,17 @@ local saves fail solely because the cloud projection is temporarily unavailable.
 
 ## Private-agent automatic memory saving
 
-Automatic memory saving is an **opt-in, per-vault** preference stored only in the
-encrypted internal runtime-settings domain. It defaults to off. When enabled,
-One may save only backend-approved, medium/high-confidence create or extend
-memories with no active sharing recipients. Low-confidence, ambiguous,
-duplicate, new-domain, corrective, deletion, financial-normalization, and
-shared-memory changes remain review-first. Each automatic write carries an
-`owner_auto_save_policy` receipt that records the enabled policy version rather
-than claiming that the owner reviewed that individual memory.
+Automatic memory saving is a **per-vault** preference stored only in the
+encrypted internal runtime-settings domain. The product default is enabled, and
+an owner can disable it. When enabled, One may save only backend-approved
+create or extend memories with no active sharing recipients.
+Low-confidence, ambiguous, duplicate, new-domain, corrective, deletion,
+financial-normalization, secret, government-ID, and shared-memory candidates
+are not written automatically. They are skipped by the chat auto-save path;
+that path must not manufacture a review request or imply that they were saved.
+Each automatic write carries an `owner_auto_save_policy` receipt that records
+the enabled policy version rather than claiming that the owner reviewed that
+individual memory.
 
 KYC onboarding has a separate first-party owner-confirmed path. It requires an
 unlocked private vault before the identity form is shown; an account without a

@@ -4227,7 +4227,7 @@ async def add_to_pkm(memory_text: str, reason: str, tool_context: ToolContext) -
     }
     return {
         "status": "directive_parked",
-        "message": "Opening Memory to save this information.",
+        "message": "Saving eligible details privately.",
     }
 
 

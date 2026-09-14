@@ -169,6 +169,10 @@ export class KycIdentityProfilePkmService {
       // the canonical writer; do not discard valid KYC facts merely because
       // their inferred destination needs review.
       writePolicy: "reviewable",
+      // KYC extraction yields independent, fixed-schema profile fields. Merge
+      // accepted fields for each domain into one encrypted write instead of
+      // serially reloading and rewriting identity for every field.
+      batchSimpleDomainExtensions: true,
     });
     if (ingestion.save.saved === 0) {
       return {

@@ -29,34 +29,107 @@ export function isExactGmailInformationRequestCandidate(
   );
 }
 
-function valuesForDraft(value: unknown, label: string, depth = 0): string[] {
+type RecipientSafeFact = {
+  label: string;
+  value: string;
+  canonicalFieldIds: readonly string[];
+};
+
+/**
+ * The projection has already enforced the exact approved path. This helper
+ * intentionally returns values only: PKM domain names, segment names and
+ * nested field paths are implementation details and must never reach an email
+ * recipient.
+ */
+function scalarValuesForDraft(value: unknown, depth = 0): string[] {
   if (value === null || value === undefined || depth > 5) return [];
   if (
     typeof value === "string" ||
     typeof value === "number" ||
     typeof value === "boolean"
   ) {
-    const text = String(value).trim();
-    return text ? [`${label}: ${text}`] : [];
+    const text = String(value).replace(/\s+/g, " ").trim();
+    return text ? [text] : [];
   }
   if (Array.isArray(value)) {
-    const scalarValues = value
-      .filter((item) => ["string", "number", "boolean"].includes(typeof item))
-      .map((item) => String(item).trim())
-      .filter(Boolean)
+    return value
+      .flatMap((item) => scalarValuesForDraft(item, depth + 1))
       .slice(0, 8);
-    return scalarValues.length ? [`${label}: ${scalarValues.join(", ")}`] : [];
   }
   if (typeof value !== "object") return [];
-  return Object.entries(value as Record<string, unknown>)
-    .flatMap(([key, nested]) =>
-      valuesForDraft(
-        nested,
-        `${label} · ${key.replaceAll("_", " ")}`,
-        depth + 1,
-      ),
-    )
-    .slice(0, 20);
+  return Object.values(value as Record<string, unknown>)
+    .flatMap((nested) => scalarValuesForDraft(nested, depth + 1))
+    .slice(0, 8);
+}
+
+function escapeMarkdown(value: string): string {
+  return value.replace(/([\\`*_{}\[\]<>])/g, "\\$1");
+}
+
+function factKey(fact: RecipientSafeFact): string {
+  return [
+    ...fact.canonicalFieldIds.map((fieldId) => fieldId.toLowerCase()),
+    fact.label.toLowerCase(),
+  ].join(" ");
+}
+
+function firstFact(
+  facts: RecipientSafeFact[],
+  terms: readonly string[],
+): RecipientSafeFact | undefined {
+  return facts.find((fact) => {
+    const key = factKey(fact);
+    return terms.some((term) => key.includes(term));
+  });
+}
+
+function recipientSafeKycReply(facts: RecipientSafeFact[]): string {
+  const used = new Set<RecipientSafeFact>();
+  const take = (terms: readonly string[]) => {
+    const fact = firstFact(facts.filter((candidate) => !used.has(candidate)), terms);
+    if (fact) used.add(fact);
+    return fact;
+  };
+  const value = (fact: RecipientSafeFact) => `**${escapeMarkdown(fact.value)}**`;
+  const sentences = ["Thank you for your email."];
+
+  const fullName = take(["full_name", "full name", "legal_name", "legal name"]);
+  if (fullName) sentences.push(`My name is ${value(fullName)}.`);
+
+  const academicStatus = take(["academic_status", "academic status", "student status"]);
+  if (academicStatus) sentences.push(`I am currently a ${value(academicStatus)}.`);
+
+  const programme = take(["programme", "program", "degree", "course"]);
+  const department = take(["department"]);
+  const institution = take(["institution", "university", "college"]);
+  if (programme || department || institution) {
+    const education = [
+      programme ? `pursuing ${value(programme)}` : "studying",
+      department ? `in ${value(department)}` : "",
+      institution ? `at ${value(institution)}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    sentences.push(`I am ${education}.`);
+  }
+
+  const schoolLocation = take(["school_location", "school location"]);
+  if (schoolLocation) sentences.push(`I completed my schooling in ${value(schoolLocation)}.`);
+
+  for (const fact of facts) {
+    if (used.has(fact)) continue;
+    const label = fact.label.replace(/\s+/g, " ").trim();
+    if (!label) continue;
+    sentences.push(`My **${escapeMarkdown(label)}** is ${value(fact)}.`);
+  }
+
+  return [
+    "Hello,",
+    "",
+    sentences.join(" "),
+    "",
+    "Please let me know if you need any other details.",
+  ].join("\n");
 }
 
 /**
@@ -122,23 +195,50 @@ export async function prepareScopedGmailInformationRequestDraft({
   const candidateByScope = new Map(
     candidates.map((candidate) => [candidate.scope, candidate]),
   );
-  const lines: string[] = [];
+  const selectedCandidates = requestedScopes
+    .map((scope) => candidateByScope.get(scope))
+    .filter((candidate): candidate is GmailInformationRequestCandidateScope =>
+      Boolean(candidate),
+    );
+  const snapshots = new Map<string, Awaited<ReturnType<typeof PkmDomainResourceService.getStaleFirst>>>();
+  const candidatesBySegment = new Map<
+    string,
+    GmailInformationRequestCandidateScope
+  >();
+  for (const candidate of selectedCandidates) {
+    const key = `${candidate.domain.trim().toLowerCase()}::${[...candidate.segment_ids]
+      .map((segmentId) => segmentId.trim().toLowerCase())
+      .sort()
+      .join(",")}`;
+    if (!candidatesBySegment.has(key)) candidatesBySegment.set(key, candidate);
+  }
+
+  await Promise.all(
+    [...candidatesBySegment.entries()].map(async ([key, candidate]) => {
+      const snapshot = await PkmDomainResourceService.getStaleFirst({
+        userId,
+        domain: candidate.domain,
+        segmentIds: candidate.segment_ids,
+        vaultKey,
+        vaultOwnerToken,
+        // KYC onboarding can have completed moments before this draft begins.
+        // Never let an older decrypted segment make the agent claim details are missing.
+        forceRefresh: true,
+        backgroundRefresh: false,
+      });
+      snapshots.set(key, snapshot);
+    }),
+  );
+
+  const facts: RecipientSafeFact[] = [];
   const availableLabels = new Map<string, string[]>();
 
-  for (const scope of requestedScopes) {
-    const candidate = candidateByScope.get(scope);
-    if (!candidate) continue;
-    const snapshot = await PkmDomainResourceService.getStaleFirst({
-      userId,
-      domain: candidate.domain,
-      segmentIds: candidate.segment_ids,
-      vaultKey,
-      vaultOwnerToken,
-      // KYC onboarding can have completed moments before this draft begins.
-      // Never let an older decrypted segment make the agent claim details are missing.
-      forceRefresh: true,
-      backgroundRefresh: false,
-    });
+  for (const candidate of selectedCandidates) {
+    const key = `${candidate.domain.trim().toLowerCase()}::${[...candidate.segment_ids]
+      .map((segmentId) => segmentId.trim().toLowerCase())
+      .sort()
+      .join(",")}`;
+    const snapshot = snapshots.get(key);
     const projection = projectDomainDataForScope({
       domain: candidate.domain,
       scope: candidate.scope,
@@ -147,17 +247,20 @@ export async function prepareScopedGmailInformationRequestDraft({
         candidate.scope.slice(`attr.${candidate.domain}.`.length),
       ],
     });
-    const values = valuesForDraft(
-      projection[candidate.domain],
-      candidate.label,
-    );
-    if (values.length) {
+    const values = scalarValuesForDraft(projection[candidate.domain]);
+    const uniqueValues = [...new Set(values)].slice(0, 8);
+    if (uniqueValues.length) {
       availableLabels.set(
         candidate.label.toLowerCase(),
         candidate.canonical_field_ids || canonicalKycFieldIds(candidate.label),
       );
+      facts.push({
+        label: candidate.label,
+        value: uniqueValues.join(", "),
+        canonicalFieldIds:
+          candidate.canonical_field_ids || canonicalKycFieldIds(candidate.label),
+      });
     }
-    lines.push(...values);
   }
 
   const unavailableLabels = workflow.requested_field_labels.filter((label) => {
@@ -168,7 +271,7 @@ export async function prepareScopedGmailInformationRequestDraft({
       )
     );
   });
-  if (!lines.length) {
+  if (!facts.length) {
     return {
       body: null,
       unavailableLabels:
@@ -178,15 +281,7 @@ export async function prepareScopedGmailInformationRequestDraft({
     };
   }
   return {
-    body: [
-      "Hello,",
-      "",
-      "Here are the requested details:",
-      "",
-      ...lines,
-      "",
-      "Please let me know if you need anything else.",
-    ].join("\n"),
+    body: recipientSafeKycReply(facts),
     unavailableLabels,
   };
 }
