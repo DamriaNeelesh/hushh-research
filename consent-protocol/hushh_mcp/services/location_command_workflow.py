@@ -166,7 +166,12 @@ async def reconcile_command_workflow(
     service = get_location_onboarding_runtime_service()
     # Exact reads never reserve another run after cancellation or response loss.
     read = service.advance_reserved_run if resume else service.get
-    result = await read(user_id=user_id, run_id=run_id, **workflow_revision_arguments())
+    result = await read(
+        user_id=user_id,
+        run_id=run_id,
+        **workflow_revision_arguments(),
+        **({"renew_finalizer": True} if resume else {}),
+    )
     bound = await service.run_store.get(user_id=user_id, run_id=run_id, include_slots=True)
     proof = bound if result.get("completion_claim_allowed") is True else None
     if bound and not proof and await service._has_verified_prior_completion(bound):

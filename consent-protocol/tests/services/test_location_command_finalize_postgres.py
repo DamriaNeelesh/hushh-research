@@ -21,7 +21,14 @@ from sqlalchemy.exc import DBAPIError
 
 from hushh_mcp.services.action_directive_ledger import ActionDirectiveStore
 from hushh_mcp.services.agent_chat_service import AgentChatService
+from hushh_mcp.services.capability_run_service import CapabilityRunStore
 from hushh_mcp.services.command_checkpoints import CommandCheckpointStore
+from hushh_mcp.services.location_onboarding_runtime import (
+    LOCATION_APPROVED_SURFACE_CONTRACTS,
+    LocationOnboardingConflictError,
+    LocationOnboardingLedgerStore,
+    derive_location_pre_vault_pkm_commit_id,
+)
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "db/migrations"
 
@@ -123,7 +130,7 @@ def prepared(isolated_db):
         }.items()
     }
     commit = str(uuid4())
-    deadline = datetime.now(UTC) + timedelta(hours=1)
+    deadline = (datetime.now(UTC) + timedelta(hours=1)).replace(microsecond=123456)
     bearer = "locpkmtoken_" + suffix + "_" + "b" * 64
     digest = "a" * 64
     params = {
@@ -258,6 +265,109 @@ def test_finalizer_atomically_commits_effect_receipt_and_purges_draft(prepared):
     ).data == [{"outcome_code": "saved"}]
     with pytest.raises(DBAPIError, match="authorization_replayed"):
         finalize(prepared)
+
+
+def test_finalizer_requires_exact_microsecond_expiry_before_any_effect(prepared):
+    exact_expiry = prepared.authority["expires_at"]
+    prepared.authority["expires_at"] = datetime.fromisoformat(exact_expiry).isoformat(
+        timespec="milliseconds"
+    )
+    with pytest.raises(DBAPIError, match="authorization_binding_mismatch"):
+        finalize(prepared)
+    assert prepared.db.execute_raw("SELECT * FROM fixture_effects").data == []
+    assert prepared.db.execute_raw("SELECT * FROM one_location_onboarding_receipts").data == []
+    assert prepared.db.execute_raw(
+        "SELECT consumed_at FROM one_location_pkm_finalize_authorizations"
+    ).data == [{"consumed_at": None}]
+    prepared.authority["expires_at"] = exact_expiry
+    assert finalize(prepared)["success"] is True
+
+
+@pytest.fixture
+def renewable(prepared):
+    ledger = LocationOnboardingLedgerStore(db=prepared.db, hmac_key="test-only-signing-key")
+    contract = LOCATION_APPROVED_SURFACE_CONTRACTS["one.location.awaiting_vault_finalize.v2"]
+    prepared.commit = derive_location_pre_vault_pkm_commit_id(
+        user_id="owner", run_id=prepared.run, draft_digest=prepared.authority["draft_digest"]
+    )
+    prepared.authority["expected_commit_id"] = prepared.commit
+    prepared.db.execute_raw(
+        """UPDATE one_location_pkm_finalize_authorizations SET expected_commit_id=CAST(:commit AS uuid);
+        UPDATE one_location_onboarding_interactions SET allowed_actions_digest=:digest""",
+        {
+            "commit": prepared.commit,
+            "digest": ledger.digest(
+                "location_allowed_actions", {"actions": list(contract.allowed_actions)}
+            ),
+        },
+    )
+    run = asyncio.run(CapabilityRunStore(db=prepared.db).get(user_id="owner", run_id=prepared.run))
+    return prepared, ledger, contract, run
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_renewal_fences_failed_attempt_and_keeps_same_draft_and_commit(renewable, expired):
+    prepared, ledger, contract, run = renewable
+    if expired:
+        prepared.db.execute_raw("""UPDATE one_location_onboarding_interactions
+            SET issued_at=NOW()-INTERVAL '2 hours', expires_at=NOW()-INTERVAL '1 hour'""")
+    else:
+        unchanged, lease = asyncio.run(ledger.issue_lease(run=run, contract=contract))
+        assert unchanged.revision == run.revision
+        assert lease.lease_id == prepared.authority["lease_id"]
+    renewed, lease = asyncio.run(
+        ledger.issue_lease(run=run, contract=contract, renew_finalizer=True)
+    )
+    assert renewed.revision == run.revision + 1
+    if not expired:
+        with pytest.raises(DBAPIError, match="authorization_inactive"):
+            finalize(prepared)
+    assert prepared.db.execute_raw("SELECT * FROM fixture_effects").data == []
+    draft = asyncio.run(ledger.get_active_secure_draft(user_id="owner", run_id=run.run_id))
+    assert draft.digest == prepared.authority["draft_digest"]
+    fresh = asyncio.run(
+        ledger.issue_pkm_finalize_authorization(run=renewed, lease=lease, draft=draft)
+    )
+    assert fresh.expected_commit_id == prepared.commit
+    prepared.authority.update(
+        authorization_id=fresh.authorization_id,
+        token=fresh.token,
+        run_revision=fresh.run_revision,
+        lease_id=fresh.lease_id,
+        directive_id=fresh.directive_id,
+        expires_at=fresh.expires_at.isoformat(),
+    )
+    assert finalize(prepared)["success"] is True
+    assert len(prepared.db.execute_raw("SELECT * FROM fixture_effects").data) == 1
+
+
+def test_completed_save_wins_before_renewal_and_cannot_be_reopened(renewable):
+    prepared, ledger, contract, run = renewable
+    assert finalize(prepared)["success"] is True
+    with pytest.raises(LocationOnboardingConflictError):
+        asyncio.run(ledger.issue_lease(run=run, contract=contract, renew_finalizer=True))
+    assert len(prepared.db.execute_raw("SELECT * FROM fixture_effects").data) == 1
+    assert len(prepared.db.execute_raw("SELECT * FROM one_location_onboarding_receipts").data) == 1
+
+
+def test_concurrent_resumes_renew_the_same_revision_once(renewable):
+    from concurrent.futures import ThreadPoolExecutor
+
+    prepared, ledger, contract, run = renewable
+
+    def renew():
+        try:
+            return asyncio.run(ledger.issue_lease(run=run, contract=contract, renew_finalizer=True))
+        except LocationOnboardingConflictError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(lambda _: renew(), range(2)))
+    assert sum(result is not None for result in results) == 1
+    assert prepared.db.execute_raw("SELECT revision FROM one_capability_runs").data == [
+        {"revision": 2}
+    ]
+    assert prepared.db.execute_raw("SELECT * FROM fixture_effects").data == []
 
 
 @pytest.mark.parametrize(

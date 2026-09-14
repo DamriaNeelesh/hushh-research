@@ -1,5 +1,4 @@
 import { webcrypto } from "node:crypto";
-import { useEffect } from "react";
 import {
   act,
   cleanup,
@@ -153,11 +152,11 @@ import {
   type LocationServerDirectiveContractId,
 } from "@/lib/services/one-location-onboarding-run-client";
 import { decryptData } from "@/lib/vault/encrypt";
+import { locationFinalizeWire } from "@/lib/one-location/pkm-finalize-authorization";
 
 const commandId = "00000000-0000-4000-8000-000000000001";
 const runId = "run_" + "b".repeat(32);
 const deadline = () => new Date(Date.now() + 3_600_000).toISOString();
-let command: ReturnType<typeof useLocationCommand>["command"];
 let checkpoint: any;
 let completed = false;
 let finalizer: LocationOnboardingRunResultV1 | null = null;
@@ -228,7 +227,6 @@ function projection(
 }
 function Controls() {
   const context = useLocationCommand();
-  useEffect(() => { command = context.command; }, [context.command]);
   return (
     <>
       <button
@@ -241,6 +239,41 @@ function Controls() {
     </>
   );
 }
+
+it("preserves the server's microsecond expiry through parsing and private-save serialization", () => {
+  const value = projection("one.location.awaiting_vault_finalize.v2", 6);
+  const expiresAt = new Date(Date.now() + 60_000).toISOString().replace(/\.\d{3}Z$/, ".123456+00:00");
+  value.run.draft = {
+    draftRef: "locdraft_" + "c".repeat(32),
+    status: "staged",
+    expiresAt: deadline(),
+  };
+  value.run.pkmFinalizeAuthorization = {
+    schemaVersion: "one.location_pkm_finalize_authorization.v1",
+    authorizationId: "locpkmauth_" + "d".repeat(32),
+    token: "locpkmtoken_" + "d".repeat(32) + "_" + "e".repeat(64),
+    runId,
+    runRevision: 6,
+    leaseId: value.directive!.lease.leaseId,
+    directiveId: value.directive!.directiveId,
+    draftRef: value.run.draft.draftRef,
+    draftDigest: "a".repeat(64),
+    expectedCommitId: "00000000-0000-4000-8000-000000000002",
+    expiresAt,
+  };
+  const parsed = parseLocationOnboardingRunResult({
+    ...value,
+    run: {
+      ...value.run,
+      pkmFinalizeAuthorization: locationFinalizeWire(value.run.pkmFinalizeAuthorization),
+    },
+  });
+  const reparsed = parseLocationOnboardingRunResult(parsed);
+  for (const result of [parsed, reparsed]) {
+    expect(result?.run.pkmFinalizeAuthorization).toBeTruthy();
+    expect(locationFinalizeWire(result!.run.pkmFinalizeAuthorization!).expires_at).toBe(expiresAt);
+  }
+});
 function App() {
   return (
     <OneLocationInteractionSurfaceProvider>
@@ -308,7 +341,7 @@ beforeEach(() => {
     sourcePlatform: "web",
   }));
   h.get.mockImplementation(async () =>
-    completed ? projection(null, 7) : finalizer,
+    completed ? projection(null, (finalizer?.run.revision ?? 6) + 1) : finalizer,
   );
   h.save.mockImplementation(async ({ beforeEffect }) => {
     await beforeEffect();
@@ -357,7 +390,14 @@ beforeEach(() => {
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ path, body });
     let response: unknown;
-    if (path.endsWith("agent-chat/proposals"))
+    if (path.endsWith(`/workflows/location/onboarding/runs/${runId}`)) {
+      // Workflow receipts require Firebase identity; a vault-owner capability
+      // is only accepted by the private PKM operation, not this endpoint.
+      if (new Headers(init.headers).get("Authorization") !== "Bearer synthetic-id-token") {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      response = completed ? projection(null, (finalizer?.run.revision ?? 6) + 1) : finalizer;
+    } else if (path.endsWith("agent-chat/proposals"))
       response = {
         checkpoint,
         plan: {
@@ -455,6 +495,7 @@ it("continues a permission settlement while the bridge binds its rendered callba
 });
 
 it("mounts the real workflow owners and finishes only after save proof and Location-on", async () => {
+  vi.mocked(OneLocationOnboardingRunClient.get).mockRestore();
   render(<App />);
   fireEvent.click(screen.getByText("Begin command"));
   await waitFor(() => expect(h.save).toHaveBeenCalledTimes(1), {
@@ -493,6 +534,67 @@ it("mounts the real workflow owners and finishes only after save proof and Locat
     ),
   ).toBe(true);
 });
+
+it.each(["renewed", "no_proof", "checkpoint_failed"] as const)(
+  "recovers an uncertain private save only after a checkpointed server fence: %s",
+  async (mode) => {
+    const api = h.api.getMockImplementation()!;
+    let recovering = false;
+    let renewed = false;
+    h.api.mockImplementation(async (path, init) => {
+      if (recovering && path.endsWith(commandId)) {
+        return new Response(JSON.stringify({ checkpoint, outcome: { state: "consumed" } }));
+      }
+      if (recovering && !completed && path.endsWith("/resume")) {
+        const current = finalizer!;
+        finalizer = projection("one.location.awaiting_vault_finalize.v2", 8);
+        finalizer.run.draft = current.run.draft;
+        finalizer.run.pkmFinalizeAuthorization = {
+          ...current.run.pkmFinalizeAuthorization!,
+          runRevision: 8,
+          leaseId: finalizer.directive!.lease.leaseId,
+          directiveId: finalizer.directive!.directiveId,
+        };
+        renewed = true;
+        return new Response(JSON.stringify({
+          status: "workflow", workflow: finalizer, checkpoint,
+          ...(mode !== "no_proof" ? { workflow_finalize_renewed: true } : {}),
+        }));
+      }
+      if (renewed && mode === "checkpoint_failed" && path.endsWith("/checkpoint")) {
+        return new Response("Checkpoint unavailable", { status: 503 });
+      }
+      return api(path, init);
+    });
+    h.save.mockImplementationOnce(async ({ beforeEffect }) => {
+      await beforeEffect();
+      throw new Error("Synthetic lost save response");
+    });
+    render(<App />);
+    fireEvent.click(screen.getByText("Begin command"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh / Resume", exact: true })).toBeVisible());
+    expect(h.save).toHaveBeenCalledTimes(1);
+    recovering = true;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh / Resume", exact: true }));
+    await waitFor(() => expect(renewed).toBe(true));
+    if (mode === "renewed") {
+      await waitFor(() => expect(window.location.pathname).toBe("/one/location"));
+      expect(h.save).toHaveBeenCalledTimes(2);
+      expect(checkpoint.capsule).toBeNull();
+    } else {
+      if (mode === "no_proof") {
+        await waitFor(() => expect(h.get).toHaveBeenCalled());
+      } else {
+        await waitFor(() => expect(screen.getByText("The command could not continue. Refresh its checkpoint.")).toBeVisible());
+      }
+      expect(h.save).toHaveBeenCalledTimes(1);
+      expect(checkpoint.capsule).not.toBeNull();
+      const retained = JSON.parse(await decryptData(checkpoint.capsule, h.vault.vaultKey));
+      expect(retained.workflow.commitDispatched).toBe(true);
+    }
+    expect(h.capture).toHaveBeenCalledTimes(1);
+  },
+);
 
 it("keeps the page usable during permission and rejects a late permission result after cancellation", async () => {
   h.permission.mockResolvedValue({
@@ -604,7 +706,7 @@ it("locking during native permission pauses the run and unlock never automatical
   expect(screen.queryByText(/Location setup complete/)).not.toBeInTheDocument();
 });
 
-it("an uncertain writer response offers the actual review route without saving again", async () => {
+it("an uncertain writer response offers explicit task recovery without automatically saving again", async () => {
   h.save.mockImplementation(async ({ beforeEffect }) => {
     await beforeEffect();
     throw new Error("synthetic lost response");
@@ -619,12 +721,8 @@ it("an uncertain writer response offers the actual review route without saving a
     { timeout: 4000 },
   );
   expect(h.save).toHaveBeenCalledTimes(1);
-  await act(async () => {
-    await command.continueGate(true);
-  });
-  expect(window.location.pathname + window.location.search).toBe(
-    "/one/location?action=settings",
-  );
+  expect(screen.getByRole("button", { name: "Refresh / Resume", exact: true })).toBeVisible();
+  expect(window.location.pathname).toBe("/one/agents");
   expect(h.save).toHaveBeenCalledTimes(1);
   expect(h.execute).not.toHaveBeenCalled();
   expect(screen.queryByText(/Location setup complete/)).not.toBeInTheDocument();
