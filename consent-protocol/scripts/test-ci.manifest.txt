@@ -260,3 +260,12 @@ tests/scripts/test_eval_one_first_tool.py
 tests/scripts/test_measure_agent_chat_latency.py
 tests/test_evalsets_are_valid.py
 tests/test_conformance_harness.py
+
+# Gemini generation contract: the two-release catalog policy, the measured
+# thinking_level matrix, the fleet switch, the manifest thinking_level field,
+# and the probe's offline guards.
+tests/services/test_gemini_two_release_policy.py
+tests/services/test_gemini_model_contract.py
+tests/test_fleet_text_model_switch.py
+tests/test_hushh_adk_manifest_and_factory.py
+tests/scripts/test_probe_gemini_generation_contract.py
