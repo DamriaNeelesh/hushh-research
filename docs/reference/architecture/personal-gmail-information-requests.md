@@ -81,7 +81,10 @@ The operator-owned UAT scheduler shape is
 `deploy/gmail/setup_personal_information_request_monitor_scheduler.sh`. It
 uses a dedicated OIDC service account and a bounded rotating `POST` job; it
 does not share the `one@hushh.ai` watch-renewal token or change that mailbox's
-scheduler.
+scheduler. Cloud Scheduler's project-managed service agent mints the OIDC
+token under `roles/cloudscheduler.serviceAgent`; deployments require only
+`iam.serviceAccounts.actAs` for the dedicated client identity and never mutate
+that identity's IAM policy.
 
 ## Consent boundary
 

@@ -77,11 +77,6 @@ elif args[:3] == ["iam", "service-accounts", "create"]:
     if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", args[3]):
         fail("IAM account ID violates the 6-30 character RFC1035 contract")
     state["accounts"].append(args[3] + "@" + project + ".iam.gserviceaccount.com")
-elif args[:3] == ["iam", "service-accounts", "add-iam-policy-binding"]:
-    if args[3] not in state["accounts"]:
-        fail("Policy binding targeted an account that was not created")
-elif args[:2] == ["projects", "describe"]:
-    print("123456789012")
 elif args[:3] == ["scheduler", "jobs", "describe"]:
     if state["job"] is None:
         sys.exit(1)
@@ -121,6 +116,12 @@ state_path.write_text(json.dumps(state))
         else []
     )
     return result, calls, json.loads(state_path.read_text())
+
+
+def test_scheduler_does_not_mutate_the_client_service_account_policy() -> None:
+    setup = SETUP.read_text(encoding="utf-8")
+    assert "iam service-accounts add-iam-policy-binding" not in setup
+    assert "roles/iam.serviceAccountTokenCreator" not in setup
 
 
 @pytest.mark.parametrize("existing_job", [False, True])
