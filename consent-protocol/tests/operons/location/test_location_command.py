@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import wave
 from types import SimpleNamespace
 from typing import Any
@@ -42,6 +43,29 @@ def test_all_current_location_capabilities_have_an_authored_destination():
     altered = list(actions.values())
     altered[0] = {**altered[0], "meaning": "changed owning contract"}
     assert compile_location_capabilities(altered)[0] != revision
+
+
+def test_workflow_prompt_preserves_owning_semantics_without_execution_internals():
+    from api.routes.one.command_proposals import _catalog
+
+    revision, actions = _catalog("location.plan.v2")
+    before = json.dumps(actions, sort_keys=True)
+    projected = semantic_catalog(actions)
+    assert len(projected) == len(actions)
+    workflow = next(item for item in projected if "workflow_id" in item)
+    owner = actions[workflow["workflow_id"]]["workflow"]
+    semantic = workflow["workflow"]
+    assert semantic["knowledge_projection"] == owner["knowledge_projection"]
+    assert semantic["command_completion_action_ids"] == ["location.resume_updates"]
+    assert semantic["completion"] == owner["plan"]["completion"]
+    assert semantic["entry_action_id"] == "setup.open_location"
+    assert "api_endpoints" not in semantic
+    assert "interaction_surfaces" not in semantic
+    assert "execution" not in semantic
+    assert len(json.dumps(workflow)) < len(json.dumps(owner)) / 5
+    assert json.dumps(actions, sort_keys=True) == before
+    # Projection cannot alter the full authority catalog or its revision.
+    assert _catalog("location.plan.v2")[0] == revision
 
 
 @pytest.mark.parametrize(

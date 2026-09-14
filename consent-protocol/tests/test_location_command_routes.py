@@ -1,4 +1,5 @@
 import hashlib
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,6 +9,35 @@ from fastapi.testclient import TestClient
 from api.routes.one import command_proposals as routes
 from api.routes.one.retired_voice import router as retired_router
 from hushh_mcp.operons.location.plan import LocationPlanV1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "status", "reason"),
+    [(TimeoutError, 504, "timeout"), (ValueError, 422, "invalid_assessment")],
+)
+async def test_assessment_failure_classification_never_logs_private_content(
+    monkeypatch, caplog, failure, status, reason
+):
+    private = "synthetic-private-query-and-provider-output"
+    monkeypatch.setattr(
+        routes,
+        "LocationCommandBrain",
+        lambda: SimpleNamespace(
+            manifest=SimpleNamespace(capabilities={}),
+            assess=AsyncMock(side_effect=failure(private)),
+        ),
+    )
+    with pytest.raises(HTTPException) as error:
+        await routes._assess(
+            private, {}, token={"user_id": "synthetic-owner", "token": "synthetic-token"}
+        )
+    assert error.value.status_code == status
+    assert f"reason={reason}" in caplog.text
+    assert private not in caplog.text
+    assert "synthetic-owner" not in caplog.text
+    assert "synthetic-token" not in caplog.text
+    assert private not in str(error.value.detail)
 
 
 def test_obsolete_live_clients_get_retirement_without_provider_startup():

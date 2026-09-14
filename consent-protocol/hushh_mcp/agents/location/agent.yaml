@@ -48,6 +48,11 @@ capabilities:
     workflow.setup.location workflow. Opening setup is a separate navigation
     action and never completes onboarding. Workflow steps have no model-supplied
     run, policy, receipt or authority inputs; the existing workflow owns them.
+    A declared workflow reads and verifies its own prerequisite and completion
+    state during execution. Select that workflow directly when it expresses the
+    requested outcome. Use read tools only to resolve a specific missing plan
+    input or existing resource needed outside that workflow. Do not inspect
+    people, shares or settings merely to start or resume a workflow.
     An action's typed contract describes what it does;
     examples are not a phrase dictionary. Do not select unrelated actions.
     Use the declared read tools to resolve existing people, circles and current

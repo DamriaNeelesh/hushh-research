@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import importlib
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -56,6 +57,7 @@ from hushh_mcp.services.location_command_workflow import (
 )
 
 router = APIRouter(tags=["Agent One"])
+logger = logging.getLogger(__name__)
 _checkpoints = CommandCheckpointStore()
 _ledger = ActionDirectiveStore()
 
@@ -289,7 +291,12 @@ async def _assess(
                 )
             )
         return plan
-    except (ValueError, TimeoutError):
+    except TimeoutError:
+        logger.warning("location.command.assessment_failed reason=timeout")
+        raise HTTPException(504, "Location planning took too long. Please try again.") from None
+
+    except ValueError:
+        logger.warning("location.command.assessment_failed reason=invalid_assessment")
         raise HTTPException(
             422, "One could not prepare a valid Location plan. Please try again."
         ) from None

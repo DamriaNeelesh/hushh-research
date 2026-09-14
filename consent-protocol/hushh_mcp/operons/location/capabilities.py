@@ -36,7 +36,19 @@ def compile_location_capabilities(
 def semantic_catalog(catalog: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Complete compact package, with no prompt-ranking cap hiding capabilities."""
     return [
-        entry
+        {
+            "workflow_id": entry["workflow_id"],
+            "workflow": {
+                "label": entry["workflow"].get("label"),
+                "description": entry["workflow"].get("description"),
+                "knowledge_projection": entry["workflow"].get("knowledge_projection"),
+                "entry_action_id": entry["workflow"].get("entry_action_id"),
+                "command_completion_action_ids": entry["workflow"].get(
+                    "command_completion_action_ids", []
+                ),
+                "completion": (entry["workflow"].get("plan") or {}).get("completion"),
+            },
+        }
         if "workflow_id" in entry
         else {
             "action_id": entry["action_id"],
