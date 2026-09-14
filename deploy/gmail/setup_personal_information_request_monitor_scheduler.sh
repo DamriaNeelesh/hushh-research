@@ -12,7 +12,7 @@ JOB_NAME="${JOB_NAME:-gmail-personal-information-request-monitor-uat}"
 CRON="${CRON:-*/5 * * * *}"
 TIMEZONE="${TIMEZONE:-America/Los_Angeles}"
 MAX_USERS="${MAX_USERS:-20}"
-SCHEDULER_SERVICE_ACCOUNT_NAME="${SCHEDULER_SERVICE_ACCOUNT_NAME:-gmail-personal-monitor-scheduler}"
+SCHEDULER_SERVICE_ACCOUNT_NAME="${SCHEDULER_SERVICE_ACCOUNT_NAME:-gmail-personal-monitor-sched}"
 SCHEDULER_SERVICE_ACCOUNT_EMAIL="${SCHEDULER_SERVICE_ACCOUNT_EMAIL:-}"
 
 if [[ -z "${BACKEND_URL}" ]]; then
@@ -25,13 +25,24 @@ if ! [[ "${MAX_USERS}" =~ ^[1-9][0-9]{0,2}$ ]] || (( MAX_USERS > 50 )); then
   exit 1
 fi
 
+if [[ -n "${SCHEDULER_SERVICE_ACCOUNT_EMAIL}" ]]; then
+  ACCOUNT_EMAIL_SUFFIX="@${PROJECT_ID}.iam.gserviceaccount.com"
+  if [[ "${SCHEDULER_SERVICE_ACCOUNT_EMAIL}" != *"${ACCOUNT_EMAIL_SUFFIX}" ]]; then
+    echo "SCHEDULER_SERVICE_ACCOUNT_EMAIL must belong to PROJECT_ID" >&2
+    exit 1
+  fi
+  SCHEDULER_SERVICE_ACCOUNT_NAME="${SCHEDULER_SERVICE_ACCOUNT_EMAIL%"${ACCOUNT_EMAIL_SUFFIX}"}"
+fi
+
+if ! [[ "${SCHEDULER_SERVICE_ACCOUNT_NAME}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
+  echo "SCHEDULER_SERVICE_ACCOUNT_NAME must be 6-30 lowercase letters, digits or hyphens, starting with a letter and ending with a letter or digit" >&2
+  exit 1
+fi
+SCHEDULER_SERVICE_ACCOUNT_EMAIL="${SCHEDULER_SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+
 if ! command -v gcloud >/dev/null 2>&1; then
   echo "gcloud is required" >&2
   exit 1
-fi
-
-if [[ -z "${SCHEDULER_SERVICE_ACCOUNT_EMAIL}" ]]; then
-  SCHEDULER_SERVICE_ACCOUNT_EMAIL="${SCHEDULER_SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 fi
 
 if ! gcloud iam service-accounts describe "${SCHEDULER_SERVICE_ACCOUNT_EMAIL}" \
@@ -57,7 +68,6 @@ COMMON_ARGS=(
   --time-zone="${TIMEZONE}"
   --uri="${URI}"
   --http-method=POST
-  --headers="Content-Type=application/json"
   --message-body="${BODY}"
   --oidc-service-account-email="${SCHEDULER_SERVICE_ACCOUNT_EMAIL}"
   --oidc-token-audience="${BACKEND_URL%/}"
@@ -67,9 +77,11 @@ COMMON_ARGS=(
 if gcloud scheduler jobs describe "${JOB_NAME}" \
   --project="${PROJECT_ID}" \
   --location="${SCHEDULER_LOCATION}" >/dev/null 2>&1; then
-  gcloud scheduler jobs update http "${JOB_NAME}" "${COMMON_ARGS[@]}" >/dev/null
+  gcloud scheduler jobs update http "${JOB_NAME}" "${COMMON_ARGS[@]}" \
+    --update-headers="Content-Type=application/json" >/dev/null
 else
-  gcloud scheduler jobs create http "${JOB_NAME}" "${COMMON_ARGS[@]}" >/dev/null
+  gcloud scheduler jobs create http "${JOB_NAME}" "${COMMON_ARGS[@]}" \
+    --headers="Content-Type=application/json" >/dev/null
 fi
 
 JOB_EVIDENCE="$(gcloud scheduler jobs describe "${JOB_NAME}" \
