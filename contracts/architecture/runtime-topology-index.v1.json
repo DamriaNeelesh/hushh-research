@@ -5544,14 +5544,14 @@
   "source_sha256": {
     "a2a_scope_map": "2bcecbbab3b901bfb1cdf76f64ff3a8478975febd5fb4be9ec95a753d3e99bf8",
     "action_gateway": "543417ed237e48134d7d2cc87a2f5b15c4124c0e4c85c34324d25db3e7151dff",
-    "agent_registry": "49cb39b76eb39b529bec9c8f8d0bfa3c05185255546339bec80e7cab13027186",
+    "agent_registry": "8ba1b879002bda4a2a37c1b0e3d02f8870d998b90c1e4c5ef3d9ddaecc55a5d9",
     "cache_manifest": "b31f78f31d803a4e997352218fa633e6896a26fe75f19b6de12648b501159ed0",
     "data_plane": "9ec04b634600c761511c2288dd4597d2691bca3a817bcd0bc60f80a800fdd991",
     "in_process_dispatch": "022c40c305a11e06510f2688041a96c1523cae5b5c03d7876fd122ce027e98c3",
     "one_specialist_tools": "422149e70546f437a55d2560bd1653501ee0203a921d1403572127dbca9a1a55",
     "route_index": "39bedd22b12f99d1a5f434d6271d5da7f5896868ddc7b1626ee40348846e357b",
-    "route_layout": "8f9969e122e81187f06841e75e8cd194580f35168f3b0f0ed61fc59bcf22f95c",
-    "surface_map": "be0d5f260a955b67a2a187a22e610bcdcf7ca8ca98f1c898a8c2fb9d12ea59ad",
+    "route_layout": "e294f665f7f75d8742e01ad020a5cea0c0cc9042a7dc5f550da81cd046757641",
+    "surface_map": "8f43eca776a85a47b285c80c388913707caba46b2a705d9208501f12047c6439",
     "topology_contract": "3515551e0cd42c3d17c767dd922111b1bf29f7ac1521d47e2d16ced39c6c1b6a",
     "world_model_compat": "10fc27eefad30ff56c69ef71a8953b727ab323a6e982ec783711fbbe1c1ee425"
   },

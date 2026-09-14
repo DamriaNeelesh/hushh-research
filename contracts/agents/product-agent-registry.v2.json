@@ -263,7 +263,8 @@
             "credential_ref": null,
             "mode": "hushh_managed_vertex",
             "name": "gemini-default",
-            "provider": "gemini"
+            "provider": "gemini",
+            "thinking_level": null
           },
           "name": "CRM Schema Mapper",
           "outputs": [
@@ -767,7 +768,8 @@
         "credential_ref": null,
         "mode": "hushh_managed_vertex",
         "name": "gemini-default",
-        "provider": "gemini"
+        "provider": "gemini",
+        "thinking_level": null
       },
       "name": "Kai Financial Agent",
       "native_requirements": [],
@@ -850,7 +852,8 @@
             "credential_ref": null,
             "mode": "hushh_managed_vertex",
             "name": "gemini-default",
-            "provider": "gemini"
+            "provider": "gemini",
+            "thinking_level": null
           },
           "name": "RIA",
           "outputs": [],
@@ -895,7 +898,8 @@
             "credential_ref": null,
             "mode": "hushh_managed_vertex",
             "name": "gemini-default",
-            "provider": "gemini"
+            "provider": "gemini",
+            "thinking_level": null
           },
           "name": "Investor",
           "outputs": [],
@@ -1968,7 +1972,8 @@
         "credential_ref": null,
         "mode": "hushh_managed_vertex",
         "name": "gemini-default",
-        "provider": "gemini"
+        "provider": "gemini",
+        "thinking_level": null
       },
       "name": "Agent One",
       "native_requirements": [],
@@ -2627,7 +2632,8 @@
         "credential_ref": null,
         "mode": "hushh_managed_vertex",
         "name": "gemini-default",
-        "provider": "gemini"
+        "provider": "gemini",
+        "thinking_level": null
       },
       "name": "Cards Agent",
       "native_requirements": [],

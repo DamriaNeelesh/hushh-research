@@ -391,14 +391,17 @@ def make_live_first_tool(
     call_gap_seconds: float = CALL_GAP_SECONDS,
 ) -> FirstToolFn:
     """Build the Vertex-backed first-tool probe. Only called on a real run."""
-    from google import genai
     from google.genai import types
+
+    from hushh_mcp.runtime_providers.factory import ManagedGeminiRuntimeBinding
 
     os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
     project = os.environ.get("GENAI_GOOGLE_CLOUD_PROJECT", "").strip()
     if not project:
         raise SystemExit("GENAI_GOOGLE_CLOUD_PROJECT is required for a live run")
-    client = genai.Client(vertexai=True, project=project, location="global")
+    client = ManagedGeminiRuntimeBinding.from_environment().build_direct_client(
+        location="global", http_options=types.HttpOptions(timeout=60_000)
+    )
     tool = types.Tool(function_declarations=build_roster_declarations())
     thinking_config = None
     if thinking_level:

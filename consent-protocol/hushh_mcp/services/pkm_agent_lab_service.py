@@ -445,10 +445,6 @@ _AGENT_CONTRACT_TIMEOUT_SECONDS = max(
 # One retry absorbs transient provider tail latency without introducing another
 # runtime configuration surface or extending the shared preview deadline.
 _AGENT_CONTRACT_MAX_ATTEMPTS = 2
-_PKM_SALIENCE_AGENT_TIMEOUT_SECONDS = max(
-    _AGENT_CONTRACT_TIMEOUT_SECONDS,
-    float(os.getenv("PKM_SALIENCE_AGENT_TIMEOUT_SECONDS", "15") or "15"),
-)
 _PREVIEW_TOTAL_BUDGET_SECONDS = max(
     4.0,
     # The graph is bounded but sequential after segmentation. The headroom over
@@ -1596,29 +1592,23 @@ class PKMAgentLabService:
         from google.genai import types as genai_types
 
         active_model = model_override or _manifest_model_name(manifest) or GEMINI_MODEL
-        is_salience_model = active_model == "gemini-3.1-pro-preview"
-        thinking_level = (
-            genai_types.ThinkingLevel.LOW
-            if is_salience_model
-            else genai_types.ThinkingLevel.MINIMAL
-        )
         config = build_generate_content_config(
             genai_types,
             active_model,
             temperature=0.0,
             # These calls are deterministic schema workers inside a bounded,
             # sequential PKM graph. Gemini's default thinking can consume the
-            # shared preview deadline before the final structure contract runs.
-            # Flash stays bounded for the fast structural stages; the two
-            # salience stages use the higher-capability model deliberately.
+            # shared preview deadline before the final structure contract runs,
+            # so every stage asks for the lowest thinking level and lets the
+            # model adapter drop or map it per the provider contract.
             thinking_config=genai_types.ThinkingConfig(
-                thinking_level=thinking_level,
+                thinking_level=genai_types.ThinkingLevel.MINIMAL,
             ),
             response_mime_type="application/json",
             automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
             response_schema=response_schema,
         )
-        max_attempts = 1 if is_salience_model else _AGENT_CONTRACT_MAX_ATTEMPTS
+        max_attempts = _AGENT_CONTRACT_MAX_ATTEMPTS
         for attempt in range(1, max_attempts + 1):
             remaining_seconds = (
                 max(0.0, deadline - time.perf_counter()) if deadline is not None else None
@@ -1633,11 +1623,7 @@ class PKMAgentLabService:
                 )
                 record("budget_exhausted", attempts=attempt - 1)
                 return None
-            effective_timeout = (
-                _PKM_SALIENCE_AGENT_TIMEOUT_SECONDS
-                if is_salience_model
-                else _AGENT_CONTRACT_TIMEOUT_SECONDS
-            )
+            effective_timeout = _AGENT_CONTRACT_TIMEOUT_SECONDS
             if remaining_seconds is not None:
                 effective_timeout = max(
                     0.25,

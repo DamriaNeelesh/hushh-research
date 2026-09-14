@@ -117,9 +117,33 @@ class ManagedGeminiRuntimeBinding:
             )
         return locations
 
-    def build_direct_client(self, *, model: str | None = None) -> Any:
+    def build_direct_client(
+        self,
+        *,
+        model: str | None = None,
+        location: str | None = None,
+        http_options: Any | None = None,
+    ) -> Any:
+        """Build the google-genai client; the one construction seam for the fleet.
+
+        ``location`` pins a single Vertex location (measurement scripts probe one
+        location at a time) and ``http_options`` bounds the request, so a stalled
+        call surfaces as an error instead of hanging a whole run.
+        """
         from google import genai
 
+        if location is not None:
+            clean_location = str(location).strip()
+            if not _LOCATION_RE.fullmatch(clean_location):
+                raise ValueError("Managed Vertex location is invalid")
+            if not self.project:
+                raise RuntimeError("Managed Vertex binding has no configured project")
+            return genai.Client(
+                vertexai=True,
+                project=self.project,
+                location=clean_location,
+                http_options=http_options,
+            )
         if self.auth_mode == DEVELOPER_API_KEY_AUTH_MODE:
             key = (
                 _clean_env("GEMINI_API_KEY")
@@ -136,6 +160,7 @@ class ManagedGeminiRuntimeBinding:
                 vertexai=True,
                 project=self.project,
                 location=locations[0],
+                http_options=http_options,
             )
         return VertexRegionalClient(
             project=self.project,
