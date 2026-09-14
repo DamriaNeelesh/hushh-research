@@ -104,6 +104,8 @@ const VAULT_COMPACT_ALTERNATIVE_BUTTON_CLASS =
   "min-h-9 h-9 whitespace-nowrap rounded-full border border-[color:var(--app-accent-border)] px-3 text-[13px] font-semibold !bg-[color:var(--app-accent-tint)] !text-[color:var(--app-accent-deep)] hover:!bg-[color:var(--app-accent-surface-strong)]";
 const VAULT_RECOVERY_LINK_CLASS =
   "min-h-11 h-auto self-start rounded-none px-0 py-2 text-[13px] font-medium leading-5 !text-[color:var(--app-accent)] underline-offset-4 hover:underline focus-visible:rounded-[var(--app-radius-sm)]";
+const VAULT_ESCAPE_LINK_CLASS =
+  "min-h-11 h-11 rounded-none px-0 py-0 text-[13px] font-semibold leading-5 !text-[color:var(--app-accent-deep)] underline-offset-2 hover:underline focus-visible:rounded-[var(--app-radius-sm)]";
 const VAULT_INPUT_SHELL_CLASS =
   "flex h-14 items-center gap-3 rounded-[var(--app-input-radius)] border-[1.5px] bg-black/[0.02] px-4 transition-[border-color,box-shadow] dark:bg-white/[0.04] focus-within:border-[color:var(--app-accent)] focus-within:ring-4 focus-within:ring-[color:var(--app-accent-ring)]";
 const VAULT_INPUT_CONTROL_CLASS =
@@ -606,7 +608,7 @@ export function VaultFlow({
   const showUnlockOtherMethods =
     showVaultKeyAlternative ||
     showPasskeyFallbackAlternative ||
-    showRecoveryAlternative;
+    (showRecoveryAlternative && !onSignOut);
   const finalizeUnlock = useCallback(async (decryptedKey: string, attempt: VaultUnlockAttempt): Promise<boolean> => {
     if (!isCurrentAttempt(attempt)) {
       return false;
@@ -649,6 +651,11 @@ export function VaultFlow({
       setIsSigningOut(false);
     }
   }, [cancelAttempt, isSigningOut, onSignOut]);
+
+  const handleShowRecoveryKey = useCallback(() => {
+    switchUnlockMethod();
+    setStep("recovery");
+  }, [switchUnlockMethod]);
 
   // Initial Vault Status Check
   useEffect(() => {
@@ -1415,31 +1422,47 @@ export function VaultFlow({
   // onSignOut); it sits below the unlock methods so it's a deliberate last
   // choice.
   const signOutEscape = onSignOut ? (
-    <div className="pt-2 flex justify-center">
-      <button
-        type="button"
-        onPointerUp={(event) => {
-          event.preventDefault();
-          void handleConfirmSignOut();
-        }}
-        onClick={(event) => {
-          event.preventDefault();
-          void handleConfirmSignOut();
-        }}
-        disabled={isSigningOut}
-        className="mx-auto flex min-h-11 items-center justify-center gap-1 rounded-full px-3 type-footnote disabled:opacity-50"
-      >
+    <div className="flex justify-center pt-[var(--app-form-section-gap)]">
+      <div className="flex min-h-11 flex-wrap items-center justify-center gap-x-2 gap-y-0 type-footnote">
         {isSigningOut ? (
-          <span className="text-muted-foreground font-semibold">Signing out...</span>
+          <span className="font-semibold text-muted-foreground">Signing out...</span>
         ) : (
           <>
             <span className="text-muted-foreground">Can&apos;t get in?</span>
-            <span className="font-semibold text-[color:var(--app-accent-deep)] underline-offset-2 hover:underline dark:text-[color:var(--app-accent-deep)]">
+            {step === "unlock" && showRecoveryAlternative ? (
+              <>
+                <Button
+                  variant="link"
+                  size="sm"
+                  showRipple={false}
+                  className={VAULT_ESCAPE_LINK_CLASS}
+                  data-testid="vault-use-recovery-key-escape"
+                  onClick={handleShowRecoveryKey}
+                  disabled={isSigningOut}
+                >
+                  Recovery key
+                </Button>
+                <span aria-hidden="true" className="text-muted-foreground/50">·</span>
+              </>
+            ) : null}
+            <button
+              type="button"
+              onPointerUp={(event) => {
+                event.preventDefault();
+                void handleConfirmSignOut();
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleConfirmSignOut();
+              }}
+              disabled={isSigningOut}
+              className={VAULT_ESCAPE_LINK_CLASS}
+            >
               Sign out
-            </span>
+            </button>
           </>
         )}
-      </button>
+      </div>
     </div>
   ) : null;
 
@@ -1821,17 +1844,14 @@ export function VaultFlow({
                           {compactGeneratedUnlockLabel}
                         </Button>
                       ) : null}
-                      {showRecoveryAlternative ? (
+                      {showRecoveryAlternative && !onSignOut ? (
                         <Button
                           variant="link"
                           size="sm"
                           showRipple={false}
                           className={cn(VAULT_RECOVERY_LINK_CLASS, "items-start h-11 min-h-11 py-0")}
                           data-testid="vault-use-recovery-key"
-                          onClick={() => {
-                            switchUnlockMethod();
-                            setStep("recovery");
-                          }}
+                          onClick={handleShowRecoveryKey}
                           disabled={isSigningOut}
                         >
                           Recovery key

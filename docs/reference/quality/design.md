@@ -56,6 +56,9 @@ must not recreate shell chrome, safe-area math, an icon well, or a list row.
    separates a label from its control, and `--app-form-section-gap` separates
    a primary action from related methods. A low-emphasis recovery path may be
    a text link with a 44px hit area; it must not look like a second primary CTA.
+   When a credential flow offers a sign-out escape, recovery belongs in that
+   same quiet escape group, with one shared link treatment and clear separation
+   from the primary action.
 
 ## Unified Mobile Header Guidelines
 
