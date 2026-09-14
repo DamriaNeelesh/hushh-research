@@ -108,6 +108,8 @@ const VAULT_INPUT_SHELL_CLASS =
   "flex h-14 items-center gap-3 rounded-[var(--app-input-radius)] border-[1.5px] bg-black/[0.02] px-4 transition-[border-color,box-shadow] dark:bg-white/[0.04] focus-within:border-[color:var(--app-accent)] focus-within:ring-4 focus-within:ring-[color:var(--app-accent-ring)]";
 const VAULT_INPUT_CONTROL_CLASS =
   "h-auto min-h-0 min-w-0 flex-1 rounded-none border-0 bg-transparent px-0 py-0 text-[16px] text-foreground caret-[color:var(--app-accent)] outline-none shadow-none focus-visible:border-transparent focus-visible:ring-0 placeholder:text-foreground/35";
+const VAULT_FIELD_STACK_CLASS = "space-y-[var(--app-form-field-gap)]";
+const VAULT_METHOD_GROUP_CLASS = "space-y-[var(--app-form-related-gap)]";
 
 // A passkey cancellation is a normal user decision, not an application
 // failure. Keep it in the credential surface so the user can choose a
@@ -1523,7 +1525,7 @@ export function VaultFlow({
                 // screen used to make, on the step that actually needs it.
                 description="Only you can open what you save."
               />
-              <div className="space-y-1.5">
+              <div className={VAULT_FIELD_STACK_CLASS}>
                 <Label htmlFor="passphrase" className="type-footnote font-medium text-muted-foreground">
                   Passphrase
                 </Label>
@@ -1557,7 +1559,7 @@ export function VaultFlow({
                     </button>
                   </div>
               </div>
-              <div className="space-y-1.5">
+              <div className={VAULT_FIELD_STACK_CLASS}>
                 <Label htmlFor="confirm" className="type-footnote font-medium text-muted-foreground">
                   Confirm passphrase
                 </Label>
@@ -1678,7 +1680,7 @@ export function VaultFlow({
                 </Alert>
               ) : null}
               {shouldShowPassphraseUnlock && (
-                <div className="space-y-1.5">
+                <div className={VAULT_FIELD_STACK_CLASS}>
                   <Label
                     htmlFor="unlock-passphrase"
                     className="type-footnote font-medium text-muted-foreground"
@@ -1720,7 +1722,7 @@ export function VaultFlow({
                   </div>
                 </div>
               )}
-              <div className="flex flex-col gap-2 pt-1">
+              <div className="flex flex-col gap-[var(--app-form-section-gap)] pt-1">
                 {shouldShowPassphraseUnlock && (
                   <Button
                     variant="none"
@@ -1784,9 +1786,9 @@ export function VaultFlow({
                 )}
 
                 {showUnlockOtherMethods ? (
-                  <div className="space-y-1.5 pt-1">
+                  <div className={VAULT_METHOD_GROUP_CLASS}>
                     <p className="type-footnote font-medium text-muted-foreground">Use another method</p>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-start gap-2">
                       {showVaultKeyAlternative ? (
                         <Button
                           variant="none"
@@ -1824,7 +1826,7 @@ export function VaultFlow({
                           variant="link"
                           size="sm"
                           showRipple={false}
-                          className={VAULT_RECOVERY_LINK_CLASS}
+                          className={cn(VAULT_RECOVERY_LINK_CLASS, "items-start h-11 min-h-11 py-0")}
                           data-testid="vault-use-recovery-key"
                           onClick={() => {
                             switchUnlockMethod();
@@ -1851,7 +1853,7 @@ export function VaultFlow({
                 title="Enter recovery key"
                 description="Use this if your passphrase is unavailable."
               />
-              <div className="space-y-1.5">
+              <div className={VAULT_FIELD_STACK_CLASS}>
                 <Label htmlFor="recovery-key" className="text-xs font-medium sm:text-sm">Recovery Key</Label>
                 <Input
                   id="recovery-key"
@@ -1867,7 +1869,7 @@ export function VaultFlow({
                   className="h-14 px-4 font-mono text-[16px]"
                 />
               </div>
-              <div className="flex flex-col gap-2 pt-2">
+              <div className="flex flex-col gap-[var(--app-form-section-gap)] pt-2">
                 <Button
                   variant="none"
                   effect="fill"
@@ -1885,7 +1887,7 @@ export function VaultFlow({
                     "Unlock"
                   )}
                 </Button>
-                <div className="space-y-1.5">
+                <div className={VAULT_METHOD_GROUP_CLASS}>
                   <p className="type-footnote font-medium text-muted-foreground">Use another method</p>
                   <div
                     className={cn(

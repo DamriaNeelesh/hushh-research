@@ -55,6 +55,25 @@ Rules:
 1. `components/app-ui/surfaces.tsx` is the semantic bridge, not a second primitive system.
 2. Feature folders consume these surfaces; they do not fork them.
 
+## Pattern: Canonical Form Controls
+
+Use the shared field primitives for direct-entry and selection controls:
+`Input`, `InputGroup`, `Textarea`, `SelectTrigger`, `CommandInput`, and
+combobox field shells.
+
+Rules:
+
+1. The outer field geometry comes from `--app-input-radius`, which is the
+   capsule field stop. Compound controls keep inner inputs square so the
+   outer shell owns the silhouette.
+2. Use `--app-form-field-gap` between a label and its control,
+   `--app-form-related-gap` inside a related-method group, and
+   `--app-form-section-gap` between a primary action and its secondary group.
+3. Keep secondary recovery or fallback paths visibly subordinate. A text link
+   may own a 44px hit area, but it should not look like a second filled CTA.
+4. Do not add route-local radius or spacing values when the shared field and
+   form tokens already express the relationship.
+
 ## Pattern: Shared Segmented Tabs
 
 Use the shared segmented control for app-facing rounded tab groups.

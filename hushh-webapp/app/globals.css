@@ -594,7 +594,12 @@ textarea {
   --app-radius-md: 14px;
   --app-radius-lg: 18px;
   --app-radius-pill: 9999px;
-  --app-input-radius: var(--app-radius-lg);
+  /* Direct-entry controls use a capsule silhouette. Compound controls keep
+     their inner input corners square and inherit this radius on the shell. */
+  --app-input-radius: var(--app-radius-pill);
+  --app-form-field-gap: 6px;
+  --app-form-section-gap: 16px;
+  --app-form-related-gap: 4px;
 
   /* Shadow elevation scale — Apple iCloud single-shadow model */
   --theme-color-fillSecondary: rgba(120, 120, 128, 0.36);
@@ -5955,7 +5960,7 @@ body[data-persona-surface="ria"] {
   --ria-cta-height: 3.5rem;
   --ria-cta-shadow: 0 8px 18px var(--morphy-cta-shadow);
   --ria-secondary-border: var(--app-accent-border);
-  --ria-input-radius: var(--app-radius-lg);
+  --ria-input-radius: var(--app-input-radius);
   --ria-input-height: 3.75rem;
   --ria-card-radius: var(--app-card-radius-standard);
   --ria-chip-radius: var(--app-radius-md);

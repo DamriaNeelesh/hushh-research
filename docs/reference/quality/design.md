@@ -51,6 +51,11 @@ must not recreate shell chrome, safe-area math, an icon well, or a list row.
 5. Copy uses plain language. One is the private agent; Kai is the finance
    specialist; Nav is the privacy and consent guardian; KYC is the identity
    workflow specialist.
+6. Form controls use one capsule field geometry and one measured rhythm: the
+   `--app-input-radius` token owns direct-entry shells, `--app-form-field-gap`
+   separates a label from its control, and `--app-form-section-gap` separates
+   a primary action from related methods. A low-emphasis recovery path may be
+   a text link with a 44px hit area; it must not look like a second primary CTA.
 
 ## Unified Mobile Header Guidelines
 
@@ -95,11 +100,35 @@ The radius token does not mean every square is a circle.
 | cards and media | semantic card token | `--app-card-radius-*` only |
 | standalone chrome control | circular or pill only when it is a control | `--app-radius-pill` |
 | avatar, presence dot, toggle thumb | circular | `--app-radius-pill` |
+| direct-entry field or field group | capsule | `--app-input-radius` |
 
 Never use `rounded-full` for a settings, launcher, or app-icon well. Reuse
 `AgentSectionIcon` for agent artwork and `SettingsRow` for settings icon wells.
 Do not use the small generic control radius as the outer radius of a list group
 or card.
+
+Direct-entry fields are the exception to the card/control distinction: `Input`,
+`InputGroup`, `Textarea`, `SelectTrigger`, `CommandInput`, and combobox field shells use
+`--app-input-radius`. Compound fields apply the radius to the outer shell and
+keep their inner input control square so the shell remains visually continuous;
+`CommandInput` is similarly an inner control whose command surface owns the
+visible modal geometry. The token is intentionally a capsule
+(`--app-radius-pill`) and is not a substitute for card radii or standalone
+action geometry.
+
+## Apple reference boundary
+
+This contract adopts Apple-like clarity, hierarchy, spacing, and hit-target
+principles; it is not a claim of Apple platform compliance or a copy of Apple
+visual assets. Apple’s Human Interface Guidelines describe text fields as
+rectangular input areas and emphasize consistent sizing and even spacing. Hussh
+chooses a capsule field silhouette as its own web grammar. The 44px minimum for
+interactive targets and additional separation around un-bezelled links are
+accessibility decisions grounded in the platform guidance:
+
+- [Apple Text Fields](https://developer.apple.com/design/human-interface-guidelines/text-fields)
+- [Apple Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility)
+- [Apple Buttons](https://developer.apple.com/design/human-interface-guidelines/buttons)
 
 ## Signed-in Shell Contract
 
