@@ -552,7 +552,22 @@ function getConsentActionsPayload(
   return { kind: "consent_actions", items };
 }
 
-function getPendingConsentRequestPayload(
+/**
+ * Re-reads a pending consent card item out of the directive payload it was
+ * embedded in. The card item is stored as an untyped payload, so every field
+ * the card or the approve handler needs has to be carried through here; a
+ * field dropped at this hop is dropped for good, however faithfully the
+ * mappers before it copied it.
+ *
+ * The bundle fields (bundleId, bundleLabel, bundleScopeCount,
+ * bundledRequestIds, bundledScopes) are deliberately NOT re-emitted. The fold
+ * below compares `payload.item.bundleId` to decide whether a later request in
+ * the same bundle merges into an existing card; leaving it null here keeps
+ * that fold inert, so a bundle of N requests renders N cards, each approvable
+ * on its own. Re-emitting them would fold the cards while Approve only acted
+ * on the head request; folding needs handleApproveBundle wired first.
+ */
+export function getPendingConsentRequestPayload(
   event: SpecialistDirectiveEvent | null,
 ): PendingConsentRequestDirectivePayload | null {
   if (!event || event.directive.kind !== "prompt") return null;
@@ -612,17 +627,28 @@ function getPendingConsentRequestPayload(
           ? rawItem.additionalAccessSummary
           : null,
       status,
+      // Approve wraps the vault key to the requester's public key, which only
+      // travels in metadata. This parser used to rebuild the item without it,
+      // so the card handed the approve handler nothing to wrap.
+      metadata:
+        rawItem.metadata &&
+        typeof rawItem.metadata === "object" &&
+        !Array.isArray(rawItem.metadata)
+          ? (rawItem.metadata as Record<string, unknown>)
+          : null,
     },
   };
 }
 
-function pendingConsentLookupItemToCardItem(
+export function pendingConsentLookupItemToCardItem(
   item: PendingConsentLookupItem,
 ): SpecialistPendingConsentRequestItem | null {
   const id = String(item.request_id || "").trim();
   if (!id) return null;
   const requesterLabel =
     item.requester_label || item.agent_id || item.developer || "An agent";
+  const metadata = item.metadata ?? null;
+  const expiryHours = metadata?.expiry_hours;
   return {
     id,
     requesterLabel,
@@ -632,9 +658,17 @@ function pendingConsentLookupItemToCardItem(
     scopeDescription: item.scope_description ?? null,
     requestedAt: item.issued_at ?? null,
     approvalTimeoutAt: item.poll_timeout_at ?? null,
+    expiryHours:
+      typeof expiryHours === "number" || typeof expiryHours === "string"
+        ? expiryHours
+        : null,
     reason: item.reason ?? null,
     additionalAccessSummary: item.additional_access_summary ?? null,
     status: "pending",
+    // Approve wraps the vault key to the requester's public key, which rides
+    // in metadata. Dropping it here left handleApprove with nothing to wrap
+    // and the backend refusing the approval as missing its wrapped key.
+    metadata,
     // These three were being dropped here, which is why a fourteen-field
     // request rendered as fourteen unrelated cards: the wire said they were one
     // ask and the mapper threw that away.
@@ -648,7 +682,7 @@ function pendingConsentLookupItemToCardItem(
   };
 }
 
-function pendingConsentCardItemToPendingConsent(
+export function pendingConsentCardItemToPendingConsent(
   item: SpecialistPendingConsentRequestItem,
 ): PendingConsent {
   const requestedAt =
@@ -682,7 +716,64 @@ function pendingConsentCardItemToPendingConsent(
         : undefined,
     reason: item.reason || undefined,
     additionalAccessSummary: item.additionalAccessSummary || undefined,
+    bundleId: item.bundleId || undefined,
+    metadata: item.metadata ?? null,
   };
+}
+
+/**
+ * The requests a pending consent card decides for: the head request first,
+ * then every request folded into the card. A single-request card yields only
+ * its own id, so that path is unchanged.
+ */
+export function pendingConsentCardRequestIds(
+  item: SpecialistPendingConsentRequestItem,
+): string[] {
+  const ids = [item.id, ...(item.bundledRequestIds || [])]
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(ids));
+}
+
+/**
+ * The PendingConsents a card's Approve or Deny acts on.
+ *
+ * A folded card says "you decide together, once", so its buttons must answer
+ * every request in it, not only the head one. The card carries the head
+ * request's metadata only (the others were folded in by id and scope), and
+ * Approve wraps the vault key to the key in each request's own metadata, so a
+ * folded card looks every member up again and acts on whichever are still
+ * pending. A single-request card needs no lookup: the card item already holds
+ * everything the hook reads.
+ */
+export async function resolvePendingConsentCardTargets(input: {
+  userId: string;
+  vaultOwnerToken: string | null;
+  item: SpecialistPendingConsentRequestItem;
+}): Promise<PendingConsent[]> {
+  const requestIds = pendingConsentCardRequestIds(input.item);
+  if (requestIds.length < 2) {
+    return [pendingConsentCardItemToPendingConsent(input.item)];
+  }
+  if (!input.vaultOwnerToken) {
+    throw new Error("Unlock your vault first.");
+  }
+  const result = await ConsentCenterService.lookupPendingRequests({
+    userId: input.userId,
+    vaultOwnerToken: input.vaultOwnerToken,
+    requestIds,
+  });
+  const byId = new Map<string, SpecialistPendingConsentRequestItem>();
+  for (const raw of result.items) {
+    const card = pendingConsentLookupItemToCardItem(raw);
+    if (card) byId.set(card.id, card);
+  }
+  const targets: PendingConsent[] = [];
+  for (const id of requestIds) {
+    const card = byId.get(id);
+    if (card) targets.push(pendingConsentCardItemToPendingConsent(card));
+  }
+  return targets;
 }
 
 function agentMessagePendingConsentRequestId(
@@ -2514,12 +2605,25 @@ export function AgentChatWorkspace({
         timestamp,
       });
     }
+    // The owner reads the action's label, never its identifier.
+    const handoffActionLabel = handoff.actionId
+      ? getKaiActionById(handoff.actionId)?.label?.trim() || null
+      : null;
+    // Only a handoff that waits on the owner may promise a confirmation; a
+    // long-running or delegated one simply continues here.
+    const handoffOwesConfirmation =
+      handoff.reason === "action_requires_chat" ||
+      handoff.reason === "sensitive_action" ||
+      handoff.reason === "manual_only";
+    const handoffPurpose = handoffOwesConfirmation
+      ? "so you can confirm it here"
+      : "so you can finish it here";
     const summaryText =
       assistantText ||
       resultSummary ||
-      (handoff.actionId
-        ? `One moved this ${handoff.actionId} request into chat for the governed action path.`
-        : "One moved this command into chat for the governed action path.");
+      (handoffActionLabel
+        ? `One moved "${handoffActionLabel}" into chat ${handoffPurpose}.`
+        : `One moved this command into chat ${handoffPurpose}.`);
     nextMessages.push({
       id: `handoff-${handoff.id}-assistant`,
       role: "assistant",
@@ -5410,11 +5514,40 @@ export function AgentChatWorkspace({
                         );
                       }}
                       onPendingConsentApprove={async (item) => {
+                        // The hook returns without throwing when the vault is
+                        // locked, which would mark the card approved for an
+                        // approval that never went out. Refuse here instead.
+                        if (!user?.uid || !isVaultUnlocked || !vaultKey) {
+                          addErrorMessage(
+                            "Unlock your vault to approve this request.",
+                          );
+                          return;
+                        }
                         setSpecialistBusyItemId(item.id);
                         try {
-                          await consentActions.handleApprove(
-                            pendingConsentCardItemToPendingConsent(item),
-                          );
+                          // A folded card answers every request in it. Each
+                          // member is looked up again so Approve wraps the key
+                          // in that request's own metadata.
+                          const targets = await resolvePendingConsentCardTargets({
+                            userId: user.uid,
+                            vaultOwnerToken: getVaultOwnerToken(),
+                            item,
+                          });
+                          if (!targets.length) {
+                            addErrorMessage(
+                              "That request is no longer waiting on you.",
+                            );
+                            return;
+                          }
+                          // Quiet so the outcome lands in the transcript, not
+                          // a toast over it. Quiet rethrows a failed request,
+                          // so the card is only marked approved when every
+                          // request in it was.
+                          for (const target of targets) {
+                            await consentActions.handleApprove(target, {
+                              quiet: true,
+                            });
+                          }
                           updateMessage(message.id, (current) => ({
                             ...current,
                             specialistDirective:
@@ -5424,14 +5557,44 @@ export function AgentChatWorkspace({
                                 "approved",
                               ),
                           }));
+                        } catch (error) {
+                          console.error("Chat consent approve failed:", error);
+                          addErrorMessage(
+                            "Could not approve that request. Try again.",
+                          );
                         } finally {
                           setSpecialistBusyItemId(null);
                         }
                       }}
                       onPendingConsentDeny={async (item) => {
+                        // Same guard as approve: the hook returns silently
+                        // without a signed-in owner or an unlocked vault.
+                        if (!user?.uid || !isVaultUnlocked) {
+                          addErrorMessage(
+                            "Unlock your vault to decline this request.",
+                          );
+                          return;
+                        }
                         setSpecialistBusyItemId(item.id);
                         try {
-                          await consentActions.handleDeny(item.id);
+                          // Same shape as approve: a folded card declines every
+                          // request in it, and only those still pending.
+                          const targets = await resolvePendingConsentCardTargets({
+                            userId: user.uid,
+                            vaultOwnerToken: getVaultOwnerToken(),
+                            item,
+                          });
+                          if (!targets.length) {
+                            addErrorMessage(
+                              "That request is no longer waiting on you.",
+                            );
+                            return;
+                          }
+                          for (const target of targets) {
+                            await consentActions.handleDeny(target.id, {
+                              quiet: true,
+                            });
+                          }
                           updateMessage(message.id, (current) => ({
                             ...current,
                             specialistDirective:
@@ -5441,6 +5604,11 @@ export function AgentChatWorkspace({
                                 "denied",
                               ),
                           }));
+                        } catch (error) {
+                          console.error("Chat consent deny failed:", error);
+                          addErrorMessage(
+                            "Could not decline that request. Try again.",
+                          );
                         } finally {
                           setSpecialistBusyItemId(null);
                         }

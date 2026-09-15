@@ -74,7 +74,8 @@ async def test_nav_agent_returns_consent_required_directive_without_review_scope
     assert result.directive is not None
     assert result.directive.kind == "prompt"
     assert result.directive.payload["requiredScope"] == ConsentScope.AGENT_NAV_REVIEW.value
-    assert "cannot review" in result.text
+    assert "allow the consent assistant" in result.text
+    assert ConsentScope.AGENT_NAV_REVIEW.value not in result.text
 
 
 @pytest.mark.asyncio

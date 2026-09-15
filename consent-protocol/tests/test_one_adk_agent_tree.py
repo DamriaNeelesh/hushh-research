@@ -257,7 +257,13 @@ class TestAgentTreeShape:
         assert "KYC app surface" in ONE_IDENTITY_INSTRUCTION
         assert "Gmail receipt sync and inbox search are paused" in ONE_IDENTITY_INSTRUCTION
         assert "named CRM" in ONE_IDENTITY_INSTRUCTION
-        assert "summon that specialist" in ONE_IDENTITY_INSTRUCTION
+        # One names that it summons specialists rather than doing their work
+        # itself (the roster line from build_specialist_capability_catalog).
+        assert (
+            "you summon these rather than acting in their domain yourself"
+            in ONE_IDENTITY_INSTRUCTION
+        )
+        assert "hand work to a specialist only where you do not" in ONE_IDENTITY_INSTRUCTION
         # Onboarding's own instance of the same rule (replaces "When the
         # exact generated id is uncertain, call list_app_actions").
         assert (

@@ -36,10 +36,9 @@ class NavAgent:
         if not validation.ok:
             return SpecialistTurnResult(
                 conversation_id=task.conversation_id or "",
-                text=(
-                    "Nav cannot review this request without an active "
-                    f"{validation.required_scope.value} consent grant."
-                ),
+                # Owner words only: the scope id stays in the directive payload
+                # below, where the app reads it, never in the sentence.
+                text="I can review your sharing once you allow the consent assistant to see it.",
                 directive=A2ADirective(
                     kind="prompt",
                     payload={

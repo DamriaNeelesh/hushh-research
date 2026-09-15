@@ -17,7 +17,10 @@ from typing import Any, Awaitable, Callable, MutableMapping
 from hushh_mcp.consent import token as consent_token
 from hushh_mcp.consent.segment_labels import humanize_path
 from hushh_mcp.services.actor_identity_service import ActorIdentityService
-from hushh_mcp.services.consent_center_service import ConsentCenterService
+from hushh_mcp.services.consent_center_service import (
+    ConsentCenterService,
+    requester_identity_metadata,
+)
 from hushh_mcp.services.consent_db import ConsentDBService
 
 logger = logging.getLogger(__name__)
@@ -182,12 +185,22 @@ class ConsentLifecycleService:
         subject_user_id = _clean(pending.get("user_id")) or user_id
         metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
         developer_label = metadata.get("developer_app_display_name") or pending["developer"]
+        # A denial written without the bundle id falls out of its group in the
+        # owner's history and reads as a stray decision on nothing in particular;
+        # one without the requester identity headlines that group with the raw
+        # principal id. Both come from the pending row, so both travel.
+        bundle_id = _clean(metadata.get("bundle_id"))
+        denied_metadata = {
+            **requester_identity_metadata(metadata),
+            **({"bundle_id": bundle_id} if bundle_id else {}),
+        }
         await self._db.insert_event(
             user_id=subject_user_id,
             agent_id=pending["developer"],
             scope=pending["scope"],
             action="CONSENT_DENIED",
             request_id=request_id,
+            metadata=denied_metadata or None,
         )
         logger.info("consent.denied_event_saved")
         return {"status": "denied", "message": f"Consent denied to {developer_label}"}
