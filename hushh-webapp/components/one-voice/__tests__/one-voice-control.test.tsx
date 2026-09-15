@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OneVoiceControl } from "@/components/one-voice/one-voice-control";
 import { useAgentVoiceState } from "@/lib/agent/agent-voice-state";
+import { navigateToAgentChat } from "@/lib/navigation/agent-navigation";
 import type { ServerFrame } from "@/lib/one-voice/protocol";
 import {
   dispatchServerFrame,
@@ -25,7 +26,6 @@ import {
 const harness = vi.hoisted(() => ({
   pathname: "/one/location",
   user: { uid: "owner" } as { uid: string } | null,
-  popover: { expanded: false, motionState: "closed", openAgent: vi.fn() },
   native: false,
   openSettings: vi.fn(async () => ({ opened: true })),
   session: null as VoiceSessionController | null,
@@ -35,8 +35,8 @@ vi.mock("next/navigation", () => ({ usePathname: () => harness.pathname }));
 vi.mock("@/hooks/use-auth", () => ({
   useAuth: () => ({ user: harness.user }),
 }));
-vi.mock("@/components/agent/agent-popover-provider", () => ({
-  useOptionalAgentPopover: () => harness.popover,
+vi.mock("@/lib/navigation/agent-navigation", () => ({
+  navigateToAgentChat: vi.fn(),
 }));
 vi.mock("@/lib/capacitor/platform", () => ({ isNative: () => harness.native }));
 vi.mock("@/lib/capacitor/one-voice-invocation", () => ({
@@ -96,8 +96,7 @@ function connect() {
 beforeEach(() => {
   harness.session = makeSession();
   harness.native = false;
-  harness.popover.expanded = false;
-  harness.popover.motionState = "closed";
+  vi.mocked(navigateToAgentChat).mockClear();
   act(() => {
     useVoiceSessionStore.getState().reset();
     useAgentVoiceState.getState().reset();
@@ -132,7 +131,7 @@ describe("OneVoiceControl", () => {
     expect(screen.queryByTestId("one-voice-panel")).toBeNull();
     expect(screen.queryByTestId("one-voice-stop")).toBeNull();
     fireEvent.click(screen.getByTestId("one-agent-chat-open"));
-    expect(harness.popover.openAgent).toHaveBeenCalledTimes(1);
+    expect(navigateToAgentChat).toHaveBeenCalledTimes(1);
   });
 
   it("seats layout=fixed above the nav with the shared bottom variable", () => {
@@ -348,12 +347,10 @@ describe("OneVoiceControl", () => {
     expect(screen.getByTestId("one-voice-pending-action")).toHaveFocus();
   });
 
-  it("hides the idle dock behind the expanded chat popover but never an active session", () => {
-    harness.popover.expanded = true;
+  it("keeps the idle dock visible while chat is a route-level workspace", () => {
     render(<OneVoiceControl layout="slot" />);
-    expect(screen.getByTestId("one-voice-agent-bar")).toHaveAttribute(
+    expect(screen.getByTestId("one-voice-agent-bar")).not.toHaveAttribute(
       "aria-hidden",
-      "true",
     );
     connect();
     expect(screen.getByTestId("one-voice-agent-bar")).not.toHaveAttribute(

@@ -31,10 +31,10 @@ import {
 import { usePathname } from "next/navigation";
 import { AudioLines, Keyboard, MessageCircle, Send, X } from "lucide-react";
 
-import { useOptionalAgentPopover } from "@/components/agent/agent-popover-provider";
 import { useVoiceSession } from "@/components/one-voice/voice-session-provider";
 import { useAuth } from "@/hooks/use-auth";
 import { isNative } from "@/lib/capacitor/platform";
+import { navigateToAgentChat } from "@/lib/navigation/agent-navigation";
 import { getKaiChromeState } from "@/lib/navigation/kai-chrome-state";
 import { isFoundationPublicRoute } from "@/lib/navigation/routes";
 import {
@@ -76,7 +76,6 @@ export function OneVoiceControl({
   const session = useVoiceSession();
   const state = useVoiceSessionState();
   const pathname = usePathname();
-  const popover = useOptionalAgentPopover();
   const { user } = useAuth();
   const inputId = useId();
   const stackRef = useRef<HTMLDivElement | null>(null);
@@ -91,13 +90,6 @@ export function OneVoiceControl({
   const engaged = active || state.error !== null;
   const hasPanel = engaged && panelHasContent(state);
   const panelOpen = hasPanel && !collapsed;
-  const hidden =
-    !engaged &&
-    Boolean(
-      popover?.expanded ||
-      popover?.motionState === "opening" ||
-      popover?.motionState === "closing",
-    );
   const noNavbar =
     !user ||
     getKaiChromeState(pathname).useOnboardingChrome ||
@@ -265,9 +257,7 @@ export function OneVoiceControl({
         className={cn(
           "bottom-chrome-surface pointer-events-auto relative flex w-full items-center overflow-hidden rounded-full transition-opacity motion-reduce:transition-none",
           layout === "slot" ? DOCK_WIDTH_SLOT : DOCK_WIDTH_FIXED,
-          hidden && "pointer-events-none opacity-0",
         )}
-        aria-hidden={hidden}
       >
         {active ? (
           <VoiceStatePill
@@ -319,7 +309,7 @@ export function OneVoiceControl({
             type="button"
             data-testid="one-agent-chat-open"
             data-agent-action="chat"
-            onClick={() => popover?.openAgent()}
+            onClick={() => navigateToAgentChat()}
             aria-label="Chat with One"
             className="flex h-11 min-w-[88px] shrink-0 items-center justify-center gap-1.5 rounded-r-full border-l border-current/15 px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-focus-ring)] sm:min-w-[96px]"
           >
