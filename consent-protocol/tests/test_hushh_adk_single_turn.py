@@ -63,6 +63,30 @@ async def test_single_turn_uses_none_history_and_returns_pydantic_value():
 
 
 @pytest.mark.asyncio
+async def test_single_turn_preserves_multimodal_message_content():
+    agent = build_single_turn_agent(
+        _manifest(),
+        output_schema=Decision,
+        model=ScriptedLlm('{"answer":"read","score":1.0}'),
+    )
+    message = types.Content(
+        role="user",
+        parts=[
+            types.Part.from_text(text="Extract this statement."),
+            types.Part.from_bytes(data=b"fixture", mime_type="application/pdf"),
+        ],
+    )
+    result = await run_single_turn(
+        agent,
+        prompt_parts="unused when message_content is supplied",
+        message_content=message,
+        user_id="owner",
+        consent_token="token",  # noqa: S106
+    )
+    assert result == Decision(answer="read", score=1.0)
+
+
+@pytest.mark.asyncio
 async def test_single_turn_rejects_invalid_structured_output():
     agent = build_single_turn_agent(
         _manifest(), output_schema=Decision, model=ScriptedLlm('{"answer": "missing score"}')

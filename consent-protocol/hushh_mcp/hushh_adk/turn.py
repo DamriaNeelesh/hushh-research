@@ -137,7 +137,7 @@ async def run_specialist_adk_turn(
     app_name: str,
     user_id: str,
     consent_token: str,
-    message: str,
+    message: str | types.Content,
     history: Sequence[Any] = (),
     state: Mapping[str, Any] | None = None,
     vault_keys: Mapping[str, str] | None = None,
@@ -158,8 +158,20 @@ async def run_specialist_adk_turn(
     ADK 2.9 Runner requires root mode chat or task; callers author that mode.
     Failed turns expose completed results on SpecialistAdkTurnError.partial_turn.
     """
-    if not app_name.strip() or not user_id.strip() or not message.strip():
+    if not app_name.strip() or not user_id.strip():
         raise ValueError("Specialist app, user, and message are required")
+    if isinstance(message, str):
+        if not message.strip():
+            raise ValueError("Specialist app, user, and message are required")
+        user_message = types.Content(
+            role="user", parts=[types.Part.from_text(text=message.strip())]
+        )
+    elif isinstance(message, types.Content):
+        if not message.parts:
+            raise ValueError("Specialist message content must contain parts")
+        user_message = message
+    else:  # pragma: no cover - guarded by the public type contract
+        raise TypeError("Specialist message must be text or google.genai.types.Content")
     if isinstance(max_llm_calls, bool) or not isinstance(max_llm_calls, int) or max_llm_calls < 1:
         raise ValueError("Specialist model-call budget must be a positive integer")
     started = time.perf_counter()
@@ -210,7 +222,7 @@ async def run_specialist_adk_turn(
             source = runner.run_async(
                 user_id=user_id,
                 session_id=session.id,
-                new_message=types.Content(role="user", parts=[types.Part.from_text(text=message)]),
+                new_message=user_message,
                 run_config=RunConfig(max_llm_calls=max_llm_calls),
             )
             async for event in bounded_adk_events(

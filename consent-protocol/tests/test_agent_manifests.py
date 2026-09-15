@@ -94,6 +94,20 @@ def test_kyc_llm_genes_are_manifest_owned_single_turn_contracts() -> None:
         assert gene.rollout.rollback.strip()
 
 
+def test_portfolio_import_extractor_is_manifest_owned_single_turn_contract() -> None:
+    manifest = load("portfolio_import")
+    extractor = next(
+        child for child in manifest.subagents if child.id == "agent_portfolio_import_extract"
+    )
+    assert extractor.model.name == "gemini-default"
+    assert resolve_fleet_model_name(extractor.model.name) == GEMINI_MODEL
+    assert extractor.runtime.adk_mode == "single_turn"
+    assert extractor.runtime.transport == ["in_process"]
+    assert extractor.privacy.plaintext_telemetry is False
+    assert extractor.performance.max_output_tokens == 32768
+    assert extractor.rollout.rollback.strip()
+
+
 def test_connected_systems_schema_mapper_is_manifest_owned_and_toolless() -> None:
     manifest = load("connected_systems")
     mapper = next(child for child in manifest.subagents if child.id == "crm_schema_mapper")

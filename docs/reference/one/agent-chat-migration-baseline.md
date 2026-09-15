@@ -109,3 +109,15 @@ The first three-repetition run observed 155 model requests. The progress-aware c
 A preceding run was interrupted at the user's pause request and is not a completed measurement. Its partial log remains preserved. Complete reports are under `consent-protocol/artifacts/regression/phase-a/`, including `nav-adk-37-acceptance-resumed.json`. The measured dirty source was based on `d7c0ce99a` and preserved under the integration worktree's `tmp/phase-a-measured-source/` before subsequent edits. These measurements do not cover A2's later Connections and authority changes.
 
 The shared execution foundation is committed as `06e3373a7`; strict owner/hop primitives as `6e6d150cc`; nested-progress correction as `f2a916a4d`. Phase A's earlier frozen-source checks passed 3,092 backend tests (111 skipped) and 7,146 web tests (six skipped). These passing suites do not override failed live acceptance or establish completion of the remaining migration phases.
+
+### Phase G continuation: Portfolio Import extraction boundary
+
+The resumable Portfolio Import stream now routes its single extraction request
+through the manifest-owned `agent_portfolio_import_extract` ADK single-turn gene.
+The route preserves the existing canonical SSE stages, terminal payload, strict
+top-level extraction keys, deterministic PDF excerpt selection, and the original
+document part when required. The model is resolved from `gemini-default` through
+the shared fleet resolver; the route no longer calls the provider streaming API
+directly. This phase has unit and source-contract coverage, but no live brokerage
+document run has been claimed. The legacy non-stream `PortfolioImportService`
+parsers and other specialist loops remain in the remaining migration queue.

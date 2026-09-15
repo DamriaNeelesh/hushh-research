@@ -120,6 +120,7 @@ async def run_single_turn(
     consent_token: str,
     thinking_level: str | None = None,
     timeout_seconds: float | None = None,
+    message_content: types.Content | None = None,
 ) -> Any:
     """Run one schema-constrained gene and return its validated result.
 
@@ -136,12 +137,18 @@ async def run_single_turn(
     if total_timeout <= 0:
         raise ValueError("single-turn timeout must be positive")
     event_timeout = min(30.0, total_timeout)
+    if message_content is not None:
+        if not isinstance(message_content, types.Content) or not message_content.parts:
+            raise ValueError("single-turn message_content must contain parts")
+        message: str | types.Content = message_content
+    else:
+        message = _prompt_text(prompt_parts)
     turn = await run_specialist_adk_turn(
         agent=agent,
         app_name=f"hushh_single_turn_{agent.name}",
         user_id=user_id,
         consent_token=consent_token,
-        message=_prompt_text(prompt_parts),
+        message=message,
         max_llm_calls=1,
         first_event_timeout_s=event_timeout,
         between_event_timeout_s=event_timeout,
