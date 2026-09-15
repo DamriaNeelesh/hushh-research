@@ -195,5 +195,38 @@ class KaiOrchestrator(HushhAgent):
         return results
 
 
-# Export singleton for convenience
-kai_orchestrator = KaiOrchestrator(user_id="default", risk_profile="balanced")
+_kai_orchestrator: KaiOrchestrator | None = None
+
+
+def get_kai_orchestrator(
+    *,
+    user_id: str = "default",
+    risk_profile: RiskProfile = "balanced",
+    processing_mode: ProcessingMode = "hybrid",
+) -> KaiOrchestrator:
+    """Return the compatibility orchestrator, constructing it on first use.
+
+    The old module-level singleton constructed three legacy analyst objects and
+    their provider configuration during import.  That made health checks and
+    route discovery perform model-adjacent work before a request had supplied
+    an owner or consent token.  Keep the convenience singleton, but make its
+    lifecycle explicit and lazy.  Non-default callers still receive an
+    isolated orchestrator, preserving the route's per-request risk profile.
+    """
+    global _kai_orchestrator
+    if user_id != "default" or risk_profile != "balanced" or processing_mode != "hybrid":
+        return KaiOrchestrator(
+            user_id=user_id,
+            risk_profile=risk_profile,
+            processing_mode=processing_mode,
+        )
+    if _kai_orchestrator is None:
+        _kai_orchestrator = KaiOrchestrator(
+            user_id=user_id,
+            risk_profile=risk_profile,
+            processing_mode=processing_mode,
+        )
+    return _kai_orchestrator
+
+
+__all__ = ["KaiOrchestrator", "get_kai_orchestrator"]
