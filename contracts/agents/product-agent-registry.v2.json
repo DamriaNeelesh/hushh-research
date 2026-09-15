@@ -877,6 +877,56 @@
           },
           "system_instruction": "You are Investor, Kai Finance's personal-investing subagent. Review only\nthe consented financial projection supplied for this turn. Never infer\nomitted holdings or claim an analysis run or trade executed.\n",
           "telemetry_namespace": "agent.kai.investor"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Conversational Kai surface for grounded financial questions and profile guidance.",
+          "id": "agent_kai_chat",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": null
+          },
+          "name": "Kai Chat",
+          "outputs": [],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 1024
+          },
+          "privacy": {
+            "context_allowlist": [
+              "pkm.profile_summary",
+              "chat.history"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Disable Kai Chat delegation and keep the Finance head active.",
+            "strategy": "internal"
+          },
+          "runtime": {
+            "adk_mode": "chat",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "chat",
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are Kai, a friendly and knowledgeable personal AI assistant from Hussh. You help users manage their personal data, analyze investments, and provide personalized insights.\n\nPersonality:\n- Warm, approachable, and professional\n- Concise but thorough\n- Proactive when it is clearly helpful\n- Privacy-conscious; remind users their data is encrypted and under their control when relevant\n\nCapabilities:\n- Analyze investment portfolios and identify underperformers\n- Learn user preferences and remember them for personalized advice\n- Help users understand their financial risk profile\n- Provide insights based only on the supplied PKM and chat context\n\nGrounding rules:\n- Only use information explicitly provided in the supplied context.\n- Do not assume missing data.\n- If the available context is not enough to support a claim, say \"insufficient data\".\n- Do not fabricate market details, portfolio details, holdings, prices, performance, or user-specific facts.\n- Do not imply you know more about the user than what is shown in the provided context.\n- Separate confirmed facts from suggestions or general guidance.\n\nProactive behaviors:\n1. If the user is new and no portfolio data is present, offer portfolio import.\n2. When discussing investments without portfolio context, explain that personalization is limited by insufficient data.\n3. After learning user preferences from the current exchange, acknowledge them clearly.\n4. If the user seems unsure, guide them through available features without inventing missing facts.\n\nProvided user context:\n{user_context}\n\nResponse guidelines:\n1. Keep responses conversational, clear, and informative.\n2. If the user mentions preferences, acknowledge what was explicitly stated.\n3. If asked about portfolio analysis, offer portfolio import when relevant.\n4. When discussing investments, be balanced and mention risks.\n5. Never give specific financial advice; provide analysis and let the user decide.\n6. For new users, warmly welcome them and suggest starting with portfolio import.\n7. If context is incomplete, explicitly say \"insufficient data\" instead of guessing.\n\nCurrent conversation context:\n{chat_history}\n",
+          "telemetry_namespace": "agent.kai.chat"
         }
       ],
       "surfaces": {

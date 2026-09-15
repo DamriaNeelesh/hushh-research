@@ -56,6 +56,14 @@ def test_core_specialists_have_distinct_ids_and_reserved_authority() -> None:
     assert load("location").required_scopes == ["cap.location.live.share"]
 
 
+def test_kai_chat_behavior_is_manifest_owned() -> None:
+    manifest = load("kai")
+    chat = next(child for child in manifest.subagents if child.id == "agent_kai_chat")
+    assert chat.runtime.adk_mode == "chat"
+    assert "pkm.profile_summary" in chat.privacy.context_allowlist
+    assert "insufficient data" in chat.system_instruction
+
+
 def test_kyc_owns_strict_zero_knowledge_formatter_contract() -> None:
     capabilities = load("kyc").capabilities
     formatter = capabilities["approved_disclosure_formatter"]
