@@ -86,6 +86,14 @@ before reconsidering that boundary. KYC's four bounded drafting and extraction c
 are now manifest-owned single-turn genes, with the current service contracts and
 unit fakes preserved for deterministic tests.
 
+The live KYC routing fixture was run against the personal Vertex bridge on
+`gemini-3.7-flash` at commit `9fb674ea8`: **8/10 (80%)**, meeting the explicit
+`MIN_ACCURACY = 0.8` gate. The two retained misses were the financial-only
+classification label and a travel-preference request; both remain visible in the
+fixture output. An earlier live attempt exposed a `gemini-default` alias being sent
+literally and returning Vertex 404; the shared single-turn factory now resolves that
+alias through `HUSHH_GEMINI_TEXT_MODEL`. No 3.8 live result is claimed here.
+
 ### Phase A live specialist evaluation
 
 The unchanged 22 Nav cases were evaluated through the real public Nav/Consent ADK path on Gemini 3.7, personal54/global. These are synthetic service fixtures with real model calls, not browser or production proof.
