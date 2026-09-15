@@ -138,12 +138,14 @@ class ManagedGeminiRuntimeBinding:
                 raise ValueError("Managed Vertex location is invalid")
             if not self.project:
                 raise RuntimeError("Managed Vertex binding has no configured project")
-            return genai.Client(
-                vertexai=True,
-                project=self.project,
-                location=clean_location,
-                http_options=http_options,
-            )
+            client_kwargs: dict[str, Any] = {
+                "vertexai": True,
+                "project": self.project,
+                "location": clean_location,
+            }
+            if http_options is not None:
+                client_kwargs["http_options"] = http_options
+            return genai.Client(**client_kwargs)
         if self.auth_mode == DEVELOPER_API_KEY_AUTH_MODE:
             key = (
                 _clean_env("GEMINI_API_KEY")
@@ -156,12 +158,14 @@ class ManagedGeminiRuntimeBinding:
 
         locations = self.locations_for_model(model) if model else self.locations
         if len(locations) == 1:
-            return genai.Client(
-                vertexai=True,
-                project=self.project,
-                location=locations[0],
-                http_options=http_options,
-            )
+            client_kwargs = {
+                "vertexai": True,
+                "project": self.project,
+                "location": locations[0],
+            }
+            if http_options is not None:
+                client_kwargs["http_options"] = http_options
+            return genai.Client(**client_kwargs)
         return VertexRegionalClient(
             project=self.project,
             locations=locations,
