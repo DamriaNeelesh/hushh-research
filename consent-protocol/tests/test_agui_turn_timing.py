@@ -219,3 +219,65 @@ def test_agent_chat_route_builds_timed_agents_for_both_heads():
     assert isinstance(agent_chat._intro_agent, TimedADKAgent)
     assert agent_chat._intro_agent.head == HEAD_INTRO
     assert agent_chat._agent is not agent_chat._intro_agent
+
+
+def _agent_with_registry(head: str = HEAD_ONE) -> TimedADKAgent:
+    agent = _agent(head)
+    agent._active_executions = {(THREAD_ID, USER_ID): object()}
+    agent._execution_lock = asyncio.Lock()
+    agent._get_user_id = lambda input_data: USER_ID  # type: ignore[method-assign]
+    return agent
+
+
+async def test_errored_run_releases_its_execution_slot(monkeypatch, caplog):
+    script = [
+        (0.0, RunStartedEvent(thread_id=THREAD_ID, run_id=RUN_ID)),
+        (0.0, RunErrorEvent(message="deadline expired", code="EXECUTION_ERROR")),
+    ]
+    monkeypatch.setattr(ADKAgent, "run", _scripted_run(script))
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    agent = _agent_with_registry()
+
+    await _drain(agent)
+
+    assert (THREAD_ID, USER_ID) not in agent._active_executions
+    assert _fields(_timing_lines(caplog)[0])["outcome"] == OUTCOME_ERROR
+
+
+async def test_finished_run_leaves_the_bridge_registry_alone(monkeypatch, caplog):
+    monkeypatch.setattr(ADKAgent, "run", _scripted_run(_normal_script()))
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    agent = _agent_with_registry()
+
+    await _drain(agent)
+
+    # A finished run may legitimately keep its execution for a HITL resume;
+    # only the bridge decides that, never the timing wrapper.
+    assert (THREAD_ID, USER_ID) in agent._active_executions
+
+
+async def test_client_disconnect_releases_its_execution_slot(monkeypatch, caplog):
+    async def stalling_run(self: ADKAgent, input: RunAgentInput) -> AsyncGenerator[BaseEvent, None]:
+        yield RunStartedEvent(thread_id=THREAD_ID, run_id=RUN_ID)
+        await asyncio.sleep(10)
+        yield RunFinishedEvent(thread_id=THREAD_ID, run_id=RUN_ID)
+
+    monkeypatch.setattr(ADKAgent, "run", stalling_run)
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    agent = _agent_with_registry()
+    stream = agent.run(_input())
+    await stream.__anext__()
+    await stream.aclose()
+
+    assert (THREAD_ID, USER_ID) not in agent._active_executions
+    assert _fields(_timing_lines(caplog)[0])["outcome"] == OUTCOME_CLIENT_DISCONNECT
+
+
+def test_agent_chat_route_bounds_the_execution_registry():
+    from api.routes.one import agent_chat
+
+    for agent in (agent_chat._agent, agent_chat._intro_agent):
+        assert agent._max_concurrent == agent_chat._MAX_CONCURRENT_EXECUTIONS
+        assert agent._execution_timeout == agent_chat._EXECUTION_TIMEOUT_SECONDS
+    assert agent_chat._MAX_CONCURRENT_EXECUTIONS > 10
+    assert agent_chat._EXECUTION_TIMEOUT_SECONDS <= 120

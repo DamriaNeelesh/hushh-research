@@ -143,10 +143,21 @@ _intro_capabilities = {
     "multiAgent": {"supported": False, "delegation": False, "handoffs": False},
     "humanInTheLoop": {"supported": False, "interrupts": False},
 }
+# The bridge defaults to 10 concurrent executions per process, across every
+# person, and keeps a slot for 600 s when a run leaves a pending tool call. Ten
+# people mid-confirmation would lock the route for everyone. These bounds are
+# per process, not per person; TimedADKAgent releases slots for runs that end
+# in error or disconnect. Measured 2026-09-14 on localhost with the latency
+# driver (agent-chat-migration-baseline).
+_MAX_CONCURRENT_EXECUTIONS = 64
+_EXECUTION_TIMEOUT_SECONDS = 120
+
 _agent = TimedADKAgent.from_app(
     _app,
     head=HEAD_ONE,
     user_id_extractor=_user_id,
+    max_concurrent_executions=_MAX_CONCURRENT_EXECUTIONS,
+    execution_timeout_seconds=_EXECUTION_TIMEOUT_SECONDS,
     session_service=_session_service,
     use_in_memory_services=True,
     use_thread_id_as_session_id=True,
@@ -157,6 +168,8 @@ _intro_agent = TimedADKAgent.from_app(
     _intro_app,
     head=HEAD_INTRO,
     user_id_extractor=_user_id,
+    max_concurrent_executions=_MAX_CONCURRENT_EXECUTIONS,
+    execution_timeout_seconds=_EXECUTION_TIMEOUT_SECONDS,
     # Anonymous and Firebase-only pre-vault turns intentionally remain
     # ephemeral. Durable history begins only after VAULT_OWNER authority is
     # present, where the encrypted owner-bound store can enforce teardown.
