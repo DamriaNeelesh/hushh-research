@@ -149,3 +149,15 @@ The SSE route emits the existing stage/chunk/complete envelope while polling
 one bounded model task, and disconnects cancel that task. Renaissance context,
 request validation, and deterministic fallback behavior remain route-owned;
 no trade or external write is performed by the gene.
+
+### Phase F continuation: legacy Kai chat authority path
+
+The product-facing `/api/kai/chat` route now passes the authenticated vault-owner token into
+the manifest-owned `agent_kai_chat` ADK chat child. The service keeps its existing conversation,
+PKM context, response validation, component hints, and safe fallback contracts; only the
+authoritative generation path changes. Unauthenticated direct service tests retain their
+provider fixture seam, while authenticated route traffic uses one bounded ADK model call with
+the shared managed Vertex adapter and no child transfer. Commit `34be51bd8` adds runtime,
+route, manifest-boundary, and auth-matrix coverage. Focused Kai tests pass (96/96), and the
+full backend runner passes (3,867 passed, 191 skipped). A live provider run is not claimed by
+this source phase; the existing route/latency evidence above remains the acceptance record.
