@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AC0011223344556677889901 /* CountryPickerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0011223344556677889902 /* CountryPickerTests.swift */; };
 		139101184C4F226D678D2C5B /* AppUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14D3E927F8363CA903B58341 /* AppUITestsLaunchTests.swift */; };
 		19493A2C811E742D1FAA4874 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D70EFDA31DB35F5785665EA6 /* Foundation.framework */; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
@@ -77,6 +78,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AC0011223344556677889902 /* CountryPickerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CountryPickerTests.swift; sourceTree = "<group>"; };
 		0E424BC311E720A549078D16 /* NativeTestSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NativeTestSupport.swift; sourceTree = "<group>"; };
 		14D3E927F8363CA903B58341 /* AppUITestsLaunchTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppUITestsLaunchTests.swift; sourceTree = "<group>"; };
 		21773A44233202A79EA4E97B /* AppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -166,6 +168,7 @@
 			isa = PBXGroup;
 			children = (
 				423141872FACCBA5C6BB6BE5 /* AppUITests.swift */,
+				AC0011223344556677889902 /* CountryPickerTests.swift */,
 				66FF55EE44DD33CC22BB11AA /* LocationPickerLocateMeTests.swift */,
 				14D3E927F8363CA903B58341 /* AppUITestsLaunchTests.swift */,
 				A11C0A730000000000000027 /* OneVoiceMicrophonePermissionBootstrapTests.swift */,
@@ -497,6 +500,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B54CF1772B3BDD70BFEC7B19 /* AppUITests.swift in Sources */,
+				AC0011223344556677889901 /* CountryPickerTests.swift in Sources */,
 				AA11BB22CC33DD44EE55FF66 /* LocationPickerLocateMeTests.swift in Sources */,
 				139101184C4F226D678D2C5B /* AppUITestsLaunchTests.swift in Sources */,
 				A11C0A730000000000000028 /* OneVoiceMicrophonePermissionBootstrapTests.swift in Sources */,

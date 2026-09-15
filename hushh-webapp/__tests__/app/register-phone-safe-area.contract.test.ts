@@ -59,7 +59,7 @@ describe("/register-phone safe-area shell contract", () => {
 
     expect(source).toContain("🤫");
     expect(source).not.toContain("one-quiet-emoji.png");
-    expect(source).toContain('sendCodeLabel="Send a verification code"');
+    expect(source).toContain('sendCodeLabel="Continue"');
     expect(source).toContain("primaryActionClassName={styles.primaryAction}");
     expect(source).toContain('verificationStep === "phone" && styles.refinedScreen');
     expect(source.match(/<PhoneVerificationFlow\b/g)).toHaveLength(1);
