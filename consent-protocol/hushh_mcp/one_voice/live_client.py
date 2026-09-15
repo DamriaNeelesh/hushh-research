@@ -126,9 +126,31 @@ class GeminiLiveSession:
         await self._session.send_realtime_input(audio_stream_end=True)
 
     async def events(self) -> AsyncIterator[LiveEvent]:
-        async for message in self._session.receive():
-            for event in translate_message(message):
-                yield event
+        """Yield events for the whole session.
+
+        ``AsyncSession.receive()`` represents ONE model turn: it stops after
+        ``turn_complete``. The session stays open, so keep receiving turns
+        until the connection really closes (an empty pass or a closed-socket
+        error).
+        """
+        while True:
+            yielded = False
+            try:
+                async for message in self._session.receive():
+                    yielded = True
+                    for event in translate_message(message):
+                        yield event
+            except Exception as exc:  # noqa: BLE001 - closed socket ends the stream
+                if _is_connection_closed(exc):
+                    return
+                raise
+            if not yielded:
+                return
+
+
+def _is_connection_closed(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    return name.startswith("ConnectionClosed") or isinstance(exc, ConnectionError)
 
 
 def translate_message(message: Any) -> list[LiveEvent]:

@@ -194,7 +194,8 @@ async def main() -> dict[str, object]:
         client = build_managed_live_client(
             model=live_config.model_id, location=live_config.location
         )
-        connect_config = types.LiveConnectConfig(response_modalities=[types.Modality.TEXT])
+        # Native-audio Live models refuse TEXT-only sessions; AUDIO proves availability.
+        connect_config = types.LiveConnectConfig(response_modalities=[types.Modality.AUDIO])
         async with client.aio.live.connect(model=live_config.model_id, config=connect_config):
             return
 

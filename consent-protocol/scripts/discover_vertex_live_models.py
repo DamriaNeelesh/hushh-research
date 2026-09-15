@@ -63,7 +63,14 @@ UNAVAILABLE = "unavailable"
 NOT_REGISTERED = "not_registered"
 
 _POLICY_MARKERS = ("allowedmodels", "org policy", "organization policy", "constraints/vertexai")
-_NOT_FOUND_MARKERS = ("not found", "404", "does not exist", "is not supported", "unsupported model")
+_NOT_FOUND_MARKERS = (
+    "not found",
+    "404",
+    "does not exist",
+    "is not supported",
+    "unsupported model",
+    "publisher model",
+)
 _PERMISSION_MARKERS = ("permission", "403", "forbidden", "unauthenticated", "401")
 _QUOTA_MARKERS = ("quota", "429", "resource_exhausted", "rate limit")
 
@@ -72,7 +79,7 @@ _QUOTA_MARKERS = ("quota", "429", "resource_exhausted", "rate limit")
 class ProbeResult:
     model: str
     location: str
-    text_probe: str
+    connect_probe: str
     audio_probe: str
     registered: bool
     detail_class: str
@@ -139,20 +146,15 @@ def _tool_declaration() -> types.Tool:
     )
 
 
-async def _text_probe(client, model: str) -> None:
+async def _connect_probe(client, model: str) -> None:
+    """Open and close one session. Native-audio models refuse TEXT-only sessions,
+    so the probe opens with AUDIO and sends nothing."""
     config = types.LiveConnectConfig(
-        response_modalities=[types.Modality.TEXT],
+        response_modalities=[types.Modality.AUDIO],
         tools=[_tool_declaration()],
     )
-    async with client.aio.live.connect(model=model, config=config) as session:
-        await session.send_client_content(
-            turns=types.Content(role="user", parts=[types.Part(text="Reply with the word OK.")]),
-            turn_complete=True,
-        )
-        async for message in session.receive():
-            if message.server_content is not None or message.tool_call is not None:
-                return
-    raise RuntimeError("Live session closed before any server content")
+    async with client.aio.live.connect(model=model, config=config):
+        return
 
 
 async def _audio_probe(client, model: str) -> None:
@@ -184,17 +186,17 @@ async def _probe(model: str, location: str) -> ProbeResult:
     result = ProbeResult(
         model=model,
         location=location,
-        text_probe="",
+        connect_probe="",
         audio_probe="",
         registered=registered,
         detail_class="",
     )
     try:
         client = build_managed_live_client(model=model, location=location)
-        await asyncio.wait_for(_text_probe(client, model), timeout=PROBE_TIMEOUT_SECONDS)
-        result.text_probe = CONNECTED
+        await asyncio.wait_for(_connect_probe(client, model), timeout=PROBE_TIMEOUT_SECONDS)
+        result.connect_probe = CONNECTED
     except Exception as exc:  # noqa: BLE001 - classification is the point
-        result.text_probe, result.detail_class = _classify(exc)
+        result.connect_probe, result.detail_class = _classify(exc)
         result.detail = type(exc).__name__
         result.audio_probe = "skipped"
         return result
@@ -236,14 +238,14 @@ async def main(argv: list[str] | None = None) -> int:
         "connected": [
             {"model": r.model, "location": r.location, "registered": r.registered}
             for r in results
-            if r.text_probe == CONNECTED and r.audio_probe == CONNECTED
+            if r.connect_probe == CONNECTED and r.audio_probe == CONNECTED
         ],
     }
     if not args.json:
-        print(f"{'model':45} {'location':14} {'text':18} {'audio':18} registered  detail")
+        print(f"{'model':45} {'location':14} {'connect':18} {'audio':18} registered  detail")
         for r in results:
             print(
-                f"{r.model:45} {r.location:14} {r.text_probe:18} {r.audio_probe:18} "
+                f"{r.model:45} {r.location:14} {r.connect_probe:18} {r.audio_probe:18} "
                 f"{str(r.registered):10}  {r.detail}"
             )
         print()

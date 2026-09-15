@@ -14,6 +14,7 @@ narrates. It returns typed results the model has to read back.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +33,8 @@ from hushh_mcp.one_voice.tools.base import (
     ToolResult,
     ToolSpec,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -142,7 +145,18 @@ class ToolExecutor:
                 receipt_token=receipt,
                 parsed=parsed,
             )
-        result = await spec.handler(ctx, parsed)
+        try:
+            result = await spec.handler(ctx, parsed)
+        except Exception as exc:  # noqa: BLE001 - a broken tool must not end the session
+            logger.warning("one_voice.tool.failed tool=%s error=%s", spec.name, type(exc).__name__)
+            return ToolCallOutcome(
+                result=Rejected(
+                    reason_code="execution_failed",
+                    spoken_facts=["I couldn't check that right now. Nothing was changed."],
+                ),
+                spec=spec,
+                parsed=parsed,
+            )
         if spec.ui_refresh and result.status not in {"rejected", "unsupported"}:
             result.ui_refresh = sorted(set(result.ui_refresh) | set(spec.ui_refresh))
         return ToolCallOutcome(result=result, spec=spec, parsed=parsed)

@@ -132,6 +132,7 @@ class VoiceSession:
         self.dropped_audio_frames = 0
         self.client_steps: dict[str, dict[str, Any]] = {}
         self.pending_receipts: dict[str, str] = {}
+        self._last_turn_ok = False
         self.close_code: int | None = None
         self.close_reason: str = ""
         self._closed = False
@@ -664,6 +665,7 @@ class VoiceSession:
         elif kind == "turn_complete":
             await self._send(protocol.turn("model_end", turn_id=self.turn.turn_id))
             self._narration_guard()
+            self._last_turn_ok = bool(self.turn.ok_results)
             self.turn.reset()
             await self._send(protocol.voice_state("listening"))
         elif kind == "tool_call":
@@ -686,7 +688,10 @@ class VoiceSession:
     def _speaking_state(self) -> Literal["asking", "confirming", "complete"]:
         if self.pending_receipts:
             return "confirming"
-        if self.turn.ok_results:
+        # The provider ends the tool-call turn before it speaks about the result,
+        # so a spoken turn with no calls of its own inherits the previous turn's
+        # outcome: speech right after a successful tool reads as "complete".
+        if self.turn.ok_results or (not self.turn.tool_calls and self._last_turn_ok):
             return "complete"
         return "asking"
 

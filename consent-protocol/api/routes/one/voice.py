@@ -77,7 +77,9 @@ def reset_readiness_cache() -> None:
 async def _probe_live_connect(config: OneVoiceLiveConfig) -> None:
     """Open and immediately close one Live session. No audio, no output."""
     client = build_managed_live_client(model=config.model_id, location=config.location)
-    live_config = genai_types.LiveConnectConfig(response_modalities=[genai_types.Modality.TEXT])
+    # Native-audio Live models refuse a TEXT-only session; opening with AUDIO and
+    # closing immediately proves availability without sending or receiving audio.
+    live_config = genai_types.LiveConnectConfig(response_modalities=[genai_types.Modality.AUDIO])
     async with client.aio.live.connect(model=config.model_id, config=live_config):
         return
 
