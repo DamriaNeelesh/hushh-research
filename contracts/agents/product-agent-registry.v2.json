@@ -495,11 +495,12 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
+        "adk_mode": "task",
         "factory": null,
         "kind": "adk",
         "transport": [
-          "in_process"
+          "in_process",
+          "chat"
         ]
       },
       "side_effects": [],
@@ -515,9 +516,34 @@
         "voice": false,
         "web": true
       },
-      "system_instruction_sha256": "a02d9db8adc0466768889d75cf4ac320f785a30fe4e61d35907fb63d5351c532",
+      "system_instruction_sha256": "05a6582d96b9b8de875753332112b1db454f0627aab1aff71ce25be990916450",
       "telemetry_namespace": "agent.email",
-      "tools": [],
+      "tools": [
+        {
+          "description": "List bounded inbound Gmail threads that appear to need the owner's reply.",
+          "name": "list_needs_reply",
+          "py_func": "hushh_mcp.agents.email.tools.list_needs_reply",
+          "required_scope": "cap.one.invoke"
+        },
+        {
+          "description": "Search the owner's Gmail and return bounded message summaries.",
+          "name": "search_inbox",
+          "py_func": "hushh_mcp.agents.email.tools.search_inbox",
+          "required_scope": "cap.one.invoke"
+        },
+        {
+          "description": "List synced purchase receipts, newest first, without changing sync state.",
+          "name": "list_receipts",
+          "py_func": "hushh_mcp.agents.email.tools.list_receipts",
+          "required_scope": "cap.one.invoke"
+        },
+        {
+          "description": "Report whether the owner's Gmail receipt sync is connected and healthy.",
+          "name": "sync_status",
+          "py_func": "hushh_mcp.agents.email.tools.sync_status",
+          "required_scope": "cap.one.invoke"
+        }
+      ],
       "ui_type": "chat",
       "version": "1.1.0"
     },
@@ -622,104 +648,6 @@
       },
       "system_instruction_sha256": "ce6442e5716f92360c059e6261761d21b3ffba210fb0d475493dc1fc65e38a92",
       "telemetry_namespace": "agent.unclassified",
-      "tools": [],
-      "ui_type": "chat",
-      "version": "1.0.0"
-    },
-    {
-      "action_ids": [],
-      "authorities": {
-        "actions": [],
-        "data": [],
-        "invocation": []
-      },
-      "availability": {
-        "enable_flag": null,
-        "environments": [
-          "development",
-          "uat",
-          "production"
-        ],
-        "loopback_only": false
-      },
-      "capabilities": {},
-      "credential_policy": {
-        "allowed": [
-          "hushh_managed_vertex"
-        ],
-        "default": "hushh_managed_vertex"
-      },
-      "description": "Read-only receipt-sync and purchase-memory specialist under One.",
-      "evaluations": [],
-      "failure_states": [
-        "auth_required",
-        "input_required",
-        "connector_unavailable"
-      ],
-      "icon": null,
-      "id": "agent_gmail",
-      "inputs": [],
-      "legacy_ids": [],
-      "manifest_path": "consent-protocol/hushh_mcp/agents/gmail/agent.yaml",
-      "manifest_version": 2,
-      "model": "gemini-default",
-      "name": "Gmail Agent",
-      "native_requirements": [],
-      "one_exposure": {
-        "discovery_status": "withheld",
-        "exposure_status": "disabled",
-        "knowledge_package_ref": null,
-        "service_id": "gmail",
-        "supported_entrypoints": [
-          "typed"
-        ]
-      },
-      "optional_scopes": [],
-      "outputs": [],
-      "owner": "backend",
-      "parent": "agent_one",
-      "performance": {
-        "latency_p95_ms": 30000,
-        "max_output_tokens": 4096
-      },
-      "pkm": {
-        "behavior": "read",
-        "mutation_contract": null
-      },
-      "privacy": {
-        "context_allowlist": [],
-        "plaintext_telemetry": false
-      },
-      "prompt_reference": null,
-      "required_scopes": [],
-      "rollout": {
-        "kill_switch": null,
-        "rollback": "Disable the agent and restore the prior manifest.",
-        "strategy": "off"
-      },
-      "runtime": {
-        "adk_mode": "single_turn",
-        "factory": null,
-        "kind": "adk",
-        "transport": [
-          "in_process"
-        ]
-      },
-      "side_effects": [],
-      "status": "active",
-      "subagents": [],
-      "surfaces": {
-        "a2a": false,
-        "android": false,
-        "chat": true,
-        "ios": false,
-        "mcp": false,
-        "not_applicable_reason": "Voice, remote A2A, MCP, and native exposure are not currently shipped.",
-        "voice": false,
-        "web": true
-      },
-      "system_instruction_sha256": "312edd1449e0d34e476a720cfe3f91f3f4317f8ec8959517642308626f78e60e",
-      "telemetry_namespace": "agent.gmail",
       "tools": [],
       "ui_type": "chat",
       "version": "1.0.0"
@@ -1196,11 +1124,12 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
+        "adk_mode": "task",
         "factory": null,
         "kind": "adk",
         "transport": [
-          "in_process"
+          "in_process",
+          "chat"
         ]
       },
       "side_effects": [],
@@ -2024,7 +1953,6 @@
           "agent_nav",
           "agent_kyc",
           "agent_email",
-          "agent_gmail",
           "agent_personal_information",
           "agent_location",
           "agent_calendar",
@@ -2285,11 +2213,12 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
+        "adk_mode": "task",
         "factory": null,
         "kind": "adk",
         "transport": [
-          "in_process"
+          "in_process",
+          "chat"
         ]
       },
       "side_effects": [],

@@ -13,6 +13,12 @@ one_exposure:
   supported_entrypoints:
     - typed
 model: gemini-default
+runtime:
+  kind: adk
+  adk_mode: task
+  transport:
+    - in_process
+    - chat
 system_instruction: |
   You are the owner's Memory Agent under One, the private agent. You help the user understand and control
   what One remembers, what they have made available, and who has asked to see it. The

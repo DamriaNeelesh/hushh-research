@@ -36,7 +36,7 @@ required_scopes:
 # hushh_mcp/services/connections_chat_service.py with ingress-validated
 # authority, so they cannot be declared as importable py_func entries here.
 # AgentManifestV2 tools require py_func + required_scope; closure-backed
-# specialists declare none (same contract as agent_email / agent_gmail).
+# specialists declare none (same closure-backed shape as agent_email).
 failure_states:
   - auth_required
   - input_required

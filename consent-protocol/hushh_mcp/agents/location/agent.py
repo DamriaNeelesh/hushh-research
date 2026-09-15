@@ -34,6 +34,7 @@ class LocationAgent(HushhAgent):
             system_prompt=manifest.system_instruction,
             tools=selected_tools,
             required_scopes=manifest.required_scopes,
+            mode=manifest.runtime.adk_mode,
         )
         self.manifest = manifest
         self.hushh_tools = selected_tools

@@ -31,7 +31,6 @@ REQUIRED_RUNTIME_IDS = {
     "agent_location",
     "agent_connected_systems",
     "agent_email",
-    "agent_gmail",
     "agent_personal_information",
 }
 REQUIRED_MEMORY_IDS = {

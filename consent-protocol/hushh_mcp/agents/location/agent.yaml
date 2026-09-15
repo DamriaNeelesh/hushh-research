@@ -17,6 +17,12 @@ one_exposure:
     package_version: 2
     path: knowledge.yaml
 model: gemini-default
+runtime:
+  kind: adk
+  adk_mode: task
+  transport:
+    - in_process
+    - chat
 capabilities:
   command_read_tools:
     - hushh_mcp.agents.location.command_read_tools.find_people
