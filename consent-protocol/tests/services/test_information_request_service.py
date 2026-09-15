@@ -45,6 +45,18 @@ class _Consent:
     async def get_consent_export(self, token_id: str):
         return self.exports.get(token_id)
 
+    async def record_export_read_once(self, **event):
+        now = int(time.time() * 1000)
+        if any(
+            row["action"] == "EXPORT_READ"
+            and row["user_id"] == event["user_id"]
+            and row["request_id"] == event["request_id"]
+            and now - row["issued_at"] < 3_600_000
+            for row in self.ledger
+        ):
+            return None
+        return await self.insert_event(action="EXPORT_READ", **event)
+
     async def insert_event(self, **event):
         row = {**event, "issued_at": int(time.time() * 1000)}
         self.ledger.append(row)
@@ -77,14 +89,6 @@ class _Service(InformationRequestService):
         }
 
     async def _rows(self, sql: str, params: dict[str, Any]):
-        if "FROM consent_audit" in sql:
-            reads = [
-                row
-                for row in self.consent.ledger
-                if row["action"] == "EXPORT_READ" and row["request_id"] == params["request"]
-            ]
-            reads.sort(key=lambda row: row["issued_at"], reverse=True)
-            return [{"issued_at": reads[0]["issued_at"]}] if reads else []
         if "SELECT bundle_id, request_fingerprint FROM one_information_request_bundles" in sql:
             return (
                 [

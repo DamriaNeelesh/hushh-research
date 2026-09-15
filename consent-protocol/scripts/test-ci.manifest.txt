@@ -290,5 +290,8 @@ tests/test_specialist_turn_parity.py
 tests/test_health_review_mode.py
 tests/services/test_person_profile_service.py
 tests/services/test_information_request_service.py
+tests/services/test_consent_export_read_dedupe.py
 tests/test_consent_handshake.py
 tests/test_consent_db_revocation_worker.py
+tests/scripts/test_eval_specialist_turns.py
+tests/test_consent_refresh_bootstrap.py

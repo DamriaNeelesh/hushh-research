@@ -141,6 +141,35 @@ class _Ledger(_FakeConsentDBService):
             )
         return count
 
+    async def record_export_read_once(
+        self,
+        *,
+        user_id: str,
+        agent_id: str,
+        scope: str,
+        request_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> int | None:
+        # Model the ledger port here; database concurrency is proved by the
+        # ConsentDBService tests rather than this in-memory lifecycle fixture.
+        recent = [
+            event["issued_at"]
+            for event in self.events
+            if event.get("action") == "EXPORT_READ"
+            and event.get("user_id") == user_id
+            and event.get("request_id") == request_id
+        ]
+        if recent and int(time.time() * 1000) - max(recent) < HOUR_MS:
+            return None
+        return await self.insert_event(
+            user_id=user_id,
+            agent_id=agent_id,
+            scope=scope,
+            action="EXPORT_READ",
+            request_id=request_id,
+            metadata=metadata,
+        )
+
     async def get_request_status(self, user_id: str, request_id: str):
         # Mirrors the real query: EXPORT_READ is a trail row, never the state.
         rows = [
@@ -279,17 +308,6 @@ class _RequestService(InformationRequestService):
 
     async def _rows(self, sql: str, params: dict[str, Any]):
         world = self._world
-        if "FROM consent_audit" in sql:
-            reads = [
-                row
-                for row in world.ledger.events
-                if row["action"] == "EXPORT_READ"
-                and row["request_id"] == params["request"]
-                and row["user_id"] == params["user_id"]
-            ]
-            if not reads:
-                return []
-            return [{"issued_at": max(row["issued_at"] for row in reads)}]
         if "SELECT bundle_id, request_fingerprint FROM one_information_request_bundles" in sql:
             return [
                 {
@@ -886,19 +904,6 @@ async def test_revoke_deletes_the_export_and_links_the_original_request(client, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "Known owner-facing defect, fix owned by the consent lifecycle service: "
-        "revoke_active_grant writes the REVOKED row with no metadata, so when it is "
-        "the newest row the history headline shows the raw principal id and no "
-        "bundle id. Deny, cancel and export reads carry requester_identity_metadata "
-        "plus bundle_id; revoke must too (the active row it reads has the metadata). "
-        "strict=True: this test fails as XPASS the moment that lands, so remove the "
-        "marker in the same change."
-    ),
-)
 async def test_revoke_headline_names_the_requester_on_the_owner_history(client, world):
     created = await _create_request(
         client,
@@ -925,6 +930,8 @@ async def test_revoke_headline_names_the_requester_on_the_owner_history(client, 
     assert previous[0]["counterpart_label"] == REQUESTER_LABEL, revoked
     assert previous[0]["metadata"].get("bundle_id") == bundle_id, revoked
     assert (revoked.get("metadata") or {}).get("requester_label") == REQUESTER_LABEL
+    assert "connector_public_key" not in revoked["metadata"]
+    assert "connector_key_id" not in revoked["metadata"]
 
 
 @pytest.mark.asyncio

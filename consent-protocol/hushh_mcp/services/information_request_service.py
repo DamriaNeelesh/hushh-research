@@ -30,7 +30,6 @@ _ONE_INFORMATION_REQUEST_APP_ID = "agent_one"
 # The owner sees one "opened" record per approved item per hour, not one per
 # poll: the requesting device refreshes the encrypted package on every open of
 # its own screen, and a ledger that repeats itself that often stops being read.
-_EXPORT_READ_WINDOW_MS = 60 * 60 * 1000
 
 
 class InformationRequestService:
@@ -396,28 +395,17 @@ class InformationRequestService:
         The requester reading the encrypted package is the moment the owner's
         records actually leave; approval alone is not. The ledger is the only
         place the owner can see that, so it is written here rather than in a
-        side table nobody surfaces. The hour window is a dedupe, not a lock: a
-        concurrent pair of reads may write twice, which over-reports, never
-        under-reports.
+        side table nobody surfaces. The ledger serializes the hour-window check
+        and insert across workers so concurrent reads leave only one record.
 
         ``grant_metadata`` is the GRANTED row's metadata (a copy of the request
         metadata); the requester identity keys are carried onto this row so the
         owner's history keeps showing the person, not the principal id.
         """
-        recent = await self._rows(
-            """SELECT issued_at FROM consent_audit
-               WHERE user_id = :user_id AND request_id = :request AND action = 'EXPORT_READ'
-               ORDER BY issued_at DESC LIMIT 1""",
-            {"user_id": subject_user_id, "request": request_id},
-        )
-        last_read_at = int((recent[0].get("issued_at") if recent else 0) or 0)
-        if last_read_at and int(time.time() * 1000) - last_read_at < _EXPORT_READ_WINDOW_MS:
-            return
-        await self._consent.insert_event(
+        await self._consent.record_export_read_once(
             user_id=subject_user_id,
             agent_id=requester_principal,
             scope=scope,
-            action="EXPORT_READ",
             request_id=request_id,
             metadata={
                 **requester_identity_metadata(grant_metadata),

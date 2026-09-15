@@ -41,6 +41,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -1514,6 +1515,64 @@ class ConsentDBService:
     # =========================================================================
     # Event Insertion
     # =========================================================================
+
+    async def record_export_read_once(
+        self,
+        *,
+        user_id: str,
+        agent_id: str,
+        scope: str,
+        request_id: str,
+        metadata: Optional[Dict] = None,
+    ) -> Optional[int]:
+        """Atomically record a read per owner/request in a rolling one-hour window.
+
+        The transaction lock covers lookup and insertion across workers. The
+        normal audit-table triggers still run, but suppressed reads insert no
+        row and produce no notification. Return None for a suppressed read.
+        """
+
+        def record():
+            with self._get_db().engine.begin() as connection:
+                if connection.dialect.name == "postgresql":
+                    connection.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                        {"key": "export-read:" + json.dumps([user_id, request_id])},
+                    )
+                elif connection.dialect.name == "sqlite":
+                    # Offline SQLite must acquire its writer lock before reading,
+                    # including when the database is shared by separate processes.
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                else:
+                    raise RuntimeError("Export read deduplication requires PostgreSQL or SQLite")
+                issued_at = int(time.time() * 1000)
+                last_read_at = connection.execute(
+                    text("""SELECT issued_at FROM consent_audit
+                        WHERE user_id = :user_id AND request_id = :request_id
+                          AND action = 'EXPORT_READ'
+                        ORDER BY issued_at DESC LIMIT 1"""),
+                    {"user_id": user_id, "request_id": request_id},
+                ).scalar_one_or_none()
+                if last_read_at is not None and issued_at - int(last_read_at) < 3_600_000:
+                    return None
+                return connection.execute(
+                    text("""INSERT INTO consent_audit
+                        (token_id, user_id, agent_id, scope, action, request_id,
+                         issued_at, metadata)
+                        VALUES (:token_id, :user_id, :agent_id, :scope, 'EXPORT_READ',
+                                :request_id, :issued_at, :metadata) RETURNING id"""),
+                    {
+                        "token_id": f"evt_{issued_at}",
+                        "user_id": user_id,
+                        "agent_id": agent_id,
+                        "scope": scope,
+                        "request_id": request_id,
+                        "issued_at": issued_at,
+                        "metadata": json.dumps(metadata) if metadata else None,
+                    },
+                ).scalar_one()
+
+        return await asyncio.to_thread(record)
 
     async def insert_event(
         self,

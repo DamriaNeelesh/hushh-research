@@ -1,23 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import {
-  expect,
-  test,
-  type BrowserContext,
-  type Page,
-  type Response,
-} from "@playwright/test";
+import { expect, test, type Page, type Response } from "@playwright/test";
 
 import {
-  openReviewerSession,
+  createProtectedReviewerHarness,
   reviewerIdentityFromEnv,
   waitForReviewerVault,
   type ReviewerIdentity,
 } from "./helpers/reviewer-session";
 
 /**
- * Two real people, two browser contexts, one information request.
+ * Two real people, isolated reviewer contexts, one information request.
  *
  * The primary reviewer OWNS the records; the counterpart REQUESTS them. That
  * assignment is fixed for the whole file so every assertion reads the same
@@ -25,7 +19,7 @@ import {
  * the owner's /people page and opens what was granted.
  *
  * Gated exactly like agent-action-dispatch-consent.spec.ts: skipped unless
- * both identities, the sign-in opt-in and the proof opt-in are all present.
+ * both identities, the reveal key and explicit mutation opt-ins are present.
  * No push is ever waited on. The chat surface is fed the same CustomEvent the
  * FCM service dispatches on a real message, and every state assertion reads
  * the Consent Center list endpoint the page itself calls.
@@ -40,6 +34,7 @@ import {
  *                                the first requested item; nothing about the
  *                                record is hardcoded here
  *   E2E_REVIEWER_SIGNIN=1  E2E_INFORMATION_SHARING=1
+ *   REVIEWER_ALLOW_SHARED_MUTATIONS=true
  *   E2E_LIVE_MODEL=1             lifts the Flow B fixme: the requester asks
  *                                through the private agent, which needs a
  *                                stack whose model actually answers a turn
@@ -51,6 +46,7 @@ const REQUIRED_VALUES = [
   "REVIEWER_COUNTERPART_UID",
   "REVIEWER_COUNTERPART_VAULT_PASSPHRASE",
   "E2E_COUNTERPART_PERSON_REF",
+  "E2E_EXPECTED_GRANT_KEY",
 ] as const;
 
 function hasTwoPeopleAuthority() {
@@ -59,7 +55,8 @@ function hasTwoPeopleAuthority() {
   }
   return (
     process.env.E2E_REVIEWER_SIGNIN === "1" &&
-    process.env.E2E_INFORMATION_SHARING === "1"
+    process.env.E2E_INFORMATION_SHARING === "1" &&
+    process.env.REVIEWER_ALLOW_SHARED_MUTATIONS === "true"
   );
 }
 
@@ -153,6 +150,30 @@ const requesterIdentity = reviewerIdentityFromEnv(
 const ownerPersonRef = process.env.E2E_COUNTERPART_PERSON_REF?.trim() ?? "";
 const expectedGrantKey = process.env.E2E_EXPECTED_GRANT_KEY?.trim() ?? "";
 const ownerPeopleRoute = `/people/${encodeURIComponent(ownerPersonRef)}`;
+type ReviewerHarness = Awaited<
+  ReturnType<typeof createProtectedReviewerHarness>
+>;
+type ReviewerSession = Awaited<ReturnType<ReviewerHarness["openSession"]>>;
+const pageHarness = new WeakMap<Page, ReviewerHarness>();
+const pageCommitments = new WeakMap<
+  Page,
+  { session: ReviewerSession; commitment: string }
+>();
+const centerAuthByPage = new WeakMap<Page, CenterAuth>();
+async function navigateProtected(page: Page, href: string) {
+  const harness = pageHarness.get(page);
+  if (!harness) throw new Error("Protected page has no reviewer harness");
+  await harness.navigateInApp(page, href);
+  const initial = pageCommitments.get(page);
+  if (!initial) throw new Error("Protected page has no initial key commitment");
+  const current = harness.vaultKeyCommitment(
+    await initial.session.capture.vaultState(),
+  );
+  expect(
+    current === initial.commitment,
+    "protected navigation preserves the vault key commitment",
+  ).toBe(true);
+}
 
 function pathEndsWith(response: Response, suffix: string): boolean {
   return new URL(response.url()).pathname.endsWith(suffix);
@@ -173,29 +194,6 @@ function waitForJsonResponse(
 }
 
 /**
- * Install the reviewer bridge on a page that shares a signed-in context but
- * never went through /login itself. The init script is what re-unlocks the
- * vault on every load, so a second page in the same context needs its own.
- */
-async function armReviewerBridge(page: Page, identity: ReviewerIdentity) {
-  await page.addInitScript(
-    ({ expectedUserId, vaultPassphrase }) => {
-      window.__HUSHH_NATIVE_TEST__ = {
-        ...(window.__HUSHH_NATIVE_TEST__ || {}),
-        enabled: true,
-        autoReviewerLogin: true,
-        expectedUserId,
-        vaultPassphrase,
-      };
-    },
-    {
-      expectedUserId: identity.userId,
-      vaultPassphrase: identity.passphrase,
-    },
-  );
-}
-
-/**
  * Open a Consent Center tab and capture what the page itself sent on its
  * list call for that surface. The page's payload is deliberately NOT read:
  * app/api/consent/center/list/route.ts keeps a 30 s hot cache keyed on the
@@ -209,6 +207,11 @@ async function openCenterTab(
   surface: CenterSurface,
 ): Promise<CenterAuth> {
   const tab = CENTER_TAB[surface];
+  const cached = centerAuthByPage.get(page);
+  if (cached) {
+    await navigateProtected(page, `/one/consent?tab=${tab}`);
+    return cached;
+  }
   const requestPromise = page.waitForRequest(
     (request) => {
       if (request.method() !== "GET") return false;
@@ -221,14 +224,17 @@ async function openCenterTab(
     },
     { timeout: 60_000 },
   );
-  await page.goto(`/one/consent?tab=${tab}`, { waitUntil: "domcontentloaded" });
+  await navigateProtected(page, `/one/consent?tab=${tab}`);
   await waitForReviewerVault(page, identity);
   const request = await requestPromise;
   const authorization = request.headers()["authorization"] ?? "";
-  expect(authorization, "the Consent Center sends a bearer on center/list").toMatch(
-    /^Bearer /,
-  );
-  return { authorization, listUrl: new URL(request.url()) };
+  expect(
+    authorization.startsWith("Bearer "),
+    "the Consent Center sends a bearer on center/list",
+  ).toBe(true);
+  const auth = { authorization, listUrl: new URL(request.url()) };
+  centerAuthByPage.set(page, auth);
+  return auth;
 }
 
 /**
@@ -386,7 +392,10 @@ async function readSelectedCount(page: Page): Promise<number> {
  * taken until the counter on the Review button reaches the minimum. Returns
  * how many are selected. Nothing about the catalogue's shape is assumed.
  */
-async function selectRequestScopes(page: Page, minimum: number): Promise<number> {
+async function selectRequestScopes(
+  page: Page,
+  minimum: number,
+): Promise<number> {
   const available = page.getByTestId("person-profile-available");
   await expect(available).toBeVisible({ timeout: 60_000 });
   const leafToggles = available.locator(
@@ -421,9 +430,7 @@ async function composeRequest(
   page: Page,
   purpose: string,
 ): Promise<RequestBundle> {
-  await page.goto(`${ownerPeopleRoute}?request=1`, {
-    waitUntil: "domcontentloaded",
-  });
+  await navigateProtected(page, `${ownerPeopleRoute}?request=1`);
   await waitForReviewerVault(page, requesterIdentity!);
 
   const selected = await selectRequestScopes(page, ITEMS_NEEDED);
@@ -441,7 +448,11 @@ async function composeRequest(
     .selectOption(String(REQUESTED_HOURS));
   await page.getByTestId("person-profile-purpose").fill(purpose);
 
-  const created = waitForJsonResponse(page, "POST", "/api/one/information-requests");
+  const created = waitForJsonResponse(
+    page,
+    "POST",
+    "/api/one/information-requests",
+  );
   await page
     .locator('[data-voice-control-id="person-profile-request-confirm"]')
     .click();
@@ -451,7 +462,9 @@ async function composeRequest(
   expect(bundle.bundleId).toBeTruthy();
   expect(bundle.items.length).toBeGreaterThanOrEqual(ITEMS_NEEDED);
   for (const item of bundle.items) {
-    expect(item.status, `item ${item.requestId} starts pending`).toBe("pending");
+    expect(item.status, `item ${item.requestId} starts pending`).toBe(
+      "pending",
+    );
   }
   // The page refetches its viewer profile after sending; the purpose is the
   // one string unique to this run, so its row is the proof the request landed.
@@ -504,7 +517,9 @@ async function cancelRequestByPurpose(
   const response = await cancelled;
   expect(response.status(), `POST ${cancelPath}`).toBe(200);
   // The page refetches the viewer profile after cancelling.
-  await expect(cancelButtonsFor(page, purpose)).toHaveCount(0, { timeout: 30_000 });
+  await expect(cancelButtonsFor(page, purpose)).toHaveCount(0, {
+    timeout: 30_000,
+  });
   await expect(rows.first()).not.toContainText("pending");
 }
 
@@ -515,26 +530,37 @@ async function dispatchFcm(
 ): Promise<void> {
   await page.evaluate(
     ({ eventName, detail }) => {
-      window.dispatchEvent(new CustomEvent(eventName, { detail: { data: detail } }));
+      window.dispatchEvent(
+        new CustomEvent(eventName, { detail: { data: detail } }),
+      );
     },
     { eventName: FCM_MESSAGE_EVENT, detail: data },
   );
 }
 
 async function openChat(page: Page, identity: ReviewerIdentity): Promise<void> {
-  await page.goto("/agent", { waitUntil: "domcontentloaded" });
+  await navigateProtected(page, "/agent");
   await waitForReviewerVault(page, identity);
   await expect(page.getByTestId("agent-chat-composer")).toBeVisible({
     timeout: 60_000,
   });
+  await page
+    .getByRole("button", { name: "Create new Agent chat", exact: true })
+    .filter({ visible: true })
+    .first()
+    .click();
+  await expect(
+    page.getByTestId("specialist-pending-consent-request-card"),
+  ).toHaveCount(0);
 }
 
-test.describe.configure({ mode: "serial" });
+test.use({ trace: "off", screenshot: "off", video: "off" });
+test.describe.configure({ mode: "serial", retries: 0, timeout: 300_000 });
 
 test.describe("Information sharing between two people (real backend, no push)", () => {
   test.skip(
     !hasTwoPeopleAuthority(),
-    "needs REVIEWER_UID/REVIEWER_VAULT_PASSPHRASE, REVIEWER_COUNTERPART_UID/REVIEWER_COUNTERPART_VAULT_PASSPHRASE, E2E_COUNTERPART_PERSON_REF, E2E_REVIEWER_SIGNIN=1 and E2E_INFORMATION_SHARING=1",
+    "needs both reviewer pairs, owner public reference, expected grant key, sign-in/proof opt-ins and REVIEWER_ALLOW_SHARED_MUTATIONS=true",
   );
   test.skip(
     ({ browserName }) => browserName !== "chromium",
@@ -546,40 +572,154 @@ test.describe("Information sharing between two people (real backend, no push)", 
   const purposeB = `Two-people proof B ${runNonce}: withdrawn before the owner decides.`;
   const purposeC = `Two-people proof C ${runNonce}: asked through the private agent.`;
 
-  let ownerContext: BrowserContext;
-  let requesterContext: BrowserContext;
   let ownerPage: Page;
   let ownerChat: Page;
   let requesterPage: Page;
   let bundle: RequestBundle;
+  const opened: ReviewerSession[] = [];
+  let ownerHarness: Awaited<ReturnType<typeof createProtectedReviewerHarness>>;
+  let requesterHarness: Awaited<
+    ReturnType<typeof createProtectedReviewerHarness>
+  >;
+  const receipts = new Map<string, RequestBundle>();
+  const receiptReads: Promise<void>[] = [];
 
   test.beforeAll(async ({ browser }, testInfo) => {
     assertFcmEventNameMatchesSource();
-    const contextOptions = {
-      baseURL: testInfo.project.use.baseURL,
-      viewport: testInfo.project.use.viewport ?? undefined,
-    };
-    ownerContext = await browser.newContext(contextOptions);
-    requesterContext = await browser.newContext(contextOptions);
-    ownerPage = await ownerContext.newPage();
-    ownerChat = await ownerContext.newPage();
-    requesterPage = await requesterContext.newPage();
-    await openReviewerSession(ownerPage, ownerIdentity!);
-    // The requester lands on the owner's page, the only surface it needs; the
-    // Location heading the default waits for is not a promise a counterpart
-    // account has to keep.
-    await openReviewerSession(requesterPage, requesterIdentity!, {
-      redirectTo: ownerPeopleRoute,
-      readyHeading: null,
+    expect(
+      ownerIdentity!.userId === requesterIdentity!.userId,
+      "reviewers must be distinct",
+    ).toBe(false);
+    const origin = testInfo.project.use.baseURL!;
+    ownerHarness = await createProtectedReviewerHarness(ownerIdentity!, origin);
+    requesterHarness = await createProtectedReviewerHarness(
+      requesterIdentity!,
+      origin,
+    );
+    await ownerHarness.assertVisibleVaultChallenge(browser, "/one/consent");
+    const owner = await ownerHarness.openSession(browser, "/one/consent");
+    opened.push(owner);
+    ownerPage = owner.page;
+    pageHarness.set(ownerPage, ownerHarness);
+    const requester = await requesterHarness.openSession(
+      browser,
+      ownerPeopleRoute,
+    );
+    opened.push(requester);
+    requesterPage = requester.page;
+    pageHarness.set(requesterPage, requesterHarness);
+    requesterPage.on("response", (response) => {
+      if (
+        response.request().method() !== "POST" ||
+        !pathEndsWith(response, "/api/one/information-requests") ||
+        !response.ok()
+      )
+        return;
+      const read = response.json().then((created: RequestBundle) => {
+        if (!created.bundleId || !Array.isArray(created.items))
+          throw new Error("Invalid creation receipt");
+        receipts.set(created.bundleId, created);
+      });
+      void read.catch(() => undefined);
+      receiptReads.push(read);
     });
-    // The chat page shares the owner context (and its bridge) but never went
-    // through /login itself.
-    await armReviewerBridge(ownerChat, ownerIdentity!);
+    const chat = await ownerHarness.openSession(browser, "/agent");
+    opened.push(chat);
+    ownerChat = chat.page;
+    pageHarness.set(ownerChat, ownerHarness);
+    for (const session of opened) {
+      const harness = pageHarness.get(session.page)!;
+      pageCommitments.set(session.page, {
+        session,
+        commitment: harness.vaultKeyCommitment(
+          await session.capture.vaultState(),
+        ),
+      });
+    }
   });
 
   test.afterAll(async () => {
-    await ownerContext?.close();
-    await requesterContext?.close();
+    const cleanupFailures: string[] = [];
+    try {
+      const readResults = await Promise.allSettled(receiptReads);
+      for (const result of readResults) {
+        if (result.status === "rejected")
+          cleanupFailures.push(
+            "creation receipt could not be decoded; outcome requires reconciliation",
+          );
+      }
+      for (const receipt of receipts.values()) {
+        // Only IDs obtained from this run's successful create responses.
+        for (const item of receipt.items) {
+          try {
+            const auth = await openCenterTab(
+              ownerPage,
+              ownerIdentity!,
+              "active",
+            );
+            if (
+              !(
+                await readRequestStatuses(
+                  ownerPage,
+                  auth,
+                  "active",
+                  item.requestId,
+                )
+              ).includes("active")
+            )
+              continue;
+            await navigateProtected(
+              ownerPage,
+              `/one/consent?tab=active&requestId=${encodeURIComponent(item.requestId)}`,
+            );
+            await ownerPage
+              .locator('[data-voice-control-id="consent_revoke"]')
+              .click();
+            const revoked = waitForJsonResponse(
+              ownerPage,
+              "POST",
+              "/api/consent/revoke",
+            );
+            await ownerPage
+              .getByRole("alertdialog")
+              .getByRole("button", { name: "Stop sharing" })
+              .click();
+            if ((await revoked).status() !== 200)
+              throw new Error("revoke refused");
+            await expectSurfaceAbsent(
+              ownerPage,
+              auth,
+              "active",
+              item.requestId,
+            );
+          } catch {
+            cleanupFailures.push("run-owned grant revocation failed");
+          }
+        }
+        try {
+          // Cancellation skips already decided items and removes leftovers.
+          const auth = await openCenterTab(
+            requesterPage,
+            requesterIdentity!,
+            "pending",
+          );
+          const cancelled = await requesterPage.request.post(
+            `/api/one/information-requests/${encodeURIComponent(receipt.bundleId)}/cancel`,
+            { headers: { Authorization: auth.authorization } },
+          );
+          if (!cancelled.ok()) throw new Error("cancel refused");
+        } catch {
+          cleanupFailures.push("run-owned request cancellation failed");
+        }
+      }
+      for (const session of opened) {
+        session.capture.assertNoCriticalApiFailures("two-person proof");
+        session.readOnlyGuard.assertNoBlockedMutation();
+      }
+      expect(cleanupFailures, "fixture cleanup must complete").toEqual([]);
+    } finally {
+      await Promise.all(opened.map((session) => session.context.close()));
+    }
   });
 
   test("requester asks the owner for three items with a 72 hour window", async () => {
@@ -588,19 +728,29 @@ test.describe("Information sharing between two people (real backend, no push)", 
 
   test("owner allows the first item from the Consent Center at the requested 72 hours", async () => {
     const [first] = bundle.items;
-    await ownerPage.goto(
+    await navigateProtected(
+      ownerPage,
       `/one/consent?tab=${CENTER_TAB.pending}&requestId=${encodeURIComponent(first!.requestId)}`,
-      { waitUntil: "domcontentloaded" },
     );
     await waitForReviewerVault(ownerPage, ownerIdentity!);
 
-    const duration = ownerPage.getByRole("combobox", { name: "Access duration" });
+    const duration = ownerPage.getByRole("combobox", {
+      name: "Access duration",
+    });
     await expect(duration).toBeVisible({ timeout: 60_000 });
     await expect(duration).toContainText(REQUESTED_HOURS_LABEL);
 
-    const approved = waitForJsonResponse(ownerPage, "POST", "/api/consent/pending/approve");
-    await ownerPage.locator('[data-voice-control-id="consent_approve"]').click();
-    expect((await approved).status(), "POST /api/consent/pending/approve").toBe(200);
+    const approved = waitForJsonResponse(
+      ownerPage,
+      "POST",
+      "/api/consent/pending/approve",
+    );
+    await ownerPage
+      .locator('[data-voice-control-id="consent_approve"]')
+      .click();
+    expect((await approved).status(), "POST /api/consent/pending/approve").toBe(
+      200,
+    );
 
     const auth = await expectCenterStatus(
       ownerPage,
@@ -616,55 +766,88 @@ test.describe("Information sharing between two people (real backend, no push)", 
     const second = bundle.items[1]!;
     await openChat(ownerChat, ownerIdentity!);
 
-    const lookedUp = waitForJsonResponse(ownerChat, "GET", "/api/consent/pending/lookup");
+    const lookedUp = waitForJsonResponse(
+      ownerChat,
+      "GET",
+      "/api/consent/pending/lookup",
+    );
     await dispatchFcm(ownerChat, {
       type: "consent_request",
       request_id: second.requestId,
       bundle_id: bundle.bundleId,
     });
-    expect((await lookedUp).status(), "GET /api/consent/pending/lookup").toBe(200);
+    expect((await lookedUp).status(), "GET /api/consent/pending/lookup").toBe(
+      200,
+    );
 
-    const card = ownerChat.getByTestId("specialist-pending-consent-request-card");
+    const card = ownerChat.getByTestId(
+      "specialist-pending-consent-request-card",
+    );
     await expect(card).toHaveCount(1, { timeout: 30_000 });
     await expect(card).toContainText("wants to see");
-    const approveButton = ownerChat.getByTestId("specialist-pending-consent-approve");
+    const approveButton = ownerChat.getByTestId(
+      "specialist-pending-consent-approve",
+    );
     await expect(approveButton).toBeVisible();
 
-    const approved = waitForJsonResponse(ownerChat, "POST", "/api/consent/pending/approve");
+    const approved = waitForJsonResponse(
+      ownerChat,
+      "POST",
+      "/api/consent/pending/approve",
+    );
     await approveButton.click();
-    expect((await approved).status(), "POST /api/consent/pending/approve").toBe(200);
+    expect((await approved).status(), "POST /api/consent/pending/approve").toBe(
+      200,
+    );
     await expect(card).toContainText("Approved");
     await expect(approveButton).toHaveCount(0);
 
-    await expectCenterStatus(ownerPage, ownerIdentity!, "active", second.requestId, "active");
+    await expectCenterStatus(
+      ownerPage,
+      ownerIdentity!,
+      "active",
+      second.requestId,
+      "active",
+    );
   });
 
   test("owner declines the third item in the Consent Center and the chat card flips on the resolved signal", async () => {
     const third = bundle.items[2]!;
-    // A fresh chat so the third item does not fold into the approved card of
-    // the same bundle; the fold is product behaviour, not what is under test.
+    // A new conversation leaves the approved card in its original history.
     await openChat(ownerChat, ownerIdentity!);
-    const lookedUp = waitForJsonResponse(ownerChat, "GET", "/api/consent/pending/lookup");
+    const lookedUp = waitForJsonResponse(
+      ownerChat,
+      "GET",
+      "/api/consent/pending/lookup",
+    );
     await dispatchFcm(ownerChat, {
       type: "consent_request",
       request_id: third.requestId,
       bundle_id: bundle.bundleId,
     });
     expect((await lookedUp).status()).toBe(200);
-    const card = ownerChat.getByTestId("specialist-pending-consent-request-card");
+    const card = ownerChat.getByTestId(
+      "specialist-pending-consent-request-card",
+    );
     await expect(card).toHaveCount(1, { timeout: 30_000 });
-    await expect(ownerChat.getByTestId("specialist-pending-consent-approve")).toBeVisible();
+    await expect(
+      ownerChat.getByTestId("specialist-pending-consent-approve"),
+    ).toBeVisible();
 
-    await ownerPage.goto(
+    await navigateProtected(
+      ownerPage,
       `/one/consent?tab=${CENTER_TAB.pending}&requestId=${encodeURIComponent(third.requestId)}`,
-      { waitUntil: "domcontentloaded" },
     );
     await waitForReviewerVault(ownerPage, ownerIdentity!);
     const deny = ownerPage.locator('[data-voice-control-id="consent_deny"]');
     await expect(deny).toBeVisible({ timeout: 60_000 });
     await deny.click();
     await expect(deny).toHaveText("Sure?");
-    const denied = waitForJsonResponse(ownerPage, "POST", "/api/consent/pending/deny");
+    const denied = waitForJsonResponse(
+      ownerPage,
+      "POST",
+      "/api/consent/pending/deny",
+    );
     await deny.click();
     expect((await denied).status(), "POST /api/consent/pending/deny").toBe(200);
 
@@ -674,13 +857,24 @@ test.describe("Information sharing between two people (real backend, no push)", 
       action: "CONSENT_DENIED",
     });
     await expect(card).toContainText("Denied");
-    await expect(ownerChat.getByTestId("specialist-pending-consent-approve")).toHaveCount(0);
+    await expect(
+      ownerChat.getByTestId("specialist-pending-consent-approve"),
+    ).toHaveCount(0);
 
-    await expectCenterStatus(ownerPage, ownerIdentity!, "previous", third.requestId, "denied");
+    await expectCenterStatus(
+      ownerPage,
+      ownerIdentity!,
+      "previous",
+      third.requestId,
+      "denied",
+    );
   });
 
   test("requester opens the granted record and finds the expected key", async () => {
-    test.skip(!expectedGrantKey, "set E2E_EXPECTED_GRANT_KEY to a key present in the owner's first requested item");
+    test.skip(
+      !expectedGrantKey,
+      "set E2E_EXPECTED_GRANT_KEY to a key present in the owner's first requested item",
+    );
     const [first] = bundle.items;
 
     // The viewer profile is what the page renders "Shared with you" from, in
@@ -694,7 +888,7 @@ test.describe("Information sharing between two people (real backend, no push)", 
         ),
       { timeout: 60_000 },
     );
-    await requesterPage.goto(ownerPeopleRoute, { waitUntil: "domcontentloaded" });
+    await navigateProtected(requesterPage, ownerPeopleRoute);
     await waitForReviewerVault(requesterPage, requesterIdentity!);
     const viewerResponse = await viewerLoaded;
     expect(viewerResponse.status(), "GET /api/one/people/<ref>").toBe(200);
@@ -709,7 +903,9 @@ test.describe("Information sharing between two people (real backend, no push)", 
       "this run's first grant is listed under Shared with you",
     ).toBeGreaterThanOrEqual(0);
 
-    const reveal = requesterPage.getByTestId("person-profile-grant-reveal").nth(grantIndex);
+    const reveal = requesterPage
+      .getByTestId("person-profile-grant-reveal")
+      .nth(grantIndex);
     await expect(reveal).toBeVisible({ timeout: 60_000 });
 
     const exported = waitForJsonResponse(
@@ -719,7 +915,10 @@ test.describe("Information sharing between two people (real backend, no push)", 
     );
     await reveal.click();
     const exportsResponse = await exported;
-    expect(exportsResponse.status(), "GET /api/one/information-requests/<bundle>/exports").toBe(200);
+    expect(
+      exportsResponse.status(),
+      "GET /api/one/information-requests/<bundle>/exports",
+    ).toBe(200);
     const exportsPayload = (await exportsResponse.json()) as {
       exports?: Array<{ requestId?: string }>;
     };
@@ -732,29 +931,51 @@ test.describe("Information sharing between two people (real backend, no push)", 
     const value = requesterPage.getByTestId("person-profile-grant-value");
     await expect(value).toHaveCount(1, { timeout: 30_000 });
     // The key only; the decrypted value is never read out of the page.
-    await expect(value).toContainText(`"${expectedGrantKey}"`);
+    await expect
+      .poll(
+        () =>
+          value.evaluate(
+            (element, key) =>
+              element.textContent?.includes(`"${key}"`) === true,
+            expectedGrantKey,
+          ),
+        { message: "opened record contains the configured key" },
+      )
+      .toBe(true);
     await reveal.click();
     await expect(value).toHaveCount(0);
   });
 
   test("owner stops sharing the first item through the confirming dialog", async () => {
     const [first] = bundle.items;
-    await ownerPage.goto(
+    await navigateProtected(
+      ownerPage,
       `/one/consent?tab=active&requestId=${encodeURIComponent(first!.requestId)}`,
-      { waitUntil: "domcontentloaded" },
     );
     await waitForReviewerVault(ownerPage, ownerIdentity!);
-    const revoke = ownerPage.locator('[data-voice-control-id="consent_revoke"]');
+    const revoke = ownerPage.locator(
+      '[data-voice-control-id="consent_revoke"]',
+    );
     await expect(revoke).toBeVisible({ timeout: 60_000 });
     await revoke.click();
 
     const dialog = ownerPage.getByRole("alertdialog");
     await expect(dialog).toBeVisible();
-    const revoked = waitForJsonResponse(ownerPage, "POST", "/api/consent/revoke");
+    const revoked = waitForJsonResponse(
+      ownerPage,
+      "POST",
+      "/api/consent/revoke",
+    );
     await dialog.getByRole("button", { name: "Stop sharing" }).click();
     expect((await revoked).status(), "POST /api/consent/revoke").toBe(200);
 
-    await expectCenterStatus(ownerPage, ownerIdentity!, "previous", first!.requestId, "revoked");
+    await expectCenterStatus(
+      ownerPage,
+      ownerIdentity!,
+      "previous",
+      first!.requestId,
+      "revoked",
+    );
   });
 
   test("requester withdraws a second request and the owner sees it as cancelled", async () => {
@@ -770,7 +991,7 @@ test.describe("Information sharing between two people (real backend, no push)", 
 
     // Leave nothing pending behind: a folder pick can carry more than the
     // three items the proof decided on. Cancel skips already decided items.
-    await requesterPage.goto(ownerPeopleRoute, { waitUntil: "domcontentloaded" });
+    await navigateProtected(requesterPage, ownerPeopleRoute);
     await waitForReviewerVault(requesterPage, requesterIdentity!);
     await expect(historyRowsFor(requesterPage, purposeA).first()).toBeVisible({
       timeout: 30_000,
@@ -792,49 +1013,102 @@ test.describe("Information sharing between two people (real backend, no push)", 
       `/api/public/people/${encodeURIComponent(ownerPersonRef)}`,
     );
     expect(publicProfile.status(), "GET /api/public/people/<ref>").toBe(200);
-    const { displayName } = (await publicProfile.json()) as { displayName?: string };
+    const { displayName } = (await publicProfile.json()) as {
+      displayName?: string;
+    };
     expect(displayName, "the owner has a public display name").toBeTruthy();
 
-    const requesterChat = await requesterContext.newPage();
-    try {
-      await armReviewerBridge(requesterChat, requesterIdentity!);
-      await openChat(requesterChat, requesterIdentity!);
+    const requesterChat = requesterPage;
+    await openChat(requesterChat, requesterIdentity!);
 
-      // The model proposes, the app confirms, and consent.request lands as
-      // the same POST the /people composer makes. A model turn is slow.
-      const created = waitForJsonResponse(
-        requesterChat,
-        "POST",
-        "/api/one/information-requests",
-        180_000,
-      );
-      const composer = requesterChat.getByTestId("agent-chat-composer-textarea");
-      await composer.fill(
-        `Ask ${displayName} to share their ${first!.label} with me for 3 days. ${purposeC}`,
-      );
-      await composer.press("Enter");
-      const response = await created;
-      expect(response.status(), "POST /api/one/information-requests (chat)").toBe(200);
-      const chatBundle = (await response.json()) as RequestBundle;
-      expect(chatBundle.bundleId).toBeTruthy();
-      expect(chatBundle.items.length).toBeGreaterThanOrEqual(1);
-      const asked = chatBundle.items[0]!;
-      expect(asked.status).toBe("pending");
+    // The model proposes, the app confirms, and consent.request lands as
+    // the same POST the /people composer makes. A model turn is slow.
+    let createdEarly = false;
+    const created = waitForJsonResponse(
+      requesterChat,
+      "POST",
+      "/api/one/information-requests",
+      270_000,
+    ).then((response) => {
+      createdEarly = true;
+      return response;
+    });
+    // Keep a rejection observed if an earlier assertion fails.
+    void created.catch(() => undefined);
+    const composer = requesterChat.getByTestId("agent-chat-composer-textarea");
+    const baseline = await requesterChat
+      .locator('[data-message-role="assistant"]')
+      .count();
+    await composer.fill(
+      `Ask ${displayName} to share their ${first!.label} with me for 3 days. ${purposeC}`,
+    );
+    await composer.press("Enter");
+    await requesterChat.waitForFunction(
+      (count) => {
+        const turns = [
+          ...document.querySelectorAll('[data-message-role="assistant"]'),
+        ];
+        const latest = turns.at(-1);
+        return (
+          turns.length > count &&
+          latest?.getAttribute("data-message-status") !== "streaming" &&
+          Boolean(latest?.textContent?.trim())
+        );
+      },
+      baseline,
+      { timeout: 120_000 },
+    );
+    expect(createdEarly, "request must wait for spoken confirmation").toBe(
+      false,
+    );
+    await composer.fill("Yes, send that request.");
+    await composer.press("Enter");
+    const confirm = requesterChat.getByTestId("specialist-directive-confirm");
+    await expect
+      .poll(async () => createdEarly || (await confirm.isVisible()), {
+        timeout: 120_000,
+      })
+      .toBe(true);
+    if (!createdEarly && (await confirm.isVisible())) await confirm.click();
+    const response = await created;
+    expect(response.status(), "POST /api/one/information-requests (chat)").toBe(
+      200,
+    );
+    const chatBundle = (await response.json()) as RequestBundle;
+    expect(chatBundle.bundleId).toBeTruthy();
+    expect(chatBundle.items.length).toBeGreaterThanOrEqual(1);
+    const asked = chatBundle.items[0]!;
+    expect(asked.status).toBe("pending");
 
-      await expectCenterStatus(ownerPage, ownerIdentity!, "pending", asked.requestId, "pending");
+    await expectCenterStatus(
+      ownerPage,
+      ownerIdentity!,
+      "pending",
+      asked.requestId,
+      "pending",
+    );
 
-      // Withdraw with the same bearer the page just used so the fixture is
-      // left as it was found.
-      const authorization = response.request().headers()["authorization"] ?? "";
-      expect(authorization, "the chat ask carried a bearer").toMatch(/^Bearer /);
-      const cancelled = await requesterChat.request.post(
-        `/api/one/information-requests/${encodeURIComponent(chatBundle.bundleId)}/cancel`,
-        { headers: { Authorization: authorization } },
-      );
-      expect(cancelled.status(), "POST /api/one/information-requests/<bundle>/cancel").toBe(200);
-      await expectCenterStatus(ownerPage, ownerIdentity!, "previous", asked.requestId, "cancelled");
-    } finally {
-      await requesterChat.close();
-    }
+    // Withdraw with the same bearer the page just used so the fixture is
+    // left as it was found.
+    const authorization = response.request().headers()["authorization"] ?? "";
+    expect(
+      authorization.startsWith("Bearer "),
+      "the chat ask carried a bearer",
+    ).toBe(true);
+    const cancelled = await requesterChat.request.post(
+      `/api/one/information-requests/${encodeURIComponent(chatBundle.bundleId)}/cancel`,
+      { headers: { Authorization: authorization } },
+    );
+    expect(
+      cancelled.status(),
+      "POST /api/one/information-requests/<bundle>/cancel",
+    ).toBe(200);
+    await expectCenterStatus(
+      ownerPage,
+      ownerIdentity!,
+      "previous",
+      asked.requestId,
+      "cancelled",
+    );
   });
 });

@@ -262,6 +262,13 @@ class ConsentLifecycleService:
         revoke_token_id = f"REVOKED_{int(time.time() * 1000)}_{resolved_scope}"
         agent_id = token_to_revoke.get("agent_id") or token_to_revoke.get("developer") or "Unknown"
         subject_user_id = _clean(token_to_revoke.get("user_id")) or user_id
+        metadata = token_to_revoke.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        bundle_id = _clean(metadata.get("bundle_id"))
+        revoked_metadata = {
+            **requester_identity_metadata(metadata),
+            **({"bundle_id": bundle_id} if bundle_id else {}),
+        }
         await self._db.insert_event(
             user_id=subject_user_id,
             agent_id=agent_id,
@@ -270,6 +277,7 @@ class ConsentLifecycleService:
             token_id=revoke_token_id,
             request_id=token_to_revoke.get("request_id"),
             scope_description="Vault owner session" if agent_id == "self" else None,
+            metadata=revoked_metadata or None,
         )
         logger.info("consent.revoked_event_saved scope=%s", resolved_scope)
         is_vault_owner = resolved_scope in ("vault.owner", "VAULT_OWNER")
