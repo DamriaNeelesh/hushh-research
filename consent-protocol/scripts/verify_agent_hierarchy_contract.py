@@ -38,7 +38,6 @@ REQUIRED_MEMORY_IDS = {
     "agent_memory_segmentation",
     "agent_memory_merge",
     "agent_pkm_structure",
-    "agent_summary_reducer",
 }
 DELEGATE_AGENT_ALIASES = {
     "one": "agent_one",

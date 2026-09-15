@@ -75,7 +75,7 @@ This page is current-state implementation truth. It does not rename runtime iden
 | Email specialist | `agent_email` | Inbox, approval-draft, and client-request planning behind One | Exact specialist and `attr.*` authority per hop |
 | Memory Agent | `agent_personal_information` | Owner memory summaries plus consented information-slice workflows, reachable from One through `ask_memory_agent` | `cap.pkm.marketplace.view` plus exact per-hop information authority; PKM summaries retain the internal `pkm.read` gate |
 | Information Marketplace | standalone product surface | Separate consent-first Marketplace routes and APIs remain available; its conversational specialist is the Memory Agent | Admitted to One's typed specialist roster; route-specific marketplace pages remain separate |
-| World Model agents | `agent_memory_intent`, `agent_memory_segmentation`, `agent_memory_merge`, `agent_pkm_structure`, `agent_summary_reducer` | Semantic memory shaping and summary reduction | Must stay under vault/PKM consent and redaction boundaries |
+| World Model agents | `agent_memory_intent`, `agent_memory_segmentation`, `agent_memory_merge`, `agent_pkm_structure` | Semantic memory shaping | Must stay under vault/PKM consent and redaction boundaries |
 | Hermes-local product leaf | Source Library Steward | Query, virtual organization, revision-pinned file management, synchronization, and mounted-target sharing | Exact local `hussh_one_sources` tools only; no terminal, generic filesystem, credentials, vault keys, provider APIs, shared memory, or delegation |
 
 `agent_one` and `agent_orchestrator` are not two product heads. The orchestrator path is a compatibility implementation namespace for One.

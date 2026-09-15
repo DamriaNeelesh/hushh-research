@@ -31,7 +31,6 @@ def test_authored_manifest_is_strict_v2(path: Path) -> None:
         "memory_merge",
         "memory_segmentation",
         "pkm_structure",
-        "summary_reducer",
     }
     assert manifest.name.strip()
     assert manifest.description.strip()
@@ -102,7 +101,7 @@ def test_gemini_model_matrix_uses_current_workload_equivalents() -> None:
     # Founder directive 2026-09-02: every text agent runs the switched Flash model. The
     # reducer and the memory chain's salience workers no longer carry their own pins
     # (gemini-3.1-flash-lite and gemini-3.1-pro-preview), so one switch moves the fleet.
-    for name in ("summary_reducer", "memory_intent", "memory_segmentation"):
+    for name in ("memory_intent", "memory_segmentation"):
         assert load(name).model_config_for_runtime().name == GEMINI_MODEL, name
     one = load("one")
     assert one.model_config_for_runtime().name == GEMINI_MODEL
