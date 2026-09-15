@@ -94,7 +94,7 @@ Exact proposal IDs return to One for the existing generated action confirmation;
 ambiguous choices remain in One's conversation without mutation-bearing cards.
 A consent-review grant does not authorize connection mutations. These branch
 changes are not deployment acceptance; live performance failures remain in
-[the migration baseline](agent-chat-migration-baseline.md).
+[the migration baseline](./agent-chat-migration-baseline.md).
 
 Nav's public handle runs a fresh, bounded ADK session per turn. Nav and its
 Consent AgentTool child use supported `chat` roots because ADK 2.9 Runner rejects
