@@ -16,6 +16,7 @@ from typing import Any
 from hushh_mcp.consent.segment_labels import humanize_path
 from hushh_mcp.constants import GEMINI_MODEL
 from hushh_mcp.hushh_adk.manifest import ManifestLoader
+from hushh_mcp.hushh_adk.single_turn import build_single_turn_agent, run_single_turn
 from hushh_mcp.runtime_providers import (
     build_generate_content_config,
     build_managed_runtime_client,
@@ -1559,6 +1560,17 @@ class PKMAgentLabService:
                 )
         return list(merged.values())
 
+    def _should_use_adk_single_turn(self, manifest: Any) -> bool:
+        """Use ADK only for full manifest objects and the managed client type."""
+        if not callable(getattr(manifest, "model_config_for_runtime", None)):
+            return False
+        try:
+            from google.genai import Client
+
+            return isinstance(self.client, Client)
+        except Exception:
+            return False
+
     async def _run_agent_contract(
         self,
         *,
@@ -1588,6 +1600,43 @@ class PKMAgentLabService:
         if self.client is None:
             record("client_unavailable", attempts=0)
             return None
+        # Real managed Gemini clients use the shared ADK single-turn operon.
+        # Test doubles and legacy manifest stand-ins retain the direct-client
+        # seam so deterministic tests never acquire credentials or network I/O.
+        if self._should_use_adk_single_turn(manifest):
+            try:
+                from google.adk.models import Gemini
+
+                adk_model = Gemini(
+                    model=model_override or _manifest_model_name(manifest) or GEMINI_MODEL,
+                    client=self.client,
+                )
+                agent = build_single_turn_agent(
+                    manifest,
+                    output_schema=response_schema,
+                    model=adk_model,
+                )
+                parsed = await run_single_turn(
+                    agent,
+                    prompt_parts=prompt,
+                    user_id="pkm-agent-lab",
+                    consent_token="managed-runtime",  # noqa: S106 - turn-local sentinel
+                    timeout_seconds=timeout_seconds,
+                )
+                value = parsed.model_dump(mode="json") if hasattr(parsed, "model_dump") else parsed
+                if isinstance(value, dict):
+                    record("success", attempts=1)
+                    return value
+                record("invalid_response", attempts=1)
+                return None
+            except Exception as error:
+                record("adk_failure", attempts=1, error_type=type(error).__name__)
+                logger.warning(
+                    "pkm.agent_contract_adk_failed agent=%s error=%s",
+                    agent_id,
+                    type(error).__name__,
+                )
+                return None
         deadline = time.perf_counter() + timeout_seconds if timeout_seconds is not None else None
         from google.genai import types as genai_types
 
