@@ -2083,7 +2083,7 @@ function ProfilePageContent({
   const resetRowDescription = "Clears saved details. Keeps sign-in.";
   const resetDialogTitle = "Reset account?";
   const resetDialogDescription =
-    "Clears saved details and setup progress. Your sign-in and vault stay.";
+    "Clears saved data and restarts setup. Sign-in and Vault stay.";
 
   const handleVaultUnlockOpenChange = (open: boolean) => {
     setShowVaultUnlock(open);
