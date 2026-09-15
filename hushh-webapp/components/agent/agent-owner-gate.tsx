@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { LocationCommandProvider } from "@/components/agent/location-command-provider";
 import { LocationCommandDeviceBridge } from "@/components/one-location/onboarding/location-command-device-bridge";
+import { LocationPublisherBridge } from "@/components/location/location-publisher-bridge";
 import { VoiceSessionProvider } from "@/components/one-voice/voice-session-provider";
 import { useOneVoiceLiveEnabled } from "@/lib/one-voice/readiness";
 
@@ -20,7 +21,10 @@ export function AgentOwnerGate({ children }: { children: ReactNode }) {
   return (
     <LocationCommandProvider enabled={!live}>
       {!live ? <LocationCommandDeviceBridge /> : null}
-      <VoiceSessionProvider enabled={live}>{children}</VoiceSessionProvider>
+      <VoiceSessionProvider enabled={live}>
+        {live ? <LocationPublisherBridge /> : null}
+        {children}
+      </VoiceSessionProvider>
     </LocationCommandProvider>
   );
 }
