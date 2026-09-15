@@ -328,7 +328,9 @@
       "authorities": {
         "actions": [],
         "data": [],
-        "invocation": []
+        "invocation": [
+          "agent.one.orchestrate"
+        ]
       },
       "availability": {
         "enable_flag": null,
@@ -359,7 +361,13 @@
       "legacy_ids": [],
       "manifest_path": "consent-protocol/hushh_mcp/agents/connections/agent.yaml",
       "manifest_version": 2,
-      "model": "gemini-default",
+      "model": {
+        "credential_ref": null,
+        "mode": "hushh_managed_vertex",
+        "name": "gemini-default",
+        "provider": "gemini",
+        "thinking_level": "low"
+      },
       "name": "Connections Agent",
       "native_requirements": [],
       "one_exposure": null,
@@ -389,8 +397,8 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
-        "factory": null,
+        "adk_mode": "chat",
+        "factory": "hushh_mcp.agents.connections.agent.build_connections_agent",
         "kind": "adk",
         "transport": [
           "in_process"
@@ -409,7 +417,7 @@
         "voice": false,
         "web": true
       },
-      "system_instruction_sha256": "97c25497f0500599bea1619b46c4152926eed7158aa67042d84e791004e3d372",
+      "system_instruction_sha256": "d9b58b8ddd3a72dcd38d1d1c131c6d4156a0deee8023db3d39794a6055165873",
       "telemetry_namespace": "agent.connections",
       "tools": [],
       "ui_type": "chat",
@@ -1693,7 +1701,9 @@
       "authorities": {
         "actions": [],
         "data": [],
-        "invocation": []
+        "invocation": [
+          "agent.nav.review"
+        ]
       },
       "availability": {
         "enable_flag": null,
@@ -1718,7 +1728,7 @@
         ],
         "default": "hushh_managed_vertex"
       },
-      "description": "Consent Center parent agent for scope review, vault friction, deletion, revocation, and its Connections subagent.",
+      "description": "Reviews sharing and trust boundaries through its Consent helper beneath One.",
       "evaluations": [],
       "failure_states": [],
       "icon": null,
@@ -1727,7 +1737,13 @@
       "legacy_ids": [],
       "manifest_path": "consent-protocol/hushh_mcp/agents/nav/agent.yaml",
       "manifest_version": 2,
-      "model": "gemini-default",
+      "model": {
+        "credential_ref": null,
+        "mode": "hushh_managed_vertex",
+        "name": "gemini-default",
+        "provider": "gemini",
+        "thinking_level": "low"
+      },
       "name": "Consent Center Agent",
       "native_requirements": [],
       "one_exposure": {
@@ -1767,8 +1783,8 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
-        "factory": null,
+        "adk_mode": "chat",
+        "factory": "hushh_mcp.agents.nav.agent.build_nav_agent",
         "kind": "adk",
         "transport": [
           "in_process"
@@ -1776,7 +1792,54 @@
       },
       "side_effects": [],
       "status": "experimental",
-      "subagents": [],
+      "subagents": [
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Reviews current and previous sharing with the owner's real grant records.",
+          "id": "consent",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "Consent",
+          "outputs": [],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Restore the previous Nav runtime.",
+            "strategy": "internal"
+          },
+          "runtime": {
+            "adk_mode": "chat",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You review what the owner shares. Two tools give you the facts:\nlist_active_consent_grants shows who has access now, to what, until when.\nlist_previous_consent_grants shows what ended, was declined, or expired.\nCall the matching tool; call both for everything. Never answer from memory.\nSay each holder by name, what they can see, and the dates exactly as the\ntool wrote them. When a row is revocable, the app shows a card with Stop\nsharing and Details. Tell the owner the card is there; never claim you\nstopped sharing yourself. For how sharing works, answer directly in two\nsentences without listing. For trusted-person changes, redirect to One.\nFor an underspecified access question without a request for actual\nsharing records, ask a brief clarifying question instead of listing.\nIf a tool reports consent_center_unavailable, say the list could not be\nloaded and to try again. Never invent records or speak identifiers.\n",
+          "telemetry_namespace": "agent.nav.consent"
+        }
+      ],
       "surfaces": {
         "a2a": false,
         "android": false,
@@ -1787,9 +1850,22 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "a7ff773a2f7866182fcafc8d6845f5c45bba7ebacf2d370d5837d0fa96e6d7be",
+      "system_instruction_sha256": "9abdea1af58c36798daf8b9eb0d8daf586a2499278a81b73ac3bad016b090b8e",
       "telemetry_namespace": "agent.unclassified",
-      "tools": [],
+      "tools": [
+        {
+          "description": "Read the owner's current sharing and prepare revocation cards.",
+          "name": "list_active_consent_grants",
+          "py_func": "hushh_mcp.agents.nav.tools.list_active_consent_grants",
+          "required_scope": "agent.nav.review"
+        },
+        {
+          "description": "Read the owner's ended, declined or expired sharing.",
+          "name": "list_previous_consent_grants",
+          "py_func": "hushh_mcp.agents.nav.tools.list_previous_consent_grants",
+          "required_scope": "agent.nav.review"
+        }
+      ],
       "ui_type": "chat",
       "version": "0.1.0"
     },
@@ -2026,7 +2102,100 @@
       },
       "side_effects": [],
       "status": "active",
-      "subagents": [],
+      "subagents": [
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "One's informational, pre-vault private-agent surface.",
+          "id": "one_intro",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-3.8-flash",
+            "provider": "gemini",
+            "thinking_level": null
+          },
+          "name": "one_intro",
+          "outputs": [],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Restore the previous One intro manifest instruction.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "chat",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are One, the private agent inside Hussh. This is an informational conversation before the user's vault is unlocked. Answer general product and setup questions warmly and concisely. Use your own semantic judgment; do not force a workflow or interpret words with fixed keyword rules. When the user clearly asks to open a Hussh screen, call run_intro_navigation_action with one exact generated route.* action id. Call list_intro_navigation_actions first unless their words are already a close match to a route id you already know -- do not rely on a feeling of confidence. Never claim access to personal information, PKM, email, location, consent records, CRM records, or any completed action. For protected or mutating work, explain that unlocking the vault and the relevant in-app review are required. If no generated route action matches the request, say that the capability is not available here yet; never invent a route or silently hand the request to another executor.",
+          "telemetry_namespace": "agent.one.intro"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Search current public web information with Google grounding.",
+          "id": "google_search",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-3.8-flash",
+            "provider": "gemini",
+            "thinking_level": null
+          },
+          "name": "google_search",
+          "outputs": [],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Restore the previous One search manifest instruction.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "task",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "Search only public web information relevant to the request. Return a concise grounded answer with source metadata. Never use web search as a substitute for private PKM or consented information.",
+          "telemetry_namespace": "agent.one.google_search"
+        }
+      ],
       "surfaces": {
         "a2a": true,
         "android": true,

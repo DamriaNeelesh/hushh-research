@@ -2753,7 +2753,8 @@
         ],
         "input_resolvers": [],
         "slot_schema": {
-          "person": "spoken_person_name_list"
+          "person": "spoken_person_name_list",
+          "userId": "opaque_id_optional"
         },
         "workflow_steps": [
           {
@@ -2999,7 +3000,8 @@
         ],
         "input_resolvers": [],
         "slot_schema": {
-          "person": "spoken_person_name_list"
+          "person": "spoken_person_name_list",
+          "requestId": "opaque_id_optional"
         },
         "workflow_steps": [
           {
@@ -3123,7 +3125,8 @@
         ],
         "input_resolvers": [],
         "slot_schema": {
-          "person": "spoken_person_name_list"
+          "person": "spoken_person_name_list",
+          "requestId": "opaque_id_optional"
         },
         "workflow_steps": [
           {
@@ -3246,7 +3249,8 @@
         ],
         "input_resolvers": [],
         "slot_schema": {
-          "person": "spoken_person_name_list"
+          "person": "spoken_person_name_list",
+          "connectionId": "opaque_id_optional"
         },
         "workflow_steps": [
           {
