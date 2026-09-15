@@ -1033,6 +1033,274 @@
             ],
             "loopback_only": false
           },
+          "description": "Produces a bounded, evidence-backed fundamental analysis from supplied SEC and market data.",
+          "id": "agent_kai_fundamental",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "Kai Fundamental Analyst",
+          "outputs": [
+            {
+              "description": null,
+              "name": "business_moat",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "financial_resilience",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "growth_efficiency",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "bull_case",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "bear_case",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "summary",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "confidence",
+              "type": "number"
+            },
+            {
+              "description": null,
+              "name": "recommendation",
+              "type": "string"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 60000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [
+              "kai.sec_context",
+              "kai.market_context",
+              "pkm.profile_summary"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Retain the deterministic fundamental analysis and keep the legacy report path disabled.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are Kai's Fundamental Analyst, an internal single-turn child.\nAnalyze only the supplied SEC filing, market, quantitative, and investor\ncontext. Return JSON with business_moat, financial_resilience,\ngrowth_efficiency, bull_case, bear_case, summary, confidence, and\nrecommendation. Every claim must be grounded in the supplied numbers;\nuse \"insufficient data\" when evidence is missing. Recommendation must be\nexactly buy, hold, or reduce. Never invent holdings, prices, filings, or\nuser facts. Return JSON only, with no markdown or tool claims.\n",
+          "telemetry_namespace": "agent.kai.fundamental"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Produces a bounded market sentiment analysis from supplied news and market context.",
+          "id": "agent_kai_sentiment",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "Kai Sentiment Analyst",
+          "outputs": [
+            {
+              "description": null,
+              "name": "summary",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "sentiment_score",
+              "type": "number"
+            },
+            {
+              "description": null,
+              "name": "key_catalysts",
+              "type": "array"
+            },
+            {
+              "description": null,
+              "name": "news_highlights",
+              "type": "array"
+            },
+            {
+              "description": null,
+              "name": "momentum_signal",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "confidence",
+              "type": "number"
+            },
+            {
+              "description": null,
+              "name": "recommendation",
+              "type": "string"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 45000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [
+              "kai.news_context",
+              "kai.market_context",
+              "pkm.profile_summary"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Retain the deterministic sentiment analysis and keep the legacy report path disabled.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are Kai's Sentiment Analyst, an internal single-turn child.\nAnalyze only the supplied news articles, market snapshot, and investor\ncontext. Return JSON with summary, sentiment_score from -1 to 1,\nkey_catalysts, news_highlights, momentum_signal, confidence, and\nrecommendation. Weigh recent evidence, identify both positive and\nnegative signals, and use \"insufficient data\" when evidence is missing.\nRecommendation must be exactly bullish, neutral, or bearish. Return JSON\nonly, with no markdown or tool claims.\n",
+          "telemetry_namespace": "agent.kai.sentiment"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Produces a bounded valuation analysis from supplied market and peer data.",
+          "id": "agent_kai_valuation",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "Kai Valuation Analyst",
+          "outputs": [
+            {
+              "description": null,
+              "name": "summary",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "valuation_verdict",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "valuation_metrics",
+              "type": "object"
+            },
+            {
+              "description": null,
+              "name": "peer_ranking",
+              "type": "string"
+            },
+            {
+              "description": null,
+              "name": "price_targets",
+              "type": "object"
+            },
+            {
+              "description": null,
+              "name": "upside_downside",
+              "type": "object"
+            },
+            {
+              "description": null,
+              "name": "confidence",
+              "type": "number"
+            },
+            {
+              "description": null,
+              "name": "recommendation",
+              "type": "string"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 45000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [
+              "kai.market_context",
+              "kai.peer_context",
+              "pkm.profile_summary"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Retain the deterministic valuation analysis and keep the legacy report path disabled.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are Kai's Valuation Analyst, an internal single-turn child.\nAnalyze only the supplied market, peer, and investor context. Return JSON\nwith summary, valuation_verdict, valuation_metrics, peer_ranking,\nprice_targets, upside_downside, confidence, and recommendation. Use\nmultiple supplied valuation measures when available, and use\n\"insufficient data\" when evidence is missing. Valuation verdict and\nrecommendation must be exactly undervalued, fair, or overvalued. Return\nJSON only, with no markdown or tool claims.\n",
+          "telemetry_namespace": "agent.kai.valuation"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
           "description": "Conversational Kai surface for grounded financial questions and profile guidance.",
           "id": "agent_kai_chat",
           "inputs": [],

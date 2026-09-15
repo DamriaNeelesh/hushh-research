@@ -278,6 +278,160 @@ subagents:
     rollout:
       strategy: general
       rollback: Disable Portfolio Optimizer delegation and retain deterministic fallback behavior.
+  - id: agent_kai_fundamental
+    name: Kai Fundamental Analyst
+    description: Produces a bounded, evidence-backed fundamental analysis from supplied SEC and market data.
+    model:
+      provider: gemini
+      name: gemini-default
+      mode: hushh_managed_vertex
+      thinking_level: low
+    runtime:
+      kind: adk
+      adk_mode: single_turn
+      transport:
+        - in_process
+    system_instruction: |
+      You are Kai's Fundamental Analyst, an internal single-turn child.
+      Analyze only the supplied SEC filing, market, quantitative, and investor
+      context. Return JSON with business_moat, financial_resilience,
+      growth_efficiency, bull_case, bear_case, summary, confidence, and
+      recommendation. Every claim must be grounded in the supplied numbers;
+      use "insufficient data" when evidence is missing. Recommendation must be
+      exactly buy, hold, or reduce. Never invent holdings, prices, filings, or
+      user facts. Return JSON only, with no markdown or tool claims.
+    outputs:
+      - name: business_moat
+        type: string
+      - name: financial_resilience
+        type: string
+      - name: growth_efficiency
+        type: string
+      - name: bull_case
+        type: string
+      - name: bear_case
+        type: string
+      - name: summary
+        type: string
+      - name: confidence
+        type: number
+      - name: recommendation
+        type: string
+    privacy:
+      context_allowlist:
+        - kai.sec_context
+        - kai.market_context
+        - pkm.profile_summary
+      plaintext_telemetry: false
+    telemetry_namespace: agent.kai.fundamental
+    performance:
+      latency_p95_ms: 60000
+      max_output_tokens: 4096
+    rollout:
+      strategy: general
+      rollback: Retain the deterministic fundamental analysis and keep the legacy report path disabled.
+  - id: agent_kai_sentiment
+    name: Kai Sentiment Analyst
+    description: Produces a bounded market sentiment analysis from supplied news and market context.
+    model:
+      provider: gemini
+      name: gemini-default
+      mode: hushh_managed_vertex
+      thinking_level: low
+    runtime:
+      kind: adk
+      adk_mode: single_turn
+      transport:
+        - in_process
+    system_instruction: |
+      You are Kai's Sentiment Analyst, an internal single-turn child.
+      Analyze only the supplied news articles, market snapshot, and investor
+      context. Return JSON with summary, sentiment_score from -1 to 1,
+      key_catalysts, news_highlights, momentum_signal, confidence, and
+      recommendation. Weigh recent evidence, identify both positive and
+      negative signals, and use "insufficient data" when evidence is missing.
+      Recommendation must be exactly bullish, neutral, or bearish. Return JSON
+      only, with no markdown or tool claims.
+    outputs:
+      - name: summary
+        type: string
+      - name: sentiment_score
+        type: number
+      - name: key_catalysts
+        type: array
+      - name: news_highlights
+        type: array
+      - name: momentum_signal
+        type: string
+      - name: confidence
+        type: number
+      - name: recommendation
+        type: string
+    privacy:
+      context_allowlist:
+        - kai.news_context
+        - kai.market_context
+        - pkm.profile_summary
+      plaintext_telemetry: false
+    telemetry_namespace: agent.kai.sentiment
+    performance:
+      latency_p95_ms: 45000
+      max_output_tokens: 4096
+    rollout:
+      strategy: general
+      rollback: Retain the deterministic sentiment analysis and keep the legacy report path disabled.
+  - id: agent_kai_valuation
+    name: Kai Valuation Analyst
+    description: Produces a bounded valuation analysis from supplied market and peer data.
+    model:
+      provider: gemini
+      name: gemini-default
+      mode: hushh_managed_vertex
+      thinking_level: low
+    runtime:
+      kind: adk
+      adk_mode: single_turn
+      transport:
+        - in_process
+    system_instruction: |
+      You are Kai's Valuation Analyst, an internal single-turn child.
+      Analyze only the supplied market, peer, and investor context. Return JSON
+      with summary, valuation_verdict, valuation_metrics, peer_ranking,
+      price_targets, upside_downside, confidence, and recommendation. Use
+      multiple supplied valuation measures when available, and use
+      "insufficient data" when evidence is missing. Valuation verdict and
+      recommendation must be exactly undervalued, fair, or overvalued. Return
+      JSON only, with no markdown or tool claims.
+    outputs:
+      - name: summary
+        type: string
+      - name: valuation_verdict
+        type: string
+      - name: valuation_metrics
+        type: object
+      - name: peer_ranking
+        type: string
+      - name: price_targets
+        type: object
+      - name: upside_downside
+        type: object
+      - name: confidence
+        type: number
+      - name: recommendation
+        type: string
+    privacy:
+      context_allowlist:
+        - kai.market_context
+        - kai.peer_context
+        - pkm.profile_summary
+      plaintext_telemetry: false
+    telemetry_namespace: agent.kai.valuation
+    performance:
+      latency_p95_ms: 45000
+      max_output_tokens: 4096
+    rollout:
+      strategy: general
+      rollback: Retain the deterministic valuation analysis and keep the legacy report path disabled.
   - id: agent_kai_chat
     name: Kai Chat
     description: Conversational Kai surface for grounded financial questions and profile guidance.

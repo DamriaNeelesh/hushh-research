@@ -16,6 +16,19 @@ def test_chat_gene_loads_from_kai_manifest() -> None:
     assert gene.privacy.plaintext_telemetry is False
 
 
+@pytest.mark.parametrize(
+    "gene_id",
+    ["agent_kai_fundamental", "agent_kai_sentiment", "agent_kai_valuation"],
+)
+def test_analyst_genes_load_as_bounded_single_turns(gene_id: str) -> None:
+    gene = runtime.load_kai_analyst_gene(gene_id)
+
+    assert gene.id == gene_id
+    assert gene.runtime.adk_mode == "single_turn"
+    assert gene.runtime.transport == ["in_process"]
+    assert gene.privacy.plaintext_telemetry is False
+
+
 @pytest.mark.asyncio
 async def test_chat_runtime_uses_one_bounded_adk_turn(monkeypatch) -> None:
     calls: dict[str, object] = {}
@@ -68,3 +81,29 @@ async def test_chat_runtime_requires_authority_and_nonempty_input() -> None:
             user_id="",
             consent_token="token",  # noqa: S106 - test fixture token
         )
+
+
+@pytest.mark.asyncio
+async def test_analyst_runtime_uses_shared_single_turn(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(runtime, "build_single_turn_agent", lambda gene, **kwargs: "agent")
+
+    async def _run_single_turn(agent, **kwargs):
+        calls["agent"] = agent
+        calls["kwargs"] = kwargs
+        return {"summary": "grounded", "confidence": 0.8}
+
+    monkeypatch.setattr(runtime, "run_single_turn", _run_single_turn)
+
+    result = await runtime.run_kai_analyst_turn(
+        gene_id="agent_kai_sentiment",
+        prompt="Analyze the supplied news.",
+        user_id="user-1",
+        consent_token="owner-token",  # noqa: S106 - test fixture token
+    )
+
+    assert result == {"summary": "grounded", "confidence": 0.8}
+    assert calls["agent"] == "agent"
+    assert calls["kwargs"]["user_id"] == "user-1"
+    assert calls["kwargs"]["consent_token"] == "owner-token"

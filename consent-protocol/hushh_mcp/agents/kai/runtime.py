@@ -24,6 +24,9 @@ from hushh_mcp.runtime_providers.gemini_config import (
 _MANIFEST_PATH = Path(__file__).with_name("agent.yaml")
 _PORTFOLIO_OPTIMIZER_GENE_ID = "agent_kai_portfolio_optimizer"
 _KAI_CHAT_GENE_ID = "agent_kai_chat"
+_KAI_FUNDAMENTAL_GENE_ID = "agent_kai_fundamental"
+_KAI_SENTIMENT_GENE_ID = "agent_kai_sentiment"
+_KAI_VALUATION_GENE_ID = "agent_kai_valuation"
 
 PORTFOLIO_OPTIMIZER_SCHEMA: dict[str, Any] = {
     "type": "OBJECT",
@@ -35,6 +38,77 @@ PORTFOLIO_OPTIMIZER_SCHEMA: dict[str, Any] = {
         "analytics": {"type": "OBJECT", "nullable": True},
     },
     "required": ["summary", "losers", "portfolio_level_takeaways"],
+}
+
+KAI_ANALYST_SCHEMAS: dict[str, dict[str, Any]] = {
+    _KAI_FUNDAMENTAL_GENE_ID: {
+        "type": "OBJECT",
+        "properties": {
+            "business_moat": {"type": "STRING"},
+            "financial_resilience": {"type": "STRING"},
+            "growth_efficiency": {"type": "STRING"},
+            "bull_case": {"type": "STRING"},
+            "bear_case": {"type": "STRING"},
+            "summary": {"type": "STRING"},
+            "confidence": {"type": "NUMBER"},
+            "recommendation": {"type": "STRING"},
+        },
+        "required": [
+            "business_moat",
+            "financial_resilience",
+            "growth_efficiency",
+            "bull_case",
+            "bear_case",
+            "summary",
+            "confidence",
+            "recommendation",
+        ],
+    },
+    _KAI_SENTIMENT_GENE_ID: {
+        "type": "OBJECT",
+        "properties": {
+            "summary": {"type": "STRING"},
+            "sentiment_score": {"type": "NUMBER"},
+            "key_catalysts": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "news_highlights": {"type": "ARRAY", "items": {"type": "OBJECT"}},
+            "momentum_signal": {"type": "STRING"},
+            "confidence": {"type": "NUMBER"},
+            "recommendation": {"type": "STRING"},
+        },
+        "required": [
+            "summary",
+            "sentiment_score",
+            "key_catalysts",
+            "news_highlights",
+            "momentum_signal",
+            "confidence",
+            "recommendation",
+        ],
+    },
+    _KAI_VALUATION_GENE_ID: {
+        "type": "OBJECT",
+        "properties": {
+            "summary": {"type": "STRING"},
+            "valuation_verdict": {"type": "STRING"},
+            "valuation_metrics": {"type": "OBJECT"},
+            "peer_ranking": {"type": "STRING"},
+            "peer_comparison": {"type": "OBJECT"},
+            "price_targets": {"type": "OBJECT"},
+            "upside_downside": {"type": "OBJECT"},
+            "confidence": {"type": "NUMBER"},
+            "recommendation": {"type": "STRING"},
+        },
+        "required": [
+            "summary",
+            "valuation_verdict",
+            "valuation_metrics",
+            "peer_ranking",
+            "price_targets",
+            "upside_downside",
+            "confidence",
+            "recommendation",
+        ],
+    },
 }
 
 
@@ -68,6 +142,23 @@ def load_kai_chat_gene() -> Any:
         raise RuntimeError("Kai chat gene has an invalid runtime boundary")
     if gene.privacy.plaintext_telemetry:
         raise RuntimeError("Kai chat gene permits plaintext telemetry")
+    return gene
+
+
+@lru_cache(maxsize=4)
+def load_kai_analyst_gene(gene_id: str) -> Any:
+    """Load one of Kai's manifest-owned analyst children."""
+
+    if gene_id not in KAI_ANALYST_SCHEMAS:
+        raise ValueError(f"Unknown Kai analyst gene: {gene_id}")
+    manifest = ManifestLoader.load(str(_MANIFEST_PATH))
+    gene = next((child for child in manifest.subagents if child.id == gene_id), None)
+    if gene is None:
+        raise RuntimeError(f"Kai analyst gene is missing: {gene_id}")
+    if gene.runtime.adk_mode != "single_turn" or gene.runtime.transport != ["in_process"]:
+        raise RuntimeError(f"Kai analyst gene has an invalid runtime boundary: {gene_id}")
+    if gene.privacy.plaintext_telemetry:
+        raise RuntimeError(f"Kai analyst gene permits plaintext telemetry: {gene_id}")
     return gene
 
 
@@ -134,6 +225,38 @@ async def run_kai_chat_turn(
     return text
 
 
+async def run_kai_analyst_turn(
+    *,
+    gene_id: str,
+    prompt: str,
+    user_id: str,
+    consent_token: str,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Run one manifest-owned Kai analyst with a bounded structured response."""
+
+    if not str(prompt or "").strip():
+        raise ValueError("Kai analyst prompt is required")
+    if not str(user_id or "").strip() or not str(consent_token or "").strip():
+        raise ValueError("Kai analyst authority is required")
+    gene = load_kai_analyst_gene(gene_id)
+    result = await run_single_turn(
+        build_single_turn_agent(gene, output_schema=KAI_ANALYST_SCHEMAS[gene_id]),
+        prompt_parts=str(prompt).strip(),
+        user_id=str(user_id),
+        consent_token=str(consent_token),
+        timeout_seconds=(
+            float(timeout_seconds)
+            if timeout_seconds is not None
+            else max(30.0, gene.performance.latency_p95_ms / 1000)
+        ),
+    )
+    payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+    if not isinstance(payload, dict):
+        raise ValueError("Kai analyst returned a non-object payload")
+    return json.loads(json.dumps(payload, separators=(",", ":")))
+
+
 async def run_kai_portfolio_optimizer(
     *,
     prompt: str,
@@ -174,10 +297,13 @@ async def run_kai_portfolio_optimizer(
 
 
 __all__ = [
+    "KAI_ANALYST_SCHEMAS",
     "PORTFOLIO_OPTIMIZER_SCHEMA",
     "build_kai_chat_agent",
+    "load_kai_analyst_gene",
     "load_kai_chat_gene",
     "load_kai_portfolio_optimizer_gene",
+    "run_kai_analyst_turn",
     "run_kai_chat_turn",
     "run_kai_portfolio_optimizer",
 ]
