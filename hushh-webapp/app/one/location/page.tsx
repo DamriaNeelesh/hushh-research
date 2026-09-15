@@ -1,5 +1,7 @@
 "use client";
 
+import { LocationArea } from "@/components/location/location-area";
+import { LocationAreaSwitch } from "@/components/location/location-area-switch";
 import { prepareCircleManagement, verifyCircleManagementReceipt, circleManagementResult,
   type CircleManagementAction, type CircleManagementBinding } from "@/lib/one-location/command-circle-management";
 import { OwnerOperationGate, SosOperationGate, stopSosShares } from "@/lib/one-location/command-sos";
@@ -15587,7 +15589,8 @@ export function OneLocationAgentPageContent({
   );
 }
 
-export default function OneLocationAgentPage({
+/** Legacy Location hub (bounded command runtime). Retired once Live is on everywhere. */
+export function OneLocationAgentPage({
   mode = "workspace",
   surface = "hub",
   onSetupReadinessChange,
@@ -15601,6 +15604,16 @@ export default function OneLocationAgentPage({
       onSetupReadinessChange={onSetupReadinessChange}
       onSetupComplete={onSetupComplete}
       onSetupSkip={onSetupSkip}
+    />
+  );
+}
+
+/** One route, two trees: the voice-first Location area when Live is on, the legacy hub otherwise. */
+export default function OneLocationPage(props: OneLocationAgentPageProps = {}) {
+  return (
+    <LocationAreaSwitch
+      live={<LocationArea mode={props.mode} />}
+      legacy={<OneLocationAgentPage {...props} />}
     />
   );
 }

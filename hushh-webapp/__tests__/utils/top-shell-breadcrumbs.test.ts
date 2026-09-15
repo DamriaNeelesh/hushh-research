@@ -737,6 +737,12 @@ describe("top shell breadcrumbs", () => {
       // Legacy bookmarks are labelled correctly while the hub canonicalizes
       // `action=privacy` to `action=settings`.
       ["privacy", "Settings"],
+      // Voice-first Location area flows.
+      ["create-circle", "New circle"],
+      ["join-circle", "Join circle"],
+      ["circle-detail", "Circle"],
+      ["invite-circle", "Invite to circle"],
+      ["ratings", "Ratings"],
       ["active-shares", "Active shares"],
       ["shared-with-me", "Shared with me"],
       ["needs-review", "Needs review"],

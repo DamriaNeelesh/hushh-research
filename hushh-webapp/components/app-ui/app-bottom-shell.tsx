@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { AgentBar } from "@/components/agent/agent-bar";
+import { useAgentVoiceState } from "@/lib/agent/agent-voice-state";
 import { useOptionalLocationCommand } from "@/components/agent/location-command-provider";
 import { Navbar } from "@/components/navbar";
 import { AmbientChromeMask } from "@/components/app-ui/ambient-chrome-mask";
@@ -27,7 +28,8 @@ const BOTTOM_SCROLL_TRANSFORM =
 /** Shared persistent bottom chrome: one material/motion owner, separate controls. */
 export function AppBottomShell({ model }: { model: BottomShellModel }) {
   const command = useOptionalLocationCommand();
-  const hidden = model.hidden && !command?.active;
+  const voiceActive = useAgentVoiceState((state) => state.active);
+  const hidden = model.hidden && !command?.active && !voiceActive;
   const shellRef = useRef<HTMLDivElement | null>(null);
   const navigationSlotRef = useRef<HTMLDivElement | null>(null);
   // AgentBar reads client-only auth and agent-popover state. Rendering its

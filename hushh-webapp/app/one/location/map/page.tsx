@@ -1,6 +1,8 @@
 "use client";
 
+import { LocationMapScreen } from "@/components/location/map/location-map-screen";
 import { LocationImmersiveMap } from "@/components/one-location/location-immersive-map";
+import { useOneVoiceLiveEnabled } from "@/lib/one-voice/readiness";
 import { useRequireAuth } from "@/hooks/use-auth";
 import { deriveLocationVoiceActions } from "@/lib/voice/location-voice-actions";
 import { usePublishVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
@@ -16,6 +18,7 @@ const LOCATION_MAP_VOICE_ACTIONS = deriveLocationVoiceActions("one_location_map"
 /** Private, immersive Map. It owns no persistent app chrome or route-local map state. */
 export default function OneLocationMapPage() {
   const auth = useRequireAuth();
+  const live = useOneVoiceLiveEnabled();
 
   usePublishVoiceSurfaceMetadata(
     !auth.loading && auth.isAuthenticated
@@ -34,5 +37,6 @@ export default function OneLocationMapPage() {
   // Every map state value is owner-scoped: renderer consent, decrypted markers,
   // nearby attendees, and pending location work must never survive an account
   // switch. A user-id key enforces that boundary before passive effects run.
+  if (live) return <LocationMapScreen key={auth.userId ?? "anonymous"} />;
   return <LocationImmersiveMap key={auth.userId ?? "anonymous"} />;
 }

@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import OneLocationAgentPage from "@/app/one/location/page";
+import { OneLocationAgentPage } from "@/app/one/location/page";
+import { LocationSetupFlow } from "@/components/location/setup/location-setup-flow";
+import { useOneVoiceLiveEnabled } from "@/lib/one-voice/readiness";
 import {
   SetupCapabilityLoading,
   useSetupCapabilityCoordinator,
@@ -26,6 +28,7 @@ function LocationSetupReturn({
 
 export function LocationOnboardingSetupClient() {
   const [ready, setReady] = useState(false);
+  const live = useOneVoiceLiveEnabled();
   const coordinator = useSetupCapabilityCoordinator({
     capabilityId: "location",
     isOperationallyReady: ready,
@@ -46,8 +49,9 @@ export function LocationOnboardingSetupClient() {
   // only after the person taps "Set up my location". Notifications are
   // deliberately outside this onboarding journey. Other capabilities keep
   // their intro gate: this is a Location-only change.
+  const Flow = live ? LocationSetupFlow : OneLocationAgentPage;
   return (
-    <OneLocationAgentPage
+    <Flow
       mode="setup"
       onSetupReadinessChange={setReady}
       onSetupComplete={async () => {
