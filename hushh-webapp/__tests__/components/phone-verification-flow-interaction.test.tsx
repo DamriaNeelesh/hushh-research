@@ -18,6 +18,7 @@ vi.mock("next/navigation", () => ({
 function renderPhoneVerificationFlow(options?: {
   startRejects?: boolean;
   codePresentation?: "onboarding";
+  phonePresentation?: "compact";
   confirmVerification?: ReturnType<typeof vi.fn>;
   currentPhoneNumber?: string | null;
 }) {
@@ -33,6 +34,7 @@ function renderPhoneVerificationFlow(options?: {
     <PhoneVerificationFlow
       mode="link"
       codePresentation={options?.codePresentation}
+      phonePresentation={options?.phonePresentation}
       currentPhoneNumber={currentPhoneNumber}
       startVerification={startVerification}
       confirmVerification={confirmVerification}
@@ -134,6 +136,37 @@ describe("PhoneVerificationFlow country selector", () => {
     fireEvent.change(countryInput, { target: { value: "not-a-country" } });
 
     expect(await screen.findByText("No country codes found.")).toBeTruthy();
+  });
+
+  it.each([
+    ["United States", "US", "+1", "🇺🇸"],
+    ["United Kingdom", "GB", "+44", "🇬🇧"],
+    ["India", "IN", "+91", "🇮🇳"],
+    ["Angola", "AO", "+244", "🇦🇴"],
+    ["Brazil", "BR", "+55", "🇧🇷"],
+  ])("keeps compact country selection synchronized for %s", async (name, iso, code, flag) => {
+    renderPhoneVerificationFlow({ phonePresentation: "compact" });
+    const phone = screen.getByRole("textbox", { name: "Phone number" });
+    fireEvent.change(phone, { target: { value: "12345" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Country code:/ }));
+    const search = await screen.findByRole("searchbox", { name: "Search countries" });
+    fireEvent.change(search, { target: { value: name } });
+    fireEvent.click(screen.getByRole("button", { name: `${name} (${code})`, exact: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("button", { name: `Country code: ${name} (${code})` })).toBeTruthy();
+    expect(document.querySelector(`[data-country-flag="${iso}"]`)?.textContent).toBe(flag);
+    expect((phone as HTMLInputElement).value).toBe("12345");
+  });
+
+  it("cancels the compact picker without changing the selected country", async () => {
+    renderPhoneVerificationFlow({ phonePresentation: "compact" });
+    const trigger = screen.getByRole("button", { name: /^Country code:/ });
+    const before = trigger.getAttribute("aria-label");
+    fireEvent.click(trigger);
+    fireEvent.change(await screen.findByRole("searchbox"), { target: { value: "Brazil" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(trigger.getAttribute("aria-label")).toBe(before);
   });
 
   it("shows India immediately after the first country selection", async () => {
