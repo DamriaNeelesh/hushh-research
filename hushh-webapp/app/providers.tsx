@@ -73,6 +73,7 @@ import {
 import { getKaiChromeState } from "@/lib/navigation/kai-chrome-state";
 import { recordDestinationEntry } from "@/lib/navigation/section-back-origin";
 import { isFocusedConnectCircleTask } from "@/lib/navigation/connect-routes";
+import { isFocusedLocationBottomTask } from "@/lib/navigation/location-routes";
 import {
   ROUTES,
   isFoundationPublicRoute,
@@ -180,14 +181,21 @@ function AppShellFrame({ children }: ProvidersProps) {
   // Location flows still keeps the top shell while clearing bottom chrome.
   const hidesPersistentChrome = routeLayout.persistentChrome === "none";
   const locationAction = String(searchParams?.get("action") || "").trim();
+  // Ask and Share pin their own Continue/Send action to the bottom edge. On a
+  // compact viewport (especially WKWebView with a home-indicator inset), the
+  // fixed Agent Bar and tab bar otherwise paint over that action when the
+  // roster happens to end near the viewport floor. These task screens retain
+  // the top breadcrumb/back affordance and exclusively own the bottom edge.
+  const focusedLocationBottomTask = isFocusedLocationBottomTask(
+    shellPathname,
+    locationAction,
+  );
   const focusedLocationChromeFlow =
     shellPathname === ROUTES.ONE_LOCATION &&
-    (locationAction === "sos" ||
+    (focusedLocationBottomTask ||
       locationAction === "sms-contacts" ||
       locationAction === "create-circle" ||
       locationAction === "circle-detail");
-  const focusedSosChromeFlow =
-    shellPathname === ROUTES.ONE_LOCATION && locationAction === "sos";
   const focusedConnectCircleChromeFlow =
     shellPathname === ROUTES.CONNECT &&
     isFocusedConnectCircleTask(
@@ -199,7 +207,7 @@ function AppShellFrame({ children }: ProvidersProps) {
   // stack while keeping the top shell route context.
   const bottomChromeHidden =
     hidesPersistentChrome ||
-    focusedSosChromeFlow ||
+    focusedLocationBottomTask ||
     focusedConnectCircleChromeFlow;
   const effectiveHideCommandBar =
     chromeState.hideCommandBar ||
@@ -288,22 +296,28 @@ function AppShellFrame({ children }: ProvidersProps) {
           topShellMetrics.contentOffsetMode === "fullscreen-flow"
             ? "fullscreen-flow"
             : "normal",
-        "--bottom-chrome-stack-height": effectiveHideCommandBar
-          ? "var(--app-bottom-shell-height, calc(var(--onboarding-agent-bar-clearance) + 1.5rem))"
-          : "var(--app-bottom-shell-height, calc(var(--app-bottom-inset) + var(--kai-command-fixed-ui)))",
-        "--bottom-chrome-full-height": effectiveHideCommandBar
-          ? "calc(var(--app-bottom-shell-height, calc(var(--onboarding-agent-bar-clearance) + 1.5rem)) + var(--bottom-chrome-fade-overscan))"
-          : "calc(var(--app-bottom-shell-height, calc(var(--app-bottom-inset) + var(--kai-command-fixed-ui))) + var(--bottom-chrome-fade-overscan))",
-        "--bottom-chrome-search-height": effectiveHideCommandBar
-          ? "calc(var(--app-bottom-inset) + var(--bottom-chrome-fade-overscan))"
-          : "calc(var(--app-safe-area-bottom-effective) + var(--app-bottom-chrome-lift) + var(--kai-command-fixed-ui) + var(--bottom-chrome-fade-overscan))",
+        "--bottom-chrome-stack-height": bottomChromeHidden
+          ? "0px"
+          : effectiveHideCommandBar
+            ? "var(--app-bottom-shell-height, calc(var(--onboarding-agent-bar-clearance) + 1.5rem))"
+            : "var(--app-bottom-shell-height, calc(var(--app-bottom-inset) + var(--kai-command-fixed-ui)))",
+        "--bottom-chrome-full-height": bottomChromeHidden
+          ? "0px"
+          : effectiveHideCommandBar
+            ? "calc(var(--app-bottom-shell-height, calc(var(--onboarding-agent-bar-clearance) + 1.5rem)) + var(--bottom-chrome-fade-overscan))"
+            : "calc(var(--app-bottom-shell-height, calc(var(--app-bottom-inset) + var(--kai-command-fixed-ui))) + var(--bottom-chrome-fade-overscan))",
+        "--bottom-chrome-search-height": bottomChromeHidden
+          ? "0px"
+          : effectiveHideCommandBar
+            ? "calc(var(--app-bottom-inset) + var(--bottom-chrome-fade-overscan))"
+            : "calc(var(--app-safe-area-bottom-effective) + var(--app-bottom-chrome-lift) + var(--kai-command-fixed-ui) + var(--bottom-chrome-fade-overscan))",
         "--bottom-chrome-visual-height": "var(--bottom-chrome-full-height)",
         "--bottom-chrome-hide-distance": "var(--app-bottom-fixed-ui)",
         // Hidden-shell routes deliberately omit the app navigation, but many
         // of them still render the fixed onboarding Agent Bar. The scroll root
         // owns the clearance for that fixed chrome so feature routes do not
         // need to guess at device safe areas or bar geometry.
-        "--app-scroll-bottom-pad": hidesPersistentChrome
+        "--app-scroll-bottom-pad": bottomChromeHidden
           ? "0px"
           : isRiaRoute(pathname)
             ? "var(--bottom-chrome-stack-height)"
@@ -315,8 +329,8 @@ function AppShellFrame({ children }: ProvidersProps) {
       }) as CSSProperties,
     [
       effectiveHideCommandBar,
+      bottomChromeHidden,
       hideGlobalChrome,
-      hidesPersistentChrome,
       isPublicStandaloneRoute,
       routeLayout.pageTopLocalOffset,
       signedInShellContentOffset.style,
