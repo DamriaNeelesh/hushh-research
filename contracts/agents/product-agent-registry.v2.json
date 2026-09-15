@@ -232,8 +232,8 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
-        "factory": null,
+        "adk_mode": "chat",
+        "factory": "hushh_mcp.agents.connected_systems.agent.build_connected_systems_agent",
         "kind": "adk",
         "transport": [
           "in_process"
@@ -317,9 +317,22 @@
         "voice": false,
         "web": true
       },
-      "system_instruction_sha256": "8982b41700947b09df4ba522788bcef02c92f6a6c883b10d40509d25f9da9149",
+      "system_instruction_sha256": "6c4157744529aa82e1712469160e889b95f08d1c40b537b1d7b5aeab7d2813d0",
       "telemetry_namespace": "agent.connected_systems",
-      "tools": [],
+      "tools": [
+        {
+          "description": "Read the public field catalogue for a configured connected CRM.",
+          "name": "describe_crm_fields",
+          "py_func": "hushh_mcp.agents.connected_systems.agent.describe_crm_fields",
+          "required_scope": "cap.one.invoke"
+        },
+        {
+          "description": "Validate a typed CRM action without accepting record values or identifiers.",
+          "name": "validate_crm_plan",
+          "py_func": "hushh_mcp.agents.connected_systems.agent.validate_crm_plan",
+          "required_scope": "cap.one.invoke"
+        }
+      ],
       "ui_type": "chat",
       "version": "1.1.0"
     },

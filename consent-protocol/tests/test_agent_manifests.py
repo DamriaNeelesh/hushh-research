@@ -86,7 +86,6 @@ def test_gemini_model_matrix_uses_current_workload_equivalents() -> None:
         "connected_systems",
         "email",
         "financial_guard",
-        "gmail",
         "kai",
         "kyc",
         "location",
