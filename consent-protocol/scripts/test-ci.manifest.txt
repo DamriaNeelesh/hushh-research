@@ -297,3 +297,15 @@ tests/test_consent_db_revocation_worker.py
 tests/scripts/test_eval_specialist_turns.py
 tests/test_consent_refresh_bootstrap.py
 tests/test_hushh_adk_turn.py
+tests/test_agent_runtime_declarations.py
+tests/test_one_manifest_subagent_prompts.py
+tests/test_nav_a2a_agent.py
+tests/test_one_adk_agent_tree.py
+tests/test_a2a_delegation_scopes.py
+tests/test_connections_a2a.py
+tests/test_specialist_availability.py
+tests/test_adk_registration.py
+tests/services/test_connections_chat_service.py
+tests/services/test_connections_manifest_sync.py
+tests/services/test_runtime_providers.py
+tests/services/test_action_directive_ledger.py

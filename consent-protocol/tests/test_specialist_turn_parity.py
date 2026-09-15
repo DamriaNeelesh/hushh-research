@@ -40,12 +40,16 @@ import difflib
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
+from pydantic import PrivateAttr
 
 import hushh_mcp.adk_bridge as adk_bridge
 from hushh_mcp.adk_bridge import dispatch as dispatch_mod
@@ -281,7 +285,13 @@ def _nav_task(token: str, message: str | None) -> A2ATask:
         conversation_id=CONVERSATION_ID,
         message=message,
         timezone="UTC",
-        authority=_authority(),
+        authority=replace(
+            _authority(),
+            invocation_capabilities=("agent.nav.review",),
+            expires_at_ms=4102444800000,
+        ),
+        expected_tenant_id="tenant_parity",
+        expected_task_id="task_parity",
     )
 
 
@@ -323,6 +333,52 @@ def _personal_information_task(token: str) -> A2ATask:
 
 def _nav_service() -> NavAgent:
     return NavAgent()
+
+
+class _ScriptedNavLlm(BaseLlm):
+    """Exercise actual Nav/Consent tool execution with offline model decisions."""
+
+    _steps: list = PrivateAttr(default_factory=list)
+
+    def __init__(self, steps):
+        super().__init__(model="gemini-3.7-flash")
+        self._steps = list(steps)
+
+    async def generate_content_async(self, llm_request, stream=False):
+        assert self._steps, "Unexpected model request beyond the parity script"
+        step = self._steps.pop(0)
+        part = (
+            types.Part(function_call=types.FunctionCall(name=step[0], args=step[1]))
+            if isinstance(step, tuple)
+            else types.Part(text=step)
+        )
+        yield LlmResponse(content=types.Content(role="model", parts=[part]))
+
+
+def _scripted_nav_service(case_name: str) -> NavAgent:
+    # These decisions preserve the historical golden's branches; semantic
+    # routing quality is evaluated separately, not asserted by a scripted LLM.
+    if case_name == "nav_active_grants":
+        text = "You have 2 active permissions: Travel Planner and Kai."
+        steps = [
+            ("consent", {"request": "Review active sharing"}),
+            ("list_active_consent_grants", {}),
+            text,
+            text,
+        ]
+    elif case_name == "nav_previous_grants":
+        text = "You have 1 previous permission: Jhumma Kumari."
+        steps = [
+            ("consent", {"request": "Review previous sharing"}),
+            ("list_previous_consent_grants", {}),
+            text,
+            text,
+        ]
+    elif case_name in {"nav_invalid_token", "nav_empty_message"}:
+        steps = []
+    else:
+        steps = ["I can help you review sharing and access."]
+    return NavAgent(model=_ScriptedNavLlm(steps))
 
 
 CASES: tuple[_Case, ...] = (
@@ -535,7 +591,9 @@ async def _run_case(
 ) -> tuple[SpecialistTurnResult, str, list[dict[str, Any]]]:
     token = _nav_token() if case.agent_id == "agent_nav" else "HCT:parity-inert-token"
     task = case.make_task(token)
-    service = case.make_service()
+    service = (
+        _scripted_nav_service(case.name) if case.agent_id == "agent_nav" else case.make_service()
+    )
 
     async def _service_for(agent_id: str) -> Any:
         assert agent_id == case.agent_id

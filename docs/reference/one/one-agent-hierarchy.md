@@ -83,9 +83,24 @@ This page is current-state implementation truth. It does not rename runtime iden
 
 `agent_nav` is the Consent Center runtime; `consent.chat.turn` resolves to it
 directly. There is no separate `agent_consent` product head or roster entry.
-`agent_connections` is Nav's declared child and is reached only through Nav's
-authority boundary. This prevents a consent review grant from being mistaken
-for trusted-connection information or mutation authority.
+Nav composes its manifest-owned Consent child through AgentTool with scoped
+reads and app-rendered revocation cards. A Connections child is supplied only for
+One's selected Connections turn after exact task-bound first-party invocation
+and database-confirmed owner admission. Every Connections tool rechecks that
+owner token. This stricter outage behavior does not change Consent's existing
+token-validation policy.
+
+Connections exposes reads and proposals, never its legacy selection executor.
+Exact proposal IDs return to One for the existing generated action confirmation;
+ambiguous choices remain in One's conversation without mutation-bearing cards.
+A consent-review grant does not authorize connection mutations. These branch
+changes are not deployment acceptance; live performance failures remain in
+[the migration baseline](agent-chat-migration-baseline.md).
+
+Nav's public handle runs a fresh, bounded ADK session per turn. Nav and its
+Consent AgentTool child use supported `chat` roots because ADK 2.9 Runner rejects
+`single_turn` roots; this does not introduce shared owner history. One's intro
+and search instructions are authored in One's manifest subagent entries.
 
 ## Wiring Modes
 
@@ -113,7 +128,7 @@ and the legacy Kai compatibility server are not advertised as official v1.
 
 ### In-process dispatch registry
 
-The in-process `dispatch` table wires `agent_location`, `agent_nav`, and `agent_personal_information`; the Marketplace remains a standalone product and One Voice and Agent Chat never admit it. Email, Connections, and Connected Systems adapters remain authority-ingress-only; Nav owns the Connections delegation boundary. Gmail is a disabled child of Connections and is not in One's active tool roster or generated discovery.
+The in-process `dispatch` table wires `agent_location`, `agent_nav`, and `agent_personal_information`; the Marketplace remains a standalone product and One Voice and Agent Chat never admit it. Email and Connected Systems adapters remain authority-ingress-only. Connections is reached through Nav; its separate legacy mutation adapter retains its full information/action authority gate. Gmail is a disabled child of Connections and is not in One's active tool roster or generated discovery.
 
 Kai has a dedicated A2A server in `adk_bridge/kai_agent.py`. KYC is manifest/service-backed through One Email KYC and approved disclosure formatting; it is scope-gated but not an in-process dispatch handler today.
 

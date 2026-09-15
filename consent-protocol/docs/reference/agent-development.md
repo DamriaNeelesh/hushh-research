@@ -36,7 +36,18 @@ In this shared-runtime branch, omitted individual ports retain shared defaults;
 these hooks alone do not establish private isolation. No ingress binding is added
 by the generic dependency seam.
 
-This branch retains Location, Nav and Personal Information registrations.
+This branch retains Location, Nav and Personal Information registrations. Nav
+uses a manifest-owned Consent AgentTool child with scoped read tools. A selected
+Connections turn additionally requires exact manifest invocation capabilities,
+trusted task/owner bindings, and a database-confirmed owner token before and
+throughout its read/proposal tools. Connection proposals return to One with exact
+record IDs for the existing generated action/confirmation path; the legacy
+selection executor is not exposed by the child. Live migration acceptance remains
+open in the migration baseline report. Shared specialist
+turn execution lives in `hushh_mcp/hushh_adk/turn.py`; event deadlines and
+cancellation live in `hushh_mcp/hushh_adk/events.py`. Each turn receives fresh
+in-memory session state and explicit HushhContext authority. No whole-turn retry
+replays completed tool effects.
 Dependency hooks do not register additional agents, grant information access,
 or establish deployment readiness. Preserve shared defaults when transferring
 portable changes from a private deployment branch; keep deployment adapters and

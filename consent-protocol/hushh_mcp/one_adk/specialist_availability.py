@@ -126,10 +126,13 @@ def resolve_specialist_availability(
     if is_location_setup:
         return result("setup_required", "location_setup_incomplete")
 
-    if agent_id in _AUTHORITY_INGRESS_ONLY and not is_wired_specialist(agent_id):
+    # Connections is composed beneath Nav; this is deployment availability,
+    # not authority. Nav still validates the exact owner-bound hop before tools.
+    runtime_agent_id = "agent_nav" if agent_id == "agent_connections" else agent_id
+    if agent_id in _AUTHORITY_INGRESS_ONLY and not is_wired_specialist(runtime_agent_id):
         return result("authority_required", "exact_a2a_authority_required")
 
-    if not is_wired_specialist(agent_id):
+    if not is_wired_specialist(runtime_agent_id):
         return result("unavailable", "specialist_unwired")
 
     if not user_id:
