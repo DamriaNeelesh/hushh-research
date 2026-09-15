@@ -71,4 +71,14 @@ CREATE INDEX IF NOT EXISTS one_voice_pending_actions_user_idx
 COMMENT ON TABLE one_voice_pending_actions IS
   'Confirmation-gated voice mutations. args hold canonical ids only; receipts are hashed; never transcripts.';
 
+-- Refresh migration 201's tombstone write guards for the new account-keyed
+-- tables. Guarded so partial test schemas without 201 still apply cleanly;
+-- every release lane runs 201 before this migration (manifest order).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'install_account_deletion_write_guards') THEN
+    PERFORM public.install_account_deletion_write_guards();
+  END IF;
+END $$;
+
 COMMIT;

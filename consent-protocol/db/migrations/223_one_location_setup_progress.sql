@@ -29,4 +29,14 @@ CREATE TABLE IF NOT EXISTS one_location_setup_progress (
 COMMENT ON TABLE one_location_setup_progress IS
   'Voice-first Location setup progress. Consent precedes OS permission by constraint.';
 
+-- Refresh migration 201's tombstone write guards for the new account-keyed
+-- tables. Guarded so partial test schemas without 201 still apply cleanly;
+-- every release lane runs 201 before this migration (manifest order).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'install_account_deletion_write_guards') THEN
+    PERFORM public.install_account_deletion_write_guards();
+  END IF;
+END $$;
+
 COMMIT;

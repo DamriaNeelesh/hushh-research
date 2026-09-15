@@ -36,4 +36,14 @@ COMMENT ON COLUMN one_location_account_settings.precision IS
 COMMENT ON COLUMN one_location_account_settings.os_permission_reported IS
   'Last OS permission state the device reported. Never implies app-level sharing is on.';
 
+-- Refresh migration 201's tombstone write guards for the new account-keyed
+-- tables. Guarded so partial test schemas without 201 still apply cleanly;
+-- every release lane runs 201 before this migration (manifest order).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'install_account_deletion_write_guards') THEN
+    PERFORM public.install_account_deletion_write_guards();
+  END IF;
+END $$;
+
 COMMIT;
