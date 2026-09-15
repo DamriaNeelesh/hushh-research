@@ -351,6 +351,87 @@ def test_ab_mode_runs_each_instruction_file_and_reports_both(cases, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_infrastructure_failure_preserves_partial_reps_and_stops_run(cases, tmp_path, capsys):
+    selected = [case for case in cases if case.family == "consent"]
+    calls = []
+
+    class ProviderError(Exception):
+        code = 499
+
+    def probe(_instruction, prompt, _screen):
+        calls.append(prompt)
+        if len(calls) == 4:
+            raise ProviderError("CANCELLED token=private-secret raw provider payload")
+        return next(case.expected[0] for case in selected if case.prompt == prompt)
+
+    assert (
+        harness.run_eval(
+            families=["consent"],
+            first_tool=probe,
+            report_dir=tmp_path,
+            reps=2,
+            min_overall_rate=0,
+            default_family_rate=0,
+            family_rate_overrides={"consent": 0},
+        )
+        == 1
+    )
+    payload = (tmp_path / harness.LATEST_REPORT_NAME).read_text()
+    report = json.loads(payload)
+    assert len(calls) == 4
+    assert len(report["cases"]) == len(selected)
+    first, failed, *remaining = report["cases"]
+    assert first["hit"] is True and len(first["got_by_rep"]) == 2
+    assert failed["status"] == "infrastructure_error" and failed["hit"] is None
+    assert len(failed["got_by_rep"]) == len(failed["latency_ms_by_rep"]) == 1
+    assert failed["infrastructure_failure"]["http_status"] == 499
+    assert failed["infrastructure_failure"]["rep"] == 2
+    assert all(row["status"] == "unattempted" and row["got_by_rep"] == [] for row in remaining)
+    assert report["overall"]["rate"] is None
+    assert report["families"]["consent"]["misses"] == []
+    assert report["latency_ms"]["count"] == 3
+    assert report["measurement_complete"] is False
+    assert report["gates"]["passed"] is False
+    assert "private-secret" not in payload + capsys.readouterr().out
+
+
+def test_outage_does_not_count_as_no_tool_success_or_run_other_ab_arms(cases, tmp_path):
+    no_tool_case = next(case for case in cases if case.expected == ("no_tool",))
+    results = harness.score_cases(
+        [no_tool_case],
+        lambda *_: (_ for _ in ()).throw(TimeoutError("private")),
+        "",
+    )
+    assert results[0].got_by_rep == []
+    assert results[0].hit is False
+    assert results[0].as_dict()["hit"] is None
+
+    arms = [tmp_path / "a.txt", tmp_path / "b.txt"]
+    for arm in arms:
+        arm.write_text("test instruction")
+    calls = []
+
+    def probe(*_):
+        calls.append(1)
+        raise ConnectionError("private endpoint")
+
+    assert (
+        harness.run_eval(
+            first_tool=probe,
+            report_dir=tmp_path,
+            instruction_files=[str(p) for p in arms],
+            quiet=True,
+        )
+        == 1
+    )
+    assert len(calls) == 1
+    second = json.loads((tmp_path / harness.LATEST_REPORT_NAME).read_text())
+    assert all(row["status"] == "unattempted" for row in second["cases"])
+    assert second["measurement_complete"] is False
+    assert second["stopped_after_infrastructure_failure"]["label"] == "a"
+    assert second["stopped_after_infrastructure_failure"]["error_type"] == "ConnectionError"
+
+
 def test_help_never_touches_the_model(monkeypatch):
     """--help exits 0 before any client is built, even with no project set."""
     monkeypatch.delenv("GENAI_GOOGLE_CLOUD_PROJECT", raising=False)

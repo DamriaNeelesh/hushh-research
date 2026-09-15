@@ -36,7 +36,9 @@ A rep hits when the observed first tool is in the case's `expected` list, or
 when no tool was called and `no_tool` is accepted. `run_app_action` is scored
 as `run_app_action:<action_id>`. A case counts as a hit only when EVERY rep
 hits. Family and overall rates are gated; a breach exits 1. `--help` never
-touches the model.
+touches the model. An exhausted provider/transport failure stops further
+requests, preserves completed reps, and marks remaining cases unattempted.
+Incomplete measurement rates are null and always fail the gate.
 """
 
 from __future__ import annotations
@@ -97,10 +99,16 @@ class CaseResult:
     expected: tuple[str, ...]
     got_by_rep: list[str | None] = field(default_factory=list)
     latency_ms_by_rep: list[float] = field(default_factory=list)
+    status: str = "completed"
+    infrastructure_failure: dict[str, Any] | None = None
 
     @property
     def hit(self) -> bool:
-        return bool(self.got_by_rep) and all(is_hit(got, self.expected) for got in self.got_by_rep)
+        return (
+            self.status == "completed"
+            and bool(self.got_by_rep)
+            and all(is_hit(got, self.expected) for got in self.got_by_rep)
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -110,7 +118,9 @@ class CaseResult:
             "expected": list(self.expected),
             "got_by_rep": list(self.got_by_rep),
             "latency_ms_by_rep": [round(value, 1) for value in self.latency_ms_by_rep],
-            "hit": self.hit,
+            "hit": self.hit if self.status == "completed" else None,
+            "status": self.status,
+            "infrastructure_failure": self.infrastructure_failure,
         }
 
 
@@ -296,15 +306,34 @@ def score_cases(
     if reps < 1:
         raise ValueError("reps must be at least 1")
     results: list[CaseResult] = []
+    stopped = False
     for case in cases:
         result = CaseResult(
             id=case.id, family=case.family, prompt=case.prompt, expected=case.expected
         )
+        if stopped:
+            result.status = "unattempted"
+            results.append(result)
+            continue
         for _ in range(reps):
             started = time.perf_counter()
-            result.got_by_rep.append(
-                first_tool(instruction, _prompt_with_screen(case), case.screen)
-            )
+            try:
+                got = first_tool(instruction, _prompt_with_screen(case), case.screen)
+            except Exception as exc:
+                # Never retain provider messages: they may contain credentials,
+                # request contents or project identifiers. Preserve only bounded
+                # structural diagnostics, and keep a failed call out of tool scores.
+                code = getattr(exc, "code", None)
+                result.status = "infrastructure_error"
+                result.infrastructure_failure = {
+                    "error_type": _LABEL_SAFE.sub("", type(exc).__name__)[:64],
+                    "http_status": code if type(code) is int and 100 <= code <= 599 else None,
+                    "rep": len(result.got_by_rep) + 1,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                }
+                stopped = True
+                break
+            result.got_by_rep.append(got)
             result.latency_ms_by_rep.append((time.perf_counter() - started) * 1000.0)
         results.append(result)
         if on_result is not None:
@@ -317,12 +346,15 @@ def family_summary(results: Sequence[CaseResult]) -> dict[str, dict[str, Any]]:
     for result in results:
         block = families.setdefault(result.family, {"cases": 0, "hits": 0, "misses": []})
         block["cases"] += 1
+        if result.status != "completed":
+            block.setdefault("incomplete", []).append(result.id)
+            continue
         if result.hit:
             block["hits"] += 1
         else:
             block["misses"].append(result.id)
     for block in families.values():
-        block["rate"] = _rate(block["hits"], block["cases"])
+        block["rate"] = None if block.get("incomplete") else _rate(block["hits"], block["cases"])
     return dict(sorted(families.items()))
 
 
@@ -341,17 +373,21 @@ def resolve_family_gates(
 
 def evaluate_gates(
     families: dict[str, dict[str, Any]],
-    overall_rate: float,
+    overall_rate: float | None,
     *,
     min_overall_rate: float,
     family_gates: dict[str, float],
 ) -> list[str]:
     breaches: list[str] = []
-    if overall_rate < min_overall_rate:
+    if overall_rate is None:
+        breaches.append("measurement incomplete: infrastructure failure or unattempted cases")
+    elif overall_rate < min_overall_rate:
         breaches.append(f"overall rate {overall_rate:.3f} < {min_overall_rate:.3f}")
     for family, block in families.items():
         floor = family_gates.get(family, DEFAULT_MIN_FAMILY_RATE)
-        if block["rate"] < floor:
+        if block["rate"] is None:
+            breaches.append(f"family {family} measurement incomplete ({block['incomplete']})")
+        elif block["rate"] < floor:
             breaches.append(
                 f"family {family} rate {block['rate']:.3f} < {floor:.3f} (missed {block['misses']})"
             )
@@ -486,7 +522,8 @@ def build_report(
 ) -> dict[str, Any]:
     families = family_summary(results)
     hits = sum(1 for result in results if result.hit)
-    overall_rate = _rate(hits, len(results))
+    complete = all(result.status == "completed" for result in results)
+    overall_rate = _rate(hits, len(results)) if complete else None
     breaches = evaluate_gates(
         families, overall_rate, min_overall_rate=min_overall_rate, family_gates=family_gates
     )
@@ -502,6 +539,7 @@ def build_report(
         "instruction_chars": len(instruction),
         "reps": reps,
         "thinking_level": thinking_level,
+        "measurement_complete": complete,
         "roster_tools": list(roster_tools or []),
         "gates": {
             "min_overall_rate": min_overall_rate,
@@ -533,7 +571,7 @@ def write_report(report: dict[str, Any], *, report_dir: Path) -> tuple[Path, Pat
 
 
 def _print_result(result: CaseResult) -> None:
-    mark = "ok " if result.hit else "BAD"
+    mark = result.status if result.status != "completed" else ("ok " if result.hit else "BAD")
     got = ", ".join(str(item) for item in result.got_by_rep)
     print(f"  {mark}  [{result.family:10}] {result.prompt[:58]:58} -> {got}")
 
@@ -542,10 +580,14 @@ def _print_summary(report: dict[str, Any]) -> None:
     overall = report["overall"]
     print(
         f"\n===== {report['label']}: {overall['hits']}/{overall['cases']} cases "
-        f"({overall['rate']:.3f}) model={report['model']} reps={report['reps']} ====="
+        f"({overall['rate'] if overall['rate'] is not None else 'incomplete'}) "
+        f"model={report['model']} reps={report['reps']} ====="
     )
     for family, block in report["families"].items():
         floor = report["gates"]["min_family_rate"].get(family, DEFAULT_MIN_FAMILY_RATE)
+        if block["rate"] is None:
+            print(f"  INCOMPLETE {family:12} {len(block['incomplete'])} cases without measurements")
+            continue
         status = "ok " if block["rate"] >= floor else "BAD"
         print(
             f"  {status} {family:12} {block['hits']}/{block['cases']} ({block['rate']:.3f} >= {floor:.2f})"
@@ -605,16 +647,35 @@ def run_eval(
     roster_tools = roster_tool_names()
     probe = first_tool or make_live_first_tool(model=model, thinking_level=thinking_level)
     exit_code = 0
+    stopped = False
+    stop_reason: dict[str, Any] | None = None
     for label, source, instruction in _instruction_plan(instruction_files):
         if not quiet:
             print(f"\n----- {label} ({len(cases)} cases x {reps} reps) -----")
-        results = score_cases(
-            cases,
-            probe,
-            instruction,
-            reps=reps,
-            on_result=None if quiet else _print_result,
+        results = (
+            [
+                CaseResult(case.id, case.family, case.prompt, case.expected, status="unattempted")
+                for case in cases
+            ]
+            if stopped
+            else score_cases(
+                cases,
+                probe,
+                instruction,
+                reps=reps,
+                on_result=None if quiet else _print_result,
+            )
         )
+        stopped = stopped or any(result.status == "infrastructure_error" for result in results)
+        if stop_reason is None:
+            stop_reason = next(
+                (
+                    {"label": label, "case_id": result.id, **result.infrastructure_failure}
+                    for result in results
+                    if result.infrastructure_failure is not None
+                ),
+                None,
+            )
         report = build_report(
             results=results,
             model=model,
@@ -627,6 +688,7 @@ def run_eval(
             family_gates=family_gates,
             roster_tools=roster_tools,
         )
+        report["stopped_after_infrastructure_failure"] = stop_reason
         named, latest = write_report(report, report_dir=report_dir)
         if not quiet:
             _print_summary(report)
