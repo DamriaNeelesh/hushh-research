@@ -327,7 +327,7 @@ describe("VaultFlow create validation", () => {
     expect(recoveryButton).toHaveClass(
       "h-11",
       "min-h-11",
-      "items-center",
+      "items-start",
       "rounded-none",
       "py-0",
     );
@@ -335,6 +335,10 @@ describe("VaultFlow create validation", () => {
     expect(recoveryButton).not.toHaveClass("border");
     expect(screen.getByText("Use another method").parentElement).toHaveClass(
       "space-y-[var(--app-form-related-gap)]",
+      "mx-auto",
+      "w-full",
+      "max-w-[21rem]",
+      "text-center",
     );
     expect(screen.getByLabelText("Vault passphrase")).toHaveClass("rounded-none");
     expect(document.querySelector("[data-vault-flow-icon]")).toHaveClass(
@@ -358,11 +362,18 @@ describe("VaultFlow create validation", () => {
     expect(passphraseButton).toHaveClass(
       "h-11",
       "min-h-11",
-      "items-center",
+      "items-start",
       "rounded-none",
       "py-0",
     );
     expect(passphraseButton).not.toHaveClass("border");
+    expect(passphraseButton).not.toHaveClass("self-start");
+    expect(screen.getByText("Use another method").parentElement).toHaveClass(
+      "mx-auto",
+      "w-full",
+      "max-w-[21rem]",
+      "text-center",
+    );
     expect(screen.getByRole("button", { name: "Recovery key" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Passkey" })).toBeNull();
   });
@@ -425,6 +436,11 @@ describe("VaultFlow create validation", () => {
     expect(screen.getByTestId("vault-use-recovery-key-escape")).toHaveClass(
       "h-11",
       "rounded-none",
+    );
+    expect(screen.getByTestId("vault-use-recovery-key-escape").parentElement).toHaveClass(
+      "min-h-11",
+      "items-start",
+      "justify-center",
     );
     expect(screen.queryByTestId("vault-use-recovery-key")).toBeNull();
 
