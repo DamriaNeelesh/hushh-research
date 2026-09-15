@@ -558,7 +558,7 @@ vi.mock("sonner", () => {
   };
 });
 
-import OneLocationAgentPage from "@/app/one/location/page";
+import { OneLocationAgentPage } from "@/app/one/location/page";
 import { prepareLocalOnboardingAction, resolveLocalOnboardingHandler } from "@/lib/agent/local-onboarding-actions";
 import { CONSENT_STATE_CHANGED_EVENT } from "@/lib/consent/consent-events";
 import { appInteractionCoordinator } from "@/lib/interaction/interaction-intent-coordinator";

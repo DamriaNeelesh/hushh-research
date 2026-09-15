@@ -101,6 +101,13 @@ function oneLocationActionLabel(action: string): string {
     "sms-contacts": "Emergency contacts",
     settings: "Settings",
     privacy: "Settings",
+    // Voice-first Location area flows. Each label must equal the flow's own
+    // TaskFlowHeader title.
+    "create-circle": "New circle",
+    "join-circle": "Join circle",
+    "circle-detail": "Circle",
+    "invite-circle": "Invite to circle",
+    ratings: "Ratings",
   };
   return labels[action] ?? titleizeSegment(action);
 }
