@@ -283,8 +283,11 @@ class _WebSocketTransport:
 
 
 def _allowed_origins() -> set[str]:
+    from hushh_mcp.runtime_settings import get_app_runtime_settings
+
     origins: set[str] = set()
-    for raw in (os.getenv("APP_FRONTEND_ORIGIN", ""), os.getenv("CORS_ALLOWED_ORIGINS", "")):
+    frontend_origin = get_app_runtime_settings().app_frontend_origin
+    for raw in (frontend_origin, os.getenv("CORS_ALLOWED_ORIGINS", "")):
         for item in str(raw).split(","):
             clean = item.strip().rstrip("/").lower()
             if clean and clean != "*":
