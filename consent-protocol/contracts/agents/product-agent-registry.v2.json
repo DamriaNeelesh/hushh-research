@@ -958,6 +958,81 @@
             ],
             "loopback_only": false
           },
+          "description": "Produces a bounded, auditable portfolio optimization proposal from supplied market and Renaissance context.",
+          "id": "agent_kai_portfolio_optimizer",
+          "inputs": [
+            {
+              "description": "Bounded holdings, market, and Renaissance context for this turn.",
+              "name": "portfolio_snapshot",
+              "type": "object"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "high"
+          },
+          "name": "Portfolio Optimizer",
+          "outputs": [
+            {
+              "description": "Portfolio health scores, diagnostics, and allocation plans.",
+              "name": "summary",
+              "type": "object"
+            },
+            {
+              "description": "Per-position grounded recommendations.",
+              "name": "losers",
+              "type": "array"
+            },
+            {
+              "description": "Grounded portfolio-level observations.",
+              "name": "portfolio_level_takeaways",
+              "type": "array"
+            },
+            {
+              "description": "Optional health radar and sector-shift metrics.",
+              "name": "analytics",
+              "type": "object"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 120000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [
+              "hussh:pkm_context"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Disable Portfolio Optimizer delegation and retain deterministic fallback behavior.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are Kai's Portfolio Optimizer, an internal single-turn child. Return\nonly the requested JSON contract using the supplied portfolio snapshot,\nmarket context, and Renaissance rubric. Never invent holdings, prices,\nperformance, or criteria. Propose illustrative allocation changes only;\nnever place trades or recommend leverage, margin, derivatives, shorting,\nor guaranteed outcomes. Do not expose supplied private context in\ntelemetry and never claim that an external action occurred.\n",
+          "telemetry_namespace": "agent.kai.portfolio_optimizer"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
           "description": "Conversational Kai surface for grounded financial questions and profile guidance.",
           "id": "agent_kai_chat",
           "inputs": [],

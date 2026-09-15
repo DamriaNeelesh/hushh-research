@@ -142,3 +142,10 @@ shared single-turn runtime for public Form ADV narrative extraction. Filing
 selection, size/page/text bounds, defensive shaping, and best-effort profile
 writes remain unchanged. The focused RIA route and brochure suites pass; no
 live filing run is claimed by this phase.
+
+Kai portfolio optimization is now declared as `agent_kai_portfolio_optimizer`
+and uses the shared single-turn runtime for both typed and SSE entrypoints.
+The SSE route emits the existing stage/chunk/complete envelope while polling
+one bounded model task, and disconnects cancel that task. Renaissance context,
+request validation, and deterministic fallback behavior remain route-owned;
+no trade or external write is performed by the gene.
