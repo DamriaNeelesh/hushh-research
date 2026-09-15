@@ -175,3 +175,19 @@ dispatch, and operon routing tests. Focused Kai manifest/runtime/operon checks
 pass (45/45); the full backend runner passes (3,867 passed, 191 skipped).
 A live analyst/debate measurement is not claimed by this phase, so the existing
 failed or incomplete performance evidence remains in the acceptance record.
+
+### Phase F continuation: Kai DebateEngine boundary
+
+Authenticated Kai debate turns now use the manifest-owned `agent_kai_debate`
+single-turn gene through the shared ADK runtime. The route passes the owner and
+consent authority into the engine, while the existing SSE event envelope and
+XML-compatible statement parsing remain unchanged. Unauthenticated unit
+fixtures retain the legacy stream seam because they do not carry product
+authority. If the bounded ADK call fails, the engine emits its existing
+redacted error and deterministic statement fallback; it does not retry a
+completed tool action. Commit `9f5a52d2a` adds the manifest contract, generated
+registry projections, route wiring, and authenticated-routing coverage.
+Focused debate tests pass (70/70); the full backend runner passes (3,867
+passed, 191 skipped), and the One Voice web gate passes (362/362). No live
+Gemini debate run is claimed here, so provider latency, quota behavior, and
+end-to-end debate quality remain open acceptance work.
