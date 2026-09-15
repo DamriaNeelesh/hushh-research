@@ -670,14 +670,14 @@ to `google-adk==2.9.0`:
   declared `<0.4`). The committed `uv.lock` still resolves `a2a-sdk==0.3.26`.
 - With that locked pair, `from google.adk.agents.remote_a2a_agent import
   RemoteA2aAgent` imports. `tests/test_adk_pin_contract.py` pins this.
-- An isolated scratch resolution of the same `pyproject.toml` with
-  `a2a-sdk>=1.1,<2` added resolves (`a2a-sdk==1.1.2`, plus `json-rpc`;
-  `ag-ui-adk==0.7.0` unchanged). That is a resolver fact only: the 1.x pair
-  was not installed, so whether `RemoteA2aAgent` imports against it, and
-  whether the transport behaves, is unproven. ADK 2.9.0 ships
-  `google/adk/a2a/_compat.py`, which rebuilds the `ClientEvent` tuple that
-  1.x removed and that broke the 2.4.0 import; that is a reason to run the
-  matrix, not a substitute for it.
+- An isolated temporary environment with `google-adk==2.9.0` and
+  `a2a-sdk==1.1.2` now proves that `RemoteA2aAgent` and the v1 Agent Card types
+  import. It does **not** prove transport compatibility: constructing
+  `create_kai_official_a2a_app()` fails before serving with `AgentCard has no
+  "url" field`, because the current adapter still uses the pre-1.1 `AgentCard`
+  shape. ADK 2.9.0 ships `google/adk/a2a/_compat.py`, which rebuilds the
+  `ClientEvent` tuple that 1.x removed and that broke the 2.4.0 import; that
+  import fix is not a substitute for the complete transport matrix.
 
 Keep One's endpoint marked `officialA2A: false` until a pinned ADK/A2A pair
 passes the complete Agent Card, Task, streaming, cancellation, and resume
