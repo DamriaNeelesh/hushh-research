@@ -2025,6 +2025,7 @@
           "agent_kyc",
           "agent_email",
           "agent_gmail",
+          "agent_personal_information",
           "agent_location",
           "agent_calendar",
           "agent_connected_systems"
@@ -2206,7 +2207,7 @@
         "voice": true,
         "web": true
       },
-      "system_instruction_sha256": "7a46902c445a384ddd2afd54046f622ef5be1fdea2c3a3e8df4c57b258e7baaa",
+      "system_instruction_sha256": "e53f7b3cecf541207b71092f5e4058660bdc883f7e833a068bdb590486399999",
       "telemetry_namespace": "agent.one",
       "tools": [],
       "ui_type": "chat",
@@ -2235,7 +2236,7 @@
         ],
         "default": "hushh_managed_vertex"
       },
-      "description": "Marketplace chatbot under One. Lets the owner query, publish, and manage their own PKM data slices with consent, and answers what is published and what it is worth. Delegatable by Agent One over A2A.\n",
+      "description": "Memory assistant under One. Lets the owner review what One remembers, what they have made available, and who has asked to see it, with consent. Delegatable by Agent One over A2A.\n",
       "evaluations": [],
       "failure_states": [],
       "icon": null,
@@ -2245,9 +2246,17 @@
       "manifest_path": "consent-protocol/hushh_mcp/agents/personal_information/agent.yaml",
       "manifest_version": 2,
       "model": "gemini-default",
-      "name": "Information Marketplace",
+      "name": "Memory Agent",
       "native_requirements": [],
-      "one_exposure": null,
+      "one_exposure": {
+        "discovery_status": "discoverable",
+        "exposure_status": "active",
+        "knowledge_package_ref": null,
+        "service_id": "personal_information",
+        "supported_entrypoints": [
+          "typed"
+        ]
+      },
       "optional_scopes": [
         "cap.pkm.marketplace.manage"
       ],
@@ -2296,9 +2305,15 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "058a07661e791adf53f93ebf3eced30634360def61eafe1b00abe82382d07ebf",
+      "system_instruction_sha256": "bdc80505a82f849dbc673b7754ed1873a623931bd094e85bcc94f822b9bc9920",
       "telemetry_namespace": "agent.unclassified",
       "tools": [
+        {
+          "description": "Read a redacted summary of what One remembers for one information area; labels and counts only, never raw records.",
+          "name": "read_my_pkm_domain_summary",
+          "py_func": "hushh_mcp.one_adk.action_tools.read_my_pkm_domain_summary",
+          "required_scope": "pkm.read"
+        },
         {
           "description": "List the data slices the user has published (set to Available) to the marketplace. Read-only; safe metadata only.",
           "name": "list_published_slices",
