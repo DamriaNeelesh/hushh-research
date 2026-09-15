@@ -126,6 +126,12 @@ provider client is constructed directly by those parser paths. A live brokerage
 document run remains unclaimed, and other specialist loops remain in the migration
 queue.
 
+Location voice transcription is declared as `agent_location_transcriber` and
+uses the same bounded single-turn runtime with an audio-only input contract.
+The route passes the authenticated owner token into the turn, while the
+existing WAV validation, silence guard, and bounded transcript output remain
+unchanged.
+
 The Memory Agent's background attribute learner is also declared as
 `agent_personal_information_attribute_learner` and uses the same bounded
 single-turn runtime. It extracts explicit claims only; PKM mutation events
