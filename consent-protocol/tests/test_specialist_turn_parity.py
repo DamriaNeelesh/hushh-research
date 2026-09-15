@@ -699,7 +699,7 @@ async def test_golden_pins_the_seams_the_migration_must_keep():
     assert prompt["is_complete"] is False
 
     publish = cases["personal_information_message_turn"]
-    assert publish["model"] == "one+marketplace"
+    assert publish["model"] == "one+memory"
     assert publish["directive_kind"] == "action"
     assert publish["directive_payload"]["type"] == "publish_slices"
 

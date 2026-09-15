@@ -230,7 +230,7 @@
         "type": "publish_slices"
       },
       "is_complete": true,
-      "model": "one+marketplace",
+      "model": "one+memory",
       "service_calls": [
         {
           "call": "handle_turn",

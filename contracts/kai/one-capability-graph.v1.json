@@ -35880,7 +35880,7 @@
         }
       ],
       "platform": "ios",
-      "projection_digest": "e0db35c3f97dadc00539e5410cc2b8c6c0680bed3eb16a91380ef63e75bb820a",
+      "projection_digest": "f72d57966c471ad029be5072302d773f775d402fc1df36ef7db27e446fe120bc",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -35893,13 +35893,13 @@
         "capability_graph_evolution": "ece24bf21bfa7ff5d90797588b5e5458d2a716c13fc5576d6aa6e2b8fba9bd0e",
         "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
         "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-        "location_agent_manifest": "14bf46ea9f5fb5bb341b37535df5f86fc178f158b799b72d05eb125b306b289a",
+        "location_agent_manifest": "3646493b01781707868076c8255ba96d4423858dd565a849c3197400365f7930",
         "location_knowledge_package": "01d88a395f6d2d3b582e1abfccb69526a9e067e1792d73b58e2342ad03d9db32",
         "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
-        "service_knowledge_packages": "10d35a5e3775065746ec19fc885299e0551c4350efa112c031b97f9b2963b725"
+        "service_knowledge_packages": "d6e7e7bd18a1b9a380a641167742e1040025b60886aba815d68d2fc13f24e110"
       },
-      "source_revision": "938f1205e0e40693",
+      "source_revision": "c3f215b4f411245a",
       "supported_entrypoints": [
         "typed",
         "voice",
@@ -37417,7 +37417,7 @@
       ]
     },
     "schema_version": "one.capability_platform_projection.v1",
-    "source_revision": "938f1205e0e40693",
+    "source_revision": "c3f215b4f411245a",
     "web": {
       "actions": [
         {
@@ -37460,7 +37460,7 @@
         }
       ],
       "platform": "web",
-      "projection_digest": "f828523607ba23475d6051979a74e1edf9df8dddf99e29cfdbbb4c5b8c85a754",
+      "projection_digest": "973a885fd4257da3f60f0170d356d6334d4130ba0f8f87dbc0185863eb32be1f",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -37473,13 +37473,13 @@
         "capability_graph_evolution": "ece24bf21bfa7ff5d90797588b5e5458d2a716c13fc5576d6aa6e2b8fba9bd0e",
         "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
         "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-        "location_agent_manifest": "14bf46ea9f5fb5bb341b37535df5f86fc178f158b799b72d05eb125b306b289a",
+        "location_agent_manifest": "3646493b01781707868076c8255ba96d4423858dd565a849c3197400365f7930",
         "location_knowledge_package": "01d88a395f6d2d3b582e1abfccb69526a9e067e1792d73b58e2342ad03d9db32",
         "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
-        "service_knowledge_packages": "10d35a5e3775065746ec19fc885299e0551c4350efa112c031b97f9b2963b725"
+        "service_knowledge_packages": "d6e7e7bd18a1b9a380a641167742e1040025b60886aba815d68d2fc13f24e110"
       },
-      "source_revision": "938f1205e0e40693",
+      "source_revision": "c3f215b4f411245a",
       "supported_entrypoints": [
         "typed",
         "voice"
@@ -39036,7 +39036,7 @@
       "renderer_key": "one_location_workflow_card"
     }
   ],
-  "revision": "938f1205e0e40693",
+  "revision": "c3f215b4f411245a",
   "schema_version": "one.capability_graph.v1",
   "screens": [
     {
@@ -40725,9 +40725,13 @@
     }
   ],
   "semantic_diff": {
-    "added": [],
+    "added": [
+      "services:service.personal_information"
+    ],
     "breaking": [],
-    "changed": [],
+    "changed": [
+      "services:service.gmail"
+    ],
     "compatible": [],
     "deprecated": [],
     "from_revision": "8e37ce83397a3ac7",
@@ -41600,21 +41604,13 @@
       "label": "Gmail",
       "native_semantic_actions": [],
       "onboarding_workflow_id": "workflow.setup.gmail",
-      "one_exposure": {
-        "discovery_status": "withheld",
-        "exposure_status": "disabled",
-        "knowledge_package_ref": null,
-        "service_id": "gmail",
-        "supported_entrypoints": [
-          "typed"
-        ]
-      },
+      "one_exposure": null,
       "route_patterns": [
         "/one/setup/gmail"
       ],
       "schema_version": "one.dynamic_service_knowledge.v1",
       "service_id": "gmail",
-      "specialist_agent_id": "agent_gmail",
+      "specialist_agent_id": null,
       "telemetry_event": "app_intelligence.service_discovery",
       "version": 1
     },
@@ -43006,6 +43002,38 @@
       "version": 1
     },
     {
+      "action_ids": [],
+      "api_endpoints": [],
+      "capability_id": "service.personal_information",
+      "completion": {},
+      "executor_hierarchy": [
+        {
+          "kind": "specialist",
+          "reason": "A manifest exposure is discovery metadata, not an execution binding.",
+          "status": "registered_discoverable_only"
+        }
+      ],
+      "kind": "service",
+      "label": "Memory Agent",
+      "native_semantic_actions": [],
+      "onboarding_workflow_id": null,
+      "one_exposure": {
+        "discovery_status": "discoverable",
+        "exposure_status": "active",
+        "knowledge_package_ref": null,
+        "service_id": "personal_information",
+        "supported_entrypoints": [
+          "typed"
+        ]
+      },
+      "route_patterns": [],
+      "schema_version": "one.dynamic_service_knowledge.v1",
+      "service_id": "personal_information",
+      "specialist_agent_id": "agent_personal_information",
+      "telemetry_event": "app_intelligence.service_discovery",
+      "version": 1
+    },
+    {
       "action_ids": [
         "ria.client_account.open_workspace_fallback",
         "ria.client_request.open_access_fallback",
@@ -43102,17 +43130,17 @@
     "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
     "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
     "kai_action_gateway": "7a130bed761547d819e5d0bcb5f94972377e463b777fc0b7d2cb8a970a29f56a",
-    "location_agent_manifest": "14bf46ea9f5fb5bb341b37535df5f86fc178f158b799b72d05eb125b306b289a",
+    "location_agent_manifest": "3646493b01781707868076c8255ba96d4423858dd565a849c3197400365f7930",
     "location_knowledge_package": "01d88a395f6d2d3b582e1abfccb69526a9e067e1792d73b58e2342ad03d9db32",
     "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
     "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
-    "product_agent_registry": "b25593ee7097a22f88ee7b7097b794a50733a00c6b04be349f0a08adad8b567b",
+    "product_agent_registry": "50af1da5a1daa9381d79ae25df0374cf6fceb44844d54ca9c0555d017bb6abf5",
     "route_orchestration_index": "43959ca5acf753a3149b1ce1f45b8589df0c4431749d689d57757f7b96666949",
-    "service_knowledge_packages": "10d35a5e3775065746ec19fc885299e0551c4350efa112c031b97f9b2963b725"
+    "service_knowledge_packages": "d6e7e7bd18a1b9a380a641167742e1040025b60886aba815d68d2fc13f24e110"
   },
-  "source_revision": "938f1205e0e40693",
+  "source_revision": "c3f215b4f411245a",
   "workflow_revision_compatibility": {
-    "current_graph_revision": "938f1205e0e40693",
+    "current_graph_revision": "c3f215b4f411245a",
     "schema_version": "one.workflow_revision_compatibility.v1",
     "workflows": [
       {
