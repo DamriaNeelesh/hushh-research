@@ -1,4 +1,21 @@
 import type { Page } from "@playwright/test";
+import path from "node:path";
+// Canonical harness is shared with the operational reviewer rehearsals.
+import { createReviewerSessionHarness } from "../../../.codex/skills/reviewer-app-testing/scripts/reviewer-session-harness.mjs";
+
+export async function createProtectedReviewerHarness(
+  identity: ReviewerIdentity,
+  appOrigin: string,
+) {
+  return createReviewerSessionHarness({
+    repoRoot: path.resolve(__dirname, "../../.."),
+    appOrigin,
+    reviewerIdentity: {
+      reviewerUid: identity.userId,
+      reviewerVaultPassphrase: identity.passphrase,
+    },
+  });
+}
 
 /**
  * Reviewer sign-in for real-backend Playwright specs.
@@ -71,7 +88,9 @@ export async function waitForReviewerVault(
   while (Date.now() < deadline) {
     const bootstrap = await page.evaluate(() => ({
       state: String(window.__HUSHH_NATIVE_TEST__?.bootstrapState || ""),
-      errorClass: String(window.__HUSHH_NATIVE_TEST__?.bootstrapErrorClass || ""),
+      errorClass: String(
+        window.__HUSHH_NATIVE_TEST__?.bootstrapErrorClass || "",
+      ),
     }));
     if (bootstrap.state === "vault_unlocked") return;
     if (TERMINAL_BOOTSTRAP_FAILURES.has(bootstrap.state)) {
@@ -80,7 +99,10 @@ export async function waitForReviewerVault(
           "This is a fixture/credential problem, not an action-dispatch problem -- see project notes on the shared reviewer fixture.",
       );
     }
-    if (!manualUnlockSubmitted && (await unlockInput.isVisible().catch(() => false))) {
+    if (
+      !manualUnlockSubmitted &&
+      (await unlockInput.isVisible().catch(() => false))
+    ) {
       await unlockInput.fill(identity.passphrase);
       if (await unlockButton.isEnabled().catch(() => false)) {
         await unlockButton.click({ noWaitAfter: true });
@@ -94,7 +116,9 @@ export async function waitForReviewerVault(
     () => window.__HUSHH_NATIVE_TEST__?.bootstrapState || "",
   );
   if (finalState !== "vault_unlocked") {
-    throw new Error(`Reviewer vault bootstrap timed out (state=${finalState || "unknown"}).`);
+    throw new Error(
+      `Reviewer vault bootstrap timed out (state=${finalState || "unknown"}).`,
+    );
   }
 }
 
@@ -110,7 +134,9 @@ export async function openReviewerSession(
 ): Promise<void> {
   const redirectTo = options.redirectTo ?? "/one/location";
   const readyHeading =
-    options.readyHeading === undefined ? "Location Agent" : options.readyHeading;
+    options.readyHeading === undefined
+      ? "Location Agent"
+      : options.readyHeading;
 
   await page.addInitScript(
     ({ expectedUserId, vaultPassphrase }) => {
