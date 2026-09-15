@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   OneVoicePanel,
@@ -25,9 +25,19 @@ vi.mock("@/components/agent/agent-voice-waveform", () => ({
   AgentVoiceWaveform: () => <div data-testid="waveform" />,
 }));
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 const NOW = Date.parse("2026-09-15T10:00:00.000Z");
+
+// The pending card disables Confirm once `expires_at` passes in real time, so
+// the clock is pinned to the same instant the frames are stamped with.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
 
 function replay(
   frames: ServerFrame[],
