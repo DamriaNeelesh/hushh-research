@@ -474,7 +474,13 @@ function AppShellFrame({ children }: ProvidersProps) {
         handleProfilePaneOpen,
       );
     };
-  }, [pathname, profilePaneEnabled, profilePaneResumeLocation, profilePaneUrlState.open, searchParams]);
+  }, [
+    pathname,
+    profilePaneEnabled,
+    profilePaneResumeLocation,
+    profilePaneUrlState.open,
+    searchParams,
+  ]);
 
   const handleProfilePaneOpenChange = (nextOpen: boolean) => {
     if (nextOpen) {
@@ -654,142 +660,124 @@ function AppShellFrame({ children }: ProvidersProps) {
                   <PostAuthOnboardingSyncBridge />
                   <LocationBusAccountBridge />
                   <ContactInvitationSessionProvider>
-                    <Suspense
-                      fallback={
-                        <>
-                          {/* Flex container for proper scroll behavior */}
-                          <div
-                            className="flex flex-col flex-1 min-h-0"
-                            style={topShellRouteStyle}
-                            data-top-shell-profile={topShellRouteProfile.id}
-                            data-app-shell-root="true"
-                            data-app-shell-offset-mode={
-                              signedInShellContentOffset.mode
-                            }
-                          >
-                            {!hidesPersistentChrome ? (
-                              <Suspense fallback={null}>
-                                <AppTopShell model={topShellModel} />
-                              </Suspense>
-                            ) : null}
-                            {!hidesPersistentChrome &&
-                            !effectiveHideCommandBar ? (
-                              <Suspense fallback={null}>
-                                <KaiCommandBarGlobal />
-                              </Suspense>
-                            ) : null}
-                            <div
-                              data-app-scroll-root="true"
-                              data-app-scroll-mode={
-                                hideGlobalChrome
-                                  ? "hidden-shell"
-                                  : shouldLockFullscreenRoot
-                                    ? "fullscreen-flow"
-                                    : "standard"
-                              }
-                              className={
-                                hideGlobalChrome
-                                  ? "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none overscroll-y-contain touch-pan-y pb-[var(--app-scroll-bottom-pad,var(--onboarding-agent-bar-clearance))] relative z-10 min-h-0"
-                                  : shouldLockFullscreenRoot
-                                    ? "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none touch-pan-y relative z-10 min-h-0"
-                                    : "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none touch-pan-y pb-[var(--app-scroll-bottom-pad,var(--app-bottom-content-clearance))] relative z-10 min-h-0"
-                              }
-                            >
-                              {!hideGlobalChrome &&
-                              !shouldLockFullscreenRoot ? (
-                                <div
-                                  data-app-shell-top-spacer="true"
-                                  aria-hidden
-                                />
-                              ) : null}
-                              <div
-                                data-app-shell-content="true"
-                                className={
-                                  shouldLockFullscreenRoot
-                                    ? "min-h-0 h-full"
-                                    : "min-h-0"
-                                }
-                              >
-                                <TopShellRouteSwipe tabSet={routeSwipeTabSet}>
-                                  <OnboardingJourneyGuard>
-                                    {children}
-                                  </OnboardingJourneyGuard>
-                                </TopShellRouteSwipe>
-                              </div>
-                            </div>
-                          </div>
-                        </>
+                    {/* Keep persistent top chrome outside the route Suspense
+                        boundary. Route data may suspend during a transition,
+                        but the Profile affordance and its measured animation
+                        state must not remount with the fallback tree. */}
+                    <div
+                      className="flex flex-col flex-1 min-h-0"
+                      style={topShellRouteStyle}
+                      data-top-shell-profile={topShellRouteProfile.id}
+                      data-app-shell-root="true"
+                      data-app-shell-offset-mode={
+                        signedInShellContentOffset.mode
                       }
                     >
-                      <ConsentNotificationProvider>
-                        <ConsentSheetProvider>
-                          {/* Flex container for proper scroll behavior */}
-                          <div
-                            className="flex flex-col flex-1 min-h-0"
-                            style={topShellRouteStyle}
-                            data-top-shell-profile={topShellRouteProfile.id}
-                            data-app-shell-root="true"
-                            data-app-shell-offset-mode={
-                              signedInShellContentOffset.mode
-                            }
-                          >
-                            {!hidesPersistentChrome ? (
-                              <Suspense fallback={null}>
-                                <AppTopShell model={topShellModel} />
-                              </Suspense>
-                            ) : null}
-                            {!hidesPersistentChrome &&
-                            !effectiveHideCommandBar ? (
-                              <Suspense fallback={null}>
-                                <KaiCommandBarGlobal />
-                              </Suspense>
-                            ) : null}
-                            {/* Main scroll container: extends under fixed bar so content can scroll behind it; padding clears bar height */}
-                            <div
-                              data-app-scroll-root="true"
-                              data-app-scroll-mode={
-                                hideGlobalChrome
-                                  ? "hidden-shell"
-                                  : shouldLockFullscreenRoot
-                                    ? "fullscreen-flow"
-                                    : "standard"
-                              }
-                              className={
-                                hideGlobalChrome
-                                  ? // Landing/onboarding flows retain a scroll tail for the fixed Agent Bar.
-                                    "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none overscroll-y-contain touch-pan-y pb-[var(--app-scroll-bottom-pad,var(--onboarding-agent-bar-clearance))] relative z-10 min-h-0"
-                                  : shouldLockFullscreenRoot
-                                    ? // Fullscreen flows keep chrome contract, but permit y-scroll for small devices.
-                                      "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none touch-pan-y relative z-10 min-h-0"
-                                    : "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none touch-pan-y pb-[var(--app-scroll-bottom-pad,var(--app-bottom-content-clearance))] relative z-10 min-h-0"
-                              }
-                            >
-                              {!hideGlobalChrome &&
-                              !shouldLockFullscreenRoot ? (
-                                <div
-                                  data-app-shell-top-spacer="true"
-                                  aria-hidden
-                                />
-                              ) : null}
+                      {!hidesPersistentChrome ? (
+                        <AppTopShell model={topShellModel} />
+                      ) : null}
+                      {!hidesPersistentChrome && !effectiveHideCommandBar ? (
+                        <KaiCommandBarGlobal />
+                      ) : null}
+                      <Suspense
+                        fallback={
+                          <>
+                            {/* Flex container for proper scroll behavior */}
+                            <div className="flex flex-col flex-1 min-h-0">
                               <div
-                                data-app-shell-content="true"
+                                data-app-scroll-root="true"
+                                data-app-scroll-mode={
+                                  hideGlobalChrome
+                                    ? "hidden-shell"
+                                    : shouldLockFullscreenRoot
+                                      ? "fullscreen-flow"
+                                      : "standard"
+                                }
                                 className={
-                                  shouldLockFullscreenRoot
-                                    ? "min-h-0 h-full"
-                                    : "min-h-0"
+                                  hideGlobalChrome
+                                    ? "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none overscroll-y-contain touch-pan-y pb-[var(--app-scroll-bottom-pad,var(--onboarding-agent-bar-clearance))] relative z-10 min-h-0"
+                                    : shouldLockFullscreenRoot
+                                      ? "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none touch-pan-y relative z-10 min-h-0"
+                                      : "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none touch-pan-y pb-[var(--app-scroll-bottom-pad,var(--app-bottom-content-clearance))] relative z-10 min-h-0"
                                 }
                               >
-                                <TopShellRouteSwipe tabSet={routeSwipeTabSet}>
-                                  <OnboardingJourneyGuard>
-                                    {children}
-                                  </OnboardingJourneyGuard>
-                                </TopShellRouteSwipe>
+                                {!hideGlobalChrome &&
+                                !shouldLockFullscreenRoot ? (
+                                  <div
+                                    data-app-shell-top-spacer="true"
+                                    aria-hidden
+                                  />
+                                ) : null}
+                                <div
+                                  data-app-shell-content="true"
+                                  className={
+                                    shouldLockFullscreenRoot
+                                      ? "min-h-0 h-full"
+                                      : "min-h-0"
+                                  }
+                                >
+                                  <TopShellRouteSwipe tabSet={routeSwipeTabSet}>
+                                    <OnboardingJourneyGuard>
+                                      {children}
+                                    </OnboardingJourneyGuard>
+                                  </TopShellRouteSwipe>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </ConsentSheetProvider>
-                      </ConsentNotificationProvider>
-                    </Suspense>
+                          </>
+                        }
+                      >
+                        <ConsentNotificationProvider>
+                          <ConsentSheetProvider>
+                            {/* Flex container for proper scroll behavior */}
+                            <div className="flex flex-col flex-1 min-h-0">
+                              {/* Main scroll container: extends under fixed bar so content can scroll behind it; padding clears bar height */}
+                              <div
+                                data-app-scroll-root="true"
+                                data-app-scroll-mode={
+                                  hideGlobalChrome
+                                    ? "hidden-shell"
+                                    : shouldLockFullscreenRoot
+                                      ? "fullscreen-flow"
+                                      : "standard"
+                                }
+                                className={
+                                  hideGlobalChrome
+                                    ? // Landing/onboarding flows retain a scroll tail for the fixed Agent Bar.
+                                      "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none overscroll-y-contain touch-pan-y pb-[var(--app-scroll-bottom-pad,var(--onboarding-agent-bar-clearance))] relative z-10 min-h-0"
+                                    : shouldLockFullscreenRoot
+                                      ? // Fullscreen flows keep chrome contract, but permit y-scroll for small devices.
+                                        "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none touch-pan-y relative z-10 min-h-0"
+                                      : "flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none touch-pan-y pb-[var(--app-scroll-bottom-pad,var(--app-bottom-content-clearance))] relative z-10 min-h-0"
+                                }
+                              >
+                                {!hideGlobalChrome &&
+                                !shouldLockFullscreenRoot ? (
+                                  <div
+                                    data-app-shell-top-spacer="true"
+                                    aria-hidden
+                                  />
+                                ) : null}
+                                <div
+                                  data-app-shell-content="true"
+                                  className={
+                                    shouldLockFullscreenRoot
+                                      ? "min-h-0 h-full"
+                                      : "min-h-0"
+                                  }
+                                >
+                                  <TopShellRouteSwipe tabSet={routeSwipeTabSet}>
+                                    <OnboardingJourneyGuard>
+                                      {children}
+                                    </OnboardingJourneyGuard>
+                                  </TopShellRouteSwipe>
+                                </div>
+                              </div>
+                            </div>
+                          </ConsentSheetProvider>
+                        </ConsentNotificationProvider>
+                      </Suspense>
+                    </div>
                   </ContactInvitationSessionProvider>
                 </AgentOwnerGate>
               </OneVoiceReadinessProvider>
