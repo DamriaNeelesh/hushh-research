@@ -195,6 +195,71 @@ def test_is_hit_semantics():
     assert not harness.is_hit("google_search", ("no_tool",))
 
 
+@pytest.mark.parametrize("gap", [-1, float("inf"), float("-inf"), float("nan")])
+def test_pacing_rejects_invalid_gap_before_probe(gap):
+    def probe(*_):
+        pytest.fail("invalid pacing must not call the model")
+
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        harness.score_cases([], probe, "", call_gap_seconds=gap)
+
+
+def test_pacing_is_outside_latency_and_stops_after_infrastructure_failure(monkeypatch):
+    clock = {"now": 0.0}
+    sleeps = []
+    calls = []
+    monkeypatch.setattr(harness.time, "perf_counter", lambda: clock["now"])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(harness.time, "sleep", sleep)
+
+    def probe(*_):
+        calls.append(clock["now"])
+        clock["now"] += 0.25
+        if len(calls) == 3:
+            raise TimeoutError("private")
+        return None
+
+    results = harness.score_cases(
+        [harness.Case(str(i), "general", "p", ("no_tool",)) for i in range(3)],
+        probe,
+        "",
+        reps=2,
+        call_gap_seconds=2.0,
+    )
+    assert calls == [0.0, 2.25, 4.5]
+    assert sleeps == [2.0, 2.0]
+    assert results[0].latency_ms_by_rep == [250.0, 250.0]
+    assert results[1].infrastructure_failure["elapsed_ms"] == 250.0
+    assert results[2].status == "unattempted"
+
+
+@pytest.mark.parametrize("injected", [False, True])
+def test_run_eval_paces_only_its_live_probe(cases, tmp_path, monkeypatch, injected):
+    probe = _stub_first_expected(cases)
+    monkeypatch.setattr(harness, "make_live_first_tool", lambda **_: probe)
+    original = harness.score_cases
+    gaps = []
+
+    def score(*args, **kwargs):
+        gaps.append(kwargs.pop("call_gap_seconds"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(harness, "score_cases", score)
+    assert (
+        harness.run_eval(
+            first_tool=probe if injected else None,
+            report_dir=tmp_path,
+            quiet=True,
+        )
+        == 0
+    )
+    assert gaps == [0.0 if injected else harness.CALL_GAP_SECONDS]
+
+
 def test_first_tool_from_response_scores_run_app_action_with_action_id():
     from types import SimpleNamespace
 
@@ -231,6 +296,9 @@ def test_all_hits_exit_zero_and_report_is_written(cases, tmp_path):
     assert len(latest["instruction_sha256"]) == 64
     assert latest["git_sha"]
     assert latest["overall"] == {"cases": len(cases), "hits": len(cases), "rate": 1.0}
+    assert latest["latency_ms"]["semantics"] == (
+        "probe_wall_time_including_retries_excluding_harness_pacing_v1"
+    )
     assert latest["gates"]["passed"] is True
     assert latest["gates"]["min_family_rate"]["consent"] == 1.0
     assert latest["gates"]["min_family_rate"]["delegation"] == 1.0

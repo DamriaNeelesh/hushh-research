@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -302,9 +303,12 @@ def score_cases(
     *,
     reps: int = DEFAULT_REPS,
     on_result: Callable[[CaseResult], None] | None = None,
+    call_gap_seconds: float = 0.0,
 ) -> list[CaseResult]:
     if reps < 1:
         raise ValueError("reps must be at least 1")
+    if not math.isfinite(call_gap_seconds) or call_gap_seconds < 0:
+        raise ValueError("call_gap_seconds must be finite and nonnegative")
     results: list[CaseResult] = []
     stopped = False
     for case in cases:
@@ -335,6 +339,10 @@ def score_cases(
                 break
             result.got_by_rep.append(got)
             result.latency_ms_by_rep.append((time.perf_counter() - started) * 1000.0)
+            if call_gap_seconds:
+                # Harness pacing is not model latency. Provider retries and
+                # backoff inside first_tool remain included in the measurement.
+                time.sleep(call_gap_seconds)
         results.append(result)
         if on_result is not None:
             on_result(result)
@@ -475,7 +483,6 @@ def make_live_first_tool(
                 raise
         else:
             raise RuntimeError(str(last_error) or "model_response_missing")
-        time.sleep(call_gap_seconds)
         return first_tool_from_response(response)
 
     return _call
@@ -550,6 +557,7 @@ def build_report(
         "overall": {"cases": len(results), "hits": hits, "rate": overall_rate},
         "families": families,
         "latency_ms": {
+            "semantics": "probe_wall_time_including_retries_excluding_harness_pacing_v1",
             "count": len(latencies),
             "p50": None if not latencies else round(_pct(latencies, 0.5) or 0.0, 1),
             "p95": None if not latencies else round(_pct(latencies, 0.95) or 0.0, 1),
@@ -664,6 +672,7 @@ def run_eval(
                 instruction,
                 reps=reps,
                 on_result=None if quiet else _print_result,
+                call_gap_seconds=CALL_GAP_SECONDS if first_tool is None else 0.0,
             )
         )
         stopped = stopped or any(result.status == "infrastructure_error" for result in results)
