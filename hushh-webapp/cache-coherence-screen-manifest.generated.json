@@ -3122,18 +3122,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/access",
@@ -3165,18 +3167,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/access/connection",
@@ -3208,18 +3212,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/account",
@@ -3251,18 +3257,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/account/phone",
@@ -3294,18 +3302,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/connected-systems",
@@ -3341,18 +3351,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/gmail",
@@ -3627,18 +3639,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/my-data/domain",
@@ -3670,18 +3684,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/pkm",
@@ -3806,18 +3822,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/preferences/device",
@@ -3849,18 +3867,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/preferences/gemini",
@@ -3892,18 +3912,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/preferences/kai",
@@ -3935,18 +3957,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/preferences/voice",
@@ -3978,18 +4002,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/preferences/voice/changelog",
@@ -4021,18 +4047,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/preferences/voice/examples",
@@ -4064,18 +4092,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/receipts",
@@ -4151,18 +4181,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/regulatory",
@@ -4234,18 +4266,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/security/devices",
@@ -4367,18 +4401,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/security/vault",
@@ -4410,18 +4446,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/support",
@@ -4453,18 +4491,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/support/compose",
@@ -4496,18 +4536,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/support/routing",
@@ -4539,18 +4581,20 @@
       "route_contract_present": true,
       "evidence": {
         "cache_service": false,
-        "use_stale_resource": true,
+        "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
-        "cache_sync": true,
-        "resource_wrapper": true,
+        "cache_sync": false,
+        "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/puppy",
@@ -6208,5 +6252,5 @@
       ]
     }
   ],
-  "content_sha256": "ccae1cff550c19fb2e472e22bcdad828e207f226691dd5a36e6934ee99d22bc8"
+  "content_sha256": "f4fe7c001ae444b34fb66173cf580ef6b0c14d21f6e6004885eb697f0cf0f2f7"
 }
