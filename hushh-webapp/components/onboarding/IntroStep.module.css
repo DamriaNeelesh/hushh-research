@@ -1,4 +1,17 @@
 .shell {
+  /* The frame includes 62px above / 34px below its content. Account for
+     native insets only when they exceed those scaled authored margins. */
+  --intro-height: calc(100svh - var(--app-scroll-bottom-pad, 0px));
+  --intro-safe-top: var(--app-safe-area-top-effective, 0px);
+  --intro-safe-bottom: var(--app-safe-area-bottom-effective, 0px);
+  --intro-frame-bottom: 34px;
+  --intro-scale: max(0, min(
+    1,
+    calc(100vw / 402px),
+    calc(var(--intro-height) / 874px),
+    calc((var(--intro-height) - var(--intro-safe-bottom)) / (874px - var(--intro-frame-bottom))),
+    calc((var(--intro-height) - var(--intro-safe-top) - var(--intro-safe-bottom)) / (812px - var(--intro-frame-bottom)))
+  ));
   position: relative;
   display: flex;
   block-size: calc(100svh - var(--app-scroll-bottom-pad, 0px));
@@ -192,6 +205,11 @@
 }
 
 @media (min-width: 640px) and (min-height: 860px) {
+  .shell {
+    /* Visible Explore links extend below the mobile frame's footer. */
+    --intro-frame-bottom: 8px;
+  }
+
   .links {
     opacity: 1;
     pointer-events: auto;
@@ -227,14 +245,12 @@
   }
 }
 
-/* Dark frame 194:2950 uses physical-screen coordinates (402 × 874).
-   Preserve its composition at the reference width; short windows scroll
-   instead of shrinking type, artwork and touch targets independently. */
+/* Dark frame 194:2950 keeps its authored 402 × 874 coordinates.
+   The shared scale fits the complete composition into the safe viewport. */
 :global(.dark) .shell {
-  --intro-scale: min(1, calc(100vw / 402px));
   --intro-font: "SF Pro", -apple-system, BlinkMacSystemFont, sans-serif;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: hidden;
 }
 
 :global(.dark) .stage {
@@ -242,12 +258,17 @@
   justify-content: center;
   flex: none;
   max-width: none;
-  min-height: calc(874px * var(--intro-scale));
+  min-height: 0;
+  /* Contain transformed layout bounds, without creating another scroller. */
+  overflow: clip;
   padding: 0;
 }
 
 :global(.dark) .composition {
-  position: relative;
+  /* Absolute positioning removes the unscaled 874px layout box. */
+  position: absolute;
+  top: max(0px, calc(var(--intro-safe-top) - 62px * var(--intro-scale)));
+  left: calc(50% - 201px);
   display: block;
   flex: none;
   width: 402px;
@@ -393,15 +414,12 @@
   }
 }
 
-/* Light frame 144:6039 is a 402 × 874 composition, measured from the
-   physical screen origin. Scale only for width; short windows scroll the
-   complete composition instead of moving the footer over the hero. Native
-   status/home chrome stays OS-owned (62pt top / 34pt bottom in the target). */
+/* Light frame 144:6039 uses the same safe-viewport fit as dark.
+   All authored element coordinates and reference-size alignment stay intact. */
 :global(html:not(.dark)) .shell {
-  --intro-scale: min(1, calc(100vw / 402px));
   --intro-font: "SF Pro", -apple-system, BlinkMacSystemFont, sans-serif;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: hidden;
 }
 
 :global(html:not(.dark)) .stage {
@@ -409,12 +427,17 @@
   justify-content: center;
   flex: none;
   max-width: none;
-  min-height: calc(874px * var(--intro-scale));
+  min-height: 0;
+  /* Contain transformed layout bounds, without creating another scroller. */
+  overflow: clip;
   padding: 0;
 }
 
 :global(html:not(.dark)) .composition {
-  position: relative;
+  /* Absolute positioning removes the unscaled 874px layout box. */
+  position: absolute;
+  top: max(0px, calc(var(--intro-safe-top) - 62px * var(--intro-scale)));
+  left: calc(50% - 201px);
   display: block;
   flex: none;
   width: 402px;
