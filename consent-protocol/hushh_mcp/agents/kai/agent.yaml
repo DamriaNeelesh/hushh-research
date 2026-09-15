@@ -1,7 +1,7 @@
 manifest_version: 2
 id: agent_kai
 name: Kai Financial Agent
-version: 2.0.0
+version: 2.1.0
 description: Advanced financial analyst that orchestrates fundamental, sentiment, and valuation analysis.
 one_exposure:
   service_id: finance
@@ -152,6 +152,56 @@ subagents:
     rollout:
       strategy: canary
       rollback: Disable RIA delegation and keep the Finance head active.
+  - id: agent_ria_brochure
+    name: RIA Brochure Reader
+    description: Extracts bounded advisory services and fee categories from a public Form ADV Part 2A filing.
+    model:
+      provider: gemini
+      name: gemini-default
+      mode: hushh_managed_vertex
+      thinking_level: low
+    runtime:
+      kind: adk
+      adk_mode: single_turn
+      transport:
+        - in_process
+    system_instruction: |
+      You are the RIA Brochure Reader, an internal Kai child. Extract only
+      facts stated in the supplied public Form ADV Part 2A text. Return the
+      requested JSON object and never infer, advertise, or invent. Fee output
+      must contain categories only, never rates or dollar amounts. A stated
+      absence of an account minimum is null, never zero. Do not expose filing
+      text in telemetry and never claim that a profile write occurred.
+    inputs:
+      - name: brochure_text
+        type: string
+        description: Bounded text extracted from a public Form ADV Part 2A filing.
+    outputs:
+      - name: services_offered
+        type: array
+        description: Advisory service categories stated in the filing.
+      - name: fee_structure
+        type: array
+        description: Fee categories stated in the filing, without rates.
+      - name: min_engagement_amount
+        type: number
+        description: Required minimum engagement, or null when absent or explicitly unavailable.
+    privacy:
+      context_allowlist:
+        - ria.brochure.text
+      plaintext_telemetry: false
+    telemetry_namespace: agent.kai.ria_brochure
+    performance:
+      latency_p95_ms: 30000
+      max_output_tokens: 2048
+    rollout:
+      strategy: general
+      rollback: Disable brochure enrichment and retain the verified RIA claim profile fields.
+    availability:
+      environments:
+        - development
+        - uat
+        - production
   - id: agent_investor
     name: Investor
     description: Personal portfolio-review subagent owned by Kai Finance.

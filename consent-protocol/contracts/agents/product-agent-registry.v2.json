@@ -840,6 +840,76 @@
             ],
             "loopback_only": false
           },
+          "description": "Extracts bounded advisory services and fee categories from a public Form ADV Part 2A filing.",
+          "id": "agent_ria_brochure",
+          "inputs": [
+            {
+              "description": "Bounded text extracted from a public Form ADV Part 2A filing.",
+              "name": "brochure_text",
+              "type": "string"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "RIA Brochure Reader",
+          "outputs": [
+            {
+              "description": "Advisory service categories stated in the filing.",
+              "name": "services_offered",
+              "type": "array"
+            },
+            {
+              "description": "Fee categories stated in the filing, without rates.",
+              "name": "fee_structure",
+              "type": "array"
+            },
+            {
+              "description": "Required minimum engagement, or null when absent or explicitly unavailable.",
+              "name": "min_engagement_amount",
+              "type": "number"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 2048
+          },
+          "privacy": {
+            "context_allowlist": [
+              "ria.brochure.text"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Disable brochure enrichment and retain the verified RIA claim profile fields.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are the RIA Brochure Reader, an internal Kai child. Extract only\nfacts stated in the supplied public Form ADV Part 2A text. Return the\nrequested JSON object and never infer, advertise, or invent. Fee output\nmust contain categories only, never rates or dollar amounts. A stated\nabsence of an account minimum is null, never zero. Do not expose filing\ntext in telemetry and never claim that a profile write occurred.\n",
+          "telemetry_namespace": "agent.kai.ria_brochure"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
           "description": "Personal portfolio-review subagent owned by Kai Finance.",
           "id": "agent_investor",
           "inputs": [],
@@ -962,7 +1032,7 @@
         }
       ],
       "ui_type": "chat",
-      "version": "2.0.0"
+      "version": "2.1.0"
     },
     {
       "action_ids": [],

@@ -145,6 +145,20 @@ def test_location_transcriber_is_manifest_owned_single_turn_contract() -> None:
     assert gene.rollout.rollback.strip()
 
 
+def test_ria_brochure_reader_is_manifest_owned_single_turn_contract() -> None:
+    manifest = load("kai")
+    gene = next(child for child in manifest.subagents if child.id == "agent_ria_brochure")
+    assert gene.name == "RIA Brochure Reader"
+    assert gene.model.name == "gemini-default"
+    assert resolve_fleet_model_name(gene.model.name) == GEMINI_MODEL
+    assert gene.runtime.adk_mode == "single_turn"
+    assert gene.runtime.transport == ["in_process"]
+    assert gene.privacy.plaintext_telemetry is False
+    assert "ria.brochure.text" in gene.privacy.context_allowlist
+    assert gene.performance.max_output_tokens == 2048
+    assert gene.rollout.rollback.strip()
+
+
 def test_connected_systems_schema_mapper_is_manifest_owned_and_toolless() -> None:
     manifest = load("connected_systems")
     mapper = next(child for child in manifest.subagents if child.id == "crm_schema_mapper")

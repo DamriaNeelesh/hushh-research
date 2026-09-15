@@ -136,3 +136,9 @@ The Memory Agent's background attribute learner is also declared as
 `agent_personal_information_attribute_learner` and uses the same bounded
 single-turn runtime. It extracts explicit claims only; PKM mutation events
 remain owned by the existing service, and the learner has no write tools.
+
+RIA brochure enrichment is now declared as `agent_ria_brochure` and uses the
+shared single-turn runtime for public Form ADV narrative extraction. Filing
+selection, size/page/text bounds, defensive shaping, and best-effort profile
+writes remain unchanged. The focused RIA route and brochure suites pass; no
+live filing run is claimed by this phase.
