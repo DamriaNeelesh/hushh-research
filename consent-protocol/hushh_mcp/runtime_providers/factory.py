@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from google.genai.types import HttpOptionsDict
+from google.genai.types import HttpOptions, HttpOptionsDict
 
 from .registry import ProviderId, normalize_provider
 from .vertex_failover import VertexRegionalClient
@@ -169,7 +169,13 @@ class ManagedGeminiRuntimeBinding:
             cooldown_seconds=_vertex_location_cooldown_seconds(),
         )
 
-    def build_adk_model(self, model: str, *, location: str | None = None) -> Any:
+    def build_adk_model(
+        self,
+        model: str,
+        *,
+        location: str | None = None,
+        http_options: HttpOptions | HttpOptionsDict | None = None,
+    ) -> Any:
         from google.adk.models import Gemini
 
         clean_location = str(location or "").strip() or (
@@ -178,6 +184,11 @@ class ManagedGeminiRuntimeBinding:
         clean_model = self.validate_model(
             model,
             location=clean_location or None,
+        )
+        transport_options = (
+            {"http_options": HttpOptions.model_validate(http_options)}
+            if http_options is not None
+            else {}
         )
         if self.auth_mode == DEVELOPER_API_KEY_AUTH_MODE:
             key = (
@@ -189,7 +200,7 @@ class ManagedGeminiRuntimeBinding:
                 raise RuntimeError("Developer Gemini API key is not configured")
             return Gemini(
                 model=clean_model,
-                client_kwargs={"vertexai": False, "api_key": key},
+                client_kwargs={"vertexai": False, "api_key": key, **transport_options},
             )
         return Gemini(
             model=clean_model,
@@ -197,6 +208,7 @@ class ManagedGeminiRuntimeBinding:
                 "vertexai": True,
                 "project": self.project,
                 "location": clean_location,
+                **transport_options,
             },
         )
 
@@ -400,6 +412,7 @@ def build_managed_gemini_adk_model(
     model: str,
     *,
     vertex_location: str | None = None,
+    http_options: HttpOptions | HttpOptionsDict | None = None,
 ) -> Any:
     """Build an ADK Gemini model from the canonical managed auth contract.
 
@@ -411,11 +424,16 @@ def build_managed_gemini_adk_model(
     ADK owns its internal client, so regional retry remains a direct-client
     capability. This function deliberately pins the configured primary region;
     it does not pretend to provide ``VertexRegionalClient`` failover.
+
+    Optional SDK HTTP options bound individual model requests without replaying
+    a turn or its tools. ``timeout`` uses milliseconds; retry ``attempts`` counts
+    the initial request too. Omission preserves ADK's existing transport defaults.
     """
 
     return ManagedGeminiRuntimeBinding.from_environment().build_adk_model(
         model,
         location=vertex_location,
+        http_options=http_options,
     )
 
 
