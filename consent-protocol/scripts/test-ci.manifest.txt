@@ -296,3 +296,4 @@ tests/test_consent_handshake.py
 tests/test_consent_db_revocation_worker.py
 tests/scripts/test_eval_specialist_turns.py
 tests/test_consent_refresh_bootstrap.py
+tests/test_hushh_adk_turn.py
