@@ -74,7 +74,7 @@ const REVIEWER_BOOTSTRAP_ROUTE_IDS = [
   "/ria/onboarding",
 ];
 const SAME_SESSION_SHELL_ROUTES = new Set([
-  "/agent",
+  "/",
   "/one",
   "/one/gmail",
   "/one/feed",
@@ -239,6 +239,12 @@ const ROUTE_OVERRIDES = {
 };
 
 const REDIRECT_EXPECTATIONS = {
+  "/agent": {
+    path: "/",
+    expectedPathname: "/",
+    allowedPathnames: ["/"],
+    allowedRouteIds: ["/"],
+  },
   "/one/profile/regulatory": {
     path: "/one/profile/regulatory",
     allowedPathnames: ["/ria/profile", "/ria/onboarding"],
@@ -246,8 +252,8 @@ const REDIRECT_EXPECTATIONS = {
   },
   "/": {
     path: "/",
-    expectedPathname: "/one",
-    allowedRouteIds: ["/one"],
+    expectedPathname: "/",
+    allowedRouteIds: ["/"],
   },
   "/gmail": {
     path: "/gmail",
@@ -1127,13 +1133,10 @@ async function requestAppNavigation(page, href) {
 async function navigateViaShell(page, spec) {
   switch (spec.route) {
     case "/":
-      await clickBottomNav(page, "One");
+      await clickBottomNav(page, "Chat");
       return true;
     case "/one":
       await requestAppNavigation(page, "/one");
-      return true;
-    case "/agent":
-      await requestAppNavigation(page, "/agent");
       return true;
     case "/ria":
       await requestNativeTestRoute(page, "/ria", ["/ria"]);

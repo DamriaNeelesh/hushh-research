@@ -12,11 +12,9 @@ import {
   type ReactNode,
   type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
-  ArrowLeft,
   Check,
   ChevronRight,
   Copy,
@@ -28,7 +26,6 @@ import {
   Maximize2,
   Mic,
   Minimize2,
-  Minus,
   Pencil,
   RotateCcw,
   Send,
@@ -174,7 +171,6 @@ import {
   type DelegateResult,
 } from "@/lib/agent/specialist-directive-runtime";
 import { useKaiSession } from "@/lib/stores/kai-session-store";
-import { readAgentOrigin } from "@/lib/navigation/agent-origin";
 import { ROUTES } from "@/lib/navigation/routes";
 import { GoogleCalendarService } from "@/lib/services/google-calendar-service";
 import { cn } from "@/lib/utils";
@@ -198,7 +194,6 @@ import { deriveVoiceRouteScreen } from "@/lib/voice/route-screen-derivation";
 import { useAgentRuntimeStateOptional } from "@/lib/agent/agent-runtime-context";
 import {
   useOneConversationSession,
-  type AgentChatHandoff,
   type GmailInformationRequestHandoff,
 } from "@/lib/agent/one-conversation-session";
 import { dedupeAdjacentAgentMessages } from "@/lib/agent/agent-chat-turn-safety";
@@ -336,8 +331,6 @@ type PendingConsentRequestDirectivePayload = {
   item: SpecialistPendingConsentRequestItem;
 };
 
-export type AgentChatWorkspaceVariant = "page" | "popover";
-
 /**
  * Which agent this workspace is showing.
  *
@@ -352,14 +345,7 @@ export type AgentChatWorkspaceVariant = "page" | "popover";
 export type AgentChatSurface = "one" | "puppy";
 
 type AgentChatWorkspaceProps = {
-  variant?: AgentChatWorkspaceVariant;
   className?: string;
-  handoff?: AgentChatHandoff | null;
-  windowControls?: ReactNode;
-  onMinimize?: () => void;
-  onNavigationActionComplete?: (result: AgentActionRuntimeResult) => void;
-  /** The owning popover has started closing; preserve history, stop capture. */
-  isSurfaceClosing?: boolean;
 };
 
 const AGENT_GREETING =
@@ -1007,6 +993,95 @@ function AgentWelcomePanel({
   );
 }
 
+function formatWelcomeDomain(domain: string): string {
+  return domain
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase())
+    .trim();
+}
+
+function PostSetupWelcomeCard({
+  name,
+  context,
+  disabled,
+  onPromptSelect,
+}: {
+  name: string;
+  context: AgentPkmContext;
+  disabled: boolean;
+  onPromptSelect: (prompt: string) => void;
+}) {
+  const domains = context.domains.filter(Boolean).slice(0, 5);
+  const savedDetails = Math.max(0, context.totalAttributes || 0);
+  return (
+    <section
+      data-testid="post-setup-welcome-card"
+      className="motion-step-enter mx-auto mt-6 w-full max-w-2xl rounded-[28px] border border-border/70 bg-card/80 p-5 shadow-[0_18px_60px_-42px_rgba(0,0,0,0.42)] sm:p-7"
+    >
+      <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+        A quiet start
+      </p>
+      <h2 className="mt-3 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+        Welcome, {name}
+      </h2>
+      <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground sm:text-base">
+        Your private workspace is ready. I’ll keep building context only from
+        connections and information you choose to share.
+      </p>
+
+      <div className="mt-6 rounded-2xl bg-muted/45 px-4 py-4 text-sm text-foreground">
+        <p className="font-medium">What’s ready so far</p>
+        {domains.length > 0 ? (
+          <>
+            <p className="mt-1 text-muted-foreground">
+              {savedDetails > 0
+                ? `${savedDetails} saved ${savedDetails === 1 ? "detail" : "details"} across ${domains.length} ${domains.length === 1 ? "category" : "categories"}.`
+                : `Context is available across ${domains.length} ${domains.length === 1 ? "category" : "categories"}.`}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2" aria-label="Available categories">
+              {domains.map((domain) => (
+                <span
+                  key={domain}
+                  className="rounded-full bg-background px-3 py-1.5 text-xs text-muted-foreground"
+                >
+                  {formatWelcomeDomain(domain)}
+                </span>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="mt-1 text-muted-foreground">
+            No categories have been added yet. You can connect a source or
+            tell me what you want to organize.
+          </p>
+        )}
+      </div>
+
+      <p className="mt-5 text-sm leading-6 text-muted-foreground">
+        Optional connections are still available whenever you’re ready. Nothing
+        is sent or connected without your review.
+      </p>
+      <div className="mt-5 flex flex-wrap gap-2">
+        {[
+          "Show what you know",
+          "Set up a connection",
+          "What can you help with?",
+        ].map((prompt) => (
+          <button
+            key={prompt}
+            type="button"
+            disabled={disabled}
+            onClick={() => onPromptSelect(prompt)}
+            className="min-h-11 rounded-full border border-border bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {prompt}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 
 function useAnimatedAssistantText(targetText: string, active: boolean) {
   const [displayedText, setDisplayedText] = useState(active ? "" : targetText);
@@ -1425,30 +1500,14 @@ export function storedMessageToAgentMessage(
   };
 }
 
-function shouldMinimizeForNavigationResult(
-  result: AgentActionRuntimeResult,
-): boolean {
-  return Boolean(
-    result.routeAfter &&
-    result.status !== "failed" &&
-    result.status !== "invalid" &&
-    result.status !== "noop",
-  );
-}
-
-export function AgentChatWorkspace({
-  variant = "page",
-  className,
-  handoff,
-  windowControls,
-  onMinimize,
-  onNavigationActionComplete,
-  isSurfaceClosing = false,
-}: AgentChatWorkspaceProps) {
+export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const isPopover = variant === "popover";
+  // The workspace is now the canonical full-page chat surface. Keep this
+  // compatibility guard for the proactive-card contract while there is no
+  // popover mount in the current route topology.
+  const isPopover = false;
   const localCrmEnabled = isLocalCrmBuildEnabled();
   const { user, loading: authLoading, phoneNumber } = useAuth();
   const {
@@ -1535,8 +1594,24 @@ export function AgentChatWorkspace({
   const [queuedHandoffPrompt, setQueuedHandoffPrompt] = useState<string | null>(
     null,
   );
+  const pendingSessionHandoff = useOneConversationSession(
+    (state) => state.pendingHandoff,
+  );
+  const pendingEntryWelcome = useOneConversationSession(
+    (state) => state.pendingEntryWelcome,
+  );
+  const consumeEntryWelcome = useOneConversationSession(
+    (state) => state.consumeEntryWelcome,
+  );
+  const handoff = pendingSessionHandoff;
+  const [postSetupWelcomeContext, setPostSetupWelcomeContext] =
+    useState<AgentPkmContext | null>(null);
+  const postSetupWelcomeOwnerRef = useRef<string | null>(null);
   const consumeHandoff = useOneConversationSession(
     (state) => state.consumeHandoff,
+  );
+  const clearConversationSession = useOneConversationSession(
+    (state) => state.clearSession,
   );
   const consumedHandoffIdRef = useRef<string | null>(null);
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -1728,13 +1803,76 @@ export function AgentChatWorkspace({
     return () => window.clearTimeout(timeoutId);
   }, [isVaultUnlocked, user?.uid, vaultKey, vaultOwnerToken]);
 
+  useEffect(() => {
+    if (
+      !user?.uid ||
+      !isVaultUnlocked ||
+      !vaultKey ||
+      !vaultOwnerToken ||
+      (pendingEntryWelcome && pendingEntryWelcome.userId !== user.uid)
+    ) {
+      postSetupWelcomeOwnerRef.current = null;
+      setPostSetupWelcomeContext(null);
+      if (pendingEntryWelcome && user?.uid && pendingEntryWelcome.userId !== user.uid) {
+        clearConversationSession();
+      }
+      return undefined;
+    }
+
+    // Consuming the marker is an in-memory acknowledgement, not a reason to
+    // remove the card. Keep the card mounted for this owner until the next
+    // authenticated-owner or vault boundary.
+    if (!pendingEntryWelcome) {
+      if (postSetupWelcomeOwnerRef.current !== user.uid) {
+        postSetupWelcomeOwnerRef.current = null;
+        setPostSetupWelcomeContext(null);
+      }
+      return undefined;
+    }
+
+    let active = true;
+    postSetupWelcomeOwnerRef.current = user.uid;
+    const cached = peekAgentPkmContext({ userId: user.uid });
+    setPostSetupWelcomeContext(cached ?? EMPTY_PKM_CONTEXT);
+    consumeEntryWelcome(user.uid);
+
+    // Metadata is intentionally the only fallback. It provides category and
+    // count summaries without placing decrypted values into the card, URL, or
+    // transcript. The vault gate above proves this is the owner's live session.
+    void loadAgentPkmContext({
+      userId: user.uid,
+      vaultKey,
+      vaultOwnerToken,
+      metadataOnly: true,
+    })
+      .then((context) => {
+        if (active) setPostSetupWelcomeContext(context);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [
+    consumeEntryWelcome,
+    clearConversationSession,
+    isVaultUnlocked,
+    pendingEntryWelcome,
+    user?.uid,
+    vaultKey,
+    vaultOwnerToken,
+  ]);
+
   const routeQuery = searchParams?.toString() || "";
   const pathnameWithQuery = routeQuery
     ? `${pathname || ""}?${routeQuery}`
     : pathname || "";
   const routeInfo = useMemo(
-    () => deriveVoiceRouteScreen(pathname || "", routeQuery),
-    [pathname, routeQuery],
+    () =>
+      deriveVoiceRouteScreen(pathname || "", routeQuery, {
+        authenticated: Boolean(user?.uid),
+      }),
+    [pathname, routeQuery, user?.uid],
   );
   const activeAnalysisTask = useMemo(() => {
     if (!user?.uid) return null;
@@ -1783,7 +1921,7 @@ export function AgentChatWorkspace({
     userId: user?.uid || null,
     enabled: !isPopover && hasChatAccess,
     idTokenProvider: user?.getIdToken ? gmailIdTokenProvider : null,
-    routeHref: ROUTES.AGENT,
+    routeHref: ROUTES.HOME,
   });
   const gmailNudges = useGmailNudges({
     userId: user?.uid || null,
@@ -3785,9 +3923,6 @@ export function AgentChatWorkspace({
         });
         appendDebugEvent(debugTurnId, "tool_result", result);
         upsertToolStatusMessage(result.resultSummary, toolResultStatus(result));
-        if (shouldMinimizeForNavigationResult(result)) {
-          onNavigationActionComplete?.(result);
-        }
         return result;
       } catch (error) {
         const message =
@@ -4506,9 +4641,6 @@ export function AgentChatWorkspace({
               screenAfter: result.screenAfter,
             },
           );
-          if (shouldMinimizeForNavigationResult(result)) {
-            onNavigationActionComplete?.(result);
-          }
           return result;
         },
       });
@@ -4835,11 +4967,6 @@ export function AgentChatWorkspace({
     void handoffPromptSubmitRef.current?.(prompt);
   }, [queuedHandoffPrompt, setQueuedHandoffPrompt]);
 
-  useEffect(() => {
-    if (!isPopover || !isSurfaceClosing) return;
-    setIsHistoryDrawerOpen(false);
-  }, [isPopover, isSurfaceClosing]);
-
   // Agent Chat never owns audio. Its microphone affordance delegates to the
   // persistent Agent Bar, which is the sole owner of command capture.
   const startConversationalVoice = requestAgentConversation;
@@ -5030,21 +5157,6 @@ export function AgentChatWorkspace({
     setInput(prompt);
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }, []);
-  const swipeStartYRef = useRef<number | null>(null);
-  const handleHeaderPointerDown = (
-    event: ReactPointerEvent<HTMLDivElement>,
-  ) => {
-    if (!onMinimize || event.pointerType === "mouse") return;
-    swipeStartYRef.current = event.clientY;
-  };
-  const handleHeaderPointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!onMinimize || swipeStartYRef.current === null) return;
-    const deltaY = event.clientY - swipeStartYRef.current;
-    swipeStartYRef.current = null;
-    if (deltaY > 72) {
-      onMinimize();
-    }
-  };
   const openHistoryDrawer = useCallback(() => {
     historyDrawerReturnFocusRef.current =
       document.activeElement instanceof HTMLElement
@@ -5053,36 +5165,6 @@ export function AgentChatWorkspace({
     setIsHistoryDrawerOpen(true);
     void loadConversationList().catch(() => undefined);
   }, [loadConversationList]);
-  const handlePageMinimize = useCallback(() => {
-    if (onMinimize) {
-      onMinimize();
-      return;
-    }
-    if (typeof window !== "undefined") {
-      // The page that handed off records itself as ?from=. This is checked
-      // before any history heuristic because it is the only signal that
-      // survives a reload or a shared link — and because `document.referrer`,
-      // which this used to rely on, is never set by App Router client
-      // navigation, so every minimize fell through to One home.
-      const origin = readAgentOrigin(window.location.search);
-      if (origin) {
-        router.push(origin);
-        return;
-      }
-      const referrer = document.referrer ? new URL(document.referrer) : null;
-      const isSameOriginReferrer =
-        referrer?.origin === window.location.origin &&
-        referrer.pathname !== ROUTES.AGENT;
-      if (isSameOriginReferrer && window.history.length > 1) {
-        router.back();
-        return;
-      }
-    }
-    // Nothing to retrace to (e.g. a direct link into this legacy full-page
-    // route with no recorded origin): land on One home, not Profile, so
-    // minimizing always returns to the section this screen lives under.
-    router.push(ROUTES.ONE_HOME);
-  }, [onMinimize, router]);
   const handleHistoryDrawerKeyDown = useCallback(
     (event: ReactKeyboardEvent) => {
       if (event.key === "Escape") {
@@ -5160,18 +5242,20 @@ export function AgentChatWorkspace({
     <div
       className={cn(
         "agent-chat-workspace flex min-h-0 w-full flex-col text-foreground",
-        isPopover
-          ? "h-full overflow-hidden bg-background"
-          : "h-[calc(100dvh-var(--app-top-content-offset,0px)-var(--app-bottom-fixed-ui,0px)-var(--app-safe-area-bottom-effective,0px))] min-h-[420px] overflow-hidden bg-background",
+        // Chat is the canonical root workspace. Its composer must clear the
+        // complete fixed bottom shell (voice + navigation), not only the
+        // navigation slot measured by Navbar. The fallback keeps direct
+        // embedding safe before AppBottomShell publishes its measurement.
+        "h-[calc(100dvh-var(--app-top-content-offset,0px)-var(--app-bottom-shell-height,calc(var(--app-bottom-fixed-ui,0px)+var(--app-safe-area-bottom-effective,0px))))] min-h-[420px] overflow-hidden bg-background",
         className,
       )}
-      data-agent-chat-workspace={variant}
+      data-agent-chat-workspace="page"
     >
       <div
         className={cn(
           "relative flex min-h-0 flex-1",
-          // The popover and page both use one continuous workspace surface.
-          // The outer popover owns its floating frame; no inner card is allowed.
+          // The route-level workspace owns one continuous surface. There is
+          // no retired popover frame or second overlay surface here.
           "overflow-hidden",
         )}
       >
@@ -5218,40 +5302,19 @@ export function AgentChatWorkspace({
           <div
             className={cn(
               "agent-chat-header flex shrink-0 touch-pan-y items-center justify-between gap-3 bg-background/82 px-4 pt-[var(--agent-chat-header-safe-top)] backdrop-blur-2xl sm:px-5",
-              isPopover
-                ? "min-h-[calc(3.5rem+var(--agent-chat-header-safe-top))] sm:h-16 sm:min-h-16 sm:pt-0"
-                : "min-h-[calc(3.75rem+var(--agent-chat-header-safe-top))] sm:min-h-[calc(4rem+var(--app-safe-area-top-effective,0px))] sm:pt-[var(--app-safe-area-top-effective,0px)]",
-              !isPopover && "lg:px-6",
+              "min-h-[calc(3.75rem+var(--agent-chat-header-safe-top))] sm:min-h-[calc(4rem+var(--app-safe-area-top-effective,0px))] sm:pt-[var(--app-safe-area-top-effective,0px)] lg:px-6",
             )}
-            onPointerDown={handleHeaderPointerDown}
-            onPointerUp={handleHeaderPointerEnd}
-            onPointerCancel={() => {
-              swipeStartYRef.current = null;
-            }}
           >
             <div className="flex min-w-0 items-center gap-3">
-              {isPopover && onMinimize ? (
-                <ShellActionSurface
-                  variant="icon"
-                  onClick={onMinimize}
-                  aria-label="Back"
-                  title="Back"
-                  className="sm:hidden"
-                >
-                  <ArrowLeft className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ShellActionSurface>
-              ) : null}
-              {!isPopover ? (
-                <ShellActionSurface
-                  variant="icon"
-                  className="lg:hidden"
-                  onClick={openHistoryDrawer}
-                  aria-label="Open chat history"
-                  title="Open chat history"
-                >
-                  <Menu className="h-4 w-4" />
-                </ShellActionSurface>
-              ) : null}
+              <ShellActionSurface
+                variant="icon"
+                className="lg:hidden"
+                onClick={openHistoryDrawer}
+                aria-label="Open chat history"
+                title="Open chat history"
+              >
+                <Menu className="h-4 w-4" />
+              </ShellActionSurface>
               <div className="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-[13px] bg-[color:var(--app-accent-soft)] shadow-[0_10px_28px_-20px_var(--app-accent-deep)]">
                 {isPuppySurface ? (
                   <Laptop
@@ -5419,31 +5482,6 @@ export function AgentChatWorkspace({
               >
                 {statusText}
               </span>
-              {isPopover ? (
-                <ShellActionSurface
-                  variant="icon"
-                  className="sm:hidden"
-                  onClick={openHistoryDrawer}
-                  aria-label="Open chat history"
-                  title="Open chat history"
-                >
-                  <Menu className="h-4 w-4" />
-                </ShellActionSurface>
-              ) : null}
-              {!isPopover ? (
-                <ShellActionSurface
-                  variant="icon"
-                  className="lg:hidden"
-                  onClick={handlePageMinimize}
-                  aria-label="Minimize Agent"
-                  title="Minimize Agent"
-                >
-                  <Minus className="h-4 w-4" />
-                </ShellActionSurface>
-              ) : null}
-              {windowControls ? (
-                <div className="ml-1">{windowControls}</div>
-              ) : null}
             </div>
           </div>
 
@@ -5461,7 +5499,7 @@ export function AgentChatWorkspace({
           {puppyEverOpened ? (
             <PuppyOneSurface
               active={isPuppySurface}
-              className={cn(!isPuppySurface && "hidden", !isPopover && "lg:px-8")}
+              className={cn(!isPuppySurface && "hidden", "lg:px-8")}
             />
           ) : null}
 
@@ -5476,7 +5514,7 @@ export function AgentChatWorkspace({
             }}
             className={cn(
               "min-h-0 flex-1 overflow-y-auto scroll-smooth px-4 pt-5 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent sm:px-6",
-              isPopover ? "pb-4" : "pb-6 lg:px-8",
+              "pb-6 lg:px-8",
               isPuppySurface && "hidden",
             )}
           >
@@ -5533,7 +5571,14 @@ export function AgentChatWorkspace({
                 />
               ) : null}
 
-              {!hasStartedConversation ? (
+              {postSetupWelcomeContext ? (
+                <PostSetupWelcomeCard
+                  name={displayName}
+                  context={postSetupWelcomeContext}
+                  disabled={isChatLoading || isStreaming}
+                  onPromptSelect={handleWelcomePromptSelect}
+                />
+              ) : !hasStartedConversation ? (
                 <AgentWelcomePanel
                   name={displayName}
                   prompts={welcomePrompts}
@@ -6383,9 +6428,7 @@ export function AgentChatWorkspace({
               // the native keyboard resize (no React state/rerender round-trip
               // in the path, which was the source of the visible lag on iOS).
               "shrink-0 bg-gradient-to-t from-background via-background/96 to-transparent px-3 pt-3 backdrop-blur transition-[padding-bottom] duration-[var(--motion-duration-sm)] ease-[var(--motion-ease-standard)] motion-reduce:transition-none sm:px-5",
-              isPopover
-                ? "pb-[var(--agent-chat-composer-bottom)] sm:pb-3"
-                : "pb-[var(--agent-chat-composer-bottom)] focus-within:pb-[var(--agent-chat-composer-focused-bottom)]",
+              "pb-[var(--agent-chat-composer-bottom)] focus-within:pb-[var(--agent-chat-composer-focused-bottom)]",
               // Puppy One has its own composer. Leaving One's on screen would
               // let a message meant for the on-device agent be sent to the
               // cloud one, which is exactly the confusion this mode prevents.

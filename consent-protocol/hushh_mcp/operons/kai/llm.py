@@ -24,7 +24,7 @@ except ImportError:
     types = None  # type: ignore
     logging.warning("⚠️ google-genai SDK not found. Kai LLM operons are unavailable.")
 
-from hushh_mcp.agents.kai.runtime import run_kai_analyst_turn
+from hushh_mcp.agents.kai.runtime import run_kai_analyst_turn, run_kai_synthesis_turn
 from hushh_mcp.consent.token import validate_token
 from hushh_mcp.constants import (
     GEMINI_MODEL,
@@ -683,15 +683,14 @@ async def synthesize_debate_recommendation_card(
     valuation_payload: Dict[str, Any],
     debate_payload: Dict[str, Any],
     highlights: List[Dict[str, Any]],
+    user_id: Optional[str] = None,
+    consent_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Build a rich post-debate synthesis card using Gemini.
 
     Returns strict JSON fields for frontend decision-card rendering.
     """
-    if not _require_gemini_ready():
-        return _gemini_unavailable_payload("Gemini synthesis unavailable")
-
     synthesis_prompt = f"""
 You are Kai Chief Investment Strategist.
 You are given finalized multi-agent debate artifacts for {ticker}.
@@ -731,13 +730,27 @@ highlights={json.dumps(highlights[:24], default=str)[:4000]}
 """
 
     try:
-        text = await _generate_content_text(
-            prompt=synthesis_prompt,
-            timeout_seconds=25.0,
-            max_output_tokens=KAI_SYNTHESIS_MAX_OUTPUT_TOKENS,
-            response_mime_type="application/json",
-        )
-        parsed = _extract_json(text)
+        has_user_id = bool(str(user_id or "").strip())
+        has_consent_token = bool(str(consent_token or "").strip())
+        if has_user_id != has_consent_token:
+            raise ValueError("Kai synthesis authority requires both user_id and consent_token")
+        if has_user_id and has_consent_token:
+            parsed = await run_kai_synthesis_turn(
+                prompt=synthesis_prompt,
+                user_id=str(user_id),
+                consent_token=str(consent_token),
+                timeout_seconds=90.0,
+            )
+        else:
+            if not _require_gemini_ready():
+                return _gemini_unavailable_payload("Gemini synthesis unavailable")
+            text = await _generate_content_text(
+                prompt=synthesis_prompt,
+                timeout_seconds=25.0,
+                max_output_tokens=KAI_SYNTHESIS_MAX_OUTPUT_TOKENS,
+                response_mime_type="application/json",
+            )
+            parsed = _extract_json(text)
         if not parsed:
             raise ValueError("Empty synthesis JSON")
         return parsed

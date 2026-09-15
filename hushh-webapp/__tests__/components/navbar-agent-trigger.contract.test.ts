@@ -12,7 +12,7 @@ function read(relativePath: string) {
 }
 
 describe("Navbar bottom chrome contract", () => {
-  it("keeps the persistent Agent Bar joined to the fixed utility bar", () => {
+  it("keeps the persistent voice bar and utility bar as distinct chrome pills", () => {
     const navbar = read("components/navbar.tsx");
     const agentBar = read("components/agent/command-agent-bar.tsx");
 
@@ -24,7 +24,7 @@ describe("Navbar bottom chrome contract", () => {
     );
   });
 
-  it("keeps Agent owned by the persistent AgentBar instead of duplicating it in the nav or search chrome", () => {
+  it("keeps voice owned by the persistent AgentBar while Chat belongs to navigation", () => {
     const navbar = read("components/navbar.tsx");
     const searchBar = read("components/kai/kai-search-bar.tsx");
     const agentBar = read("components/agent/command-agent-bar.tsx");
@@ -42,21 +42,25 @@ describe("Navbar bottom chrome contract", () => {
     expect(searchBar).not.toContain("kai-bottom-agent-action");
     expect(searchBar).not.toContain('aria-label="Open Agent"');
 
-    // The command bar remains the global typed-search surface, while the
-    // persistent Agent dock exposes Voice and Chat as two sibling actions.
-    expect(agentBar).toContain('data-testid="one-agent-chat-open"');
-    expect(agentBar).toContain('data-agent-action="chat"');
-    expect(agentBar).toContain("popover?.openAgent()");
-    expect(agentBar).toContain('aria-label="Chat with One"');
-    expect(agentBar).toContain('data-testid="one-agent-chat-label"');
+    // The command bar exposes only Voice; Chat is the fifth route navigation
+    // destination and therefore has no duplicate launcher here.
+    expect(navbar).toContain('dataTourId: "nav-chat"');
+    expect(agentBar).not.toContain('data-agent-action="chat"');
+    expect(agentBar).not.toContain("openAgent");
+    expect(agentBar).not.toContain('aria-label="Chat with One"');
+    expect(agentBar).not.toContain('data-testid="one-agent-chat-label"');
     expect(agentBar).not.toContain("openSearchAndChat");
     expect(agentBar).not.toContain("openKaiCommandBar");
     expect(agentBar).toContain("Talk to One. Hold to speak, or tap to start and finish.");
     expect(agentBar).toContain('data-native-voice-control-id="one_voice_agent_bar_start"');
     expect(agentBar).toContain('data-agent-action="voice"');
+    expect(agentBar).toContain(
+      "isFoundationPublicRoute(pathname) && pathname !== ROUTES.HOME",
+    );
+    expect(agentBar).not.toContain("pathname === \"/\" ||");
     expect(agentBar).toContain("onPointerCancel");
     expect(agentBar).toContain("event.detail !== 0");
-    expect(agentBar).toContain("MessageCircle");
+    expect(agentBar).not.toContain("MessageCircle");
     expect(agentBar).not.toContain("isRiaChrome");
     expect(agentBar).toContain('layout = "fixed"');
     expect(agentBar).not.toContain("useKaiBottomChromeElementTranslation");
@@ -117,9 +121,16 @@ describe("Navbar bottom chrome contract", () => {
     )?.groups?.classes;
     expect(dockClass).toBeDefined();
     expect(dockClass).toContain("bottom-chrome-surface");
+    expect(dockClass).not.toContain("bottom-chrome-control");
     expect(dockClass).not.toContain("backdrop-blur");
     expect(agentBar).not.toContain('? "h-11 rounded-[22px] px-2.5"');
-    expect(agentBar).toContain("var(--app-agent-bar-max-width)");
+    expect(agentBar).toContain(
+      "max-w-[min(calc(100vw-1.5rem),var(--app-agent-bar-max-width))]",
+    );
+    expect(agentBar).toContain("max-w-[min(calc(100vw-2rem),34rem)]");
+    expect(bottomShell).not.toContain("bottom-chrome-surface mx-auto");
+    expect(bottomShell).not.toContain("app-bottom-shell-max-width");
+    expect(agentBar).toContain("flex flex-col items-center gap-2");
     expect(bottomShell).toContain("var(--bottom-chrome-full-height)");
     expect(bottomShell).toContain("--app-bottom-shell-height");
     expect(bottomShell).not.toContain("xl:hidden");
@@ -127,19 +138,32 @@ describe("Navbar bottom chrome contract", () => {
     expect(navbar).toContain("if (shellNavigationHidden || hideNavbar)");
     expect(navbar).toContain("data-ambient-chrome-ignore");
     expect(agentBar).toContain("data-ambient-chrome-ignore");
+    const globalStyles = read("app/globals.css");
+    expect(globalStyles).toContain("[data-bottom-shell-motion-stack]");
+    expect(globalStyles).toContain(
+      "transform: translate3d(0, calc(var(--kb-height, 0px) * -1), 0) !important",
+    );
+    expect(globalStyles).toContain(
+      ".bottom-chrome-surface,\n.kai-bottom-nav-pill {",
+    );
+    expect(globalStyles).not.toContain(
+      ".kai-bottom-nav-pill {\n  color: var(--foreground);\n  border: 0 !important;",
+    );
+    const chromeState = read("lib/navigation/kai-chrome-state.ts");
+    expect(chromeState).not.toContain("path === ROUTES.HOME ||");
   });
 
   it("pins voice-only Foundation chrome instead of applying signed-in nav scroll-hide motion", () => {
     const providers = read("app/providers.tsx");
 
     expect(providers).toContain(
-      "const foundationVoiceOnlyChrome = isFoundationRoute;",
+      "const foundationVoiceOnlyChrome = isFoundationRoute && !isAuthenticated;",
     );
     expect(providers).toMatch(
       /const pinnedBottomChrome\s*=\s*isRiaRoute\(pathname\)\s*\|\|\s*foundationVoiceOnlyChrome;/,
     );
     expect(providers).toMatch(
-      /navigationHidden:\s*effectiveHideCommandBar\s*\|\|\s*foundationVoiceOnlyChrome,/,
+      /navigationHidden:\s*hideBottomNavigation,/,
     );
     expect(providers).toContain(
       "!pinnedBottomChrome &&\n      !bottomChromeHidden",

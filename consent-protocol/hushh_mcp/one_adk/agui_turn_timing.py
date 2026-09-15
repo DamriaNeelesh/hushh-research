@@ -15,7 +15,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from ag_ui.core import BaseEvent, EventType, RunAgentInput
 from ag_ui_adk import ADKAgent
@@ -107,7 +107,7 @@ class TimedADKAgent(ADKAgent):
         already a ``TimedADKAgent``. The label is set right after construction
         because ``ADKAgent`` is a plain class, not a frozen model.
         """
-        instance = super().from_app(app, **kwargs)
+        instance = cast("TimedADKAgent", super().from_app(app, **kwargs))
         instance.head = head
         return instance
 

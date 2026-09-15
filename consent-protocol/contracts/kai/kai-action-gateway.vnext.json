@@ -869,7 +869,7 @@
         "delegate_agent_id": "agent_wallet",
         "reachability": {
           "routes": [
-            "/agent",
+            "/",
             "/one",
             "/one/wallet"
           ],
@@ -22649,7 +22649,7 @@
       "delegate_agent_id": "agent_wallet",
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/wallet"
         ],
@@ -22759,7 +22759,7 @@
       "delegate_agent_id": "agent_wallet",
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/wallet"
         ],
@@ -22875,7 +22875,7 @@
       "delegate_agent_id": "agent_wallet",
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/wallet"
         ],
@@ -23103,7 +23103,7 @@
       "delegate_agent_id": null,
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -23236,7 +23236,7 @@
       "delegate_agent_id": null,
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -23369,7 +23369,7 @@
       "delegate_agent_id": null,
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -23502,7 +23502,7 @@
       "delegate_agent_id": null,
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",

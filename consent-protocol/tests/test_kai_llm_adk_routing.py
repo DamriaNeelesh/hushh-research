@@ -94,3 +94,62 @@ async def test_other_analyst_operons_route_to_manifest_genes(
 
     assert result["summary"] == "grounded"
     assert calls[0]["gene_id"] == gene_id
+
+
+def _synthesis_inputs() -> dict[str, object]:
+    return {
+        "ticker": "AAPL",
+        "risk_profile": "balanced",
+        "user_context": {"risk_profile": "balanced", "holdings_count": 2},
+        "renaissance_context": {"tier": "A"},
+        "fundamental_payload": {"recommendation": "hold"},
+        "sentiment_payload": {"recommendation": "neutral"},
+        "valuation_payload": {"recommendation": "fair"},
+        "debate_payload": {"decision": "hold"},
+        "highlights": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_authenticated_synthesis_routes_to_manifest_gene(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def _run(**kwargs):
+        calls.append(kwargs)
+        return {
+            "thesis": "Cash generation supports a balanced hold.",
+            "key_drivers": ["Cash generation"],
+            "key_risks": ["Valuation"],
+            "action_plan": ["Review concentration"],
+            "watchlist_triggers": ["Margin decline"],
+            "horizon_fit": "Fits a balanced horizon.",
+        }
+
+    async def _legacy_must_not_run(*_args, **_kwargs):
+        raise AssertionError("authenticated synthesis must use the ADK gene")
+
+    monkeypatch.setattr(llm, "run_kai_synthesis_turn", _run)
+    monkeypatch.setattr(llm, "_generate_content_text", _legacy_must_not_run)
+
+    result = await llm.synthesize_debate_recommendation_card(
+        **_synthesis_inputs(),
+        user_id="user-1",
+        consent_token="token",  # noqa: S106 - test fixture token
+    )
+
+    assert result["thesis"].startswith("Cash generation")
+    assert calls[0]["user_id"] == "user-1"
+    assert calls[0]["consent_token"] == "token"
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_synthesis_keeps_legacy_fixture_seam(monkeypatch) -> None:
+    async def _legacy(**_kwargs):
+        return '{"thesis":"legacy"}'
+
+    monkeypatch.setattr(llm, "_require_gemini_ready", lambda: True)
+    monkeypatch.setattr(llm, "_generate_content_text", _legacy)
+
+    result = await llm.synthesize_debate_recommendation_card(**_synthesis_inputs())
+
+    assert result == {"thesis": "legacy"}

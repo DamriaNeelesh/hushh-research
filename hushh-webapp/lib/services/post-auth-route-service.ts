@@ -22,10 +22,10 @@ const NO_VAULT_DEFAULT_ROUTE = ROUTES.ONE_HOME;
 
 function normalizeRedirectPath(path: string | null | undefined): string {
   if (!path || !path.trim()) return DEFAULT_HOME_ROUTE;
-  // `/` is the public welcome route, not an authenticated destination. Login
-  // historically supplied it as a placeholder and the legacy persona router
-  // then promoted some users to `/ria`. Organic authentication always enters
-  // the private-agent home; explicit internal deep links remain untouched.
+  // `/` is the dual-mode entry route: anonymous visitors see the welcome
+  // surface, while authenticated users enter the private-agent Chat workspace.
+  // Organic authentication always enters that canonical home; explicit
+  // internal deep links remain untouched.
   if (path === ROUTES.HOME) return DEFAULT_HOME_ROUTE;
   if (
     path === ROUTES.PHONE_MANDATE ||

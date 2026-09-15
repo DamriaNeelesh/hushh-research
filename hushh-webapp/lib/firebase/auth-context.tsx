@@ -71,6 +71,7 @@ import {
 } from "@/lib/auth/session-owner";
 import { ACCOUNT_SESSION_VALIDATION_BUDGET_MS } from "@/lib/auth/account-session-policy";
 import { shouldSkipAmbientIdentityHydrationForAutomation } from "@/lib/testing/native-test";
+import { useOneConversationSession } from "@/lib/agent/one-conversation-session";
 
 // Pre-compute platform check to avoid dynamic imports in callbacks
 const IS_NATIVE = typeof window !== "undefined" && Capacitor.isNativePlatform();
@@ -983,6 +984,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
             ownsExpectedSession = stillOwnsExpectedSession();
           }
           CacheSyncService.onAuthSignedOut(currentUid);
+          useOneConversationSession.getState().clearSession();
           if (currentUid) {
             await UserLocalStateService.clearForUser(currentUid);
           }

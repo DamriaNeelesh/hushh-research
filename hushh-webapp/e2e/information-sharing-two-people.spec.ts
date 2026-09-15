@@ -549,7 +549,7 @@ async function dispatchFcm(
 }
 
 async function openChat(page: Page, identity: ReviewerIdentity): Promise<void> {
-  await navigateProtected(page, "/agent");
+  await navigateProtected(page, "/");
   await waitForReviewerVault(page, identity);
   await expect(page.getByTestId("agent-chat-composer")).toBeVisible({
     timeout: 60_000,
@@ -707,7 +707,7 @@ test.describe("Information sharing between two people (real backend, no push)", 
       void read.catch(() => undefined);
       receiptReads.push(read);
     });
-    const chat = await ownerHarness.openSession(browser, "/agent");
+    const chat = await ownerHarness.openSession(browser, "/");
     opened.push(chat);
     ownerChat = chat.page;
     pageHarness.set(ownerChat, ownerHarness);

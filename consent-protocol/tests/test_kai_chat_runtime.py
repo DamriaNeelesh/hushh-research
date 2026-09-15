@@ -18,7 +18,13 @@ def test_chat_gene_loads_from_kai_manifest() -> None:
 
 @pytest.mark.parametrize(
     "gene_id",
-    ["agent_kai_fundamental", "agent_kai_sentiment", "agent_kai_valuation"],
+    [
+        "agent_kai_debate",
+        "agent_kai_synthesis",
+        "agent_kai_fundamental",
+        "agent_kai_sentiment",
+        "agent_kai_valuation",
+    ],
 )
 def test_analyst_genes_load_as_bounded_single_turns(gene_id: str) -> None:
     gene = runtime.load_kai_analyst_gene(gene_id)
@@ -107,3 +113,24 @@ async def test_analyst_runtime_uses_shared_single_turn(monkeypatch) -> None:
     assert calls["agent"] == "agent"
     assert calls["kwargs"]["user_id"] == "user-1"
     assert calls["kwargs"]["consent_token"] == "owner-token"
+
+
+@pytest.mark.asyncio
+async def test_synthesis_runtime_routes_to_its_manifest_gene(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    async def _run_analyst_turn(**kwargs):
+        calls.update(kwargs)
+        return {"thesis": "grounded"}
+
+    monkeypatch.setattr(runtime, "run_kai_analyst_turn", _run_analyst_turn)
+
+    result = await runtime.run_kai_synthesis_turn(
+        prompt="Synthesize supplied evidence.",
+        user_id="user-1",
+        consent_token="owner-token",  # noqa: S106 - test fixture token
+    )
+
+    assert result == {"thesis": "grounded"}
+    assert calls["gene_id"] == "agent_kai_synthesis"
+    assert calls["user_id"] == "user-1"

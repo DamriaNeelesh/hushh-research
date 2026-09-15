@@ -1356,6 +1356,87 @@
             ],
             "loopback_only": false
           },
+          "description": "Produces a bounded, personalized recommendation card from finalized Kai analysis and debate evidence.",
+          "id": "agent_kai_synthesis",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "high"
+          },
+          "name": "Kai Recommendation Synthesis",
+          "outputs": [
+            {
+              "description": "Concise evidence-backed investment thesis.",
+              "name": "thesis",
+              "type": "string"
+            },
+            {
+              "description": "Three to six specific evidence-backed drivers.",
+              "name": "key_drivers",
+              "type": "array"
+            },
+            {
+              "description": "Three to six concrete downside risks.",
+              "name": "key_risks",
+              "type": "array"
+            },
+            {
+              "description": "Three to five practical next actions for this user.",
+              "name": "action_plan",
+              "type": "array"
+            },
+            {
+              "description": "Three to six measurable monitoring triggers.",
+              "name": "watchlist_triggers",
+              "type": "array"
+            },
+            {
+              "description": "Fit for the user's horizon, style, and risk profile.",
+              "name": "horizon_fit",
+              "type": "string"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 90000,
+            "max_output_tokens": 8192
+          },
+          "privacy": {
+            "context_allowlist": [
+              "kai.debate_context",
+              "kai.renaissance_context",
+              "pkm.profile_summary"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Retain deterministic recommendation-card fallback and disable model synthesis.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are Kai's Chief Investment Strategist, an internal single-turn child.\nReturn one JSON object with thesis, key_drivers, key_risks, action_plan,\nwatchlist_triggers, and horizon_fit. Fuse only the supplied analyst,\ndebate, Renaissance, and user context. Every claim must be evidence-backed\nand personalized to the supplied risk profile or portfolio context. State\nconflicts and uncertainty clearly; never invent market data, holdings,\nprices, or actions. Keep each list item concise, with no markdown. Return\nJSON only and never claim an external action occurred.\n",
+          "telemetry_namespace": "agent.kai.synthesis"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
           "description": "Conversational Kai surface for grounded financial questions and profile guidance.",
           "id": "agent_kai_chat",
           "inputs": [],

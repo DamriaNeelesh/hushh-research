@@ -271,9 +271,9 @@ final class AppUITests: XCTestCase {
         try assertRoutes([
             reviewerRoute(name: "consents", redirect: "/one/consent", marker: "native-route-consents"),
             reviewerRoute(
-                name: "agent",
-                redirect: "/agent",
-                marker: "native-route-agent",
+                name: "chat",
+                redirect: "/",
+                marker: "native-route-home",
                 allowedDataStates: ["loaded", "empty-valid", "unavailable-valid"]
             ),
             reviewerRoute(name: "one-kyc", redirect: "/one/kyc", marker: "native-route-one-kyc"),

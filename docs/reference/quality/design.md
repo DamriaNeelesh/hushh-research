@@ -145,20 +145,21 @@ safe area
 │ Finance                     Market · Portfolio · Analysis                    │
 └──────────────────────────────────────────────────────────────────────────────┘
                                      route content
-                              Agent Bar (6px visual join)
-                              One · Connect · Search
+                              voice-only control (narrow slot)
+                              Chat · One · Connect · Feed · Search
 safe area
 ```
 
-1. The centered primary bottom navigation is fixed and constant: **One**,
-   **Connect**, and **Search**. Search is a segment in that shared control and
-   opens the global command surface. Profile remains a top-bar control.
+1. The centered primary bottom navigation is fixed and constant: **Chat**,
+   **One**, **Connect**, **Feed**, and **Search**, in that order. **Chat** is
+   the canonical home route (`/`). Search is a segment in that shared control
+   and opens the global command surface. Profile remains a top-bar control.
 2. Search opens the existing global command/search surface. It is not agent
    chat and has no route-local replacement.
-3. The Agent Bar and bottom utility bar are one bottom-chrome stack. Their
-   resting visual separation is 6px; their transforms, safe-area clearance,
-   and fade are measured by the shared shell. Neither route nor component may
-   add another gap.
+3. The voice-only control and bottom navigation are one bottom-chrome surface.
+   There is no divider, nested material, or inter-slot gap; their transform,
+   safe-area clearance, and fade are measured by the shared shell. Neither
+   route nor component may add another boundary.
 4. Finance and RIA workspace tabs render only in the unified top shell. Their
    labels, destinations, active query state, and visibility come from the
    central route registry; route bodies and bottom navigation do not duplicate
@@ -168,9 +169,10 @@ safe area
    Profile route. Connect remains a route but is not shell chrome.
 6. Tabs are horizontally scrollable when needed, retain clear selected state,
    and do not push or overlap the top-bar actions on a small viewport.
-7. The bottom utility frame uses the exact Agent Bar width constraint. Its
-   three segments are equal-width and centered at every breakpoint; it never
-   aligns to the wider page shell or viewport edge.
+7. The bottom navigation frame uses the shared bottom-chrome width constraint.
+   Its five segments are equal-width and centered at every breakpoint; it
+   never aligns to the wider page shell or viewport edge. The voice slot is
+   narrower than the navigation frame while retaining a 44px hit target.
 8. Finance is one `/one/kai?tab=` workspace. Market, Portfolio, and Analysis
    use the Profile reading measure and shared outer gutter; their content may
    vary, but they must not introduce a wider dashboard canvas, a second fixed

@@ -28,6 +28,7 @@ _KAI_FUNDAMENTAL_GENE_ID = "agent_kai_fundamental"
 _KAI_SENTIMENT_GENE_ID = "agent_kai_sentiment"
 _KAI_VALUATION_GENE_ID = "agent_kai_valuation"
 _KAI_DEBATE_GENE_ID = "agent_kai_debate"
+_KAI_SYNTHESIS_GENE_ID = "agent_kai_synthesis"
 
 PORTFOLIO_OPTIMIZER_SCHEMA: dict[str, Any] = {
     "type": "OBJECT",
@@ -46,6 +47,25 @@ KAI_ANALYST_SCHEMAS: dict[str, dict[str, Any]] = {
         "type": "OBJECT",
         "properties": {"statement": {"type": "STRING"}},
         "required": ["statement"],
+    },
+    _KAI_SYNTHESIS_GENE_ID: {
+        "type": "OBJECT",
+        "properties": {
+            "thesis": {"type": "STRING"},
+            "key_drivers": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "key_risks": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "action_plan": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "watchlist_triggers": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "horizon_fit": {"type": "STRING"},
+        },
+        "required": [
+            "thesis",
+            "key_drivers",
+            "key_risks",
+            "action_plan",
+            "watchlist_triggers",
+            "horizon_fit",
+        ],
     },
     _KAI_FUNDAMENTAL_GENE_ID: {
         "type": "OBJECT",
@@ -285,6 +305,24 @@ async def run_kai_debate_turn(
     return statement
 
 
+async def run_kai_synthesis_turn(
+    *,
+    prompt: str,
+    user_id: str,
+    consent_token: str,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Run one bounded recommendation-card synthesis through its ADK gene."""
+
+    return await run_kai_analyst_turn(
+        gene_id=_KAI_SYNTHESIS_GENE_ID,
+        prompt=prompt,
+        user_id=user_id,
+        consent_token=consent_token,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 async def run_kai_portfolio_optimizer(
     *,
     prompt: str,
@@ -333,6 +371,7 @@ __all__ = [
     "load_kai_portfolio_optimizer_gene",
     "run_kai_analyst_turn",
     "run_kai_debate_turn",
+    "run_kai_synthesis_turn",
     "run_kai_chat_turn",
     "run_kai_portfolio_optimizer",
 ]

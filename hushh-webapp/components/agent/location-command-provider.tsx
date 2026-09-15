@@ -12,7 +12,6 @@ import {
 import { useRouter } from "next/navigation";
 import { App } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
-import { useOptionalAgentPopover } from "@/components/agent/agent-popover-provider";
 import { useAuth } from "@/hooks/use-auth";
 import { useVault } from "@/lib/vault/vault-context";
 import { useAgentRuntimeStateOptional } from "@/lib/agent/agent-runtime-context";
@@ -85,7 +84,6 @@ function useCommandController(enabled = true) {
   const { switchPersona } = usePersonaState();
   const busyOperations = useKaiSession((state) => state.busyOperations);
   const setAnalysisParams = useKaiSession((state) => state.setAnalysisParams);
-  const popover = useOptionalAgentPopover();
   const locationSurface = useOptionalOneLocationInteractionSurface();
   const locationSurfaceRef = useRef(locationSurface);
   locationSurfaceRef.current = locationSurface;
@@ -342,7 +340,6 @@ function useCommandController(enabled = true) {
     setView({ phase: "idle", message: "" });
     recordingRef.current = "starting";
     setRecording("starting");
-    popover?.minimizeAgent();
     lease.current = appInteractionCoordinator.acquireVoiceLease({
       owner: "agent-bar-command",
       onRevoked: cancelCapture,
@@ -380,7 +377,7 @@ function useCommandController(enabled = true) {
             : "The microphone could not start. Try recording again.",
       });
     }
-  }, [cancelCapture, capture, command, popover, run]);
+  }, [cancelCapture, capture, command, run]);
   const startRef = useRef(startCapture);
   startRef.current = startCapture;
   useEffect(() => {
@@ -388,7 +385,6 @@ function useCommandController(enabled = true) {
     const request = (event: Event) => {
       const value =
         (event as CustomEvent<AgentConversationRequest>).detail || {};
-      popover?.minimizeAgent();
       const accepted = () => {
         if (value.requestId && pendingExternalRequest.current !== value) return;
         pendingExternalRequest.current = null;
@@ -465,7 +461,7 @@ function useCommandController(enabled = true) {
         cancelPendingRequest,
       );
     };
-  }, [cancelCapture, command, enabled, popover, report]);
+  }, [cancelCapture, command, enabled, report]);
   useEffect(() => {
     command.clearReferences();
     return () => command.clearReferences();

@@ -4866,8 +4866,9 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
   box-shadow: 0 11px 34px 0 var(--theme-color-boxShadow);
 }
 
-/* Flat bottom nav surface: outer material only. Selection is color, not a
-   separate filled pill or enlarged tab. */
+/* Persistent bottom chrome uses two distinct, shared-material pills: the
+   voice bar and the navigation bar. Keep their geometry separate so the
+   controls read as bars rather than one oversized card. */
 .bottom-chrome-surface,
 .kai-bottom-nav-pill {
   color: var(--foreground);
@@ -4882,6 +4883,21 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
 .dark .kai-bottom-nav-pill {
   border-color: rgba(84, 84, 88, 0.58) !important;
   background: rgba(28, 28, 30, 0.78) !important;
+}
+
+/* Reduced motion keeps the shell present and keyboard-safe, but removes the
+   scroll-driven hide transform and all control transitions from this shared
+   surface. */
+@media (prefers-reduced-motion: reduce) {
+  [data-bottom-shell-motion-stack] {
+    transform: translate3d(0, calc(var(--kb-height, 0px) * -1), 0) !important;
+  }
+
+  [data-bottom-shell-motion-stack],
+  [data-bottom-shell-motion-stack] * {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 .kai-bottom-nav-pill [data-segment-indicator] {

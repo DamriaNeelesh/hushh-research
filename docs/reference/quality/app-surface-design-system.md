@@ -410,7 +410,7 @@ The signed-in bottom navigation is a shared shell surface, not a route-local tab
 
 Rules:
 
-1. The primary bottom utility bar is fixed and constant on all signed-in standard routes: `One`, `Connect`, and `Search`. Search is part of the same segmented control and opens `KaiCommandBarGlobal`; it does not route to `/agent` or open agent chat.
+1. The primary bottom navigation is fixed and constant on all signed-in standard routes: `Chat`, `One`, `Connect`, `Feed`, and `Search`, in that order. `Chat` is the canonical `/` route. Search is part of the same segmented control and opens `KaiCommandBarGlobal`; it does not route to `/agent` or open an agent overlay.
 2. Profile remains the rightmost signed-in top-bar action, using the signed-in image or shared generic fallback.
 3. Finance owns `Market`, `Portfolio`, and `Analysis`; RIA owns `Home`, `Clients`, and `Picks`. Contextual workspace tabs are rendered by the shared top shell from the central route registry; they never become route-local or bottom-navigation chrome.
 4. Consent Center owns `Requests`, `Active`, `History`, and `Connections` in
@@ -826,7 +826,7 @@ Rules:
 ## RIA Information Architecture
 
 1. `RIA` is a lightweight workspace shell, not a second dense operations dashboard.
-2. RIA workspace navigation lives in the top shell: `Home / Clients / Picks`. The fixed bottom utilities remain `One / Connect / Search`; Profile remains the rightmost top-bar action.
+2. RIA workspace navigation lives in the top shell: `Home / Clients / Picks`. The fixed bottom navigation remains `Chat / One / Connect / Feed / Search`; Profile remains the rightmost top-bar action.
 3. `/one/consent` is the single consent/request workspace for both investor and RIA personas.
 4. `/ria/requests` remains only as a compatibility alias into `/one/consent`, not as a second consent system.
 5. The shell contextualizes `/one/consent` as `One > Consent Center`; legacy `/consents` preserves inbound links by redirecting to that canonical URL.

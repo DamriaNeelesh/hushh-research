@@ -38,7 +38,6 @@ import { AppEdgeBackGesture } from "@/components/app-ui/app-edge-back-gesture";
 import { AppProfileEdgeGesture } from "@/components/app-ui/app-profile-edge-gesture";
 import { ProfilePane } from "@/components/app-ui/profile-pane";
 import { TopShellRouteSwipe } from "@/components/app-ui/top-shell-route-swipe";
-import { AgentPopoverProvider } from "@/components/agent/agent-popover-provider";
 import { AgentRuntimeStateProvider } from "@/lib/agent/agent-runtime-context";
 import { SiriOneVoiceHandoff } from "@/components/agent/siri-one-voice-handoff";
 import { SiriOneRequestHandoff } from "@/components/agent/siri-one-request-handoff";
@@ -370,14 +369,20 @@ function AppShellFrame({ children }: ProvidersProps) {
   // subscribing the shared hide driver when there is no nav travel makes the
   // bar follow scroll progress and visibly bounce on research, blog, and
   // developers pages.
-  const foundationVoiceOnlyChrome = isFoundationRoute;
+  const foundationVoiceOnlyChrome = isFoundationRoute && !isAuthenticated;
+  // The canonical root is dual-mode: anonymous visitors get onboarding, while
+  // authenticated owners get Chat plus the signed-in shell. Its command
+  // palette is mounted as a global dialog even though it has no idle chrome;
+  // Search therefore remains available from the first bottom-nav segment.
+  const hideBottomNavigation =
+    effectiveHideCommandBar || foundationVoiceOnlyChrome;
   // RIA and Foundation both use a persistent-but-pinned lower utility. Keep
   // the scroll-hide driver for ordinary signed-in navigation only.
   const pinnedBottomChrome = isRiaRoute(pathname) || foundationVoiceOnlyChrome;
   const bottomShellModel = {
     ambientEnabled:
       ambientChromeEnabled && !isFullscreenTopFlow && !bottomChromeHidden,
-    navigationHidden: effectiveHideCommandBar || foundationVoiceOnlyChrome,
+    navigationHidden: hideBottomNavigation,
     hidden: bottomChromeHidden,
   };
   // Drive the bottom-chrome hide animation through a CSS variable instead of a
@@ -615,8 +620,7 @@ function AppShellFrame({ children }: ProvidersProps) {
         <VaultProvider>
           <OneLocationInteractionSurfaceProvider>
             <AgentRuntimeStateProvider>
-              <AgentPopoverProvider>
-                <OneVoiceReadinessProvider>
+              <OneVoiceReadinessProvider>
                 <AgentOwnerGate>
                   <SiriOneVoiceHandoff />
                   <SiriOneRequestHandoff />
@@ -788,8 +792,7 @@ function AppShellFrame({ children }: ProvidersProps) {
                     </Suspense>
                   </ContactInvitationSessionProvider>
                 </AgentOwnerGate>
-                </OneVoiceReadinessProvider>
-              </AgentPopoverProvider>
+              </OneVoiceReadinessProvider>
               {/*
                 Inside VaultProvider, not beside GlobalVoiceActionHandlers.
                 Signing out needs only the session, so that one sits above the
@@ -830,7 +833,7 @@ export function Providers({ children }: ProvidersProps) {
           {/* AppShellFrame resolves route-backed tab state through
               useSearchParams(). This boundary must be above that shared shell
               so static/native builds can pre-render every route, including
-              /one and /agent. Route-local boundaries cannot catch a hook in
+              the root Chat workspace and /one. Route-local boundaries cannot catch a hook in
               the provider that owns them. */}
           <Suspense fallback={null}>
             <AppShellFrame>{children}</AppShellFrame>

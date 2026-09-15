@@ -82,7 +82,7 @@ export function resolvePersonRefFromProfilePathname(
 export const ROUTES = {
   HOME: "/",
   PERSON_PROFILE: "/people/[personRef]",
-  /** Canonical public knowledge workspace; root remains anonymous onboarding. */
+  /** Canonical public knowledge workspace; root is dual-mode Chat/onboarding. */
   WELCOME: "/welcome",
   ONE_HOME: "/one",
   DEVELOPERS: "/developers",
@@ -160,7 +160,8 @@ export const ROUTES = {
   ONE_FEED: "/one/feed",
   /** Compatibility-only access manager route. Preserve inbound partner links. */
   LEGACY_CONSENTS: "/consents",
-  AGENT: "/agent",
+  /** Compatibility-only inbound path; the active chat surface is `/`. */
+  LEGACY_AGENT: "/agent",
   CONNECT: "/one/connect",
   CONNECT_SETTINGS: "/one/connect/settings",
   MARKETPLACE: "/marketplace",
