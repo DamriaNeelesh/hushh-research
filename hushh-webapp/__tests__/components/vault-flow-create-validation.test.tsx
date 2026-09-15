@@ -374,6 +374,7 @@ describe("VaultFlow create validation", () => {
       "max-w-[21rem]",
       "text-center",
     );
+    expect(screen.queryByTestId("vault-unlock-method-divider")).toBeNull();
     expect(screen.getByRole("button", { name: "Recovery key" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Passkey" })).toBeNull();
   });
@@ -433,6 +434,12 @@ describe("VaultFlow create validation", () => {
     expect(await screen.findByText(/Unlocking with passkey/i)).toBeTruthy();
     const signOutEscape = screen.getByRole("button", { name: "Sign out" }) as HTMLButtonElement;
     expect(signOutEscape.disabled).toBe(false);
+    expect(signOutEscape).toHaveClass("inline-flex", "items-start", "h-11");
+    expect(screen.getByTestId("vault-unlock-method-divider")).toBeTruthy();
+    expect(screen.getByText("Can't get in?").parentElement).toHaveClass(
+      "flex-col",
+      "items-center",
+    );
     expect(screen.getByTestId("vault-use-recovery-key-escape")).toHaveClass(
       "h-11",
       "rounded-none",

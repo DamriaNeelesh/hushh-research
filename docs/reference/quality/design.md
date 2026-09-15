@@ -57,9 +57,12 @@ must not recreate shell chrome, safe-area math, an icon well, or a list row.
    a primary action from related methods. A low-emphasis recovery path may be
    a text link with a 44px hit area; it must not look like a second primary CTA.
    Related-method groups keep their descriptor on one line and a centered
-   action row on the next inside a capped form measure. Keep visible link text
-   close to its descriptor while preserving the transparent hit area; do not
-   use incidental padding or a left-anchored action row to create the rhythm.
+   action row on the next inside a capped form measure. When a hard-gate escape
+   group is also present, the two groups use centered columns with one
+   vertically centered divider; when only one group exists, omit the divider
+   and keep that group centered. Keep visible link text close to its descriptor
+   while preserving the transparent hit area; do not use incidental padding or
+   a left-anchored action row to create the rhythm.
    When a credential flow offers a sign-out escape, recovery belongs in that
    same quiet escape group, with one shared link treatment and clear separation
    from the primary action.
