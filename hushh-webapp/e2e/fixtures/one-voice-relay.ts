@@ -31,7 +31,10 @@ export type MockedRelay = {
   /** Emit server frames outside the script (e.g. an unsolicited pending action). */
   emit: (frames: ServerFrame[]) => void;
   /** Resolve once the client has sent a frame matching the predicate. */
-  waitFor: (predicate: (frame: ClientFrame) => boolean, timeoutMs?: number) => Promise<ClientFrame>;
+  waitFor: (
+    predicate: (frame: ClientFrame) => boolean,
+    timeoutMs?: number,
+  ) => Promise<ClientFrame>;
   readinessCalls: number;
   ticketCalls: number;
   confirmCalls: string[];
@@ -40,7 +43,14 @@ export type MockedRelay = {
 
 const CONVERSATION_ID = "11111111-2222-4333-8444-555555555555";
 
-export function pendingAction(overrides: Partial<ServerFrame> & { pending_action_id: string; tool: string; summary: string; tier: "voice" | "tap" }): ServerFrame {
+export function pendingAction(
+  overrides: Partial<ServerFrame> & {
+    pending_action_id: string;
+    tool: string;
+    summary: string;
+    tier: "voice" | "tap";
+  },
+): ServerFrame {
   return {
     type: "pending_action",
     gateway_action_id: "location.send_request",
@@ -57,10 +67,28 @@ export function pendingAction(overrides: Partial<ServerFrame> & { pending_action
   };
 }
 
-export function toolResult(tool: string, result: Record<string, unknown>): ServerFrame {
+export function toolResult(
+  tool: string,
+  result: Record<string, unknown>,
+): ServerFrame {
   const status = String(result.status ?? "ok");
-  const notSuccess = new Set(["rejected", "unsupported", "confirmation_required", "tap_required", "navigation_dispatched", "grant_created", "pending"]);
-  return { type: "tool.result", call_id: null, tool, status, ok: !notSuccess.has(status), result_public: { spoken_facts: [], ...result, status } };
+  const notSuccess = new Set([
+    "rejected",
+    "unsupported",
+    "confirmation_required",
+    "tap_required",
+    "navigation_dispatched",
+    "grant_created",
+    "pending",
+  ]);
+  return {
+    type: "tool.result",
+    call_id: null,
+    tool,
+    status,
+    ok: !notSuccess.has(status),
+    result_public: { spoken_facts: [], ...result, status },
+  };
 }
 
 export function sessionReady(extra: Partial<ServerFrame> = {}): ServerFrame {
@@ -80,7 +108,10 @@ export function sessionReady(extra: Partial<ServerFrame> = {}): ServerFrame {
   };
 }
 
-export async function mockVoiceRelay(page: Page, steps: RelayStep[]): Promise<MockedRelay> {
+export async function mockVoiceRelay(
+  page: Page,
+  steps: RelayStep[],
+): Promise<MockedRelay> {
   const state: MockedRelay = {
     sent: [],
     emit: () => undefined,
@@ -92,7 +123,10 @@ export async function mockVoiceRelay(page: Page, steps: RelayStep[]): Promise<Mo
     confirmCalls: [],
     cancelCalls: [],
   };
-  const waiters: Array<{ predicate: (frame: ClientFrame) => boolean; resolve: (frame: ClientFrame) => void }> = [];
+  const waiters: Array<{
+    predicate: (frame: ClientFrame) => boolean;
+    resolve: (frame: ClientFrame) => void;
+  }> = [];
   const queue = [...steps];
 
   await page.route("**/api/one/voice/readiness", async (route) => {
@@ -100,7 +134,14 @@ export async function mockVoiceRelay(page: Page, steps: RelayStep[]): Promise<Mo
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ enabled: true, status: "ready", model: "gemini-live-2.5-flash-native-audio", location: "us-central1", protocol_version: "one-voice-v1", ws_path: "/api/one/voice/live" }),
+      body: JSON.stringify({
+        enabled: true,
+        status: "ready",
+        model: "gemini-live-2.5-flash-native-audio",
+        location: "us-central1",
+        protocol_version: "one-voice-v1",
+        ws_path: "/api/one/voice/live",
+      }),
     });
   });
   await page.route("**/api/one/voice/sessions", async (route) => {
@@ -108,17 +149,40 @@ export async function mockVoiceRelay(page: Page, steps: RelayStep[]): Promise<Mo
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ ticket: "v1.e2e.ticket", expires_at: Math.floor(Date.now() / 1000) + 60, session_id: "e2e-session", ws_path: "/api/one/voice/live", protocol_version: "one-voice-v1" }),
+      body: JSON.stringify({
+        ticket: "v1.e2e.ticket",
+        expires_at: Math.floor(Date.now() / 1000) + 60,
+        session_id: "e2e-session",
+        ws_path: "/api/one/voice/live",
+        protocol_version: "one-voice-v1",
+      }),
     });
   });
-  await page.route("**/api/one/voice/pending-actions/*/confirm", async (route) => {
-    state.confirmCalls.push(route.request().url());
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ pending_action: null, result: { status: "ok" } }) });
-  });
-  await page.route("**/api/one/voice/pending-actions/*/cancel", async (route) => {
-    state.cancelCalls.push(route.request().url());
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ pending_action: { status: "cancelled" } }) });
-  });
+  await page.route(
+    "**/api/one/voice/pending-actions/*/confirm",
+    async (route) => {
+      state.confirmCalls.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          pending_action: null,
+          result: { status: "ok" },
+        }),
+      });
+    },
+  );
+  await page.route(
+    "**/api/one/voice/pending-actions/*/cancel",
+    async (route) => {
+      state.cancelCalls.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ pending_action: { status: "cancelled" } }),
+      });
+    },
+  );
 
   await page.routeWebSocket(/\/api\/one\/voice\/live/, (ws: WebSocketRoute) => {
     const send = (frame: ServerFrame) => ws.send(JSON.stringify(frame));
@@ -127,8 +191,17 @@ export async function mockVoiceRelay(page: Page, steps: RelayStep[]): Promise<Mo
       new Promise<ClientFrame>((resolve, reject) => {
         const existing = state.sent.find(predicate);
         if (existing) return resolve(existing);
-        const timer = setTimeout(() => reject(new Error("timed out waiting for client frame")), timeoutMs);
-        waiters.push({ predicate, resolve: (frame) => { clearTimeout(timer); resolve(frame); } });
+        const timer = setTimeout(
+          () => reject(new Error("timed out waiting for client frame")),
+          timeoutMs,
+        );
+        waiters.push({
+          predicate,
+          resolve: (frame) => {
+            clearTimeout(timer);
+            resolve(frame);
+          },
+        });
       });
     ws.onMessage((raw) => {
       let frame: ClientFrame;
@@ -155,11 +228,20 @@ export async function mockVoiceRelay(page: Page, steps: RelayStep[]): Promise<Mo
       }
       if (frame.type === "audio") return;
       const step = queue[0];
-      const matches = step ? (step.when ? step.when(frame) : frame.type === "text") : false;
+      const matches = step
+        ? step.when
+          ? step.when(frame)
+          : frame.type === "text"
+        : false;
       if (step && matches) {
         queue.shift();
         if (frame.type === "text") {
-          send({ type: "transcript.input", text: String(frame.text), final: true, turn_id: "t-e2e" });
+          send({
+            type: "transcript.input",
+            text: String(frame.text),
+            final: true,
+            turn_id: "t-e2e",
+          });
         }
         step.reply.forEach(send);
       }
