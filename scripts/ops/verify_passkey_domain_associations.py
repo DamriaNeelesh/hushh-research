@@ -14,6 +14,18 @@ from dataclasses import dataclass
 from typing import Any
 
 
+UNIVERSAL_LINK_PATHS = (
+    "/one/kai/plaid/oauth/return",
+    "/one/kai/alpaca/oauth/return",
+    "/one/profile/google/oauth/return",
+    "/one/profile/gmail/oauth/return",
+    "/kai/plaid/oauth/return",
+    "/kai/alpaca/oauth/return",
+    "/profile/google/oauth/return",
+    "/profile/gmail/oauth/return",
+)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(
         self,
@@ -90,6 +102,9 @@ def _fetch(url: str, timeout_seconds: int) -> _HttpResponse:
             content_type=error.headers.get_content_type(),
             body=error.read(),
         )
+    except urllib.error.URLError as error:
+        reason = str(error.reason).strip() or "network error"
+        raise RuntimeError(f"Could not fetch {url}: {reason}") from error
 
 
 def _json(response: _HttpResponse, label: str) -> Any:
@@ -108,6 +123,32 @@ def _json(response: _HttpResponse, label: str) -> Any:
 def _verify_aasa(payload: Any, expected_app_id: str) -> None:
     if not isinstance(payload, dict):
         raise RuntimeError("AASA payload must be an object")
+    applinks = payload.get("applinks")
+    if not isinstance(applinks, dict):
+        raise RuntimeError("AASA payload is missing applinks")
+    details = applinks.get("details")
+    if not isinstance(details, list):
+        raise RuntimeError("AASA applinks is missing details")
+    matching_details = [
+        entry
+        for entry in details
+        if isinstance(entry, dict)
+        and isinstance(entry.get("appIDs"), list)
+        and expected_app_id in entry["appIDs"]
+    ]
+    if not matching_details:
+        raise RuntimeError("AASA applinks does not authorize the configured iOS app")
+    claimed_paths = {
+        component.get("/")
+        for entry in matching_details
+        for component in entry.get("components", [])
+        if isinstance(component, dict) and isinstance(component.get("/"), str)
+    }
+    missing_paths = [path for path in UNIVERSAL_LINK_PATHS if path not in claimed_paths]
+    if missing_paths:
+        raise RuntimeError(
+            "AASA applinks is missing OAuth return paths: " + ", ".join(missing_paths)
+        )
     webcredentials = payload.get("webcredentials")
     if not isinstance(webcredentials, dict):
         raise RuntimeError("AASA payload is missing webcredentials")
@@ -131,7 +172,10 @@ def _verify_asset_links(
         target = entry.get("target")
         if (
             not isinstance(relations, list)
-            or "delegate_permission/common.get_login_creds" not in relations
+            or not {
+                "delegate_permission/common.get_login_creds",
+                "delegate_permission/common.handle_all_urls",
+            }.issubset(relations)
             or not isinstance(target, dict)
             or target.get("namespace") != "android_app"
             or target.get("package_name") != expected_package

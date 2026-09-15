@@ -502,6 +502,7 @@ const WEB_FETCH_TIMEOUT_MS = 60_000;
 export async function fetchWithWebTimeout(
   url: string,
   init: RequestInit,
+  timeoutMs: number = WEB_FETCH_TIMEOUT_MS,
 ): Promise<Response> {
   const controller = new AbortController();
   const callerSignal = init.signal ?? null;
@@ -516,11 +517,11 @@ export async function fetchWithWebTimeout(
   const timer = setTimeout(() => {
     controller.abort(
       new DOMException(
-        `Request timed out after ${WEB_FETCH_TIMEOUT_MS}ms`,
+        `Request timed out after ${timeoutMs}ms`,
         "TimeoutError",
       ),
     );
-  }, WEB_FETCH_TIMEOUT_MS);
+  }, timeoutMs);
 
   try {
     return await fetch(url, { ...init, signal: controller.signal });
@@ -871,7 +872,7 @@ async function apiFetch(
       ) {
         if (options.body instanceof FormData) {
           // Multipart uploads route through native plugins; keep fetch fallback for safety.
-          const formResponse = await fetch(url, {
+          const formResponse = await fetchWithWebTimeout(url, {
             ...options,
             credentials: "include",
             headers: mergedHeaders,
