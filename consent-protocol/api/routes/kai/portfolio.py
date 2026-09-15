@@ -28,7 +28,6 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from functools import lru_cache, partial
-from pathlib import Path as FilePath
 from typing import Any, AsyncGenerator, Optional
 
 from fastapi import (
@@ -52,9 +51,14 @@ from api.routes.kai.import_run_manager import (
     KaiPortfolioImportRunManager,
     PortfolioImportRunRecord,
 )
+from hushh_mcp.agents.portfolio_import.runtime import (
+    _EXTRACTION_SCHEMA as _PORTFOLIO_EXTRACT_SCHEMA,
+)
+from hushh_mcp.agents.portfolio_import.runtime import (
+    load_portfolio_gene,
+    run_portfolio_gene,
+)
 from hushh_mcp.constants import GEMINI_MODEL
-from hushh_mcp.hushh_adk.manifest import ManifestLoader
-from hushh_mcp.hushh_adk.single_turn import build_single_turn_agent, run_single_turn
 from hushh_mcp.kai_import import (
     FINANCIAL_STATEMENT_EXTRACT_V2_REQUIRED_KEYS,
     ImportStrictParseError,
@@ -67,7 +71,6 @@ from hushh_mcp.kai_import import (
     build_token_counts_payload,
     evaluate_import_quality_gate_v2,
 )
-from hushh_mcp.runtime_providers import build_managed_runtime_client
 from hushh_mcp.services.personal_knowledge_model_service import get_pkm_service
 from hushh_mcp.services.portfolio_import_service import (
     ImportResult,
@@ -138,42 +141,11 @@ def _resolve_portfolio_import_model() -> str:
     return GEMINI_MODEL
 
 
-_PORTFOLIO_IMPORT_MANIFEST_PATH = (
-    FilePath(__file__).resolve().parents[3]
-    / "hushh_mcp"
-    / "agents"
-    / "portfolio_import"
-    / "agent.yaml"
-)
-_PORTFOLIO_EXTRACT_SCHEMA: dict[str, Any] = {
-    "type": "OBJECT",
-    "properties": {
-        "statement_details": {"type": "OBJECT"},
-        "portfolio_summary": {"type": "OBJECT"},
-        "detailed_holdings": {"type": "ARRAY", "items": {"type": "OBJECT"}},
-        "cash_balance": {"type": "NUMBER", "nullable": True},
-        "total_value": {"type": "NUMBER", "nullable": True},
-    },
-    "required": sorted(FINANCIAL_STATEMENT_EXTRACT_V2_REQUIRED_KEYS),
-}
-
-
 @lru_cache(maxsize=1)
 def _portfolio_import_extract_gene() -> Any:
     """Load the manifest-owned Portfolio Import extraction gene once."""
 
-    manifest = ManifestLoader.load(str(_PORTFOLIO_IMPORT_MANIFEST_PATH))
-    gene = next(
-        (child for child in manifest.subagents if child.id == "agent_portfolio_import_extract"),
-        None,
-    )
-    if gene is None:
-        raise RuntimeError("Portfolio Import extraction gene is missing from its manifest")
-    if gene.runtime.adk_mode != "single_turn" or gene.runtime.transport != ["in_process"]:
-        raise RuntimeError("Portfolio Import extraction gene has an invalid runtime boundary")
-    if gene.privacy.plaintext_telemetry:
-        raise RuntimeError("Portfolio Import extraction gene permits plaintext telemetry")
-    return gene
+    return load_portfolio_gene("agent_portfolio_import_extract")
 
 
 async def _run_portfolio_import_extract_gene(
@@ -189,16 +161,9 @@ async def _run_portfolio_import_extract_gene(
 ) -> tuple[dict[str, Any], str, int]:
     """Run the bounded Portfolio Import extractor through the shared ADK turn."""
 
-    from google.adk.models import Gemini
     from google.genai import types
 
-    client = build_managed_runtime_client("gemini")
     gene = _portfolio_import_extract_gene()
-    agent = build_single_turn_agent(
-        gene,
-        output_schema=_PORTFOLIO_EXTRACT_SCHEMA,
-        model=Gemini(model=model_name, client=client),
-    )
 
     parts: list[Any] = [types.Part.from_text(text=prompt)]
     excerpt = str(context_excerpt or "").strip()
@@ -214,30 +179,25 @@ async def _run_portfolio_import_extract_gene(
                 mime_type="text/csv" if is_csv_upload else "application/pdf",
             )
         )
-    message = types.Content(role="user", parts=parts)
-    started = time.perf_counter()
-    parsed = await run_single_turn(
-        agent,
-        prompt_parts="portfolio import extraction",
-        message_content=message,
+    parsed, elapsed_ms = await run_portfolio_gene(
+        gene_id=gene.id,
+        prompt=prompt,
+        document_parts=parts[1:],
+        output_schema=_PORTFOLIO_EXTRACT_SCHEMA,
         user_id=user_id,
         consent_token=consent_token,
+        model_name=model_name,
         timeout_seconds=120.0,
     )
-    payload = parsed.model_dump(mode="json") if hasattr(parsed, "model_dump") else parsed
-    if not isinstance(payload, dict):
-        raise ImportStrictParseError(
-            "IMPORT_JSON_INVALID", "Extractor returned a non-object payload"
-        )
     # Preserve the existing strict contract, including its exact top-level key set.
     from hushh_mcp.kai_import.extract_v2 import parse_json_strict_v2
 
     normalized, _ = parse_json_strict_v2(
-        json.dumps(payload, separators=(",", ":")),
+        json.dumps(parsed, separators=(",", ":")),
         required_keys=FINANCIAL_STATEMENT_EXTRACT_V2_REQUIRED_KEYS,
     )
     source = "full_document" if include_full_document else "excerpt_only"
-    return normalized, source, int((time.perf_counter() - started) * 1000)
+    return normalized, source, elapsed_ms
 
 
 _POSITIONS_PAGE_KEYWORDS = (
@@ -2235,6 +2195,7 @@ async def import_portfolio(
         user_id=user_id,
         file_content=content,
         filename=file.filename,
+        consent_token=str(token_data.get("token") or ""),
     )
 
     if (

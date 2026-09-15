@@ -120,4 +120,8 @@ document part when required. The model is resolved from `gemini-default` through
 the shared fleet resolver; the route no longer calls the provider streaming API
 directly. This phase has unit and source-contract coverage, but no live brokerage
 document run has been claimed. The legacy non-stream `PortfolioImportService`
-parsers and other specialist loops remain in the remaining migration queue.
+relevance, comprehensive extraction and holdings parsing paths now use the three
+manifest-owned Portfolio Import genes through the shared runtime adapter; no
+provider client is constructed directly by those parser paths. A live brokerage
+document run remains unclaimed, and other specialist loops remain in the migration
+queue.

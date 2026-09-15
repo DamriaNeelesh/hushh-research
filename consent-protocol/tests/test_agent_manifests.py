@@ -96,16 +96,22 @@ def test_kyc_llm_genes_are_manifest_owned_single_turn_contracts() -> None:
 
 def test_portfolio_import_extractor_is_manifest_owned_single_turn_contract() -> None:
     manifest = load("portfolio_import")
-    extractor = next(
-        child for child in manifest.subagents if child.id == "agent_portfolio_import_extract"
-    )
-    assert extractor.model.name == "gemini-default"
-    assert resolve_fleet_model_name(extractor.model.name) == GEMINI_MODEL
-    assert extractor.runtime.adk_mode == "single_turn"
-    assert extractor.runtime.transport == ["in_process"]
-    assert extractor.privacy.plaintext_telemetry is False
-    assert extractor.performance.max_output_tokens == 32768
-    assert extractor.rollout.rollback.strip()
+    genes = {child.id: child for child in manifest.subagents}
+    expected = {
+        "agent_portfolio_import_extract": 32768,
+        "agent_portfolio_import_relevance": 256,
+        "agent_portfolio_import_comprehensive": 32768,
+    }
+    assert set(expected) <= genes.keys()
+    for gene_id, output_tokens in expected.items():
+        gene = genes[gene_id]
+        assert gene.model.name == "gemini-default"
+        assert resolve_fleet_model_name(gene.model.name) == GEMINI_MODEL
+        assert gene.runtime.adk_mode == "single_turn"
+        assert gene.runtime.transport == ["in_process"]
+        assert gene.privacy.plaintext_telemetry is False
+        assert gene.performance.max_output_tokens == output_tokens
+        assert gene.rollout.rollback.strip()
 
 
 def test_connected_systems_schema_mapper_is_manifest_owned_and_toolless() -> None:

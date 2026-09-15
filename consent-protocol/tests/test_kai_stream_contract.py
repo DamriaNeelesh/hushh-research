@@ -180,7 +180,7 @@ def test_portfolio_import_extraction_uses_manifest_owned_single_turn_runtime():
     portfolio_source = (_ROOT / "api/routes/kai/portfolio.py").read_text(encoding="utf-8")
 
     assert "_portfolio_import_extract_gene" in portfolio_source
-    assert "run_single_turn(" in portfolio_source
+    assert "run_portfolio_gene(" in portfolio_source
     assert "generate_content_stream(" not in portfolio_source
 
 
