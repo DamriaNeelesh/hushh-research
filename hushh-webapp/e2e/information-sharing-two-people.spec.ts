@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { expect, test, type Page, type Response } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Page,
+  type Request,
+  type Response,
+} from "@playwright/test";
 
 import {
   createProtectedReviewerHarness,
@@ -9,6 +15,10 @@ import {
   waitForReviewerVault,
   type ReviewerIdentity,
 } from "./helpers/reviewer-session";
+import {
+  assertCleanupComplete,
+  validateCleanupBundle,
+} from "./helpers/information-sharing-cleanup";
 
 /**
  * Two real people, isolated reviewer contexts, one information request.
@@ -583,6 +593,18 @@ test.describe("Information sharing between two people (real backend, no push)", 
   >;
   const receipts = new Map<string, RequestBundle>();
   const receiptReads: Promise<void>[] = [];
+  type CreationAttempt = {
+    purpose: string;
+    scopeRefs: string[];
+    durationSeconds: number;
+    sentAt: number;
+    ownerAuthorization: string;
+    bundleId?: string;
+  };
+  const attempts = new Map<string, CreationAttempt>();
+  const requestAttempts = new WeakMap<Request, CreationAttempt>();
+  const captureFailures: string[] = [];
+  let requesterSession: ReviewerSession;
 
   test.beforeAll(async ({ browser }, testInfo) => {
     assertFcmEventNameMatchesSource();
@@ -606,8 +628,56 @@ test.describe("Information sharing between two people (real backend, no push)", 
       ownerPeopleRoute,
     );
     opened.push(requester);
+    requesterSession = requester;
     requesterPage = requester.page;
     pageHarness.set(requesterPage, requesterHarness);
+    requesterPage.on("request", (request) => {
+      if (
+        request.method() !== "POST" ||
+        new URL(request.url()).pathname !== "/api/one/information-requests"
+      )
+        return;
+      try {
+        const body = request.postDataJSON();
+        if (
+          body.person_ref !== ownerPersonRef ||
+          ![purposeA, purposeB, purposeC].includes(body.purpose) ||
+          !Array.isArray(body.scope_refs) ||
+          body.scope_refs.length < 1 ||
+          body.scope_refs.length > 50 ||
+          !body.scope_refs.every(
+            (scope: unknown) => typeof scope === "string",
+          ) ||
+          typeof body.idempotency_key !== "string" ||
+          typeof body.duration_seconds !== "number"
+        )
+          throw new Error("unrecognized creation");
+        const prior = attempts.get(body.idempotency_key);
+        if (
+          prior &&
+          (prior.purpose !== body.purpose ||
+            prior.durationSeconds !== body.duration_seconds ||
+            JSON.stringify(prior.scopeRefs) !==
+              JSON.stringify([...body.scope_refs].sort()))
+        )
+          throw new Error("idempotency collision");
+        const attempt = prior ?? {
+          purpose: body.purpose,
+          scopeRefs: [...body.scope_refs].sort(),
+          durationSeconds: body.duration_seconds,
+          sentAt: Date.now(),
+          ownerAuthorization: request.headers().authorization ?? "",
+        };
+        if (attempts.size >= 3 && !prior)
+          throw new Error("unexpected extra creation");
+        attempts.set(body.idempotency_key, attempt);
+        requestAttempts.set(request, attempt);
+      } catch {
+        captureFailures.push(
+          "unrecognized creation attempt; manual reconciliation required",
+        );
+      }
+    });
     requesterPage.on("response", (response) => {
       if (
         response.request().method() !== "POST" ||
@@ -616,9 +686,23 @@ test.describe("Information sharing between two people (real backend, no push)", 
       )
         return;
       const read = response.json().then((created: RequestBundle) => {
+        const attempt = requestAttempts.get(response.request());
+        if (!attempt)
+          throw new Error("Creation has no recognized outgoing attempt");
         if (!created.bundleId || !Array.isArray(created.items))
           throw new Error("Invalid creation receipt");
+        if (
+          created.items.length !== attempt.scopeRefs.length ||
+          JSON.stringify(created.items.map((item) => item.scopeRef).sort()) !==
+            JSON.stringify(attempt.scopeRefs) ||
+          !created.items.every(
+            (item) =>
+              typeof item.requestId === "string" && item.requestId.length > 0,
+          )
+        )
+          throw new Error("Creation receipt does not match request");
         receipts.set(created.bundleId, created);
+        attempt.bundleId = created.bundleId;
       });
       void read.catch(() => undefined);
       receiptReads.push(read);
@@ -639,7 +723,7 @@ test.describe("Information sharing between two people (real backend, no push)", 
   });
 
   test.afterAll(async () => {
-    const cleanupFailures: string[] = [];
+    const cleanupFailures: string[] = [...captureFailures];
     try {
       const readResults = await Promise.allSettled(receiptReads);
       for (const result of readResults) {
@@ -648,26 +732,117 @@ test.describe("Information sharing between two people (real backend, no push)", 
             "creation receipt could not be decoded; outcome requires reconciliation",
           );
       }
-      for (const receipt of receipts.values()) {
-        // Only IDs obtained from this run's successful create responses.
-        for (const item of receipt.items) {
-          try {
-            const auth = await openCenterTab(
-              ownerPage,
-              ownerIdentity!,
-              "active",
-            );
-            if (
-              !(
-                await readRequestStatuses(
-                  ownerPage,
-                  auth,
-                  "active",
-                  item.requestId,
-                )
-              ).includes("active")
+      for (const attempt of attempts.values()) {
+        if (attempt.bundleId) continue;
+        try {
+          // Authenticated profile history is constrained to this requester and owner.
+          const identity = await openCenterTab(
+            requesterPage,
+            requesterIdentity!,
+            "pending",
+          );
+          const historyResponse = await requesterPage.request.get(
+            `/api/one/people/${encodeURIComponent(ownerPersonRef)}`,
+            {
+              headers: {
+                Authorization: identity.authorization,
+                "Cache-Control": "no-cache",
+              },
+            },
+          );
+          if (!historyResponse.ok()) throw new Error("history unavailable");
+          const { requestHistory } = await historyResponse.json();
+          if (!Array.isArray(requestHistory) || requestHistory.length >= 100)
+            throw new Error("history may be truncated");
+          const matches = requestHistory.filter(
+            (item) =>
+              item.purpose === attempt.purpose &&
+              Date.parse(item.createdAt) >= attempt.sentAt - 5_000 &&
+              Date.parse(item.createdAt) <= Date.now(),
+          );
+          const bundleIds = [...new Set(matches.map((item) => item.bundleId))];
+          if (bundleIds.length !== 1 || typeof bundleIds[0] !== "string")
+            throw new Error("ambiguous or missing creation");
+          const detailResponse = await requesterPage.request.get(
+            `/api/one/information-requests/${encodeURIComponent(bundleIds[0])}`,
+            {
+              headers: { Authorization: attempt.ownerAuthorization },
+            },
+          );
+          if (!detailResponse.ok())
+            throw new Error("bundle verification failed");
+          const detail = await detailResponse.json();
+          if (
+            detail.bundleId !== bundleIds[0] ||
+            detail.personRef !== ownerPersonRef ||
+            detail.purpose !== attempt.purpose ||
+            detail.durationSeconds !== attempt.durationSeconds ||
+            !Array.isArray(detail.items) ||
+            detail.items.length !== attempt.scopeRefs.length ||
+            JSON.stringify(
+              detail.items
+                .map((item: { scopeRef: string }) => item.scopeRef)
+                .sort(),
+            ) !== JSON.stringify(attempt.scopeRefs) ||
+            !detail.items.every(
+              (item: { requestId: unknown }) =>
+                typeof item.requestId === "string" &&
+                matches.some((row) => row.requestId === item.requestId),
             )
-              continue;
+          ) {
+            throw new Error("bundle is not the bounded outgoing attempt");
+          }
+          attempt.bundleId = detail.bundleId;
+          receipts.set(detail.bundleId, detail);
+        } catch {
+          cleanupFailures.push(
+            "lost creation receipt could not be reconciled unambiguously; no unknown bundle changed",
+          );
+        }
+      }
+      for (const receipt of receipts.values()) {
+        const attempt = [...attempts.values()].find(
+          (entry) => entry.bundleId === receipt.bundleId,
+        );
+        if (!attempt) {
+          cleanupFailures.push("receipt has no recognized creation attempt");
+          continue;
+        }
+        let ownerAuthorization: string;
+        try {
+          ownerAuthorization = attempt.ownerAuthorization || `Bearer ${await requesterSession.capture.ownerToken()}`;
+        } catch {
+          cleanupFailures.push("requester owner authorization unavailable; bundle left unchanged");
+          continue;
+        }
+        const detailPath = `/api/one/information-requests/${encodeURIComponent(receipt.bundleId)}`;
+        const expectedBundle = {
+          ...receipt,
+          personRef: ownerPersonRef,
+          purpose: attempt.purpose,
+        };
+        const readDetail = async () => {
+          const response = await requesterPage.request.get(detailPath, {
+            headers: { Authorization: ownerAuthorization },
+          });
+          if (!response.ok())
+            throw new Error("authoritative cleanup detail unavailable");
+          return response.json();
+        };
+        let grantedItems;
+        try {
+          grantedItems = validateCleanupBundle(
+            await readDetail(),
+            expectedBundle,
+          ).items.filter((item) => item.status === "granted");
+        } catch {
+          cleanupFailures.push(
+            "authoritative cleanup detail unavailable; bundle left unchanged",
+          );
+          continue;
+        }
+        for (const item of grantedItems) {
+          try {
             await navigateProtected(
               ownerPage,
               `/one/consent?tab=active&requestId=${encodeURIComponent(item.requestId)}`,
@@ -686,28 +861,30 @@ test.describe("Information sharing between two people (real backend, no push)", 
               .click();
             if ((await revoked).status() !== 200)
               throw new Error("revoke refused");
-            await expectSurfaceAbsent(
-              ownerPage,
-              auth,
-              "active",
-              item.requestId,
+            const refreshed = validateCleanupBundle(
+              await readDetail(),
+              expectedBundle,
             );
+            if (
+              refreshed.items.some(
+                (row) =>
+                  row.requestId === item.requestId && row.status === "granted",
+              )
+            )
+              throw new Error("grant remains after revoke");
           } catch {
             cleanupFailures.push("run-owned grant revocation failed");
           }
         }
         try {
           // Cancellation skips already decided items and removes leftovers.
-          const auth = await openCenterTab(
-            requesterPage,
-            requesterIdentity!,
-            "pending",
-          );
           const cancelled = await requesterPage.request.post(
             `/api/one/information-requests/${encodeURIComponent(receipt.bundleId)}/cancel`,
-            { headers: { Authorization: auth.authorization } },
+            { headers: { Authorization: ownerAuthorization } },
           );
           if (!cancelled.ok()) throw new Error("cancel refused");
+          // A 200 cancellation skips granted items; only this fresh read proves cleanup.
+          assertCleanupComplete(await readDetail(), expectedBundle);
         } catch {
           cleanupFailures.push("run-owned request cancellation failed");
         }
@@ -1040,7 +1217,7 @@ test.describe("Information sharing between two people (real backend, no push)", 
       .locator('[data-message-role="assistant"]')
       .count();
     await composer.fill(
-      `Ask ${displayName} to share their ${first!.label} with me for 3 days. ${purposeC}`,
+      `Ask ${displayName} to share their ${first!.label} with me for 3 days. Use this exact request purpose: ${purposeC}`,
     );
     await composer.press("Enter");
     await requesterChat.waitForFunction(
