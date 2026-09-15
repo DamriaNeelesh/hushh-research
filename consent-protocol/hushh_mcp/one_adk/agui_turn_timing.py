@@ -60,6 +60,7 @@ class TurnTiming:
     tool_calls: int = 0
     specialist_calls: int = 0
     outcome: str = OUTCOME_FINISHED
+    terminal_observed: bool = False
 
     def observe(self, event: BaseEvent) -> None:
         self.events += 1
@@ -67,7 +68,10 @@ class TurnTiming:
         if self.first_visible_at is None and event_type in _FIRST_VISIBLE_EVENT_TYPES:
             self.first_visible_at = time.perf_counter()
         if event_type == EventType.RUN_ERROR:
+            self.terminal_observed = True
             self.outcome = OUTCOME_ERROR
+        elif event_type == EventType.RUN_FINISHED:
+            self.terminal_observed = True
         if event_type != EventType.TOOL_CALL_START:
             return
         self.tool_calls += 1
@@ -109,18 +113,24 @@ class TimedADKAgent(ADKAgent):
 
     async def run(self, input: RunAgentInput) -> AsyncGenerator[BaseEvent, None]:
         timing = TurnTiming(head=self.head, run=run_label(input), started_at=time.perf_counter())
+        interrupted = False
         try:
             async for event in super().run(input):
                 timing.observe(event)
                 yield event
         except (asyncio.CancelledError, GeneratorExit):
-            timing.outcome = OUTCOME_CLIENT_DISCONNECT
+            interrupted = True
+            # Consumers commonly close immediately after the terminal event.
+            # observe() runs before yield so that normal closure cannot replace
+            # an emitted finish or error with a disconnect diagnosis.
+            if not timing.terminal_observed:
+                timing.outcome = OUTCOME_CLIENT_DISCONNECT
             raise
         except BaseException:
             timing.outcome = OUTCOME_ERROR
             raise
         finally:
-            if timing.outcome in (OUTCOME_ERROR, OUTCOME_CLIENT_DISCONNECT):
+            if interrupted or timing.outcome in (OUTCOME_ERROR, OUTCOME_CLIENT_DISCONNECT):
                 await self._release_execution(input)
             timing.log()
 

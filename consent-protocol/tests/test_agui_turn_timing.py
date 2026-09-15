@@ -190,6 +190,55 @@ async def test_consumer_closing_early_marks_client_disconnect(monkeypatch, caplo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_error", [False, True])
+@pytest.mark.parametrize("close_kind", ["close", "cancel"])
+async def test_terminal_event_preserves_outcome_when_consumer_closes(
+    monkeypatch,
+    caplog,
+    terminal_error,
+    close_kind,
+):
+    terminal = (
+        RunErrorEvent(message="private error", code="MODEL_ERROR")
+        if terminal_error
+        else RunFinishedEvent(thread_id=THREAD_ID, run_id=RUN_ID)
+    )
+    monkeypatch.setattr(ADKAgent, "run", _scripted_run([(0.0, terminal)]))
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    agent = _agent_with_registry()
+    stream = agent.run(_input())
+    assert await anext(stream) is terminal
+    if close_kind == "close":
+        await stream.aclose()
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await stream.athrow(asyncio.CancelledError())
+    lines = _timing_lines(caplog)
+    assert len(lines) == 1
+    assert _fields(lines[0])["outcome"] == (OUTCOME_ERROR if terminal_error else OUTCOME_FINISHED)
+    # This change only corrects telemetry; interrupted execution cleanup stays
+    # identical even when the client has already received a terminal event.
+    assert (THREAD_ID, USER_ID) not in agent._active_executions
+
+
+@pytest.mark.asyncio
+async def test_error_terminal_is_not_overwritten_by_later_finished_event(monkeypatch, caplog):
+    monkeypatch.setattr(
+        ADKAgent,
+        "run",
+        _scripted_run(
+            [
+                (0.0, RunErrorEvent(message="private", code="MODEL_ERROR")),
+                (0.0, RunFinishedEvent(thread_id=THREAD_ID, run_id=RUN_ID)),
+            ]
+        ),
+    )
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    await _drain(_agent())
+    assert _fields(_timing_lines(caplog)[0])["outcome"] == OUTCOME_ERROR
+
+
+@pytest.mark.asyncio
 async def test_task_cancellation_marks_client_disconnect(monkeypatch, caplog):
     started = asyncio.Event()
 
