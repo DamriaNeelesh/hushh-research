@@ -1357,6 +1357,11 @@ async def ask_location_agent(request: str, tool_context: ToolContext) -> dict[st
     return await _specialist_turn("agent_location", request, tool_context)
 
 
+async def ask_memory_agent(request: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Ask the Memory Agent about remembered information and marketplace summaries."""
+    return await _specialist_turn("agent_personal_information", request, tool_context)
+
+
 async def ask_connected_systems_agent(request: str, tool_context: ToolContext) -> dict[str, Any]:
     """Ask the Connected Systems specialist about CRM records and external system workflows."""
     return await _specialist_turn("agent_connected_systems", request, tool_context)
@@ -1693,6 +1698,7 @@ def _one_roster_tools(*, specialist_model: Any | None = None, tool_mode: str = "
         AgentTool(agent=_build_finance_agent(model=specialist_model)),
         ask_email_agent,
         ask_location_agent,
+        ask_memory_agent,
         ask_consent_agent,
         list_my_location_circles,
         get_location_circle_members,

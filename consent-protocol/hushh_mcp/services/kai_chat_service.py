@@ -9,7 +9,7 @@ This service handles:
 4. Insertable UI component detection
 5. Persistent chat history
 6. Proactive onboarding (portfolio import prompts)
-7. Intent classification for workflow triggers
+7. Manifest-authored chat behavior with model-owned semantic routing
 
 Canonical attach points
 -----------------------
@@ -23,12 +23,13 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 from google.genai import types as genai_types
 
 from hushh_mcp.constants import GEMINI_MODEL
+from hushh_mcp.hushh_adk.manifest import ManifestLoader
 from hushh_mcp.runtime_providers import (
     build_generate_content_config,
     build_managed_runtime_client,
@@ -48,125 +49,6 @@ from hushh_mcp.services.personal_knowledge_model_service import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# INTENT CLASSIFICATION
-# =============================================================================
-
-
-class IntentType(str, Enum):
-    """Types of user intents that trigger specific workflows."""
-
-    PORTFOLIO_IMPORT = "portfolio_import"
-    STOCK_ANALYSIS = "stock_analysis"
-    RISK_ASSESSMENT = "risk_assessment"
-    GENERAL_CHAT = "general_chat"
-    PROFILE_QUERY = "profile_query"
-    CONSENT_MANAGEMENT = "consent_management"
-    GREETING = "greeting"
-
-
-class IntentClassifier:
-    """Classifies user intent to trigger appropriate workflows."""
-
-    INTENT_PATTERNS = {
-        IntentType.PORTFOLIO_IMPORT: [
-            "import",
-            "upload",
-            "brokerage",
-            "statement",
-            "portfolio",
-            "holdings",
-            "positions",
-            "connect my",
-            "add my stocks",
-            "import my",
-            "upload my",
-        ],
-        IntentType.STOCK_ANALYSIS: [
-            "analyze",
-            "what about",
-            "should i buy",
-            "recommendation",
-            "stock",
-            "ticker",
-            "price",
-            "evaluate",
-            "research",
-            "tell me about",
-            "how is",
-            "what do you think of",
-        ],
-        IntentType.RISK_ASSESSMENT: [
-            "risk",
-            "tolerance",
-            "aggressive",
-            "conservative",
-            "profile",
-            "risk profile",
-            "investment style",
-        ],
-        IntentType.PROFILE_QUERY: [
-            "what do you know",
-            "my profile",
-            "my data",
-            "about me",
-            "what have you learned",
-            "my preferences",
-        ],
-        IntentType.CONSENT_MANAGEMENT: [
-            "consent",
-            "permission",
-            "data sharing",
-            "who has access",
-            "revoke",
-            "manage access",
-        ],
-        IntentType.GREETING: [
-            "hi",
-            "hello",
-            "hey",
-            "good morning",
-            "good afternoon",
-            "good evening",
-            "howdy",
-            "what's up",
-            "sup",
-        ],
-    }
-
-    def classify(self, message: str) -> tuple[IntentType, float]:
-        """
-        Classify user intent with confidence score.
-
-        Returns:
-            Tuple of (IntentType, confidence_score)
-        """
-        message_lower = message.lower().strip()
-
-        # Check each intent pattern
-        scores = {}
-        for intent, patterns in self.INTENT_PATTERNS.items():
-            matches = sum(1 for p in patterns if p in message_lower)
-            if matches > 0:
-                # Score based on number of matches and pattern specificity
-                scores[intent] = min(0.5 + (matches * 0.2), 1.0)
-
-        if not scores:
-            return (IntentType.GENERAL_CHAT, 0.5)
-
-        # Return highest scoring intent
-        best_intent = max(scores, key=scores.get)
-        return (best_intent, scores[best_intent])
-
-    def extract_ticker(self, message: str) -> Optional[str]:
-        """Extract stock ticker from message."""
-        # Look for uppercase 1-5 letter words that could be tickers
-        ticker_match = re.search(r"\b([A-Z]{1,5})\b", message)
-        if ticker_match:
-            return ticker_match.group(1)
-        return None
 
 
 @dataclass
@@ -243,6 +125,17 @@ Current conversation context:
 {chat_history}
 """
 
+# The authored prompt lives in Kai's manifest.  Resolve the chat child once at
+# import time; this is schema validation only and does not create a provider
+# client or route a request.
+_KAI_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "agents" / "kai" / "agent.yaml"
+_KAI_CHAT_MANIFEST = next(
+    child
+    for child in ManifestLoader.load(str(_KAI_MANIFEST_PATH)).subagents
+    if child.id == "agent_kai_chat"
+)
+SYSTEM_PROMPT = str(_KAI_CHAT_MANIFEST.system_instruction)
+
 SAFE_FALLBACK_RESPONSE = "I'm unable to generate a reliable response right now."
 MIN_RESPONSE_CHARS = 24
 GENERIC_FALLBACK_TEXTS = {
@@ -261,7 +154,7 @@ class KaiChatService:
     - PKM for user context
     - Attribute learner for auto-learning
     - Chat DB for persistent history
-    - Intent classifier for workflow triggers
+    - Manifest-authored chat behavior and model-owned semantic routing
     """
 
     def __init__(self):
@@ -269,7 +162,6 @@ class KaiChatService:
         self._pkm_service = None
         self._chat_db = None
         self._attribute_learner = None
-        self._intent_classifier = IntentClassifier()
 
     @property
     def client(self):
@@ -363,43 +255,9 @@ class KaiChatService:
                     learned_attributes=[],
                 )
 
-            # 5. Classify intent for workflow triggers
-            intent, confidence = self._intent_classifier.classify(message)
-
-            # 6. Handle high-confidence intents with specific workflows
-            if confidence > 0.7:
-                component = self._handle_intent(intent, message, user_context)
-                if component:
-                    # Store user message
-                    await self.chat_db.add_message(
-                        conversation_id=conversation.id,
-                        role=MessageRole.USER,
-                        content=message,
-                    )
-
-                    # Generate contextual response for the intent
-                    response_text = self._get_intent_response(intent, component)
-
-                    await self.chat_db.add_message(
-                        conversation_id=conversation.id,
-                        role=MessageRole.ASSISTANT,
-                        content=response_text,
-                        content_type=ContentType.COMPONENT,
-                        component_type=ComponentType(component.type.upper())
-                        if hasattr(ComponentType, component.type.upper())
-                        else None,
-                        component_data=component.data,
-                    )
-
-                    return KaiChatResponse(
-                        conversation_id=str(conversation.id),
-                        response=response_text,
-                        component_type=component.type,
-                        component_data=component.data,
-                        learned_attributes=[],
-                    )
-
-            # 7. Build system prompt with context
+            # 5. Build the manifest-authored prompt with context. Model
+            # semantics choose the response; keyword matching is reserved for
+            # the display-only component hint below.
             system_prompt = self._build_system_prompt(user_context, history)
 
             # 8. Generate and validate response before using it anywhere else.
@@ -700,63 +558,6 @@ class KaiChatService:
             next_to_collect,
             "Is there any additional information you'd like to share about your investment profile?",
         )
-
-    def _handle_intent(
-        self,
-        intent: IntentType,
-        message: str,
-        user_context: UserPersonalKnowledgeModelMetadata,
-    ) -> Optional[UIComponent]:
-        """Handle specific intents with UI components."""
-        if intent == IntentType.PORTFOLIO_IMPORT:
-            return UIComponent(
-                type="portfolio_import",
-                data={"prompt": "Upload your brokerage statement", "show_skip": True},
-            )
-
-        elif intent == IntentType.STOCK_ANALYSIS:
-            ticker = self._intent_classifier.extract_ticker(message)
-            if ticker:
-                return UIComponent(
-                    type="analysis",
-                    data={"ticker": ticker},
-                )
-
-        elif intent == IntentType.PROFILE_QUERY:
-            return UIComponent(
-                type="pkm_summary",
-                data={"user_context": user_context.__dict__ if user_context else {}},
-            )
-
-        elif intent == IntentType.CONSENT_MANAGEMENT:
-            return UIComponent(
-                type="consent_management",
-                data={},
-            )
-
-        return None
-
-    def _get_intent_response(self, intent: IntentType, component: UIComponent) -> str:
-        """Get a contextual response for a specific intent."""
-        responses = {
-            IntentType.PORTFOLIO_IMPORT: (
-                "I'll help you import your portfolio. You can upload a CSV or PDF brokerage statement below. "
-                "This will allow me to analyze your holdings and provide personalized insights."
-            ),
-            IntentType.STOCK_ANALYSIS: (
-                f"Let me analyze {component.data.get('ticker', 'that stock')} for you. "
-                "I'll look at key metrics, recent performance, and how it fits your portfolio."
-            ),
-            IntentType.PROFILE_QUERY: (
-                "Here's what I know about you based on our conversations and your data. "
-                "All this information is encrypted and under your control."
-            ),
-            IntentType.CONSENT_MANAGEMENT: (
-                "You can manage who has access to your data here. "
-                "Review and revoke permissions at any time."
-            ),
-        }
-        return responses.get(intent, "Let me help you with that.")
 
     async def _get_or_create_conversation(
         self,

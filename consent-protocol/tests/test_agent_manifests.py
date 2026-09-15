@@ -31,7 +31,6 @@ def test_authored_manifest_is_strict_v2(path: Path) -> None:
         "memory_merge",
         "memory_segmentation",
         "pkm_structure",
-        "summary_reducer",
     }
     assert manifest.name.strip()
     assert manifest.description.strip()
@@ -55,6 +54,14 @@ def test_core_specialists_have_distinct_ids_and_reserved_authority() -> None:
     assert load("nav").required_scopes == ["agent.nav.review"]
     assert load("kyc").required_scopes == ["agent.kyc.process"]
     assert load("location").required_scopes == ["cap.location.live.share"]
+
+
+def test_kai_chat_behavior_is_manifest_owned() -> None:
+    manifest = load("kai")
+    chat = next(child for child in manifest.subagents if child.id == "agent_kai_chat")
+    assert chat.runtime.adk_mode == "chat"
+    assert "pkm.profile_summary" in chat.privacy.context_allowlist
+    assert "insufficient data" in chat.system_instruction
 
 
 def test_kyc_owns_strict_zero_knowledge_formatter_contract() -> None:
@@ -86,7 +93,6 @@ def test_gemini_model_matrix_uses_current_workload_equivalents() -> None:
         "connected_systems",
         "email",
         "financial_guard",
-        "gmail",
         "kai",
         "kyc",
         "location",
@@ -103,7 +109,7 @@ def test_gemini_model_matrix_uses_current_workload_equivalents() -> None:
     # Founder directive 2026-09-02: every text agent runs the switched Flash model. The
     # reducer and the memory chain's salience workers no longer carry their own pins
     # (gemini-3.1-flash-lite and gemini-3.1-pro-preview), so one switch moves the fleet.
-    for name in ("summary_reducer", "memory_intent", "memory_segmentation"):
+    for name in ("memory_intent", "memory_segmentation"):
         assert load(name).model_config_for_runtime().name == GEMINI_MODEL, name
     one = load("one")
     assert one.model_config_for_runtime().name == GEMINI_MODEL

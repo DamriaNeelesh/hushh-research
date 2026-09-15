@@ -232,8 +232,8 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
-        "factory": null,
+        "adk_mode": "chat",
+        "factory": "hushh_mcp.agents.connected_systems.agent.build_connected_systems_agent",
         "kind": "adk",
         "transport": [
           "in_process"
@@ -317,9 +317,22 @@
         "voice": false,
         "web": true
       },
-      "system_instruction_sha256": "8982b41700947b09df4ba522788bcef02c92f6a6c883b10d40509d25f9da9149",
+      "system_instruction_sha256": "6c4157744529aa82e1712469160e889b95f08d1c40b537b1d7b5aeab7d2813d0",
       "telemetry_namespace": "agent.connected_systems",
-      "tools": [],
+      "tools": [
+        {
+          "description": "Read the public field catalogue for a configured connected CRM.",
+          "name": "describe_crm_fields",
+          "py_func": "hushh_mcp.agents.connected_systems.agent.describe_crm_fields",
+          "required_scope": "cap.one.invoke"
+        },
+        {
+          "description": "Validate a typed CRM action without accepting record values or identifiers.",
+          "name": "validate_crm_plan",
+          "py_func": "hushh_mcp.agents.connected_systems.agent.validate_crm_plan",
+          "required_scope": "cap.one.invoke"
+        }
+      ],
       "ui_type": "chat",
       "version": "1.1.0"
     },
@@ -495,11 +508,12 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
+        "adk_mode": "task",
         "factory": null,
         "kind": "adk",
         "transport": [
-          "in_process"
+          "in_process",
+          "chat"
         ]
       },
       "side_effects": [],
@@ -515,9 +529,34 @@
         "voice": false,
         "web": true
       },
-      "system_instruction_sha256": "a02d9db8adc0466768889d75cf4ac320f785a30fe4e61d35907fb63d5351c532",
+      "system_instruction_sha256": "05a6582d96b9b8de875753332112b1db454f0627aab1aff71ce25be990916450",
       "telemetry_namespace": "agent.email",
-      "tools": [],
+      "tools": [
+        {
+          "description": "List bounded inbound Gmail threads that appear to need the owner's reply.",
+          "name": "list_needs_reply",
+          "py_func": "hushh_mcp.agents.email.tools.list_needs_reply",
+          "required_scope": "cap.one.invoke"
+        },
+        {
+          "description": "Search the owner's Gmail and return bounded message summaries.",
+          "name": "search_inbox",
+          "py_func": "hushh_mcp.agents.email.tools.search_inbox",
+          "required_scope": "cap.one.invoke"
+        },
+        {
+          "description": "List synced purchase receipts, newest first, without changing sync state.",
+          "name": "list_receipts",
+          "py_func": "hushh_mcp.agents.email.tools.list_receipts",
+          "required_scope": "cap.one.invoke"
+        },
+        {
+          "description": "Report whether the owner's Gmail receipt sync is connected and healthy.",
+          "name": "sync_status",
+          "py_func": "hushh_mcp.agents.email.tools.sync_status",
+          "required_scope": "cap.one.invoke"
+        }
+      ],
       "ui_type": "chat",
       "version": "1.1.0"
     },
@@ -622,104 +661,6 @@
       },
       "system_instruction_sha256": "ce6442e5716f92360c059e6261761d21b3ffba210fb0d475493dc1fc65e38a92",
       "telemetry_namespace": "agent.unclassified",
-      "tools": [],
-      "ui_type": "chat",
-      "version": "1.0.0"
-    },
-    {
-      "action_ids": [],
-      "authorities": {
-        "actions": [],
-        "data": [],
-        "invocation": []
-      },
-      "availability": {
-        "enable_flag": null,
-        "environments": [
-          "development",
-          "uat",
-          "production"
-        ],
-        "loopback_only": false
-      },
-      "capabilities": {},
-      "credential_policy": {
-        "allowed": [
-          "hushh_managed_vertex"
-        ],
-        "default": "hushh_managed_vertex"
-      },
-      "description": "Read-only receipt-sync and purchase-memory specialist under One.",
-      "evaluations": [],
-      "failure_states": [
-        "auth_required",
-        "input_required",
-        "connector_unavailable"
-      ],
-      "icon": null,
-      "id": "agent_gmail",
-      "inputs": [],
-      "legacy_ids": [],
-      "manifest_path": "consent-protocol/hushh_mcp/agents/gmail/agent.yaml",
-      "manifest_version": 2,
-      "model": "gemini-default",
-      "name": "Gmail Agent",
-      "native_requirements": [],
-      "one_exposure": {
-        "discovery_status": "withheld",
-        "exposure_status": "disabled",
-        "knowledge_package_ref": null,
-        "service_id": "gmail",
-        "supported_entrypoints": [
-          "typed"
-        ]
-      },
-      "optional_scopes": [],
-      "outputs": [],
-      "owner": "backend",
-      "parent": "agent_one",
-      "performance": {
-        "latency_p95_ms": 30000,
-        "max_output_tokens": 4096
-      },
-      "pkm": {
-        "behavior": "read",
-        "mutation_contract": null
-      },
-      "privacy": {
-        "context_allowlist": [],
-        "plaintext_telemetry": false
-      },
-      "prompt_reference": null,
-      "required_scopes": [],
-      "rollout": {
-        "kill_switch": null,
-        "rollback": "Disable the agent and restore the prior manifest.",
-        "strategy": "off"
-      },
-      "runtime": {
-        "adk_mode": "single_turn",
-        "factory": null,
-        "kind": "adk",
-        "transport": [
-          "in_process"
-        ]
-      },
-      "side_effects": [],
-      "status": "active",
-      "subagents": [],
-      "surfaces": {
-        "a2a": false,
-        "android": false,
-        "chat": true,
-        "ios": false,
-        "mcp": false,
-        "not_applicable_reason": "Voice, remote A2A, MCP, and native exposure are not currently shipped.",
-        "voice": false,
-        "web": true
-      },
-      "system_instruction_sha256": "312edd1449e0d34e476a720cfe3f91f3f4317f8ec8959517642308626f78e60e",
-      "telemetry_namespace": "agent.gmail",
       "tools": [],
       "ui_type": "chat",
       "version": "1.0.0"
@@ -936,6 +877,56 @@
           },
           "system_instruction": "You are Investor, Kai Finance's personal-investing subagent. Review only\nthe consented financial projection supplied for this turn. Never infer\nomitted holdings or claim an analysis run or trade executed.\n",
           "telemetry_namespace": "agent.kai.investor"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Conversational Kai surface for grounded financial questions and profile guidance.",
+          "id": "agent_kai_chat",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": null
+          },
+          "name": "Kai Chat",
+          "outputs": [],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 1024
+          },
+          "privacy": {
+            "context_allowlist": [
+              "pkm.profile_summary",
+              "chat.history"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Disable Kai Chat delegation and keep the Finance head active.",
+            "strategy": "internal"
+          },
+          "runtime": {
+            "adk_mode": "chat",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "chat",
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are Kai, a friendly and knowledgeable personal AI assistant from Hussh. You help users manage their personal data, analyze investments, and provide personalized insights.\n\nPersonality:\n- Warm, approachable, and professional\n- Concise but thorough\n- Proactive when it is clearly helpful\n- Privacy-conscious; remind users their data is encrypted and under their control when relevant\n\nCapabilities:\n- Analyze investment portfolios and identify underperformers\n- Learn user preferences and remember them for personalized advice\n- Help users understand their financial risk profile\n- Provide insights based only on the supplied PKM and chat context\n\nGrounding rules:\n- Only use information explicitly provided in the supplied context.\n- Do not assume missing data.\n- If the available context is not enough to support a claim, say \"insufficient data\".\n- Do not fabricate market details, portfolio details, holdings, prices, performance, or user-specific facts.\n- Do not imply you know more about the user than what is shown in the provided context.\n- Separate confirmed facts from suggestions or general guidance.\n\nProactive behaviors:\n1. If the user is new and no portfolio data is present, offer portfolio import.\n2. When discussing investments without portfolio context, explain that personalization is limited by insufficient data.\n3. After learning user preferences from the current exchange, acknowledge them clearly.\n4. If the user seems unsure, guide them through available features without inventing missing facts.\n\nProvided user context:\n{user_context}\n\nResponse guidelines:\n1. Keep responses conversational, clear, and informative.\n2. If the user mentions preferences, acknowledge what was explicitly stated.\n3. If asked about portfolio analysis, offer portfolio import when relevant.\n4. When discussing investments, be balanced and mention risks.\n5. Never give specific financial advice; provide analysis and let the user decide.\n6. For new users, warmly welcome them and suggest starting with portfolio import.\n7. If context is incomplete, explicitly say \"insufficient data\" instead of guessing.\n\nCurrent conversation context:\n{chat_history}\n",
+          "telemetry_namespace": "agent.kai.chat"
         }
       ],
       "surfaces": {
@@ -1196,11 +1187,12 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
+        "adk_mode": "task",
         "factory": null,
         "kind": "adk",
         "transport": [
-          "in_process"
+          "in_process",
+          "chat"
         ]
       },
       "side_effects": [],
@@ -2024,7 +2016,7 @@
           "agent_nav",
           "agent_kyc",
           "agent_email",
-          "agent_gmail",
+          "agent_personal_information",
           "agent_location",
           "agent_calendar",
           "agent_connected_systems"
@@ -2206,7 +2198,7 @@
         "voice": true,
         "web": true
       },
-      "system_instruction_sha256": "7a46902c445a384ddd2afd54046f622ef5be1fdea2c3a3e8df4c57b258e7baaa",
+      "system_instruction_sha256": "e53f7b3cecf541207b71092f5e4058660bdc883f7e833a068bdb590486399999",
       "telemetry_namespace": "agent.one",
       "tools": [],
       "ui_type": "chat",
@@ -2235,7 +2227,7 @@
         ],
         "default": "hushh_managed_vertex"
       },
-      "description": "Marketplace chatbot under One. Lets the owner query, publish, and manage their own PKM data slices with consent, and answers what is published and what it is worth. Delegatable by Agent One over A2A.\n",
+      "description": "Memory assistant under One. Lets the owner review what One remembers, what they have made available, and who has asked to see it, with consent. Delegatable by Agent One over A2A.\n",
       "evaluations": [],
       "failure_states": [],
       "icon": null,
@@ -2245,9 +2237,17 @@
       "manifest_path": "consent-protocol/hushh_mcp/agents/personal_information/agent.yaml",
       "manifest_version": 2,
       "model": "gemini-default",
-      "name": "Information Marketplace",
+      "name": "Memory Agent",
       "native_requirements": [],
-      "one_exposure": null,
+      "one_exposure": {
+        "discovery_status": "discoverable",
+        "exposure_status": "active",
+        "knowledge_package_ref": null,
+        "service_id": "personal_information",
+        "supported_entrypoints": [
+          "typed"
+        ]
+      },
       "optional_scopes": [
         "cap.pkm.marketplace.manage"
       ],
@@ -2276,11 +2276,12 @@
         "strategy": "off"
       },
       "runtime": {
-        "adk_mode": "single_turn",
+        "adk_mode": "task",
         "factory": null,
         "kind": "adk",
         "transport": [
-          "in_process"
+          "in_process",
+          "chat"
         ]
       },
       "side_effects": [],
@@ -2296,9 +2297,15 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "058a07661e791adf53f93ebf3eced30634360def61eafe1b00abe82382d07ebf",
+      "system_instruction_sha256": "bdc80505a82f849dbc673b7754ed1873a623931bd094e85bcc94f822b9bc9920",
       "telemetry_namespace": "agent.unclassified",
       "tools": [
+        {
+          "description": "Read a redacted summary of what One remembers for one information area; labels and counts only, never raw records.",
+          "name": "read_my_pkm_domain_summary",
+          "py_func": "hushh_mcp.one_adk.action_tools.read_my_pkm_domain_summary",
+          "required_scope": "pkm.read"
+        },
         {
           "description": "List the data slices the user has published (set to Available) to the marketplace. Read-only; safe metadata only.",
           "name": "list_published_slices",
@@ -2641,109 +2648,6 @@
         }
       ],
       "ui_type": "upload",
-      "version": "1.0.0"
-    },
-    {
-      "action_ids": [],
-      "authorities": {
-        "actions": [],
-        "data": [],
-        "invocation": []
-      },
-      "availability": {
-        "enable_flag": null,
-        "environments": [
-          "development",
-          "uat",
-          "production"
-        ],
-        "loopback_only": false
-      },
-      "capabilities": {},
-      "credential_policy": {
-        "allowed": [
-          "hushh_managed_vertex"
-        ],
-        "default": "hushh_managed_vertex"
-      },
-      "description": "Produces minimal discovery-safe PKM summaries without leaking semantic private state.",
-      "evaluations": [],
-      "failure_states": [],
-      "icon": null,
-      "id": "agent_summary_reducer",
-      "inputs": [
-        {
-          "description": null,
-          "name": "domain",
-          "type": "string"
-        },
-        {
-          "description": null,
-          "name": "candidate_data",
-          "type": "object"
-        }
-      ],
-      "legacy_ids": [],
-      "manifest_path": "consent-protocol/hushh_mcp/agents/summary_reducer/agent.yaml",
-      "manifest_version": 2,
-      "model": "gemini-default",
-      "name": "PKM Summary Reducer",
-      "native_requirements": [],
-      "one_exposure": null,
-      "optional_scopes": [],
-      "outputs": [
-        {
-          "description": null,
-          "name": "summary_projection",
-          "type": "object"
-        }
-      ],
-      "owner": "backend",
-      "parent": "agent_one",
-      "performance": {
-        "latency_p95_ms": 30000,
-        "max_output_tokens": 4096
-      },
-      "pkm": {
-        "behavior": "none",
-        "mutation_contract": null
-      },
-      "privacy": {
-        "context_allowlist": [],
-        "plaintext_telemetry": false
-      },
-      "prompt_reference": null,
-      "required_scopes": [],
-      "rollout": {
-        "kill_switch": null,
-        "rollback": "Disable the agent and restore the prior manifest.",
-        "strategy": "off"
-      },
-      "runtime": {
-        "adk_mode": "single_turn",
-        "factory": null,
-        "kind": "adk",
-        "transport": [
-          "in_process"
-        ]
-      },
-      "side_effects": [],
-      "status": "experimental",
-      "subagents": [],
-      "surfaces": {
-        "a2a": false,
-        "android": false,
-        "chat": false,
-        "ios": false,
-        "mcp": false,
-        "not_applicable_reason": null,
-        "voice": false,
-        "web": false
-      },
-      "system_instruction_sha256": "f26e3f760cd855eedd8966c5c89352e844cf1493edf7f5eed9aecf27b80cb769",
-      "telemetry_namespace": "agent.unclassified",
-      "tools": [],
-      "ui_type": "chat",
       "version": "1.0.0"
     },
     {
