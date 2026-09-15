@@ -1081,7 +1081,251 @@
       },
       "side_effects": [],
       "status": "active",
-      "subagents": [],
+      "subagents": [
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Classifies an inbound request against the user's available KYC domains and scopes.",
+          "id": "agent_kyc_route",
+          "inputs": [
+            {
+              "description": "Sanitized request text, domain summaries, and available scopes.",
+              "name": "request_context",
+              "type": "string"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "KYC Route",
+          "outputs": [
+            {
+              "description": "Grounded KYC routing decision.",
+              "name": "routing",
+              "type": "object"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Restore the direct KYC routing implementation.",
+            "strategy": "internal"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "Classify an inbound request for personal information using only the supplied\ndomain summaries and available scope paths. Decide from meaning rather than\nkeywords. Select only scopes present in the supplied context; never invent\ndata, scope paths, or values. Return exactly the routing object requested by\nthe caller, and mark non-data requests unsupported.\n",
+          "telemetry_namespace": "agent.kyc.route"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Rewrites a tokenized KYC email while preserving every private placeholder.",
+          "id": "agent_kyc_redraft",
+          "inputs": [
+            {
+              "description": "Tokenized draft and the owner's bounded rewrite instruction.",
+              "name": "rewrite_context",
+              "type": "string"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "KYC Redraft",
+          "outputs": [
+            {
+              "description": "Rewritten tokenized email body.",
+              "name": "rewritten_template",
+              "type": "string"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [
+              "workflow.current_draft",
+              "workflow.redraft_instruction"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Restore the direct KYC redraft implementation.",
+            "strategy": "internal"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "Rewrite the supplied tokenized KYC email according to the user's instruction.\nPreserve every placeholder token exactly, including spelling, braces, and\nindex. Do not add, remove, duplicate, or invent a placeholder. Use no facts\noutside the supplied text and return only an object containing rewritten_template.\n",
+          "telemetry_namespace": "agent.kyc.redraft"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Rewrites a KYC disclosure from the current draft and exact approved workflow context.",
+          "id": "agent_kyc_redraft_full",
+          "inputs": [
+            {
+              "description": "Approved workflow context and bounded rewrite instruction.",
+              "name": "rewrite_context",
+              "type": "string"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "KYC Full Redraft",
+          "outputs": [
+            {
+              "description": "Rewritten disclosure email body.",
+              "name": "rewritten_body",
+              "type": "string"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [
+              "workflow.current_draft",
+              "workflow.approved_exports",
+              "workflow.redraft_instruction"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Restore the direct full-redraft implementation.",
+            "strategy": "internal"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "Revise the supplied KYC disclosure using only the current draft, inbound\nrequest, and exact approved information. Follow the owner's instruction,\nnever expand scopes or fabricate values, and return only an object containing\nrewritten_body.\n",
+          "telemetry_namespace": "agent.kyc.redraft_full"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Extracts approved fields and drafts a disclosure without fabricating missing values.",
+          "id": "agent_kyc_extract_and_draft",
+          "inputs": [
+            {
+              "description": "Approved scopes, exact domain information, and request context.",
+              "name": "disclosure_context",
+              "type": "string"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "KYC Extract and Draft",
+          "outputs": [
+            {
+              "description": "Grounded extracted fields, missing fields, and draft.",
+              "name": "disclosure",
+              "type": "object"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [
+              "workflow.approved_scopes",
+              "workflow.approved_exports",
+              "workflow.request.snippet"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Restore the direct KYC extraction implementation.",
+            "strategy": "internal"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "Extract only fields covered by the supplied approved scopes and draft a clear\nreply from the information owner's perspective. Use exact supplied values,\nlist absent fields as missing, and never fabricate personal information. Return\nexactly the extraction and draft object requested by the caller.\n",
+          "telemetry_namespace": "agent.kyc.extract_and_draft"
+        }
+      ],
       "surfaces": {
         "a2a": false,
         "android": false,

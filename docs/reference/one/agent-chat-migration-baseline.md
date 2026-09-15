@@ -77,6 +77,15 @@ A single memory-preference recheck completed in **10,963 ms**, passed its latenc
 
 No specialist migration has landed in this continuation. Record each phase revision, identical fixtures/model/configuration, per-family accuracy, latency and retained failures here before claiming parity.
 
+### Phase G routing decisions
+
+Calendar remains on One's existing deterministic toolset. The measured Gemini 3.7
+first-tool gate was **1/4** for the Calendar family, below the migration precondition;
+no `ask_calendar_agent` child was introduced. Re-run the comparable family fixture
+before reconsidering that boundary. KYC's four bounded drafting and extraction calls
+are now manifest-owned single-turn genes, with the current service contracts and
+unit fakes preserved for deterministic tests.
+
 ### Phase A live specialist evaluation
 
 The unchanged 22 Nav cases were evaluated through the real public Nav/Consent ADK path on Gemini 3.7, personal54/global. These are synthetic service fixtures with real model calls, not browser or production proof.

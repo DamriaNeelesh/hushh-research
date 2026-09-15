@@ -74,6 +74,26 @@ def test_kyc_owns_strict_zero_knowledge_formatter_contract() -> None:
     assert formatter["backend_plaintext_allowed"] is False
 
 
+def test_kyc_llm_genes_are_manifest_owned_single_turn_contracts() -> None:
+    manifest = load("kyc")
+    genes = {child.id: child for child in manifest.subagents}
+    expected = {
+        "agent_kyc_route",
+        "agent_kyc_redraft",
+        "agent_kyc_redraft_full",
+        "agent_kyc_extract_and_draft",
+    }
+    assert expected <= genes.keys()
+    for gene_id in expected:
+        gene = genes[gene_id]
+        assert gene.runtime.adk_mode == "single_turn"
+        assert gene.runtime.transport == ["in_process"]
+        assert gene.system_instruction.strip()
+        assert gene.privacy.plaintext_telemetry is False
+        assert gene.performance.max_output_tokens > 0
+        assert gene.rollout.rollback.strip()
+
+
 def test_connected_systems_schema_mapper_is_manifest_owned_and_toolless() -> None:
     manifest = load("connected_systems")
     mapper = next(child for child in manifest.subagents if child.id == "crm_schema_mapper")
