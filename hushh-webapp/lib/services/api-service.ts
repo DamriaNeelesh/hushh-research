@@ -239,7 +239,7 @@ function isLocalNativeHost(host: string | null): boolean {
   return Boolean(host && LOCAL_NATIVE_HOSTS.has(host));
 }
 
-function normalizeNativeBackendUrl(raw: string): string {
+export function normalizeNativeBackendUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/$/, "");
   const platform = Capacitor.getPlatform();
   const backendHost = hostFromUrl(trimmed);

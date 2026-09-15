@@ -3,13 +3,24 @@
 import { useEffect, useRef, useState } from "react";
 
 import { OneLocationAgentPage } from "@/app/one/location/page";
-import { LocationSetupFlow } from "@/components/location/setup/location-setup-flow";
+import dynamic from "next/dynamic";
 import { useOneVoiceLiveEnabled } from "@/lib/one-voice/readiness";
 import {
   SetupCapabilityLoading,
   useSetupCapabilityCoordinator,
 } from "@/components/onboarding/setup/setup-capability-coordinator";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
+
+const LocationSetupFlow = dynamic(
+  () =>
+    import("@/components/location/setup/location-setup-flow").then(
+      (module) => module.LocationSetupFlow,
+    ),
+  {
+    ssr: false,
+    loading: () => <SetupCapabilityLoading label="Preparing location setup…" />,
+  },
+);
 
 function LocationSetupReturn({ onReturn }: { onReturn: () => void }) {
   const returnedRef = useRef(false);

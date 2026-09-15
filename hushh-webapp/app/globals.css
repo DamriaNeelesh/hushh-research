@@ -6611,3 +6611,53 @@ body[data-persona-surface="ria"] {
   [data-slot="settings-row-title"] {
   color: var(--app-destructive) !important;
 }
+
+/* One Live Voice dock: the conversation panel rises from the pill, the level
+   bars ease between frames, a partial transcript line breathes while the
+   words are still arriving. All of it is switched off under reduced motion;
+   the pill then shows a static level bar instead of the waveform. */
+@keyframes one-voice-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes one-voice-partial-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.one-voice-panel-enter {
+  animation: one-voice-panel-enter var(--motion-duration-md, 240ms)
+    var(--motion-ease-decelerate, cubic-bezier(0, 0, 0.2, 1)) both;
+}
+
+.one-voice-level-fill {
+  transition: width var(--motion-duration-xs, 120ms)
+    var(--motion-ease-standard, cubic-bezier(0.2, 0, 0, 1));
+}
+
+.one-voice-transcript-partial {
+  animation: one-voice-partial-breathe 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .one-voice-panel-enter,
+  .one-voice-transcript-partial {
+    animation: none !important;
+  }
+
+  .one-voice-level-fill {
+    transition: none !important;
+  }
+}

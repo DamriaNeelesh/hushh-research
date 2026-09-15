@@ -136,7 +136,9 @@ export function useVoiceSessionSelector<T>(selector: (state: VoiceSessionState) 
  */
 export function useVoiceToolEffects(handlers: VoiceToolEffectHandlers): void {
   const ref = useRef(handlers);
-  ref.current = handlers;
+  useEffect(() => {
+    ref.current = handlers;
+  });
   useEffect(() => {
     const key = Symbol("voice-effects");
     const proxy: VoiceToolEffectHandlers = {
