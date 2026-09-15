@@ -61,7 +61,12 @@ final class AppUITests: XCTestCase {
             loginButton.exists && loginButton.isHittable,
             "Login must become usable after the native privacy cover releases"
         )
-        XCTAssertFalse(app.staticTexts["Protecting private information\u{2026}"].exists)
+        let privacyCover = app.staticTexts["Protecting private information\u{2026}"]
+        let coverDeadline = Date().addingTimeInterval(5)
+        while Date() < coverDeadline, privacyCover.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertFalse(privacyCover.exists, "Privacy cover must release after login becomes usable")
     }
 
     func testPublicAndAuthRoutes() throws {
