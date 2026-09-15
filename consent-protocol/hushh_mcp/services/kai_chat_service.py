@@ -28,6 +28,7 @@ from typing import Optional
 
 from google.genai import types as genai_types
 
+from hushh_mcp.agents.kai.runtime import run_kai_chat_turn
 from hushh_mcp.constants import GEMINI_MODEL
 from hushh_mcp.hushh_adk.manifest import ManifestLoader
 from hushh_mcp.runtime_providers import (
@@ -148,6 +149,7 @@ class KaiChatService:
         user_id: str,
         message: str,
         conversation_id: Optional[str] = None,
+        consent_token: Optional[str] = None,
     ) -> KaiChatResponse:
         """
         Process a user message and generate a response.
@@ -219,6 +221,8 @@ class KaiChatService:
             response_text, tokens, response_valid = await self._generate_validated_response(
                 system_prompt,
                 message,
+                user_id=user_id,
+                consent_token=consent_token,
             )
 
             if not response_valid:
@@ -627,6 +631,43 @@ class KaiChatService:
             logger.error("kai_chat_service.generate_response.error: %s", e)
             return "I'm having trouble generating a response right now. Please try again.", None
 
+    async def _generate_adk_response(
+        self,
+        system_prompt: str,
+        user_message: str,
+        *,
+        user_id: str,
+        consent_token: str,
+        stricter: bool = False,
+        previous_response: Optional[str] = None,
+    ) -> tuple[str, Optional[int]]:
+        """Generate through Kai's manifest-owned ADK chat child."""
+
+        retry_note = ""
+        if stricter:
+            retry_note = (
+                "\n\nIMPORTANT RETRY INSTRUCTIONS:\n"
+                "- Return one direct assistant reply only.\n"
+                "- Do not include role labels like 'User:' or 'Kai:'.\n"
+                "- Do not return placeholders, templates, or meta commentary.\n"
+                f"- The reply must be specific, complete, and longer than {MIN_RESPONSE_CHARS} characters.\n"
+                "- If the available context is insufficient, say that clearly and keep the reply useful.\n"
+                "- Do not repeat generic fallback text.\n"
+            )
+            if previous_response:
+                retry_note += f"\nPrevious invalid response:\n{previous_response}\n"
+        try:
+            response = await run_kai_chat_turn(
+                system_instruction=system_prompt,
+                user_message=f"{user_message}{retry_note}",
+                user_id=user_id,
+                consent_token=consent_token,
+            )
+            return response, None
+        except Exception as error:
+            logger.error("kai_chat_service.adk_response.error: %s", type(error).__name__)
+            return SAFE_FALLBACK_RESPONSE, None
+
     def _build_generation_prompt(
         self,
         *,
@@ -695,12 +736,24 @@ class KaiChatService:
         self,
         system_prompt: str,
         user_message: str,
+        *,
+        user_id: Optional[str] = None,
+        consent_token: Optional[str] = None,
     ) -> tuple[str, Optional[int], bool]:
         """
         Generate a chat response, validate it, retry once with stricter instructions,
         and finally return a safe fallback if no valid answer is produced.
         """
-        response_text, tokens = await self._generate_response(system_prompt, user_message)
+        use_adk = bool(user_id and consent_token)
+        if use_adk:
+            response_text, tokens = await self._generate_adk_response(
+                system_prompt,
+                user_message,
+                user_id=str(user_id),
+                consent_token=str(consent_token),
+            )
+        else:
+            response_text, tokens = await self._generate_response(system_prompt, user_message)
         validation = self.validate_response(response_text)
         if validation.is_valid:
             return validation.text, tokens, True
@@ -714,12 +767,22 @@ class KaiChatService:
             validation.reason,
         )
 
-        retry_text, retry_tokens = await self._generate_response(
-            system_prompt,
-            user_message,
-            stricter=True,
-            previous_response=validation.text,
-        )
+        if use_adk:
+            retry_text, retry_tokens = await self._generate_adk_response(
+                system_prompt,
+                user_message,
+                user_id=str(user_id),
+                consent_token=str(consent_token),
+                stricter=True,
+                previous_response=validation.text,
+            )
+        else:
+            retry_text, retry_tokens = await self._generate_response(
+                system_prompt,
+                user_message,
+                stricter=True,
+                previous_response=validation.text,
+            )
         retry_validation = self.validate_response(retry_text)
         if retry_validation.is_valid:
             return retry_validation.text, retry_tokens, True
