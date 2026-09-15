@@ -1,7 +1,7 @@
 # ADK conformance recordings for specialist agents
 
 Deterministic, model-free regression for the private agent's specialist agents,
-built on ADK's own `RecordingsPlugin` / `ReplayPlugin` (google-adk 2.4.0).
+built on ADK's own `RecordingsPlugin` / `ReplayPlugin` (google-adk 2.9.0).
 
 A recording captures, per case, the exact sequence the agent produced: every
 model request and response, every tool call and response. A replay feeds the

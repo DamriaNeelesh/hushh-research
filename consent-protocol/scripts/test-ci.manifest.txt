@@ -269,3 +269,6 @@ tests/services/test_gemini_model_contract.py
 tests/test_fleet_text_model_switch.py
 tests/test_hushh_adk_manifest_and_factory.py
 tests/scripts/test_probe_gemini_generation_contract.py
+
+# The pinned ADK version, no workflow-graph imports, session semantics, A2A import.
+tests/test_adk_pin_contract.py

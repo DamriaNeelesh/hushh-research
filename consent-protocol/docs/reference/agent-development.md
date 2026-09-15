@@ -652,15 +652,26 @@ The verifier checks:
 - Required agent -> operon data-source calls for fundamental/sentiment/valuation paths.
 
 The current pinned runtime is intentionally **not** an A2A v1 release
-candidate. An isolated dependency spike resolves `google-adk==2.4.0` with
-`a2a-sdk==1.1.0`, but importing ADK's `RemoteA2aAgent` fails because ADK
-imports `a2a.client.ClientEvent`, which A2A SDK 1.1.0 does not export. Keep
-One's endpoint marked `officialA2A: false` until a pinned ADK/A2A pair passes
-the complete Agent Card, Task, streaming, cancellation, and resume matrix.
+candidate. Measured on 2026-09-14 when the pin moved from `google-adk==2.4.0`
+to `google-adk==2.9.0`:
 
-The same spike confirms that `google-adk==2.4.0` can import
-`RemoteA2aAgent` with `a2a-sdk==0.3.26`. That establishes only legacy SDK
-compatibility; it must never be treated as A2A v1 compatibility.
+- `google-adk==2.9.0` declares `a2a-sdk[http-server]>=0.3.4,<2` (2.4.0
+  declared `<0.4`). The committed `uv.lock` still resolves `a2a-sdk==0.3.26`.
+- With that locked pair, `from google.adk.agents.remote_a2a_agent import
+  RemoteA2aAgent` imports. `tests/test_adk_pin_contract.py` pins this.
+- An isolated scratch resolution of the same `pyproject.toml` with
+  `a2a-sdk>=1.1,<2` added resolves (`a2a-sdk==1.1.2`, plus `json-rpc`;
+  `ag-ui-adk==0.7.0` unchanged). That is a resolver fact only: the 1.x pair
+  was not installed, so whether `RemoteA2aAgent` imports against it, and
+  whether the transport behaves, is unproven. ADK 2.9.0 ships
+  `google/adk/a2a/_compat.py`, which rebuilds the `ClientEvent` tuple that
+  1.x removed and that broke the 2.4.0 import; that is a reason to run the
+  matrix, not a substitute for it.
+
+Keep One's endpoint marked `officialA2A: false` until a pinned ADK/A2A pair
+passes the complete Agent Card, Task, streaming, cancellation, and resume
+matrix. Importing against 0.3.26 establishes only legacy SDK compatibility; it
+must never be treated as A2A v1 compatibility.
 
 ### Local ADK A2A transport rehearsal
 
