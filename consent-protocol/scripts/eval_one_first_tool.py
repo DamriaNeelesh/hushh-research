@@ -73,7 +73,7 @@ DEFAULT_MIN_FAMILY_RATE = 0.8
 STRICT_FAMILIES: dict[str, float] = {"consent": 1.0, "delegation": 1.0}
 THINKING_LEVELS = ("low", "medium", "high")
 CALL_GAP_SECONDS = 2.0
-QUOTA_RETRY_ATTEMPTS = 3
+QUOTA_RETRY_ATTEMPTS = 6
 _LABEL_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 # (instruction, prompt, screen) -> first tool name, "run_app_action:<id>", or None.
@@ -363,9 +363,17 @@ def evaluate_gates(
 # ---------------------------------------------------------------------------
 
 
+_TRANSIENT_MARKERS = ("RESOURCE_EXHAUSTED", "429", "DEADLINE_EXCEEDED", "504", "503", "UNAVAILABLE")
+
+
 def _is_quota_error(exc: Exception) -> bool:
+    """Quota and transient provider failures are retried; everything else is a result.
+
+    Measured 2026-09-14: Vertex answered a baseline run with 504 DEADLINE_EXCEEDED
+    mid-way, which is not a property of the instruction under test.
+    """
     message = str(exc).upper()
-    return "RESOURCE_EXHAUSTED" in message or "429" in message
+    return any(marker in message for marker in _TRANSIENT_MARKERS)
 
 
 def first_tool_from_response(response: Any) -> str | None:
@@ -424,7 +432,9 @@ def make_live_first_tool(
             except Exception as exc:
                 last_error = exc
                 if _is_quota_error(exc) and attempt < QUOTA_RETRY_ATTEMPTS:
-                    time.sleep(call_gap_seconds * attempt)
+                    # Exponential backoff, capped: 429s on a shared project quota
+                    # clear in tens of seconds, not in two.
+                    time.sleep(min(call_gap_seconds * (2 ** (attempt - 1)), 60.0))
                     continue
                 raise
         else:

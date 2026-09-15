@@ -120,4 +120,33 @@ class TimedADKAgent(ADKAgent):
             timing.outcome = OUTCOME_ERROR
             raise
         finally:
+            if timing.outcome in (OUTCOME_ERROR, OUTCOME_CLIENT_DISCONNECT):
+                await self._release_execution(input)
             timing.log()
+
+    async def _release_execution(self, input: RunAgentInput) -> None:
+        """Drop the bridge's execution entry for a run that ended in error or disconnect.
+
+        The bridge keeps an execution registered after a run when the session
+        still shows a pending tool call, so a resume can find it. A run that
+        died between a function call and its response (a provider 504 mid
+        tool loop, a client that went away) leaves exactly that shape behind and
+        would hold one of the process-wide execution slots until it is stale
+        (600 s by default). Nothing can resume such a run, so the slot is
+        released here. Measured 2026-09-14: a handful of these locked the whole
+        route with "Maximum concurrent executions (10) reached".
+        """
+        registry = getattr(self, "_active_executions", None)
+        lock = getattr(self, "_execution_lock", None)
+        if not isinstance(registry, dict) or lock is None:
+            return
+        try:
+            user_id = self._get_user_id(input)
+        except Exception:  # noqa: BLE001 - a run that never resolved its user holds no slot
+            return
+        key = (input.thread_id, user_id)
+        try:
+            async with lock:
+                registry.pop(key, None)
+        except Exception:  # noqa: BLE001 - never let slot release mask the run outcome
+            logger.debug("one_agent_chat_execution_release_failed", exc_info=True)
