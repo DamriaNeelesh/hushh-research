@@ -161,3 +161,17 @@ the shared managed Vertex adapter and no child transfer. Commit `34be51bd8` adds
 route, manifest-boundary, and auth-matrix coverage. Focused Kai tests pass (96/96), and the
 full backend runner passes (3,867 passed, 191 skipped). A live provider run is not claimed by
 this source phase; the existing route/latency evidence above remains the acceptance record.
+
+### Phase F continuation: Kai analyst operons
+
+Fundamental, sentiment, and valuation analysis now use the manifest-owned
+`agent_kai_fundamental`, `agent_kai_sentiment`, and `agent_kai_valuation`
+single-turn genes through the shared ADK runtime. The analysts still own their
+existing consent-checked data fetches and deterministic fallbacks; only the
+structured Gemini generation seam moved. JSON response shapes and downstream
+`FundamentalInsight`, `SentimentInsight`, and `ValuationInsight` adapters are
+preserved. Commit `0b95acce6` adds the three manifest contracts, shared runtime
+dispatch, and operon routing tests. Focused Kai manifest/runtime/operon checks
+pass (45/45); the full backend runner passes (3,867 passed, 191 skipped).
+A live analyst/debate measurement is not claimed by this phase, so the existing
+failed or incomplete performance evidence remains in the acceptance record.
