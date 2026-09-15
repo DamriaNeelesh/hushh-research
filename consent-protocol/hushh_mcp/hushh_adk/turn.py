@@ -67,6 +67,7 @@ class _CallBudget(BasePlugin):
         super().__init__(name="hushh_specialist_call_budget")
         self.limit = limit
         self.calls = 0
+        self.last_progress: float | None = None
         self.tool_calls: list[types.FunctionCall] = []
         self.tool_results: list[types.FunctionResponse] = []
 
@@ -86,6 +87,12 @@ class _CallBudget(BasePlugin):
         )
         return None
 
+    async def after_model_callback(self, *, callback_context: Any, llm_response: Any):
+        # A received response is actual request progress; merely starting a
+        # request (or retrying one) does not refresh the inactivity deadline.
+        self.last_progress = asyncio.get_running_loop().time()
+        return None
+
     async def after_tool_callback(
         self, *, tool: Any, tool_args: dict, tool_context: Any, result: Any
     ):
@@ -96,6 +103,7 @@ class _CallBudget(BasePlugin):
                 response=copy.deepcopy(result if isinstance(result, dict) else {"result": result}),
             )
         )
+        self.last_progress = asyncio.get_running_loop().time()
         return None
 
 
@@ -210,6 +218,7 @@ async def run_specialist_adk_turn(
                 first_event_timeout_s=first_event_timeout_s,
                 between_event_timeout_s=between_event_timeout_s,
                 total_timeout_s=total_timeout_s,
+                progress_timestamp=lambda: budget.last_progress,
             ):
                 if event.error_code or event.error_message:
                     # ADK emits an error event before raising the original cause.

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import math
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import TypeVar, cast
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ async def bounded_adk_events(
     first_event_timeout_s: float = 20,
     between_event_timeout_s: float = 20,
     total_timeout_s: float = 60,
+    progress_timestamp: Callable[[], float | None] | None = None,
 ) -> AsyncIterator[T]:
     """Cancel and close a stalled source; never retry an invocation."""
     for value in (first_event_timeout_s, between_event_timeout_s, total_timeout_s):
@@ -69,11 +70,29 @@ async def bounded_adk_events(
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise asyncio.TimeoutError
-            timeout = min(
-                between_event_timeout_s if saw_event else first_event_timeout_s, remaining
-            )
+            idle_started = loop.time()
+            idle_limit = between_event_timeout_s if saw_event else first_event_timeout_s
+            # Demand exactly once for this outer event. A nested callback can
+            # extend the idle wait, never request another source advancement.
             demand.set()
-            is_event, value = await asyncio.wait_for(queue.get(), timeout)
+            while True:
+                now = loop.time()
+                last_progress = progress_timestamp() if progress_timestamp else None
+                if last_progress is not None:
+                    if not math.isfinite(last_progress) or last_progress > now:
+                        raise ValueError("ADK progress must use the current loop's monotonic clock")
+                    idle_started = max(idle_started, last_progress)
+                timeout = min(idle_started + idle_limit - now, deadline - now)
+                if timeout <= 0:
+                    raise asyncio.TimeoutError
+                try:
+                    is_event, value = await asyncio.wait_for(queue.get(), timeout)
+                    break
+                except TimeoutError:
+                    # Child AgentTool events are hidden from the outer runner.
+                    # Recheck completed child work before declaring inactivity.
+                    # The total deadline is never changed.
+                    continue
             if not is_event:
                 if isinstance(value, Exception):
                     raise value

@@ -318,3 +318,161 @@ async def test_cancellation_resistant_source_reports_unconfirmed_cleanup(monkeyp
     finally:
         release.set()
         await asyncio.wait_for(stopped.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_nested_progress_extends_idle_without_prefetch():
+    loop = asyncio.get_running_loop()
+    progress = [None]
+    writes = []
+
+    async def source():
+        for _ in range(4):
+            await asyncio.sleep(0.025)
+            progress[0] = loop.time()
+        yield "nested result"
+        writes.append("must await demand")
+        yield "next result"
+
+    events = bounded_adk_events(
+        source(),
+        first_event_timeout_s=0.06,
+        total_timeout_s=0.5,
+        progress_timestamp=lambda: progress[0],
+    )
+    assert await anext(events) == "nested result"
+    await asyncio.sleep(0.03)
+    assert writes == []
+    await events.aclose()
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_stalled_child_expires_after_last_real_progress():
+    loop = asyncio.get_running_loop()
+    progress = [None]
+    stopped = asyncio.Event()
+
+    async def source():
+        try:
+            await asyncio.sleep(0.03)
+            progress[0] = loop.time()
+            await asyncio.Event().wait()
+            yield "unreachable"
+        finally:
+            stopped.set()
+
+    started = loop.time()
+    with pytest.raises(TimeoutError):
+        async for _ in bounded_adk_events(
+            source(),
+            first_event_timeout_s=0.06,
+            total_timeout_s=0.5,
+            progress_timestamp=lambda: progress[0],
+        ):
+            pass
+    assert loop.time() - progress[0] >= 0.055
+    assert loop.time() - started < 0.4 and stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_progress_cannot_extend_total_deadline():
+    loop = asyncio.get_running_loop()
+    progress = [None]
+    stopped = asyncio.Event()
+
+    async def source():
+        try:
+            while True:
+                await asyncio.sleep(0.015)
+                progress[0] = loop.time()
+            yield "unreachable"
+        finally:
+            stopped.set()
+
+    started = loop.time()
+    with pytest.raises(TimeoutError):
+        async for _ in bounded_adk_events(
+            source(),
+            first_event_timeout_s=0.05,
+            total_timeout_s=0.12,
+            progress_timestamp=lambda: progress[0],
+        ):
+            pass
+    assert 0.11 <= loop.time() - started < 0.4
+    assert stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_outer_event_racing_progress_is_not_lost_or_prefetched():
+    loop = asyncio.get_running_loop()
+    progress = [None]
+    visited = []
+
+    async def source():
+        for index in range(3):
+            await asyncio.sleep(0.02)
+            progress[0] = loop.time()
+            visited.append(index)
+            yield index
+
+    events = bounded_adk_events(
+        source(),
+        first_event_timeout_s=0.05,
+        between_event_timeout_s=0.05,
+        total_timeout_s=0.5,
+        progress_timestamp=lambda: progress[0],
+    )
+    for index in range(3):
+        assert await anext(events) == index
+        await asyncio.sleep(0.02)
+        assert visited == list(range(index + 1))
+    with pytest.raises(StopAsyncIteration):
+        await anext(events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("track_progress", [True, False])
+async def test_real_nested_agent_progress_prevents_false_idle_timeout(monkeypatch, track_progress):
+    if not track_progress:
+
+        def without_progress(source, **kwargs):
+            kwargs["progress_timestamp"] = None
+            return bounded_adk_events(source, **kwargs)
+
+        monkeypatch.setattr("hushh_mcp.hushh_adk.turn.bounded_adk_events", without_progress)
+
+    class SlowModel(ScriptedLlm):
+        async def generate_content_async(self, llm_request, stream=False):
+            await asyncio.sleep(0.25)
+            async for item in super().generate_content_async(llm_request, stream):
+                yield item
+
+    async def read_value():
+        await asyncio.sleep(0.25)
+        return {"value": "fixture"}
+
+    child = LlmAgent(
+        name="child",
+        model=SlowModel([response(call="read_value"), response(text="child answer")]),
+        tools=[read_value],
+    )
+    built = agent(
+        ScriptedLlm([response(call="child")]),
+        tools=[AgentTool(agent=child, skip_summarization=True)],
+    )
+    pending = run(
+        built,
+        first_event_timeout_s=1.0,
+        between_event_timeout_s=0.4,
+        total_timeout_s=3.0,
+    )
+    if not track_progress:
+        with pytest.raises(SpecialistAdkTurnError) as failure:
+            await pending
+        assert isinstance(failure.value.__cause__, TimeoutError)
+        return
+    result = await pending
+    assert result.final_text == "child answer"
+    assert result.llm_calls == 3
+    assert [receipt.name for receipt in result.tool_results] == ["read_value", "child"]
