@@ -114,6 +114,23 @@ def test_portfolio_import_extractor_is_manifest_owned_single_turn_contract() -> 
         assert gene.rollout.rollback.strip()
 
 
+def test_memory_attribute_learner_is_manifest_owned_single_turn_contract() -> None:
+    manifest = load("personal_information")
+    gene = next(
+        child
+        for child in manifest.subagents
+        if child.id == "agent_personal_information_attribute_learner"
+    )
+    assert gene.name == "Attribute Learner"
+    assert gene.model.name == "gemini-default"
+    assert resolve_fleet_model_name(gene.model.name) == GEMINI_MODEL
+    assert gene.runtime.adk_mode == "single_turn"
+    assert gene.runtime.transport == ["in_process"]
+    assert gene.privacy.plaintext_telemetry is False
+    assert gene.performance.max_output_tokens == 2048
+    assert gene.rollout.rollback.strip()
+
+
 def test_connected_systems_schema_mapper_is_manifest_owned_and_toolless() -> None:
     manifest = load("connected_systems")
     mapper = next(child for child in manifest.subagents if child.id == "crm_schema_mapper")

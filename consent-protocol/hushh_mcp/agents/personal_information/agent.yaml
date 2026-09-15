@@ -1,7 +1,7 @@
 manifest_version: 2
 id: agent_personal_information
 name: Memory Agent
-version: 0.1.0
+version: 0.2.0
 description: >
   Memory assistant under One. Lets the owner review what One remembers, what they
   have made available, and who has asked to see it, with consent. Delegatable by
@@ -118,3 +118,49 @@ tools:
     description: Deny a pending marketplace access request server-side on the owner's explicit instruction. request_id from list_access_requests.
     py_func: hushh_mcp.agents.personal_information.tools.deny_access_request
     required_scope: cap.pkm.marketplace.manage
+subagents:
+  - id: agent_personal_information_attribute_learner
+    name: Attribute Learner
+    description: Extracts explicitly stated preferences from one completed conversation turn for encrypted PKM mutation events.
+    model:
+      provider: gemini
+      name: gemini-default
+      mode: hushh_managed_vertex
+      thinking_level: low
+    runtime:
+      kind: adk
+      adk_mode: single_turn
+      transport:
+        - in_process
+    system_instruction: |
+      You are the Memory Agent's Attribute Learner. Extract only preferences,
+      facts, or characteristics explicitly stated in the supplied user and
+      assistant messages. Do not infer, diagnose, or summarize. Use lowercase
+      snake_case keys and a broad durable domain. Return JSON only in the
+      requested attributes contract; return an empty array when no clear fact
+      is stated. This child never writes PKM and never claims persistence.
+    inputs:
+      - name: conversation_turn
+        type: object
+        description: One completed user and assistant message pair.
+    outputs:
+      - name: attributes
+        type: array
+        description: Explicitly stated attributes with domain, key, value, and confidence.
+    privacy:
+      context_allowlist:
+        - conversation.user_message
+        - conversation.assistant_message
+      plaintext_telemetry: false
+    telemetry_namespace: agent.personal_information.attribute_learner
+    performance:
+      latency_p95_ms: 30000
+      max_output_tokens: 2048
+    rollout:
+      strategy: general
+      rollback: Disable the Attribute Learner child and preserve the conversation without inference.
+    availability:
+      environments:
+        - development
+        - uat
+        - production

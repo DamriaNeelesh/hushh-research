@@ -125,3 +125,8 @@ manifest-owned Portfolio Import genes through the shared runtime adapter; no
 provider client is constructed directly by those parser paths. A live brokerage
 document run remains unclaimed, and other specialist loops remain in the migration
 queue.
+
+The Memory Agent's background attribute learner is also declared as
+`agent_personal_information_attribute_learner` and uses the same bounded
+single-turn runtime. It extracts explicit claims only; PKM mutation events
+remain owned by the existing service, and the learner has no write tools.

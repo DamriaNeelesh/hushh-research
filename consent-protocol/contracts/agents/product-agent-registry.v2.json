@@ -2530,7 +2530,69 @@
       },
       "side_effects": [],
       "status": "experimental",
-      "subagents": [],
+      "subagents": [
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Extracts explicitly stated preferences from one completed conversation turn for encrypted PKM mutation events.",
+          "id": "agent_personal_information_attribute_learner",
+          "inputs": [
+            {
+              "description": "One completed user and assistant message pair.",
+              "name": "conversation_turn",
+              "type": "object"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "Attribute Learner",
+          "outputs": [
+            {
+              "description": "Explicitly stated attributes with domain, key, value, and confidence.",
+              "name": "attributes",
+              "type": "array"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 30000,
+            "max_output_tokens": 2048
+          },
+          "privacy": {
+            "context_allowlist": [
+              "conversation.user_message",
+              "conversation.assistant_message"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Disable the Attribute Learner child and preserve the conversation without inference.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are the Memory Agent's Attribute Learner. Extract only preferences,\nfacts, or characteristics explicitly stated in the supplied user and\nassistant messages. Do not infer, diagnose, or summarize. Use lowercase\nsnake_case keys and a broad durable domain. Return JSON only in the\nrequested attributes contract; return an empty array when no clear fact\nis stated. This child never writes PKM and never claims persistence.\n",
+          "telemetry_namespace": "agent.personal_information.attribute_learner"
+        }
+      ],
       "surfaces": {
         "a2a": false,
         "android": false,
@@ -2588,7 +2650,7 @@
         }
       ],
       "ui_type": "chat",
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     {
       "action_ids": [],
@@ -2852,7 +2914,192 @@
       },
       "side_effects": [],
       "status": "experimental",
-      "subagents": [],
+      "subagents": [
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Extracts a brokerage statement into the bounded portfolio-import contract.",
+          "id": "agent_portfolio_import_extract",
+          "inputs": [
+            {
+              "description": "Private PDF or CSV content plus a deterministic text excerpt.",
+              "name": "statement",
+              "type": "object"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "Portfolio Statement Extractor",
+          "outputs": [
+            {
+              "description": "Bounded financial statement extraction contract.",
+              "name": "extraction",
+              "type": "object"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 120000,
+            "max_output_tokens": 32768
+          },
+          "privacy": {
+            "context_allowlist": [
+              "portfolio.statement.content",
+              "portfolio.statement.filename",
+              "portfolio.statement.excerpt"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Disable the ADK extractor and retain the previous bounded import parser until the contract is repaired.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are the Portfolio Statement Extractor, an internal child of the\nPortfolio Import Agent. Extract only facts present in the supplied\nbrokerage statement and return the requested JSON contract.\n\nPreserve the statement's numbers, signs, dates, account metadata,\nholdings, transactions, income, cash, and disclosures. Never invent a\nvalue. Use null for a missing scalar and an empty array or object when a\nsection is absent. Keep every holding as a separate row unless the\nstatement itself has already consolidated it. Return JSON only and never\ninclude markdown or commentary.\n\nThe caller supplies a deterministic page excerpt when available and may\nalso supply the original PDF or CSV as a private model input. Do not\nexpose document contents in telemetry or claim that a write occurred.\n",
+          "telemetry_namespace": "agent.portfolio_import.extract"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Classifies whether a document is a brokerage statement from bounded text.",
+          "id": "agent_portfolio_import_relevance",
+          "inputs": [
+            {
+              "description": "Filename and bounded text sample only.",
+              "name": "document_metadata",
+              "type": "object"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "Portfolio Document Relevance Classifier",
+          "outputs": [
+            {
+              "description": "Relevance decision with confidence and reason.",
+              "name": "relevance",
+              "type": "object"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 10000,
+            "max_output_tokens": 256
+          },
+          "privacy": {
+            "context_allowlist": [
+              "portfolio.statement.filename",
+              "portfolio.statement.text_sample"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Disable model relevance classification and fall back to the deterministic relevance heuristic.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are the Portfolio Document Relevance Classifier, an internal child\nof Portfolio Import. Decide only whether the supplied filename and text\nsample describe a brokerage or investment account statement. Return the\nrequested JSON fields, use a confidence between 0 and 1, and explain the\nevidence briefly. Never extract account values, infer a user identity,\nor claim that an import occurred. Return JSON only.\n",
+          "telemetry_namespace": "agent.portfolio_import.relevance"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
+          "description": "Extracts full brokerage statement details from a private PDF document.",
+          "id": "agent_portfolio_import_comprehensive",
+          "inputs": [
+            {
+              "description": "Private PDF document and extraction instructions.",
+              "name": "statement",
+              "type": "object"
+            }
+          ],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "Comprehensive Portfolio Document Extractor",
+          "outputs": [
+            {
+              "description": "Full comprehensive portfolio extraction object.",
+              "name": "extraction",
+              "type": "object"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 120000,
+            "max_output_tokens": 32768
+          },
+          "privacy": {
+            "context_allowlist": [
+              "portfolio.statement.content",
+              "portfolio.statement.filename"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Disable comprehensive ADK extraction and retain the deterministic parser result for inspection.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are the Comprehensive Portfolio Document Extractor, an internal\nchild of Portfolio Import. Read the supplied private brokerage PDF and\nreturn the complete extraction JSON contract requested by the caller.\nPreserve every supported account, holding, transaction, income, cash,\nhistorical, and disclosure field that is present. Do not summarize,\nhallucinate, or expose document contents in telemetry. Use null for a\nmissing scalar and empty collections for absent sections. Return JSON\nonly, without markdown or commentary.\n",
+          "telemetry_namespace": "agent.portfolio_import.comprehensive"
+        }
+      ],
       "surfaces": {
         "a2a": false,
         "android": false,
@@ -2892,7 +3139,7 @@
         }
       ],
       "ui_type": "upload",
-      "version": "1.0.0"
+      "version": "1.2.0"
     },
     {
       "action_ids": [
