@@ -100,9 +100,7 @@ interface VaultFlowProps {
 
 const VAULT_ALTERNATIVE_BUTTON_CLASS =
   "min-h-11 h-auto whitespace-normal rounded-full border border-[color:var(--app-accent-border)] px-3 py-2 text-[13px] leading-snug font-medium sm:text-[14px] !bg-[color:var(--app-accent-tint)] !text-[color:var(--app-accent-deep)] hover:!bg-[color:var(--app-accent-surface-strong)]";
-const VAULT_COMPACT_ALTERNATIVE_BUTTON_CLASS =
-  "min-h-9 h-9 whitespace-nowrap rounded-full border border-[color:var(--app-accent-border)] px-3 text-[13px] font-semibold !bg-[color:var(--app-accent-tint)] !text-[color:var(--app-accent-deep)] hover:!bg-[color:var(--app-accent-surface-strong)]";
-const VAULT_RECOVERY_LINK_CLASS =
+const VAULT_ALTERNATIVE_LINK_CLASS =
   "min-h-11 h-auto self-start rounded-none px-0 py-2 text-[13px] font-medium leading-5 !text-[color:var(--app-accent)] underline-offset-4 hover:underline focus-visible:rounded-[var(--app-radius-sm)]";
 const VAULT_ESCAPE_LINK_CLASS =
   "min-h-11 h-11 rounded-none px-0 py-0 text-[13px] font-semibold leading-5 !text-[color:var(--app-accent-deep)] underline-offset-2 hover:underline focus-visible:rounded-[var(--app-radius-sm)]";
@@ -1814,10 +1812,10 @@ export function VaultFlow({
                     <div className="flex flex-wrap items-start gap-2">
                       {showVaultKeyAlternative ? (
                         <Button
-                          variant="none"
-                          effect="fade"
+                          variant="link"
                           size="sm"
-                          className={VAULT_COMPACT_ALTERNATIVE_BUTTON_CLASS}
+                          showRipple={false}
+                          className={cn(VAULT_ALTERNATIVE_LINK_CLASS, "items-center h-11 min-h-11 py-0")}
                           data-testid="vault-use-passphrase-instead"
                           onClick={() => {
                             switchUnlockMethod();
@@ -1830,10 +1828,10 @@ export function VaultFlow({
                       ) : null}
                       {showPasskeyFallbackAlternative ? (
                         <Button
-                          variant="none"
-                          effect="fade"
+                          variant="link"
                           size="sm"
-                          className={VAULT_COMPACT_ALTERNATIVE_BUTTON_CLASS}
+                          showRipple={false}
+                          className={cn(VAULT_ALTERNATIVE_LINK_CLASS, "items-center h-11 min-h-11 py-0")}
                           onClick={() => {
                             switchUnlockMethod();
                             setPassphrase("");
@@ -1849,7 +1847,7 @@ export function VaultFlow({
                           variant="link"
                           size="sm"
                           showRipple={false}
-                          className={cn(VAULT_RECOVERY_LINK_CLASS, "items-start h-11 min-h-11 py-0")}
+                          className={cn(VAULT_ALTERNATIVE_LINK_CLASS, "items-center h-11 min-h-11 py-0")}
                           data-testid="vault-use-recovery-key"
                           onClick={handleShowRecoveryKey}
                           disabled={isSigningOut}

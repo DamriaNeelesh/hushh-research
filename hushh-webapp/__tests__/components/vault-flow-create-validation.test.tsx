@@ -324,7 +324,13 @@ describe("VaultFlow create validation", () => {
     expect(screen.getByText("Use another method")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Passkey" })).toBeTruthy();
     const recoveryButton = screen.getByRole("button", { name: "Recovery key" });
-    expect(recoveryButton).toHaveClass("h-11", "min-h-11", "items-start", "rounded-none", "py-0");
+    expect(recoveryButton).toHaveClass(
+      "h-11",
+      "min-h-11",
+      "items-center",
+      "rounded-none",
+      "py-0",
+    );
     expect(recoveryButton).not.toHaveClass("w-full");
     expect(recoveryButton).not.toHaveClass("border");
     expect(screen.getByText("Use another method").parentElement).toHaveClass(
@@ -348,7 +354,15 @@ describe("VaultFlow create validation", () => {
     render(<VaultFlow user={user} onSuccess={vi.fn()} />);
 
     expect(await screen.findByText("Use another method")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Passphrase" })).toBeTruthy();
+    const passphraseButton = screen.getByRole("button", { name: "Passphrase" });
+    expect(passphraseButton).toHaveClass(
+      "h-11",
+      "min-h-11",
+      "items-center",
+      "rounded-none",
+      "py-0",
+    );
+    expect(passphraseButton).not.toHaveClass("border");
     expect(screen.getByRole("button", { name: "Recovery key" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Passkey" })).toBeNull();
   });
