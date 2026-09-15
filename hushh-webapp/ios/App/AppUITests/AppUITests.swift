@@ -59,9 +59,9 @@ final class AppUITests: XCTestCase {
         }
         XCTAssertTrue(
             loginButton.exists && loginButton.isHittable,
-            "Login must become usable after bounded native resume validation"
+            "Login must become usable after the native privacy cover releases"
         )
-        XCTAssertFalse(app.staticTexts["Checking your session\u{2026}"].exists)
+        XCTAssertFalse(app.staticTexts["Protecting private information\u{2026}"].exists)
     }
 
     func testPublicAndAuthRoutes() throws {
