@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronLeft, LogOut, MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
 
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
 import { NativeRouteMarker } from "@/components/app-ui/native-route-marker";
 import { PhoneVerificationFlow } from "@/components/auth/phone-verification-flow";
@@ -310,7 +312,7 @@ export function PhoneMandatePageContent() {
 
   const shell = (
     <main
-      className={cn("relative w-full overflow-hidden bg-white dark:bg-[#000000]", verificationStep === "phone" && styles.refinedScreen)}
+      className={cn("relative w-full overflow-hidden bg-white dark:bg-[#000000]", verificationStep === "phone" && styles.refinedScreen, verificationStep === "code" && styles.codeScreen)}
       style={{
         height: "calc(100dvh - var(--app-scroll-bottom-pad, 0px))",
         minHeight: "calc(100svh - var(--app-scroll-bottom-pad, 0px))",
@@ -365,7 +367,11 @@ export function PhoneMandatePageContent() {
       >
         <div className={cn("flex w-full flex-none flex-col items-center gap-5 px-2 text-center", styles.flowStack)}>
           <div className={cn("flex w-full flex-col items-center gap-3", styles.flowHeading)}>
-            <div className={styles.existingBurst}><OneArcIllustration /></div>
+            {verificationStep === "code" ? (
+              <span role="img" aria-label="Hushh" className={styles.codeIcon}>🤫</span>
+            ) : (
+              <div className={styles.existingBurst}><OneArcIllustration /></div>
+            )}
             <span className={styles.hushhVisual} aria-hidden="true">🤫</span>
 
             <h1
@@ -373,14 +379,18 @@ export function PhoneMandatePageContent() {
               aria-level={1}
               aria-label={
                 verificationStep === "code"
-                  ? "Enter verification code"
-                  : "Verify your phone number"
+                  ? "Enter your code"
+                  : verificationStep === "phone"
+                    ? "Welcome to One"
+                    : "Verify your phone number"
               }
               className={cn("whitespace-nowrap font-bold text-[25px] sm:text-[27px] leading-[32px] tracking-[-0.5px] text-[#17130C] dark:text-[#F2F2F7]", styles.flowTitle)}
             >
               {verificationStep === "code"
-                ? "Enter verification code"
-                : "Verify your phone number"}
+                ? "Enter your code"
+                : verificationStep === "phone"
+                  ? "Welcome to One"
+                  : "Verify your phone number"}
             </h1>
           </div>
 
@@ -397,11 +407,32 @@ export function PhoneMandatePageContent() {
               onCompleted={continueToNextRoute}
               onContinueExisting={continueToNextRoute}
               onStepChange={setVerificationStep}
-              sendCodeLabel="Send a verification code"
-              confirmLabel="Verify"
+              sendCodeLabel="Continue"
+              phonePresentation="compact"
+              confirmLabel="Confirm"
+              codePresentation="onboarding"
               primaryActionClassName={styles.primaryAction}
               className={styles.phoneForm}
-              helperText=""
+              helperText={
+                <>
+                  By using your mobile number, you may receive SMS notifications
+                  from us.{" "}
+                  <Dialog modal>
+                    <DialogTrigger asChild>
+                      <button type="button" className={styles.learnMore}>
+                        Learn more
+                      </button>
+                    </DialogTrigger>
+                    <DialogContent srDescription="How your mobile number is used">
+                      <DialogTitle>About SMS notifications</DialogTitle>
+                      <p>
+                        We’ll send a verification code to confirm your mobile
+                        number. You may also receive SMS notifications from Hushh.
+                      </p>
+                    </DialogContent>
+                  </Dialog>
+                </>
+              }
             />
             <div id="recaptcha-container" className={cn("mt-3 min-h-0", styles.recaptcha)} />
           </div>
