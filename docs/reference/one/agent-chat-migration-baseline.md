@@ -1,6 +1,6 @@
 # Agent Chat migration measurements
 
-This record separates saved measurements from checkpoint claims. Specialist migrations have not yet passed their before/after gates. Historical artifacts remain under `consent-protocol/artifacts/regression/before/` (ignored).
+This record separates saved measurements from checkpoint claims. Specialist migrations have not yet passed their before/after gates. Generated historical run artifacts are preserved in the local regression evidence workspace and are intentionally not tracked.
 
 ## Visual Map
 
@@ -106,7 +106,7 @@ The unchanged 22 Nav cases were evaluated through the real public Nav/Consent AD
 
 The first three-repetition run observed 155 model requests. The progress-aware correction observed 150. Every completed attempt matched both tool and shape expectations. All repetitions must pass for a case to pass; failures remain in the denominator. All four unchanged gates failed on both runs: 90% first-tool, 90% shape, p50 ≤4s and p95 ≤8s. No provider failure is relabeled as successful model behavior. The corrected run recorded nested model and tool callbacks as progress; each timeout occurred about 20 seconds after the last observed progress, so it does not prove that the provider was still advancing silently.
 
-A preceding run was interrupted at the user's pause request and is not a completed measurement. Its partial log remains preserved. Complete reports are under `consent-protocol/artifacts/regression/phase-a/`, including `nav-adk-37-acceptance-resumed.json`. The measured dirty source was based on `d7c0ce99a` and preserved under the integration worktree's `tmp/phase-a-measured-source/` before subsequent edits. These measurements do not cover A2's later Connections and authority changes.
+A preceding run was interrupted at the user's pause request and is not a completed measurement. Its partial log remains preserved in the local regression evidence workspace. The complete Phase A reports, including `nav-adk-37-acceptance-resumed.json`, are retained there as generated evidence. The measured dirty source was based on `d7c0ce99a` and preserved under the integration worktree's local temporary evidence before subsequent edits. These measurements do not cover A2's later Connections and authority changes.
 
 The shared execution foundation is committed as `06e3373a7`; strict owner/hop primitives as `6e6d150cc`; nested-progress correction as `f2a916a4d`. Phase A's earlier frozen-source checks passed 3,092 backend tests (111 skipped) and 7,146 web tests (six skipped). These passing suites do not override failed live acceptance or establish completion of the remaining migration phases.
 
