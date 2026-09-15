@@ -272,3 +272,12 @@ tests/scripts/test_probe_gemini_generation_contract.py
 
 # The pinned ADK version, no workflow-graph imports, session semantics, A2A import.
 tests/test_adk_pin_contract.py
+
+# CI wiring guards (2026-09-14). Each pins a workflow property that fails
+# SILENTLY when it drifts: the ios lane not scheduled for a web surface its
+# XCUITest renders, or the capability graph gate reading HEAD instead of the
+# pull request base so a repurposed action lands with `breaking: []`. An
+# unlisted test never runs in any lane, so a guard outside this manifest is
+# decoration.
+tests/test_ios_lane_path_filter_covers_native_test_surfaces.py
+tests/test_capability_graph_gate_compares_against_base.py

@@ -1484,6 +1484,7 @@ dependencies = [
 dev = [
     { name = "bandit" },
     { name = "mypy" },
+    { name = "pathspec" },
     { name = "pip-licenses" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1549,6 +1550,7 @@ requires-dist = [
 dev = [
     { name = "bandit", specifier = ">=1.7.6" },
     { name = "mypy", specifier = ">=1.8.0" },
+    { name = "pathspec", specifier = ">=0.12" },
     { name = "pip-licenses", specifier = ">=5.0.0" },
     { name = "pytest", specifier = ">=8.2.2" },
     { name = "pytest-asyncio", specifier = ">=0.23.0" },
