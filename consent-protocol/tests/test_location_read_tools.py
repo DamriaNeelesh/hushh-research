@@ -21,6 +21,8 @@ import json
 
 import pytest
 
+from hushh_mcp.services.one_location_agent_service import OneLocationAgentService
+from hushh_mcp.services.one_location_circle_service import OneLocationCircleService
 from mcp_modules.tools import location_tools
 
 
@@ -109,7 +111,7 @@ _RAW_LIST_STATE_PAYLOAD = {
 @pytest.mark.asyncio
 async def test_get_state_returns_only_derived_counts(monkeypatch, vault_owner_token_for_user):
     monkeypatch.setattr(
-        location_tools.OneLocationAgentService,
+        OneLocationAgentService,
         "list_state",
         lambda self, *, user_id: _RAW_LIST_STATE_PAYLOAD,
     )
@@ -167,7 +169,7 @@ _RAW_CIRCLE_LIST = [
 @pytest.mark.asyncio
 async def test_list_circles_returns_service_result(monkeypatch, vault_owner_token_for_user):
     monkeypatch.setattr(
-        location_tools.OneLocationCircleService,
+        OneLocationCircleService,
         "list_circles",
         lambda self, *, user_id: _RAW_CIRCLE_LIST,
     )

@@ -30,8 +30,21 @@ from mcp.types import TextContent
 from hushh_mcp.consent.token import validate_token_with_db
 from hushh_mcp.constants import ConsentScope
 from hushh_mcp.services.action_gateway import list_action_gateway_actions
-from hushh_mcp.services.one_location_agent_service import OneLocationAgentService
-from hushh_mcp.services.one_location_circle_service import OneLocationCircleService
+
+# OneLocationAgentService and OneLocationCircleService are imported lazily
+# inside the two read handlers below, not at module scope. The published
+# @hushh/mcp npm package vendors only mcp_server.py, mcp_modules, hushh_mcp,
+# and db (packages/hushh-mcp/scripts/stage-runtime.mjs) -- it deliberately
+# excludes the FastAPI api/ tree. OneLocationAgentService imports
+# api.utils.fcm_messages and api.utils.firebase_admin at its own module
+# level for push notifications, so importing it here at module scope took
+# down the ENTIRE packed stdio-bridge server at startup (every tool group,
+# not just Location) the moment that package's CI verified a real packed
+# install. Lazy-importing means a missing api/ tree only fails these two
+# specific tool calls -- gracefully, via mcp_server.call_tool()'s existing
+# outer exception handler -- in that one distribution shape, while the
+# hosted remote transport (which runs the full checkout, api/ included)
+# and any full-repo local stdio setup are unaffected either way.
 
 logger = logging.getLogger("hushh-mcp-server")
 
@@ -152,6 +165,8 @@ async def handle_location_get_state(args: dict[str, Any]) -> list[TextContent]:
     if not allowed:
         return _ok({"status": "forbidden", "reason": reason})
 
+    from hushh_mcp.services.one_location_agent_service import OneLocationAgentService
+
     state = OneLocationAgentService().list_state(user_id=user_id)
     owner_grants = state.get("ownerGrants") or []
     received_grants = state.get("receivedGrants") or []
@@ -191,6 +206,8 @@ async def handle_location_list_circles(args: dict[str, Any]) -> list[TextContent
     allowed, reason = await _authorize_user(user_id, consent_token)
     if not allowed:
         return _ok({"status": "forbidden", "reason": reason})
+
+    from hushh_mcp.services.one_location_circle_service import OneLocationCircleService
 
     circles = OneLocationCircleService().list_circles(user_id=user_id)
     return _ok({"status": "ok", "circles": circles})
