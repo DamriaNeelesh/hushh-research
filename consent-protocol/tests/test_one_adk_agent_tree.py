@@ -89,20 +89,6 @@ from hushh_mcp.services.one_location_circle_service import OneLocationCircleServ
 
 
 class TestAgentTreeShape:
-    @pytest.fixture(autouse=True)
-    def _managed_live_key(self, monkeypatch: pytest.MonkeyPatch):
-        """The canonical live model rides the developer_api transport, so
-        building the voice head requires the Hussh-managed live key; tests
-        provide a dummy (no session is ever opened at build time)."""
-        monkeypatch.setenv("HUSHH_MANAGED_GEMINI_LIVE_API_KEY", "test-managed-live-key")
-
-    def test_voice_head_fails_closed_without_the_managed_live_key(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.delenv("HUSHH_MANAGED_GEMINI_LIVE_API_KEY", raising=False)
-        with pytest.raises(RuntimeError, match="managed_live_key_missing"):
-            _tree._build_one_live_model()
-
     def test_root_agent_is_one_with_full_roster(self):
         agent = build_one_root_agent()
         assert agent.name == "one"
@@ -205,7 +191,10 @@ class TestAgentTreeShape:
         )
         # ADK executes bypassed Google Search in a nested text GenerateContent
         # turn. It must never inherit One's native-audio Live model.
-        assert search_tool.agent.model.model == _tree._SPECIALIST_MODEL
+        assert (
+            getattr(search_tool.agent.model, "model", search_tool.agent.model)
+            == _tree._SPECIALIST_MODEL
+        )
         assert search_tool.propagate_grounding_metadata is True
 
     def test_text_runtime_propagates_turn_model_to_finance_and_investor(self):
@@ -241,31 +230,6 @@ class TestAgentTreeShape:
 
         assert agent.model == _tree._SPECIALIST_MODEL
         assert intro_agent.model == _tree._SPECIALIST_MODEL
-
-    def test_byok_live_registry_rejects_models_outside_the_matrix(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Fail-closed contract: an unrehearsed model has no matrix entry."""
-        monkeypatch.setenv("HUSHH_GEMINI_BYOK_LIVE_ENABLED", "true")
-        monkeypatch.setattr(_tree, "_BYOK_LIVE_MODEL", "gemini-9.9-flash-live-preview")
-        with pytest.raises(ValueError, match="byok_live_unsupported"):
-            _tree.build_one_live_runner(
-                runtime_mode="byok",
-                runtime_credential="test-key",
-            )
-
-    def test_byok_live_registry_accepts_gemini_31_flash_live(self, monkeypatch: pytest.MonkeyPatch):
-        """gemini-3.1-flash-live-preview passed its 2026-08-21 ADK rehearsal:
-        mid-session injections reach the model (ADK transposes single-text-part
-        send_content to send_realtime_input on 3.x names), so the matrix now
-        declares it compatible and the BYOK gate must accept it."""
-        monkeypatch.setenv("HUSHH_GEMINI_BYOK_LIVE_ENABLED", "true")
-        monkeypatch.setattr(_tree, "_BYOK_LIVE_MODEL", "gemini-3.1-flash-live-preview")
-        runner = _tree.build_one_live_runner(
-            runtime_mode="byok",
-            runtime_credential="test-key",
-        )
-        assert runner is not None
 
     def test_identity_instruction_answers_name_question(self):
         assert "I'm One" in ONE_IDENTITY_INSTRUCTION
@@ -327,7 +291,7 @@ class TestAgentTreeShape:
         marker = "YOUR SPECIALISTS"
         assert marker in _one_runtime_instruction(SimpleNamespace(state={}))
         for builder in (build_one_root_agent, build_one_text_agent):
-            assert "instruction=_one_runtime_instruction" in inspect.getsource(builder)
+            assert builder().instruction is _one_runtime_instruction
 
     def test_runtime_instruction_injects_only_the_active_route_playbook(self):
         instruction = _one_runtime_instruction(
@@ -499,8 +463,11 @@ class TestAgentTreeShape:
             "confidence",
         } <= set(signature.parameters)
 
-    def test_runner_is_singleton(self):
-        assert get_one_runner() is get_one_runner()
+    def test_legacy_runner_is_explicitly_retired(self):
+        with pytest.raises(RuntimeError, match="ONE_LIVE_RETIRED"):
+            get_one_runner()
+        with pytest.raises(RuntimeError, match="ONE_LIVE_RETIRED"):
+            _tree.build_one_live_runner(runtime_mode="byok", runtime_credential="unused")
 
 
 def _tool_context(state: dict) -> SimpleNamespace:
@@ -973,16 +940,24 @@ class TestRunAppAction:
 
     @pytest.mark.asyncio
     async def test_governed_mutation_ignores_model_confirmation_slot(self):
-        state: dict = {}
+        state = {
+            _STATE_SCREEN: "one_location",
+            STATE_VOICE_CONTEXT: {
+                "route_pattern": "/one/location",
+                "screen": "one_location",
+                "context_revision": "location-2",
+                "available_action_ids": ["location.share_selected"],
+            },
+        }
         result = await run_app_action(
-            "location.create_circle",
-            {"name": "Family", "confirmed": True},
+            "location.share_selected",
+            {"duration_hours": "1", "confirmed": True},
             _tool_context(state),
         )
 
         assert result["status"] == "confirm_pending"
         assert result["directive"]["needsConfirmation"] is True
-        assert result["directive"]["slots"] == {"name": "Family"}
+        assert result["directive"]["slots"] == {"duration_hours": "1"}
 
     @pytest.mark.asyncio
     async def test_unwired_specialist_action_is_not_advertised_as_executable(self):
@@ -5013,7 +4988,7 @@ class TestNamedShareChain:
         analysis.start has always spelled out {'symbol': <ticker>}; this asserts
         the same for every action the instruction tells One to start by name.
         """
-        for action_id in ("location.share_selected", "connect.send_request", "analysis.start"):
+        for action_id in ("connect.send_request", "analysis.start"):
             entry = get_action_gateway_action(action_id)
             assert action_id in ONE_IDENTITY_INSTRUCTION, action_id
             required = [
@@ -5024,6 +4999,14 @@ class TestNamedShareChain:
             assert required, action_id
             for slot in required:
                 assert f"'{slot}':" in ONE_IDENTITY_INSTRUCTION, f"{action_id} slot {slot}"
+
+    def test_location_share_defers_missing_inputs_to_reviewed_audience_preparation(self):
+        entry = get_action_gateway_action("location.share_selected")
+        assert "location.share_selected" in ONE_IDENTITY_INSTRUCTION
+        assert set(entry["goal"]["slot_schema"]) == {"person", "circle", "duration_hours"}
+        assert entry["command"]["resource_inputs"] == {"person": "person", "circle": "circle"}
+        assert entry["command"]["client_receipt"] == "location.audience.v1"
+        assert entry["execution_policy"] == "confirm_required"
 
     def test_a_wrong_or_ambiguous_name_is_relayed_not_guessed(self):
         instruction = ONE_IDENTITY_INSTRUCTION

@@ -37,8 +37,6 @@ tests/test_vault_keys_metadata.py
 tests/test_one_location_routes.py
 tests/services/test_one_location_agent_service.py
 tests/test_one_capability_runtime_router_mount.py
-tests/test_location_command_relay.py
-tests/services/test_location_command_runtime.py
 tests/services/test_location_brain_semantic_retrieval.py
 tests/services/test_location_circle_direct_executor.py
 tests/services/test_location_circle_name_interaction.py
@@ -57,6 +55,7 @@ tests/test_llm_operon_stream_error_leak.py
 tests/test_stream_agent_thinking_gemini_error_cwe209.py
 tests/test_one_location_db_error_detail_cwe209.py
 tests/test_cloudbuild_step_arg_limit.py
+tests/test_gmail_information_request_release_contract.py
 tests/test_uat_deploy_no_traffic_contract.py
 tests/test_verify_env_secrets_parity.py
 tests/test_deploy_sha_gate_payload_size.py
@@ -155,6 +154,11 @@ tests/test_account_deletion_tombstone_migration.py
 tests/test_account_deletion_release_workflow.py
 tests/test_cloud_run_image_resolution.py
 
+# First-party document renewal: expiry is not revocation, but revoked lineage
+# can never renew or regain authority through a later grant/duplicate token.
+tests/test_vault_owner_token_renewal.py
+tests/test_internal_vault_owner_token_validation.py
+
 # Contact discovery.
 #
 # `POST /api/marketplace/contacts/match` answers "is the person behind this
@@ -217,3 +221,34 @@ tests/test_live_context_screen_state.py
 tests/test_adk_dispatch.py
 
 tests/test_information_chat_service.py
+
+# Consent lifecycle authorization and the model/rule boundary (2026-09-11).
+# Each of these guards a property that fails SILENTLY when it breaks: a consent
+# mutation authorized by the model instead of the person's tap, a governed action
+# with no browser handler (offered, confirmed, then nothing), a stored key becoming
+# shareable, a rule overruling the agent that answered, or a stage skipped while
+# reporting as one that ran. None of them is caught by a type error or a 500.
+tests/test_consent_lifecycle_chat.py
+tests/test_internal_path_keys.py
+tests/test_scope_catalog_self_corrects_stale_rows.py
+tests/services/test_structure_decision_is_the_models.py
+tests/services/test_intent_frame_is_the_models.py
+tests/test_agent_stage_skips_are_visible.py
+
+# Location command semantics, retirement and atomic recovery lifecycle.
+tests/operons/location/test_location_command.py
+tests/test_location_command_routes.py
+tests/test_location_command_workflow.py
+tests/test_one_location_named_circle_routes.py
+tests/test_location_requested_workflow_authority.py
+tests/test_location_workflow_compatibility.py
+tests/services/test_location_command_postgres.py
+tests/services/test_location_command_finalize_postgres.py
+tests/services/test_location_command_continuation_postgres.py
+tests/test_kai_local_runtime.py
+
+tests/test_location_command_reads.py
+tests/test_location_audience_authority.py
+tests/services/test_location_public_link_command_postgres.py
+tests/services/test_location_circle_command_postgres.py
+tests/services/test_location_nearby_visit_command_postgres.py

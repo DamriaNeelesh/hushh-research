@@ -46,6 +46,8 @@ type EmailDraftCardProps = {
   onSendFailed?: (error: EmailDeliveryError, attemptId?: string | null) => void;
   /** Reuses this editor while keeping recipient and thread server-derived. */
   sourceBoundReply?: SourceBoundEmailReplyAdapter | null;
+  /** Metadata-only context for the source-bound request; never Gmail content. */
+  sourceBoundContext?: string;
 };
 
 const EMPTY_DRAFT: EmailDraft = {
@@ -74,6 +76,7 @@ export function EmailDraftCard({
   onSent,
   onSendFailed,
   sourceBoundReply = null,
+  sourceBoundContext,
 }: EmailDraftCardProps) {
   const idPrefix = useId();
   const [draft, setDraft] = useState<EmailDraft>(() => {
@@ -410,6 +413,7 @@ export function EmailDraftCard({
               <Mail className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
               <span>
                 This reply stays in the original Gmail thread. Recipient and subject are taken from that message.
+                {sourceBoundContext ? ` ${sourceBoundContext}` : ""}
               </span>
             </div>
           ) : (

@@ -364,6 +364,13 @@ from api.routes import tickers  # noqa: E402
 
 app.include_router(tickers.router)
 
+# Public batch market quotes. Same public posture as the ticker search above: prices for symbols
+# the caller names, nothing derived from a person. Serves Hushh Tech's marquee off the same warm
+# L1/L2 cache this service already keeps, instead of a second Yahoo client in that repository.
+from api.routes import market_quotes  # noqa: E402
+
+app.include_router(market_quotes.router)
+
 # Identity compatibility routes
 from api.routes import identity  # noqa: E402
 
@@ -434,16 +441,12 @@ async def startup_widen_default_executor() -> None:
     Every synchronous SQLAlchemy DB call in this process (and
     `asyncio.to_thread` calls like the one_location agent tools use) runs on
     the SAME default executor asyncio itself uses for things like DNS
-    resolution (`loop.getaddrinfo`, which the `websockets` client uses to
-    connect out to the Gemini Live API). Python's default pool size --
+    resolution and SDK connection setup. Python's default pool size --
     `min(32, cpu_count + 4)` -- is easily saturated by concurrent blocking DB
     work under load, at which point an unrelated, otherwise-instant operation
-    like that DNS lookup queues behind it and can time out. Observed directly:
-    a live voice session's outbound Gemini Live handshake failed with
-    "TimeoutError: timed out during opening handshake" at getaddrinfo, at the
-    exact moment two DB-heavy endpoints were each taking 40-50s. Widening the
-    pool doesn't fix the underlying DB cost, but it stops unrelated quick
-    executor work from being starved behind it.
+    like that DNS lookup queues behind it and can time out. Widening the pool
+    doesn't fix the underlying DB cost, but it stops unrelated quick executor
+    work from being starved behind it.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -465,35 +468,6 @@ async def startup_one_runtime_dependency_guard() -> None:
         "startup.one_runtime_dependency_ready google_adk_expected=%s google_adk_installed=%s",
         evidence["google_adk_expected"],
         evidence["google_adk_installed"],
-    )
-
-
-@app.on_event("startup")
-async def startup_location_command_semantic_index() -> None:
-    """Make the enabled command runtime ready before it can accept PCM.
-
-    Location command turns deliberately have no lexical or alias fallback.
-    The per-worker semantic index must therefore be ready before UAT traffic
-    reaches the relay.  Failing startup is safer than accepting speech and
-    producing a misleading card because a cold worker has no index yet.
-    """
-
-    if _environment() != "uat" or not _env_truthy("HUSHH_LOCATION_COMMAND_RUNTIME_ENABLED"):
-        return
-    started_at = time.perf_counter()
-    try:
-        from hushh_mcp.services.app_intelligence_runtime import (
-            prewarm_location_brain_semantic_index,
-        )
-
-        result = await asyncio.to_thread(prewarm_location_brain_semantic_index)
-    except Exception:
-        logger.critical("startup.location_command_semantic_index_failed")
-        raise RuntimeError("Location command semantic index is unavailable.") from None
-    logger.info(
-        "startup.location_command_semantic_index_ready card_count=%s duration_ms=%.2f",
-        result.get("card_count") if isinstance(result, dict) else "unknown",
-        (time.perf_counter() - started_at) * 1000,
     )
 
 

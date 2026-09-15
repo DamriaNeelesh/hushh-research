@@ -36,8 +36,9 @@ ran=0
 
 # Account deletion is an auth/session boundary on every client. Keep the
 # production-code regressions and rendered recovery notice in the PR gate.
-if has_match '^(hushh-webapp/(lib/(auth/|firebase/auth-context|flows/delete-account|services/(account-service|api-service|auth-service|vault-service)|vault/vault-context)|components/(auth/|vault/|onboarding/)|app/(login/|page\.tsx)|e2e/account-session-recovery|__tests__/.*(account|session|vault))|consent-protocol/(api/(routes/account|utils/firebase_auth)|hushh_mcp/services/account|db/migrations/201_))'; then
+if has_match '^(hushh-webapp/(lib/(auth/|firebase/auth-context|flows/delete-account|services/(account-service|api-service|auth-service|vault-(service|bootstrap-service|method-service))|vault/|capacitor/(session-privacy|plugins/(keychain-web|vault-web)))|components/(auth/|vault/|onboarding/)|app/(login/|page\.tsx|api/consent/vault-owner-token/)|e2e/account-session-recovery|__tests__/.*(account|session|vault))|consent-protocol/(api/(routes/(account|consent)|utils/firebase_auth)|hushh_mcp/(services/(account|consent_db)|consent/token)|db/migrations/201_))'; then
   run_check "account session recovery" npm run verify:account-session
+  run_check "vault unlock and enrollment" npm run verify:vault-unlock
   NEXT_PUBLIC_APP_ENV="${NEXT_PUBLIC_APP_ENV:-development}" \
   NEXT_PUBLIC_BACKEND_URL="${NEXT_PUBLIC_BACKEND_URL:-http://127.0.0.1:9}" \
   NEXT_PUBLIC_FIREBASE_API_KEY="${NEXT_PUBLIC_FIREBASE_API_KEY:-test-api-key}" \
@@ -45,6 +46,26 @@ if has_match '^(hushh-webapp/(lib/(auth/|firebase/auth-context|flows/delete-acco
   NEXT_PUBLIC_FIREBASE_PROJECT_ID="${NEXT_PUBLIC_FIREBASE_PROJECT_ID:-dummy-project}" \
   NEXT_PUBLIC_FIREBASE_APP_ID="${NEXT_PUBLIC_FIREBASE_APP_ID:-1:123456789:web:abcdef123456}" \
   run_check "account session browser recovery" npm run test:account-session:browser
+  ran=1
+fi
+
+# Consent surfaces and the Memory route they are supposed to match.
+#
+# The founder's benchmark for how information should read is the Memory tab --
+# one domain, then attributes, one level at a time. Its tests already assert
+# every property that makes it good: immediate children only, a back control
+# named for its parent, ancestors-only breadcrumbs, descendant counts that
+# exclude hidden keys, human labels for opaque segments. NONE of it gated a pull
+# request, because no pack named components/profile or lib/pkm, so the reference
+# surface was free to drift away from its own contract.
+#
+# The consent side is here for the same reason and a sharper one: it is where a
+# person decides what another person may see. It shipped offering 24 rows of
+# which roughly five were information about anybody -- the rest onboarding
+# checkpoints and routing telemetry -- and no test in the repository could have
+# said so.
+if has_match '^hushh-webapp/(components/(consent/|profile/)|lib/(consent/|pkm/|personal-knowledge-model/)|components/connections/person-profile-page\.tsx|__tests__/.*(consent|pkm|person-profile))'; then
+  run_check "consent + memory parity" npm run test:consent-memory-parity
   ran=1
 fi
 
@@ -56,7 +77,7 @@ fi
 
 # Agent Chat is a two-agent window: One in the cloud and Puppy One on the
 # owner's own Mac. The invariants that matter are COMPOSITION properties (which
-# of One's controls survive the switch, whether a live voice session or an
+# of One's controls survive the switch, whether a command capture or an
 # in-flight turn does), and none of the eleven Puppy suites gated a pull
 # request before this lane existed, which is how a cloud model picker shipped
 # sitting over the on-device transcript. Kept separate from the voice-gateway

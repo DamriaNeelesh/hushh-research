@@ -75,17 +75,27 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).not.toContain("Writing in expanded composer");
   });
 
-  it("stages an oversized prompt as a removable in-memory text attachment before sending", () => {
+  it("captures a large paste as an editable in-memory text attachment", () => {
     const workspace = read("components/agent/agent-chat-workspace.tsx");
 
-    expect(workspace).toContain("LONG_PROMPT_ATTACHMENT_CHARS = 8_000");
-    expect(workspace).toContain("data-testid=\"agent-chat-long-prompt-attachment\"");
-    expect(workspace).toContain("long-prompt.txt");
-    expect(workspace).toContain('aria-label="Remove long prompt attachment"');
-    expect(workspace).toContain("onClick={() => setLongPromptAttachment(null)}");
-    expect(workspace).toContain("const text = attachment?.text ?? draftText;");
-    expect(workspace).toContain("setComposerPurpose(null);");
-    expect(workspace).toContain("enqueuePrompt(text);");
+    expect(workspace).toContain("shouldCaptureLargePaste(pasted)");
+    expect(workspace).toContain("event.preventDefault()");
+    expect(workspace).toContain("createPendingTextAttachment(nextText)");
+    expect(workspace).toContain('data-testid="agent-chat-text-attachment"');
+    expect(workspace).toContain("getTextAttachmentTitle(longPromptAttachment.text)");
+    expect(workspace).toContain('aria-label="Remove text attachment"');
+    expect(workspace).toContain("openLongPromptAttachment");
+    expect(workspace).toContain("collapseComposer");
+    expect(workspace).toContain("combineAttachmentAndComposerText");
+    expect(workspace).toContain("await submitComposerText()");
+    expect(workspace).toContain('source: "agent_chat_auto_capture"');
+    expect(workspace).toContain("saveEligiblePkmCardsInBackground({");
+    expect(workspace).not.toContain("Long paste detected — choose where it belongs.");
+    expect(workspace).not.toContain("composerPurpose");
+    expect(workspace).not.toContain("Review for Memory");
+    expect(workspace).not.toContain("Send as chat");
+    expect(workspace).not.toContain("AgentPkmReviewPanel");
+    expect(workspace).not.toContain("getPkmConfirmationCards");
   });
 
   it("keeps active assistant streams full-width and errors compact", () => {
@@ -143,19 +153,15 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain('aria-label="One\'s model"');
   });
 
-  it("ends a live One voice session on the way into Puppy One", () => {
-    // A One Live session survived the switch with every trace of it gone from
-    // the screen: the status word is suppressed in Puppy mode, and the mute
-    // and cancel controls live inside the composer that `hidden` removes. The
-    // stop is unconditional because the shared voice store still reads "idle"
-    // during the window where the microphone lease is already held.
+  it("pauses One command capture on the way into Puppy One", () => {
     const workspace = read("components/agent/agent-chat-workspace.tsx");
-    const bar = read("components/agent/agent-bar.tsx");
+    const provider = read("components/agent/location-command-provider.tsx");
 
     expect(workspace).toContain("requestAgentConversationStop();");
     expect(workspace).toContain("enterPuppySurface();");
-    expect(bar).toContain("AGENT_CONVERSATION_STOP_EVENT");
-    expect(bar).toContain("handleConversationStop");
+    expect(provider).toContain("AGENT_CONVERSATION_STOP_EVENT");
+    expect(provider).toContain("cancelCapture();");
+    expect(provider).toContain("command.pause();");
   });
 
   it("keeps both transcripts mounted and mounts Puppy One only once it is asked for", () => {

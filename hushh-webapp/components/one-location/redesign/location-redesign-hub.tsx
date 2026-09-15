@@ -334,11 +334,17 @@ export type PrivateCheckInResult = {
 };
 
 export type PrivateCheckInRequest = {
+  commandDirectiveId?: string;
+  /** Consented owner snapshot from the draft, including Circle recipients. */
+  recipientSnapshots?: OneLocationRecipient[];
   recipientIds: string[];
   durationHours: string;
   message?: string;
   point: PlainLocationPoint;
   clientOperationId: string;
+  commandOperationId?: string;
+  commandSignal?: AbortSignal;
+  commandOwner?: string;
   confirmedAt: string;
   /** Named-Circle provenance when the check-in was targeted at a Circle. */
   sourceCircleId?: string | null;

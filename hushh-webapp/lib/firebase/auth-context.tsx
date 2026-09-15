@@ -50,6 +50,8 @@ import { isLocalCrmBuildEnabled } from "@/lib/connected-systems/crm-product-avai
 import {
   completeNativeSessionPrivacyValidation,
   getNativeSessionPrivacyState,
+  subscribeNativeSessionPrivacy,
+  type NativeSessionPrivacyState,
 } from "@/lib/capacitor/session-privacy";
 import {
   AUTH_SESSION_INVALIDATED_EVENT,
@@ -63,9 +65,14 @@ import {
   type AuthSessionInvalidationDetail,
   type AuthSessionInvalidationCode,
 } from "@/lib/auth/session-invalidation";
-import { publishValidatedAuthSessionOwner } from "@/lib/auth/session-owner";
+import {
+  publishValidatedAuthSessionOwner,
+  AUTH_SESSION_VERIFICATION_REQUIRED_EVENT,
+  snapshotValidatedAuthSessionOwner,
+  type AuthSessionVerificationRequiredDetail,
+} from "@/lib/auth/session-owner";
+import { ACCOUNT_SESSION_VALIDATION_BUDGET_MS } from "@/lib/auth/account-session-policy";
 import { shouldSkipAmbientIdentityHydrationForAutomation } from "@/lib/testing/native-test";
-import { resolveSlowRequestTimeoutMs } from "@/lib/utils/request-timeouts";
 
 // Pre-compute platform check to avoid dynamic imports in callbacks
 const IS_NATIVE = typeof window !== "undefined" && Capacitor.isNativePlatform();
@@ -75,17 +82,7 @@ const IS_NATIVE = typeof window !== "undefined" && Capacitor.isNativePlatform();
 // privacy generation always bypasses this window.
 const ACTIVE_SESSION_VALIDATION_DEBOUNCE_MS = 10_000;
 const WEB_AUTH_OBSERVER_WATCHDOG_MS = 10_000;
-// A local backend can reach UAT through the Cloud SQL proxy, but a slow
-// liveness probe must not leave every protected route on an indefinite loader.
-// An unavailable result enters the existing locked recovery surface; it never
-// unlocks or publishes protected information.
-const ACCOUNT_SESSION_VALIDATION_BUDGET_MS = resolveSlowRequestTimeoutMs(
-  8_000,
-  {
-    developmentFloorMs: 8_000,
-    overrideEnvKey: "HUSHH_ACCOUNT_SESSION_VALIDATION_TIMEOUT_MS",
-  },
-);
+const SESSION_VERIFICATION_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 30_000] as const;
 const NATIVE_SESSION_PRIVACY_READ_BUDGET_MS = 2_000;
 const ACCOUNT_DELETION_REPROBE_DEFAULT_DELAY_MS = 2_000;
 const ACCOUNT_DELETION_REPROBE_MAX_DELAY_MS = 2_000;
@@ -393,6 +390,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [loading, setLoading] = useState(true);
   const [sessionVerificationRequired, setSessionVerificationRequired] =
     useState(false);
+  const [nativePrivacyReady, setNativePrivacyReady] =
+    useState<NativeSessionPrivacyState | null>(null);
+  const nativePrivacyLatestRef = useRef<NativeSessionPrivacyState | null>(null);
+  const nativePrivacyReconcileRef = useRef<() => void>(() => undefined);
+  const authGateRef = useRef({ loading, sessionVerificationRequired });
+  authGateRef.current = { loading, sessionVerificationRequired };
   const [confirmationResult, setConfirmationResult] =
     useState<ConfirmationResult | null>(null);
   const [nativeVerificationId, setNativeVerificationId] = useState<
@@ -418,31 +421,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
     observedAnonymous: boolean;
   } | null>(null);
   const activeSessionValidationPromiseRef = useRef<Promise<void> | null>(null);
-  /**
-   * How long a background revalidation may run before the loading gate is
-   * raised.
-   *
-   * Revalidating an ALREADY-PUBLISHED identity is a background check, not a
-   * sign-in. Raising the gate synchronously meant every window focus and every
-   * app foreground unmounted the tree behind a spinner and re-rendered the
-   * whole screen, which is what the owner sees as the app "checking your
-   * session again and again". In the overwhelming majority of cases Firebase
-   * answers from cache in a few milliseconds and nothing needed to be hidden at
-   * all.
-   *
-   * The validation itself is unchanged and still runs on every foreground: only
-   * the moment the gate becomes VISIBLE moves. A check that is genuinely slow,
-   * or one that is about to sign the person out, still raises it and still
-   * prevents a cached Vault dialog from flashing.
-   */
-  const DEFERRED_AUTH_GATE_MS = 200;
-  const deferredAuthGateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearDeferredAuthGate = useCallback(() => {
-    if (deferredAuthGateTimerRef.current !== null) {
-      clearTimeout(deferredAuthGateTimerRef.current);
-      deferredAuthGateTimerRef.current = null;
-    }
-  }, []);
   // A web auth observer can validate a new identity while a foreground check
   // for the previously published identity is still settling. Only the current
   // observer may release this gate; otherwise the old Vault can flash before
@@ -717,10 +695,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
             // A cached token can be stale for benign reasons. Revalidate it
             // through Firebase, then ask the backend once more before making a
             // terminal decision.
+          } else {
+            // Retrying the same unavailable endpoint with a fresh token cannot
+            // establish account liveness and doubles load during an outage. Keep
+            // the privacy gate closed and let the bounded recovery loop retry.
+            return { outcome: "unavailable" };
           }
         } catch {
-          // A transport/backend outage is not evidence of deletion. Fall back
-          // to Firebase's own forced validation below.
+          // A transport/backend outage is not evidence of deletion, and a
+          // Firebase refresh is not a substitute for the deletion tombstone
+          // contract. Preserve identity while keeping protected UI sealed.
+          return { outcome: "unavailable" };
         }
       }
 
@@ -1088,17 +1073,18 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   /**
    * Revalidate an already-published identity whenever the app becomes active.
-   * The validation is single-flight and briefly restores the auth loading gate
-   * so a cached Vault dialog cannot flash while Firebase is deciding whether
-   * the account still exists.
+   * The validation is single-flight. Web foreground checks stay background so
+   * a slow revocation probe cannot unmount an in-progress WebAuthn ceremony or
+   * replace an already-admitted screen with a spinner. Native resume remains
+   * privacy-gated immediately. Either platform still fails closed as soon as
+   * the authoritative result is terminal or unavailable.
    */
   const validateActiveSession = useCallback(
     (options?: { force?: boolean; deferGate?: boolean }): Promise<void> => {
       const force = options?.force === true;
-      // Only the web focus/pageshow path may defer the gate. A native
-      // background-to-active transition must raise it immediately: that is the
-      // moment an account-deletion check runs, and vault content must not be on
-      // screen while it does.
+      // Only an already-published web identity may keep its current surface
+      // while its foreground check runs. Native resume still raises the gate
+      // immediately for its OS privacy boundary.
       const deferGate = options?.deferGate === true && !force;
       const predecessor = activeSessionValidationPromiseRef.current;
 
@@ -1138,15 +1124,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
           // raises the gate immediately. The tree must not be visible between
           // serialized checks.
           setLoading(true);
-        } else {
-          // An ordinary web focus or pageshow. Let the tree keep rendering what
-          // it already had, and only raise the gate if this check is still
-          // running after the grace window.
-          clearDeferredAuthGate();
-          deferredAuthGateTimerRef.current = setTimeout(() => {
-            deferredAuthGateTimerRef.current = null;
-            if (activeSessionValidationPromiseRef.current) setLoading(true);
-          }, DEFERRED_AUTH_GATE_MS);
         }
       }
 
@@ -1213,7 +1190,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
         // A newer forced validation owns the loading gate. Its predecessor must
         // not expose cached Vault UI between the two operations.
         if (activeSessionValidationPromiseRef.current === operation) {
-          clearDeferredAuthGate();
           if (!webAuthObserverPendingRef.current) setLoading(false);
         }
       };
@@ -1235,15 +1211,57 @@ export function AuthProvider({ children }: AuthProviderProps) {
         ) {
           // Also releases a gate when the serialized task safely became a no-op
           // (for example, the identity disappeared through another observer).
-          clearDeferredAuthGate();
           setLoading(false);
         }
       };
       void operation.then(clearCompletedOperation, clearCompletedOperation);
       return operation;
     },
-    [validateAccountSession, clearDeferredAuthGate],
+    [validateAccountSession],
   );
+
+  useEffect(() => {
+    if (!sessionVerificationRequired || !userId) return;
+
+    let cancelled = false;
+    let attempt = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleRetry = () => {
+      const delay =
+        SESSION_VERIFICATION_RETRY_DELAYS_MS[
+          Math.min(attempt, SESSION_VERIFICATION_RETRY_DELAYS_MS.length - 1)
+        ];
+      retryTimer = globalThis.setTimeout(() => {
+        retryTimer = null;
+        if (cancelled) return;
+
+        const canReachBackend =
+          document.visibilityState === "visible" && navigator.onLine !== false;
+        if (!canReachBackend) {
+          attempt += 1;
+          scheduleRetry();
+          return;
+        }
+
+        void validateActiveSession({ force: true }).finally(() => {
+          if (cancelled || !authGateRef.current.sessionVerificationRequired) {
+            return;
+          }
+          attempt += 1;
+          scheduleRetry();
+        });
+      }, delay);
+    };
+
+    // Availability failures stay fail-closed, but no longer require a customer
+    // to repeatedly press Try again after a transient backend/proxy incident.
+    scheduleRetry();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) globalThis.clearTimeout(retryTimer);
+    };
+  }, [sessionVerificationRequired, userId, validateActiveSession]);
 
   useEffect(() => {
     const handleAuthInvalidated = (event: Event) => {
@@ -1321,6 +1339,23 @@ export function AuthProvider({ children }: AuthProviderProps) {
     };
   }, [signOut]);
 
+  useEffect(() => {
+    const requireVerification = (event: Event) => {
+      const detail = (event as CustomEvent<AuthSessionVerificationRequiredDetail>).detail;
+      const owner = snapshotValidatedAuthSessionOwner();
+      if (!detail || !owner || detail.userId !== owner.userId ||
+          detail.generation !== owner.generation || detail.userId !== userRef.current?.uid) return;
+      setSessionVerificationRequired(true);
+      // Parallel protected requests can all report the same transport outage.
+      // One current account check owns recovery for that identity generation.
+      if (!activeSessionValidationPromiseRef.current) {
+        void validateActiveSession({ force: true });
+      }
+    };
+    window.addEventListener(AUTH_SESSION_VERIFICATION_REQUIRED_EVENT, requireVerification);
+    return () => window.removeEventListener(AUTH_SESSION_VERIFICATION_REQUIRED_EVENT, requireVerification);
+  }, [validateActiveSession]);
+
   // Initialize only after the terminal invalidation listener above exists.
   // This ordering guarantees a deleted account found during native cold
   // restoration cannot leave the auth loading gate stuck or reveal stale UI.
@@ -1336,30 +1371,111 @@ export function AuthProvider({ children }: AuthProviderProps) {
       }
     };
 
-    const settleNativePrivacyProtectedSession = async () => {
-      const privacyState = await withinAccountSessionValidationBudget(
-        getNativeSessionPrivacyState(),
-        Date.now() + NATIVE_SESSION_PRIVACY_READ_BUDGET_MS,
-      ).catch(() => ({ shielded: false, generation: 0 }));
+    let privacySequence = 0;
+    let privacyReadFailures = 0;
+    let privacyRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let removePrivacyListener: (() => Promise<void>) | null = null;
+    let privacyListenerConnecting = false;
+    const validatedPrivacyGenerations = new Map<string, Promise<void>>();
+
+    const schedulePrivacyRead = () => {
+      if (!mounted || privacyRetryTimer !== null || privacyReadFailures >= 3) return;
+      privacyRetryTimer = setTimeout(() => {
+        privacyRetryTimer = null;
+        connectNativePrivacyListener();
+        void settleNativePrivacyProtectedSession();
+      }, 500);
+    };
+
+    const settleNativePrivacyProtectedSession = async (
+      deliveredState?: NativeSessionPrivacyState,
+      retry = false,
+    ) => {
+      const sequence = ++privacySequence;
+      let privacyState: NativeSessionPrivacyState;
       try {
-        if (userRef.current) {
-          await validateActiveSession({ force: privacyState.shielded });
-        } else {
-          await checkAuth();
-        }
-      } finally {
-        if (
-          mounted &&
-          privacyState.shielded &&
-          !terminalInvalidationLatchRef.current &&
-          !signOutPromiseRef.current
-        ) {
-          await completeNativeSessionPrivacyValidation(
-            privacyState.generation,
-          ).catch(() => undefined);
-        }
+        privacyState = deliveredState ?? await withinAccountSessionValidationBudget(
+          getNativeSessionPrivacyState(),
+          Date.now() + NATIVE_SESSION_PRIVACY_READ_BUDGET_MS,
+        );
+      } catch {
+        if (!mounted || sequence !== privacySequence) return;
+        privacyReadFailures += 1;
+        // Unknown bridge state is never evidence that an existing cover is gone.
+        // Restore identity within its own budget, then render the existing safe
+        // recovery gate while native retry/restart controls remain available.
+        if (!nativeRestoreSettledRef.current) await checkAuth();
+        if (!mounted || sequence !== privacySequence) return;
+        setSessionVerificationRequired(true);
+        if (!signOutPromiseRef.current && !terminalInvalidationLatchRef.current &&
+            activePostAuthSettlementRef.current === null) setLoading(false);
+        schedulePrivacyRead();
+        return;
+      }
+      if (!mounted || sequence !== privacySequence) return;
+      nativePrivacyLatestRef.current = privacyState;
+      if (!privacyState.appIsActive) {
+        setNativePrivacyReady(null);
+        if (privacyState.cause !== "inactive") setLoading(true);
+        return;
+      }
+
+      // A later background callback can strengthen the same generation's
+      // validation debt; an earlier transient result cannot satisfy that debt.
+      const validationKey = `${privacyState.generation}:${privacyState.cause}`;
+      let validation = validatedPrivacyGenerations.get(validationKey);
+      if (!validation || retry) {
+        validation = (async () => {
+          if (!nativeRestoreSettledRef.current) {
+            await checkAuth();
+          } else if (!userRef.current) {
+            if (privacyState.cause !== "inactive" || retry ||
+                authGateRef.current.sessionVerificationRequired) await checkAuth();
+          } else if (privacyState.cause !== "inactive" || retry ||
+                     authGateRef.current.sessionVerificationRequired) {
+            await validateActiveSession({ force: true });
+          } else {
+            // A permission/biometric sheet does not end a settled auth session.
+            // If another auth operation already owns the gate, wait for it.
+            await activeSessionValidationPromiseRef.current;
+          }
+        })();
+        validatedPrivacyGenerations.clear();
+        validatedPrivacyGenerations.set(validationKey, validation);
+      }
+      await validation;
+      if (mounted && nativePrivacyLatestRef.current?.generation === privacyState.generation &&
+          nativePrivacyLatestRef.current.appIsActive && privacyState.shielded &&
+          !terminalInvalidationLatchRef.current && !signOutPromiseRef.current) {
+        setNativePrivacyReady({ ...privacyState });
       }
     };
+
+    nativePrivacyReconcileRef.current = () => {
+      privacyReadFailures += 1;
+      schedulePrivacyRead();
+    };
+    const connectNativePrivacyListener = () => {
+      if (!IS_NATIVE || !mounted || removePrivacyListener || privacyListenerConnecting) return;
+      privacyListenerConnecting = true;
+      // Separate from pause/resume: this event also covers inactive-only cycles,
+      // and arrives only after native didBecomeActive can accept an ack.
+      void subscribeNativeSessionPrivacy((event) => {
+        privacyReadFailures = 0;
+        void settleNativePrivacyProtectedSession(event, event.action === "retry");
+      }).then((handle) => {
+        if (!mounted) { void handle.remove(); return; }
+        removePrivacyListener = () => handle.remove();
+        // Catch up with a transition that happened before subscription.
+        void settleNativePrivacyProtectedSession();
+      }).catch(() => {
+        privacyReadFailures += 1;
+        schedulePrivacyRead();
+      }).finally(() => {
+        privacyListenerConnecting = false;
+      });
+    };
+    connectNativePrivacyListener();
 
     const removeLifecycleListener =
       appInteractionCoordinator.subscribeLifecycle(() => {
@@ -1379,13 +1495,23 @@ export function AuthProvider({ children }: AuthProviderProps) {
         }
 
         if (IS_NATIVE) {
+          // The active privacy event owns native acknowledgement. A state read
+          // is also safe here: willEnterForeground can still report inactive.
           void settleNativePrivacyProtectedSession();
         } else if (userRef.current) {
-          void validateActiveSession();
+          // Browser visibility returns through this lifecycle coordinator as
+          // well as window focus/pageshow. Keep it equivalent to those web
+          // paths; otherwise switching apps bypasses the background policy and
+          // tears down an active WebAuthn vault unlock.
+          void validateActiveSession({ deferGate: true });
         }
       });
 
     const validateWhenVisible = () => {
+      if (IS_NATIVE) {
+        if (document.visibilityState === "visible") void settleNativePrivacyProtectedSession();
+        return;
+      }
       if (document.visibilityState !== "visible" || !userRef.current) return;
       // Deferred gate: window focus fires on every trip back to the tab or app
       // window, and gating the tree on each one re-rendered the whole screen
@@ -1490,14 +1616,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     return () => {
       mounted = false;
+      nativePrivacyReconcileRef.current = () => undefined;
+      if (privacyRetryTimer !== null) clearTimeout(privacyRetryTimer);
+      void removePrivacyListener?.();
       webAuthRevision += 1;
       webAuthObserverPendingRef.current = false;
       markInitialWebAuthObserverReceived();
       removeLifecycleListener();
       window.removeEventListener("focus", validateWhenVisible);
       window.removeEventListener("pageshow", validateWhenVisible);
-      // A deferred gate that fires after unmount would set state on a dead tree.
-      clearDeferredAuthGate();
       unsubscribe();
     };
   }, [
@@ -1505,8 +1632,47 @@ export function AuthProvider({ children }: AuthProviderProps) {
     checkAuth,
     validateAccountSession,
     validateActiveSession,
-    clearDeferredAuthGate,
   ]);
+
+  // A completed Promise is not a rendered gate. Wait for React to commit the
+  // validated destination or recovery UI, then allow a WebView paint before
+  // uncovering it. Two frames avoid acknowledging in the pre-paint callback.
+  useEffect(() => {
+    if (!IS_NATIVE || !nativePrivacyReady || loading ||
+        terminalInvalidationLatchRef.current || signOutPromiseRef.current ||
+        activePostAuthSettlementRef.current !== null) return;
+    let cancelled = false;
+    let paintedFrame: number | null = null;
+    const releaseAfterPaint = () => {
+      if (cancelled || authGateRef.current.loading ||
+          nativePrivacyLatestRef.current?.generation !== nativePrivacyReady.generation ||
+          !nativePrivacyLatestRef.current.appIsActive ||
+          terminalInvalidationLatchRef.current || signOutPromiseRef.current ||
+          activePostAuthSettlementRef.current !== null) return;
+      void withinAccountSessionValidationBudget(
+        completeNativeSessionPrivacyValidation(nativePrivacyReady.generation),
+        Date.now() + NATIVE_SESSION_PRIVACY_READ_BUDGET_MS,
+      ).then((result) => {
+        if (cancelled) return;
+        if (result.released || !result.shielded) {
+          setNativePrivacyReady((pending) =>
+            pending?.generation === nativePrivacyReady.generation ? null : pending);
+        } else {
+          nativePrivacyReconcileRef.current();
+        }
+      }).catch(() => {
+        if (!cancelled) nativePrivacyReconcileRef.current();
+      });
+    };
+    const frame = requestAnimationFrame(() => {
+      paintedFrame = requestAnimationFrame(releaseAfterPaint);
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      if (paintedFrame !== null) cancelAnimationFrame(paintedFrame);
+    };
+  }, [nativePrivacyReady, loading, sessionVerificationRequired, user]);
 
   const startPhoneVerification = useCallback(
     async (

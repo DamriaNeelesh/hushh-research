@@ -3,6 +3,7 @@
 import {
   type CSSProperties,
   type FormEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -55,6 +56,7 @@ import {
   kaiAppHelperClassName,
 } from "@/components/kai/shared/kai-typography";
 import { FigmaCountryFlag } from "@/components/onboarding/FigmaOnboardingPrimitives";
+import { CountryPicker } from "@/components/auth/country-picker";
 import { cn } from "@/lib/utils";
 import { ROUTES } from "@/lib/navigation/routes";
 import { usePublishVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
@@ -110,9 +112,11 @@ type PhoneVerificationFlowProps = {
   onCancel?: () => void;
   sendCodeLabel?: string;
   confirmLabel?: string;
+  codePresentation?: "default" | "onboarding";
   primaryActionClassName?: string;
   className?: string;
-  helperText?: string;
+  helperText?: ReactNode;
+  phonePresentation?: "default" | "compact";
   style?: CSSProperties;
   onStepChange?: (step: VerificationStep) => void;
 };
@@ -361,9 +365,11 @@ export function PhoneVerificationFlow({
   onCancel,
   sendCodeLabel,
   confirmLabel,
+  codePresentation = "default",
   primaryActionClassName,
   className,
   helperText,
+  phonePresentation = "default",
   style,
   onStepChange,
 }: PhoneVerificationFlowProps) {
@@ -378,6 +384,7 @@ export function PhoneVerificationFlow({
     currentPhoneNumber || "",
   );
   const [verificationCode, setVerificationCode] = useState("");
+  const [codeError, setCodeError] = useState<string | null>(null);
   const [step, setStep] = useState<VerificationStep>(
     mode === "link" && currentPhoneNumber ? "linked" : "phone",
   );
@@ -742,6 +749,7 @@ export function PhoneVerificationFlow({
         // instant a new one exists -- keeping them invites confirming the
         // wrong session.
         setVerificationCode("");
+        setCodeError(null);
         setStep("code");
         morphyToast.success(
           resendCode
@@ -866,6 +874,7 @@ export function PhoneVerificationFlow({
       phoneFlowInFlightRef.current = true;
       setBusy(true);
       try {
+        setCodeError(null);
         const verifiedUser = await confirmVerification(normalizedCode);
         trackEvent("phone_verification_completed", {
           action: mode,
@@ -900,6 +909,12 @@ export function PhoneVerificationFlow({
         // worth fixing, not a dead session -- and no SMS is auto-sent either
         // way; Resend remains an explicit tap.
         const errorCode = String((error as { code?: unknown })?.code ?? "");
+        if (
+          codePresentation === "onboarding" &&
+          ["invalid-verification-code", "auth/invalid-verification-code"].includes(errorCode)
+        ) {
+          setCodeError("That code isn't right. Check it and try again.");
+        }
         if (errorCode === "code-expired") {
           setVerificationCode("");
         }
@@ -916,7 +931,7 @@ export function PhoneVerificationFlow({
         setBusy(false);
       }
     },
-    [busy, confirmVerification, mode, onCompleted, submittedPhoneNumber],
+    [busy, codePresentation, confirmVerification, mode, onCompleted, submittedPhoneNumber],
   );
 
   const handleConfirmVerification = useCallback(async () => {
@@ -1032,6 +1047,7 @@ export function PhoneVerificationFlow({
       onSubmit={handleSubmit}
       data-figma-phone-flow="true"
       data-figma-phone-step={step}
+      data-phone-presentation={phonePresentation}
     >
       <FieldSet>
       {step === "phone" ? (
@@ -1044,6 +1060,20 @@ export function PhoneVerificationFlow({
               >
                 Country code
               </FieldLabel>
+              {phonePresentation === "compact" ? (
+                <CountryPicker
+                  open={countryComboboxOpen}
+                  onOpenChange={(open) => {
+                    setCountryComboboxOpen(open);
+                    if (open) setCountryQuery("");
+                  }}
+                  query={countryQuery}
+                  onQueryChange={setCountryQuery}
+                  options={filteredCountryOptions}
+                  selected={selectedCountryOption ?? DEFAULT_PHONE_COUNTRY_OPTION}
+                  onSelect={handleCountrySelection}
+                />
+              ) : (
               <Combobox
                 open={countryComboboxOpen}
                 onOpenChange={(open) => {
@@ -1111,8 +1141,15 @@ export function PhoneVerificationFlow({
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-y-0 left-4 z-10 flex min-w-0 max-w-[calc(100%-3.5rem)] items-center gap-2 whitespace-nowrap text-[15px] text-[#17130c] dark:text-[#f5f5f7]"
                     >
-                      <FigmaCountryFlag />
-                      <span className="min-w-0 truncate">{selectedCountryDisplayLabel}</span>
+                      <FigmaCountryFlag
+                        countryCode={
+                          selectedCountryOption?.value ??
+                          DEFAULT_PHONE_COUNTRY_OPTION.value
+                        }
+                      />
+                      <span className="min-w-0 truncate">
+                        {selectedCountryDisplayLabel}
+                      </span>
                     </span>
                   ) : null}
                 </ComboboxInput>
@@ -1143,6 +1180,7 @@ export function PhoneVerificationFlow({
                   </ComboboxList>
                 </ComboboxContent>
               </Combobox>
+              )}
             </Field>
 
             <Field className="gap-2" data-figma-phone-field="number">
@@ -1234,14 +1272,19 @@ export function PhoneVerificationFlow({
             className="text-center text-sm leading-6 text-muted-foreground"
             data-figma-otp-intro="true"
           >
-            Enter the code sent to{" "}
+            {codePresentation === "onboarding" ? "To confirm your account, enter the 6-digit code we sent to " : "Enter the code sent to "}
             <span className="font-semibold text-foreground">
               {maskPhoneNumberForOtp(submittedPhoneNumber)}
             </span>
-            .
+            .{" "}
+            {codePresentation === "onboarding" && (
+              <button type="button" onClick={() => void handleStartVerification(true)} disabled={busy} className="text-[color:var(--app-accent-deep)] disabled:opacity-50">
+                Resend code
+              </button>
+            )}
           </p>
 
-          <Field className="gap-2" data-figma-otp-field="true">
+          <Field className="gap-2" data-figma-otp-field="true" data-invalid={Boolean(codeError)}>
             <FieldLabel htmlFor="phone-flow-code">One-time code</FieldLabel>
             <div className="relative">
               <div className="flex gap-2">
@@ -1274,17 +1317,27 @@ export function PhoneVerificationFlow({
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 aria-label="One-time code"
+                aria-invalid={Boolean(codeError)}
+                aria-describedby={codeError ? "phone-flow-code-error" : undefined}
                 value={verificationCode}
-                onChange={(event) =>
-                  setVerificationCode(
-                    event.target.value.replace(/\D/g, "").slice(0, 6),
-                  )
-                }
+                onChange={(event) => {
+                  setCodeError(null);
+                  setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6));
+                }}
                 autoFocus
                 enterKeyHint="done"
                 className="absolute inset-0 h-full w-full cursor-default rounded-2xl opacity-0 outline-none"
               />
             </div>
+            {codeError && (
+              <p
+                id="phone-flow-code-error"
+                role="alert"
+                className="text-center text-sm font-semibold text-destructive"
+              >
+                {codeError}
+              </p>
+            )}
           </Field>
 
           <Button
@@ -1309,7 +1362,8 @@ export function PhoneVerificationFlow({
             )}
           </Button>
 
-          <div className="flex items-center justify-center gap-3 pt-1 text-[15px]">
+          <div data-figma-otp-actions="true" className="flex items-center justify-center gap-3 pt-1 text-[15px]">
+            {codePresentation !== "onboarding" && <>
             <button
               type="button"
               onClick={() => void handleStartVerification(true)}
@@ -1321,13 +1375,14 @@ export function PhoneVerificationFlow({
             <span aria-hidden className="text-black/25 dark:text-white/30">
               ·
             </span>
+            </>}
             <button
               type="button"
               onClick={() => setStep("phone")}
               disabled={busy}
               className="font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
             >
-              Use a different number
+              {codePresentation === "onboarding" ? "Use a Different number" : "Use a different number"}
             </button>
           </div>
         </>

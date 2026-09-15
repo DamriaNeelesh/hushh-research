@@ -2,7 +2,7 @@
 
 The generated action gateway remains the source of truth for product actions.
 This module compiles it with the generated route index into a small, versioned
-capability graph that every entry point can use (Live voice, typed chat, Siri,
+capability graph that every entry point can use (Location commands, typed chat, Siri,
 and browser automation).  It deliberately contains product metadata and safe
 execution policy only; private domain values and client-provided authority do
 not enter the graph.
@@ -400,7 +400,7 @@ def _location_result_descriptor(result: str) -> dict[str, Any]:
         "position_captured",
         "position_unavailable",
     }
-    app_results = {"vault_unavailable", "draft_unavailable"}
+    app_results = {"vault_unavailable", "draft_prepared", "draft_unavailable"}
     presentation = (
         "native_result"
         if result in native_results
@@ -463,7 +463,7 @@ def _location_result_payload_schema(results: tuple[str, ...]) -> dict[str, Any]:
                 },
             }
             required.append("positionObservation")
-        elif result == "vault_unavailable":
+        elif result in {"vault_unavailable", "draft_prepared"}:
             properties["draftMetadata"] = {
                 "type": "object",
                 "additionalProperties": False,
@@ -581,7 +581,7 @@ LOCATION_KNOWLEDGE_INTERACTION_SURFACE_REGISTRY: Mapping[str, Mapping[str, Any]]
         directive_kind="form",
         title_key="one.location.place_persisting.title",
         body_key="one.location.place_persisting.body",
-        results=("vault_unavailable", "skip_place", "pause"),
+        results=("vault_unavailable", "draft_prepared", "skip_place", "pause"),
     ),
     "one.location.awaiting_vault_finalize.v2": _location_surface_contract(
         directive_kind="status",
@@ -762,6 +762,7 @@ LOCATION_KNOWLEDGE_VERIFIER_REGISTRY: Mapping[str, Mapping[str, Any]] = {
             "save_place",
             "skip_place",
             "vault_unavailable",
+            "draft_prepared",
             "pause",
         ],
     },
@@ -859,7 +860,7 @@ _VOICE_TELEMETRY_METRICS: Mapping[str, str] = {
 _VOICE_TELEMETRY_CORRELATION_PATTERNS: Mapping[str, re.Pattern[str]] = {
     "trace_id": re.compile(r"^(?:[0-9a-f]{16,64}|trace_[A-Za-z0-9_-]{8,96})$"),
     "activation_id": re.compile(r"^vact_[A-Za-z0-9_-]{8,96}$"),
-    "voice_session_id": re.compile(r"^(?:voice_|gemini_live_)[A-Za-z0-9_-]{8,128}$"),
+    "voice_session_id": re.compile(r"^(?:voice_|command_)[A-Za-z0-9_-]{8,128}$"),
     "turn_id": re.compile(r"^vturn_[A-Za-z0-9_-]{8,96}$"),
     "context_revision": re.compile(
         r"^(?:r[A-Za-z0-9_-]{1,64}:r[A-Za-z0-9_-]{1,64}|ctx_r[A-Za-z0-9_-]{1,96})$"
@@ -1174,7 +1175,14 @@ def location_onboarding_runtime_source_digest() -> str:
 def location_workflow_api_contract_source_digest() -> str:
     """Digest the typed public request/response contract used by both clients."""
 
-    return _sha256_path(_LOCATION_WORKFLOW_API_CONTRACT_PATH)
+    response_contract = (
+        _LOCATION_WORKFLOW_API_CONTRACT_PATH.parents[2] / "models" / "location_workflow.py"
+    )
+    return hashlib.sha256(
+        (
+            _sha256_path(_LOCATION_WORKFLOW_API_CONTRACT_PATH) + _sha256_path(response_contract)
+        ).encode()
+    ).hexdigest()
 
 
 def capability_graph_evolution_source_digest() -> str:
@@ -2320,6 +2328,20 @@ def _compile_location_knowledge_workflow(
                 f"Location knowledge package {field} does not match the generated route workflow."
             )
     completion_action_id = str(package.get("completion_action_id") or "")
+    command_completion = _clean_strings(package.get("command_completion_action_ids"))
+    for action_id in command_completion:
+        action = actions_by_id.get(action_id) or {}
+        if (
+            (action.get("execution_target") or {}).get("status") != "wired"
+            or action.get("execution_policy") != "allow_direct"
+            or any(
+                item.get("required") and item.get("default_value") is None
+                for item in (action.get("goal") or {}).get("required_inputs") or []
+            )
+        ):
+            raise ValueError(
+                "Command completion requires a wired, direct action without missing inputs."
+            )
     if completion_action_id not in set(base_workflow.get("completion_action_ids") or []):
         raise ValueError(
             "Location knowledge completion_action_id is not a wired workflow completion action."
@@ -2450,6 +2472,7 @@ def _compile_location_knowledge_workflow(
     )
     workflow.update(
         {
+            "command_completion_action_ids": command_completion,
             "version": int(package.get("workflow_version") or 2),
             "label": str(package.get("label") or ""),
             "description": str(package.get("description") or ""),
@@ -4761,7 +4784,7 @@ def list_complete_service_brain_model_projections(
 def load_capability_graph() -> dict[str, Any]:
     """Load the build-time graph and fail closed when it is stale.
 
-    Runtime source/AST discovery used to make a warm Live session depend on
+    Runtime source/AST discovery used to make an active request depend on
     process imports and stale in-memory caches. The deployable now consumes a
     checked-in artifact only; its generated-source, policy, and compiler
     digests prevent a gateway, manifest, or policy rollout from silently using
