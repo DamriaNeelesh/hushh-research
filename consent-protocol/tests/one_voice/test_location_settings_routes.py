@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from api.middleware import require_firebase_auth, require_vault_owner_token
 from api.routes import account
-from api.routes.one import location
+from api.routes.one import location_settings as location
 from hushh_mcp.services.one_location_account_settings_service import (
     AccountSettings,
     SharingTransition,
