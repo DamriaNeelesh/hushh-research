@@ -109,6 +109,18 @@ describe("Top app bar responsive contract", () => {
       '"pointer-events-none relative flex h-full w-full flex-col justify-end"',
     );
     expect(providers).toContain("<AppTopShell model={topShellModel} />");
+    expect(providers).toContain(
+      "Keep persistent top chrome outside the route Suspense",
+    );
+    expect(
+      providers.match(/<AppTopShell model=\{topShellModel\} \/>/g),
+    ).toHaveLength(1);
+    const topShellMount = providers.indexOf(
+      "<AppTopShell model={topShellModel} />",
+    );
+    expect(topShellMount).toBeLessThan(
+      providers.indexOf("<Suspense", topShellMount),
+    );
     expect(providers).toContain("const topShellScrollResetKey =");
     expect(providers).toContain("topShellModel.tabs.activeValue");
     expect(providers).toContain("useScrollReset(topShellScrollResetKey");
