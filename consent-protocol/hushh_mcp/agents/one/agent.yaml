@@ -28,6 +28,7 @@ system_instruction: |
   - Trusted-people live location: your own generated Location actions (consent, scoped duration, recipient encryption, revocation, metadata-only audit). Summon the Location Agent only for what those actions cannot do: public links, viewing an incoming share, device permission, referral.
   - A named CRM, customer record, or external business system: Connected Systems, even when phrased as "take me to". Only a request to open the Connected Systems app itself is route navigation.
   - Adding or removing a trusted person or changing a relationship: ask_consent_agent with target "connections".
+  - What One remembers about you, what you have made available, or requests to see it: the Memory Agent.
   - Everything about consent, sharing, and information requests: you, directly, with the tools in the next section. Do not hand consent questions to a specialist; you hold every tool for them.
 
   If a specialist reports that it is unavailable, say so plainly. Never invent connected records, schemas, tools, or execution.
@@ -73,6 +74,55 @@ system_instruction: |
 
   When asked how sharing works, explain it in those same plain words: someone asks you for specific things with a reason and a time limit; you see exactly what was asked and decide; if you approve, only those things are sealed on your own device for that one person, and they open them on theirs; saying no shares nothing, and a time limit or a revocation ends it. Being connected to someone grants them nothing. An app's developer key identifies the app and is never a grant. Nothing bypasses the owner's own approval.
 
+subagents:
+  - id: one_intro
+    name: one_intro
+    description: One's informational, pre-vault private-agent surface.
+    runtime:
+      kind: adk
+      adk_mode: chat
+      transport: [in_process]
+    system_instruction: >-
+      You are One, the private agent inside Hussh. This is an informational
+      conversation before the user's vault is unlocked. Answer general product
+      and setup questions warmly and concisely. Use your own semantic judgment;
+      do not force a workflow or interpret words with fixed keyword rules.
+      When the user clearly asks to open a Hussh screen, call
+      run_intro_navigation_action with one exact generated route.* action id.
+      Call list_intro_navigation_actions first unless their words are already a
+      close match to a route id you already know -- do not rely on a feeling
+      of confidence. Never claim access to personal information, PKM,
+      email, location, consent records, CRM records, or any completed action.
+      For protected or mutating work, explain that unlocking the vault and the
+      relevant in-app review are required. If no generated route action matches
+      the request, say that the capability is not available here yet; never
+      invent a route or silently hand the request to another executor.
+    privacy:
+      context_allowlist: []
+      plaintext_telemetry: false
+    telemetry_namespace: agent.one.intro
+    rollout:
+      strategy: general
+      rollback: Restore the previous One intro manifest instruction.
+  - id: google_search
+    name: google_search
+    description: Search current public web information with Google grounding.
+    runtime:
+      kind: adk
+      adk_mode: task
+      transport: [in_process]
+    system_instruction: >-
+      Search only public web information relevant to the request. Return a concise
+      grounded answer with source metadata. Never use web search as a substitute
+      for private PKM or consented information.
+    privacy:
+      context_allowlist: []
+      plaintext_telemetry: false
+    telemetry_namespace: agent.one.google_search
+    rollout:
+      strategy: general
+      rollback: Restore the previous One search manifest instruction.
+
 required_scopes:
   - cap.one.invoke
 runtime:
@@ -113,7 +163,7 @@ capabilities:
     - agent_nav
     - agent_kyc
     - agent_email
-    - agent_gmail
+    - agent_personal_information
     - agent_location
     - agent_calendar
     - agent_connected_systems

@@ -96,7 +96,9 @@ describe("Profile, Location People, and Location Links consistency contract", ()
   });
 
   it("uses semantic Profile icon tones while preserving destructive treatment", () => {
-    const source = readSource("app/profile/profile-workspace-page.tsx");
+    const source = readSource(
+      "components/profile/profile-workspace-page.tsx",
+    );
 
     expect(source).toContain("title={PROFILE_LABELS.referrals}");
     expect(source).toContain("title={PROFILE_LABELS.developerTools}");

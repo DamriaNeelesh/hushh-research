@@ -869,7 +869,7 @@
         "delegate_agent_id": "agent_wallet",
         "reachability": {
           "routes": [
-            "/agent",
+            "/",
             "/one",
             "/one/wallet"
           ],
@@ -2753,7 +2753,8 @@
         ],
         "input_resolvers": [],
         "slot_schema": {
-          "person": "spoken_person_name_list"
+          "person": "spoken_person_name_list",
+          "userId": "opaque_id_optional"
         },
         "workflow_steps": [
           {
@@ -2999,7 +3000,8 @@
         ],
         "input_resolvers": [],
         "slot_schema": {
-          "person": "spoken_person_name_list"
+          "person": "spoken_person_name_list",
+          "requestId": "opaque_id_optional"
         },
         "workflow_steps": [
           {
@@ -3123,7 +3125,8 @@
         ],
         "input_resolvers": [],
         "slot_schema": {
-          "person": "spoken_person_name_list"
+          "person": "spoken_person_name_list",
+          "requestId": "opaque_id_optional"
         },
         "workflow_steps": [
           {
@@ -3246,7 +3249,8 @@
         ],
         "input_resolvers": [],
         "slot_schema": {
-          "person": "spoken_person_name_list"
+          "person": "spoken_person_name_list",
+          "connectionId": "opaque_id_optional"
         },
         "workflow_steps": [
           {
@@ -22645,7 +22649,7 @@
       "delegate_agent_id": "agent_wallet",
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/wallet"
         ],
@@ -22755,7 +22759,7 @@
       "delegate_agent_id": "agent_wallet",
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/wallet"
         ],
@@ -22871,7 +22875,7 @@
       "delegate_agent_id": "agent_wallet",
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/wallet"
         ],
@@ -23099,7 +23103,7 @@
       "delegate_agent_id": null,
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -23232,7 +23236,7 @@
       "delegate_agent_id": null,
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -23365,7 +23369,7 @@
       "delegate_agent_id": null,
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -23498,7 +23502,7 @@
       "delegate_agent_id": null,
       "reachability": {
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",

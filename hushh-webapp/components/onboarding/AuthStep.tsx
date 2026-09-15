@@ -338,7 +338,7 @@ export function AuthStep({
       const explicitTargetPath = normalizeInternalRouteHref(
         resumeTarget || redirectPath,
       );
-      const targetPath = explicitTargetPath ?? ROUTES.ONE_HOME;
+      const targetPath = explicitTargetPath ?? ROUTES.HOME;
       const navigationKey = `${userId}:${targetPath}`;
       if (lastNavigationKeyRef.current === navigationKey) {
         return lastResolvedNavigationPathRef.current || targetPath;

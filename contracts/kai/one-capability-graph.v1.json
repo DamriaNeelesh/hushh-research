@@ -28144,7 +28144,7 @@
       "navigation": {
         "fallback": "agent_chat_wallet_list",
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/wallet"
         ],
@@ -28304,7 +28304,7 @@
       "navigation": {
         "fallback": "agent_chat_wallet_add",
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/wallet"
         ],
@@ -28477,7 +28477,7 @@
       "navigation": {
         "fallback": "agent_chat_wallet_reveal",
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/wallet"
         ],
@@ -28789,7 +28789,7 @@
       "navigation": {
         "fallback": "consent.request",
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -28970,7 +28970,7 @@
       "navigation": {
         "fallback": "consent.deny",
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -29153,7 +29153,7 @@
       "navigation": {
         "fallback": "consent.revoke",
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -29320,7 +29320,7 @@
       "navigation": {
         "fallback": "consent.cancel_request",
         "routes": [
-          "/agent",
+          "/",
           "/one",
           "/one/consent",
           "/people/[personRef]",
@@ -37728,7 +37728,7 @@
         }
       ],
       "platform": "ios",
-      "projection_digest": "e937108745e25b5f069d9e784d507634a921200d46dba6e3290a5cdf189558b2",
+      "projection_digest": "9a1c8c65734ed189c85b4923181b85114e3f11193f7edbddef5c1c8072d44a45",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -37738,16 +37738,16 @@
       ],
       "schema_version": "one.capability_platform_projection.v1",
       "source_digests": {
-        "capability_graph_evolution": "07441cbd02b76326a2d899f88e7c2b92feddb8dd3bc5d19b043bc00ec2b765cc",
+        "capability_graph_evolution": "9345cefc642be327364b77382ca9019dd68eba4a71d626afd6546d3d8c5a39f8",
         "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
         "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-        "location_agent_manifest": "14bf46ea9f5fb5bb341b37535df5f86fc178f158b799b72d05eb125b306b289a",
+        "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
         "location_knowledge_package": "ffae41f4c4dcea4a5cadfd3529878b50e59436c7a2b5c069a23c4ea11b16c0de",
         "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
-        "service_knowledge_packages": "6fbf4254bf860a7f7be8882810a573e6e90deff98d058a1e2361c5e4a00972a4"
+        "service_knowledge_packages": "f361804817c649a57c89f25e983445883e767a9c0750a5e07eebc1055315ef60"
       },
-      "source_revision": "aaec9bce8ec29c93",
+      "source_revision": "37cb394043f0f125",
       "supported_entrypoints": [
         "typed",
         "voice",
@@ -39265,7 +39265,7 @@
       ]
     },
     "schema_version": "one.capability_platform_projection.v1",
-    "source_revision": "aaec9bce8ec29c93",
+    "source_revision": "37cb394043f0f125",
     "web": {
       "actions": [
         {
@@ -39308,7 +39308,7 @@
         }
       ],
       "platform": "web",
-      "projection_digest": "ff49893b561e039b64c5f9868b395ae07b7ce33630b0266808455481e549e93b",
+      "projection_digest": "7001c6376ebe1df268f18e9c9ed73da91edb7c42f26b723387e2838e1d1b0929",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -39318,16 +39318,16 @@
       ],
       "schema_version": "one.capability_platform_projection.v1",
       "source_digests": {
-        "capability_graph_evolution": "07441cbd02b76326a2d899f88e7c2b92feddb8dd3bc5d19b043bc00ec2b765cc",
+        "capability_graph_evolution": "9345cefc642be327364b77382ca9019dd68eba4a71d626afd6546d3d8c5a39f8",
         "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
         "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-        "location_agent_manifest": "14bf46ea9f5fb5bb341b37535df5f86fc178f158b799b72d05eb125b306b289a",
+        "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
         "location_knowledge_package": "ffae41f4c4dcea4a5cadfd3529878b50e59436c7a2b5c069a23c4ea11b16c0de",
         "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
-        "service_knowledge_packages": "6fbf4254bf860a7f7be8882810a573e6e90deff98d058a1e2361c5e4a00972a4"
+        "service_knowledge_packages": "f361804817c649a57c89f25e983445883e767a9c0750a5e07eebc1055315ef60"
       },
-      "source_revision": "aaec9bce8ec29c93",
+      "source_revision": "37cb394043f0f125",
       "supported_entrypoints": [
         "typed",
         "voice"
@@ -40884,29 +40884,28 @@
       "renderer_key": "one_location_workflow_card"
     }
   ],
-  "revision": "aaec9bce8ec29c93",
+  "revision": "37cb394043f0f125",
   "schema_version": "one.capability_graph.v1",
   "screens": [
     {
       "action_ids": [
-        "onboarding.claim_one"
+        "onboarding.claim_one",
+        "wallet.add",
+        "wallet.list",
+        "wallet.reveal"
       ],
       "capability_id": "screen:/",
       "kind": "screen",
-      "label": "one_intro",
+      "label": "chat",
       "route_pattern": "/",
       "telemetry_event": "app_intelligence.navigation",
       "version": 1
     },
     {
-      "action_ids": [
-        "wallet.add",
-        "wallet.list",
-        "wallet.reveal"
-      ],
+      "action_ids": [],
       "capability_id": "screen:/agent",
       "kind": "screen",
-      "label": "app",
+      "label": "compatibility_redirect",
       "route_pattern": "/agent",
       "telemetry_event": "app_intelligence.navigation",
       "version": 1
@@ -40921,11 +40920,7 @@
       "version": 1
     },
     {
-      "action_ids": [
-        "wallet.add",
-        "wallet.list",
-        "wallet.reveal"
-      ],
+      "action_ids": [],
       "capability_id": "screen:/blog/[slug]",
       "kind": "screen",
       "label": "app",
@@ -41258,11 +41253,7 @@
       "version": 1
     },
     {
-      "action_ids": [
-        "wallet.add",
-        "wallet.list",
-        "wallet.reveal"
-      ],
+      "action_ids": [],
       "capability_id": "screen:/one/connected-systems/[systemId]",
       "kind": "screen",
       "label": "app",
@@ -41284,11 +41275,7 @@
       "version": 1
     },
     {
-      "action_ids": [
-        "wallet.add",
-        "wallet.list",
-        "wallet.reveal"
-      ],
+      "action_ids": [],
       "capability_id": "screen:/one/email",
       "kind": "screen",
       "label": "app",
@@ -42151,11 +42138,7 @@
       "version": 1
     },
     {
-      "action_ids": [
-        "wallet.add",
-        "wallet.list",
-        "wallet.reveal"
-      ],
+      "action_ids": [],
       "capability_id": "screen:/one/puppy",
       "kind": "screen",
       "label": "app",
@@ -42328,11 +42311,7 @@
       "version": 1
     },
     {
-      "action_ids": [
-        "wallet.add",
-        "wallet.list",
-        "wallet.reveal"
-      ],
+      "action_ids": [],
       "capability_id": "screen:/one/wallet-card",
       "kind": "screen",
       "label": "app",
@@ -42424,11 +42403,7 @@
       "version": 1
     },
     {
-      "action_ids": [
-        "wallet.add",
-        "wallet.list",
-        "wallet.reveal"
-      ],
+      "action_ids": [],
       "capability_id": "screen:/research/protocol",
       "kind": "screen",
       "label": "app",
@@ -42576,11 +42551,7 @@
       "version": 1
     },
     {
-      "action_ids": [
-        "wallet.add",
-        "wallet.list",
-        "wallet.reveal"
-      ],
+      "action_ids": [],
       "capability_id": "screen:/welcome",
       "kind": "screen",
       "label": "app",
@@ -42590,17 +42561,40 @@
     }
   ],
   "semantic_diff": {
-    "added": [],
+    "added": [
+      "services:service.personal_information"
+    ],
     "breaking": [],
     "changed": [
-      "screens:screen:/one/location",
-      "screens:screen:/one/profile",
-      "screens:screen:/one/profile/account",
-      "screens:screen:/one/profile/account/phone"
+      "actions:consent.cancel_request",
+      "actions:consent.deny",
+      "actions:consent.request",
+      "actions:consent.revoke",
+      "actions:wallet.add",
+      "actions:wallet.list",
+      "actions:wallet.reveal",
+      "screens:screen:/",
+      "screens:screen:/agent",
+      "screens:screen:/blog/[slug]",
+      "screens:screen:/one/connected-systems/[systemId]",
+      "screens:screen:/one/email",
+      "screens:screen:/one/puppy",
+      "screens:screen:/one/wallet-card",
+      "screens:screen:/research/protocol",
+      "screens:screen:/welcome",
+      "services:service.gmail"
     ],
     "compatible": [],
-    "deprecated": [],
-    "from_revision": "a4e4c3976f85ab29",
+    "deprecated": [
+      "actions:consent.cancel_request",
+      "actions:consent.deny",
+      "actions:consent.request",
+      "actions:consent.revoke",
+      "actions:wallet.add",
+      "actions:wallet.list",
+      "actions:wallet.reveal"
+    ],
+    "from_revision": "aaec9bce8ec29c93",
     "migrated": [],
     "removed": []
   },
@@ -43470,21 +43464,13 @@
       "label": "Gmail",
       "native_semantic_actions": [],
       "onboarding_workflow_id": "workflow.setup.gmail",
-      "one_exposure": {
-        "discovery_status": "withheld",
-        "exposure_status": "disabled",
-        "knowledge_package_ref": null,
-        "service_id": "gmail",
-        "supported_entrypoints": [
-          "typed"
-        ]
-      },
+      "one_exposure": null,
       "route_patterns": [
         "/one/setup/gmail"
       ],
       "schema_version": "one.dynamic_service_knowledge.v1",
       "service_id": "gmail",
-      "specialist_agent_id": "agent_gmail",
+      "specialist_agent_id": null,
       "telemetry_event": "app_intelligence.service_discovery",
       "version": 1
     },
@@ -44916,6 +44902,38 @@
       "version": 1
     },
     {
+      "action_ids": [],
+      "api_endpoints": [],
+      "capability_id": "service.personal_information",
+      "completion": {},
+      "executor_hierarchy": [
+        {
+          "kind": "specialist",
+          "reason": "A manifest exposure is discovery metadata, not an execution binding.",
+          "status": "registered_discoverable_only"
+        }
+      ],
+      "kind": "service",
+      "label": "Memory Agent",
+      "native_semantic_actions": [],
+      "onboarding_workflow_id": null,
+      "one_exposure": {
+        "discovery_status": "discoverable",
+        "exposure_status": "active",
+        "knowledge_package_ref": null,
+        "service_id": "personal_information",
+        "supported_entrypoints": [
+          "typed"
+        ]
+      },
+      "route_patterns": [],
+      "schema_version": "one.dynamic_service_knowledge.v1",
+      "service_id": "personal_information",
+      "specialist_agent_id": "agent_personal_information",
+      "telemetry_event": "app_intelligence.service_discovery",
+      "version": 1
+    },
+    {
       "action_ids": [
         "ria.client_account.open_workspace_fallback",
         "ria.client_request.open_access_fallback",
@@ -45008,21 +45026,21 @@
     }
   ],
   "source_digests": {
-    "capability_graph_evolution": "07441cbd02b76326a2d899f88e7c2b92feddb8dd3bc5d19b043bc00ec2b765cc",
+    "capability_graph_evolution": "9345cefc642be327364b77382ca9019dd68eba4a71d626afd6546d3d8c5a39f8",
     "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
     "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-    "kai_action_gateway": "c1ae6e274ed385a93f08a3e7402feb2e420bb0122cd9af739b8278677ac350b5",
-    "location_agent_manifest": "14bf46ea9f5fb5bb341b37535df5f86fc178f158b799b72d05eb125b306b289a",
+    "kai_action_gateway": "253acaf9b155512386fc8ab2070ef5030ab0895583b3589f2038b133a110101f",
+    "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
     "location_knowledge_package": "ffae41f4c4dcea4a5cadfd3529878b50e59436c7a2b5c069a23c4ea11b16c0de",
     "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
     "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
-    "product_agent_registry": "60d548c78070d4880175aff8d0c0b9956fa91a9c670196bd3c2ad8c59c638bba",
-    "route_orchestration_index": "cd4967cac021793c105c9ca89f0f2442eac8c9f5acf05b27f837b23f0934dbe4",
-    "service_knowledge_packages": "6fbf4254bf860a7f7be8882810a573e6e90deff98d058a1e2361c5e4a00972a4"
+    "product_agent_registry": "1f15e99ef2e4d6b79c1a149f2ec6baba9ad2f10a94c8f41d5cf68678dd5c01a6",
+    "route_orchestration_index": "fd4b475bece0df420901d00247ef2e33fa6d274a8742816326cc516ee39ba11c",
+    "service_knowledge_packages": "f361804817c649a57c89f25e983445883e767a9c0750a5e07eebc1055315ef60"
   },
-  "source_revision": "aaec9bce8ec29c93",
+  "source_revision": "37cb394043f0f125",
   "workflow_revision_compatibility": {
-    "current_graph_revision": "aaec9bce8ec29c93",
+    "current_graph_revision": "37cb394043f0f125",
     "schema_version": "one.workflow_revision_compatibility.v1",
     "workflows": [
       {
@@ -45033,6 +45051,7 @@
           "6448b901792d40a4",
           "8e37ce83397a3ac7",
           "a4e4c3976f85ab29",
+          "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "cf08fb61503832fb",
@@ -45053,6 +45072,7 @@
           "6448b901792d40a4",
           "8e37ce83397a3ac7",
           "a4e4c3976f85ab29",
+          "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "cf08fb61503832fb",
@@ -45073,6 +45093,7 @@
           "6448b901792d40a4",
           "8e37ce83397a3ac7",
           "a4e4c3976f85ab29",
+          "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "cf08fb61503832fb",
@@ -45093,6 +45114,7 @@
           "6448b901792d40a4",
           "8e37ce83397a3ac7",
           "a4e4c3976f85ab29",
+          "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "cf08fb61503832fb",
@@ -45113,6 +45135,7 @@
           "6448b901792d40a4",
           "8e37ce83397a3ac7",
           "a4e4c3976f85ab29",
+          "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "cf08fb61503832fb",
@@ -45133,6 +45156,7 @@
           "6448b901792d40a4",
           "8e37ce83397a3ac7",
           "a4e4c3976f85ab29",
+          "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "cf08fb61503832fb",
@@ -45153,6 +45177,7 @@
           "6448b901792d40a4",
           "8e37ce83397a3ac7",
           "a4e4c3976f85ab29",
+          "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "cf08fb61503832fb",

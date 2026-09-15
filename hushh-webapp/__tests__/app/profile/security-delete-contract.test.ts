@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const profilePageSource = readFileSync(
-  join(process.cwd(), "app/profile/profile-workspace-page.tsx"),
+  join(process.cwd(), "components/profile/profile-workspace-page.tsx"),
   "utf8",
 );
 const topAppBarSource = readFileSync(
@@ -75,7 +75,7 @@ describe("profile security deletion contract", () => {
   it("offers a reset-account path that keeps the account and re-runs setup", () => {
     expect(profilePageSource).toContain("Reset account?");
     expect(profilePageSource).toContain(
-      "Clears saved data and restarts setup. Sign-in and Vault stay.",
+      "Clears saved details and setup progress. Your sign-in and vault stay.",
     );
     expect(profilePageSource).toContain('"Reset account"');
     expect(profilePageSource).toContain(

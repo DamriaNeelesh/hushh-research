@@ -683,6 +683,7 @@ export const LOCATION_FLOW_LABELS: Readonly<Record<string, string>> = {
   "active-shares": "Active shares",
   "shared-with-me": "Shared with me",
   "needs-review": "Needs review",
+  ratings: "Place ratings",
 };
 
 /**

@@ -59,9 +59,9 @@ final class AppUITests: XCTestCase {
         }
         XCTAssertTrue(
             loginButton.exists && loginButton.isHittable,
-            "Login must become usable after bounded native resume validation"
+            "Login must become usable after the native privacy cover releases"
         )
-        XCTAssertFalse(app.staticTexts["Checking your session\u{2026}"].exists)
+        XCTAssertFalse(app.staticTexts["Protecting private information\u{2026}"].exists)
     }
 
     func testPublicAndAuthRoutes() throws {
@@ -271,9 +271,9 @@ final class AppUITests: XCTestCase {
         try assertRoutes([
             reviewerRoute(name: "consents", redirect: "/one/consent", marker: "native-route-consents"),
             reviewerRoute(
-                name: "agent",
-                redirect: "/agent",
-                marker: "native-route-agent",
+                name: "chat",
+                redirect: "/",
+                marker: "native-route-home",
                 allowedDataStates: ["loaded", "empty-valid", "unavailable-valid"]
             ),
             reviewerRoute(name: "one-kyc", redirect: "/one/kyc", marker: "native-route-one-kyc"),

@@ -51,6 +51,8 @@ OPENAI_REALTIME_PROVIDERS: tuple[ProviderId, ...] = ("gemini", "openai")
 _MODELS: tuple[ModelEntry, ...] = (
     # Gemini text models use generateContent and are not valid Live transports.
     # Native realtime is model-specific; never infer it from the provider.
+    # Founder rule 2026-09-14: exactly the last two Gemini releases are registered
+    # for generation. A roll-forward replaces the oldest row, it never adds a third.
     ModelEntry(
         provider="gemini",
         model=GEMINI_MODEL,
@@ -70,23 +72,6 @@ _MODELS: tuple[ModelEntry, ...] = (
         supports_prompt_caching=True,
         supported_vertex_locations=("global",),
     ),
-    ModelEntry(
-        provider="gemini",
-        model="gemini-3.6-flash",
-        supports_prompt_caching=True,
-        supported_vertex_locations=("global",),
-    ),
-    ModelEntry(
-        provider="gemini",
-        model="gemini-3.5-flash",
-        supports_prompt_caching=True,
-        supported_vertex_locations=("global",),
-    ),
-    ModelEntry(
-        provider="gemini",
-        model="gemini-3.1-pro-preview",
-        supported_vertex_locations=("global",),
-    ),
     # Retrieval-only model used by the server-owned Location Brain semantic
     # index. Global-only availability makes ManagedGeminiRuntimeBinding return
     # the native GenAI client, which exposes ``embed_content``, rather than the
@@ -98,7 +83,6 @@ _MODELS: tuple[ModelEntry, ...] = (
         supports_function_calling=False,
         supported_vertex_locations=("global",),
     ),
-    ModelEntry(provider="gemini", model="gemini-3.1-flash-lite"),
     # Gemini Live (bidirectional audio) on Vertex. Live models are served from
     # regional endpoints only, so the entry pins its region and never inherits
     # the global/us/eu multi-region aliases the text fleet uses. Only entries

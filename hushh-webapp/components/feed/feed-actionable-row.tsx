@@ -9,6 +9,7 @@ import { ConnectionPersonAvatar } from "@/components/connections/connection-pers
 import { Icon } from "@/lib/morphy-ux/ui";
 import { cn } from "@/lib/utils";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
+import { useArmedAction } from "@/lib/ui/use-armed-action";
 import { FeedRowMetadata } from "./feed-row-metadata";
 import type {
   FeedActionButton,
@@ -27,18 +28,10 @@ function ActionButton({
   // Irreversible actions (Deny / Decline / Cancel) require a confirming second
   // tap: the first tap arms the button ("Sure?") and auto-disarms after a few
   // seconds, so a stray tap can't reject a request or abort a running analysis.
-  const [armed, setArmed] = useState(false);
-  const disarmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (disarmTimer.current) clearTimeout(disarmTimer.current);
-    };
-  }, []);
+  const confirmTap = useArmedAction();
+  const { armed, disarm } = confirmTap;
 
   const runNow = () => {
-    setArmed(false);
-    if (disarmTimer.current) clearTimeout(disarmTimer.current);
     void runAction(action);
   };
 
@@ -48,30 +41,23 @@ function ActionButton({
 
   useEffect(() => {
     if (!actionsLocked || isRunning) return;
-    setArmed(false);
-    if (disarmTimer.current) clearTimeout(disarmTimer.current);
-  }, [actionsLocked, isRunning]);
+    disarm();
+  }, [actionsLocked, disarm, isRunning]);
 
   return (
     <button
       type="button"
       disabled={action.disabled || actionsLocked}
       aria-label={
-        showConfirm
-          ? `Confirm ${action.label}`
-          : action.confirm
-            ? `${action.label} (tap again to confirm)`
-            : undefined
+        action.confirm ? confirmTap.ariaLabel(action.label) : undefined
       }
       onClick={(event) => {
         // The row itself may be a link/button; never let an action bubble into it.
         event.stopPropagation();
         event.preventDefault();
         if (actionsLocked) return;
-        if (action.confirm && !armed) {
-          setArmed(true);
-          if (disarmTimer.current) clearTimeout(disarmTimer.current);
-          disarmTimer.current = setTimeout(() => setArmed(false), 3500);
+        if (action.confirm) {
+          confirmTap.activate(runNow);
           return;
         }
         runNow();
@@ -91,7 +77,7 @@ function ActionButton({
       {isRunning ? (
         <Icon icon={Loader2} size="xs" className="animate-spin" />
       ) : null}
-      {showConfirm ? "Sure?" : action.label}
+      {action.confirm ? confirmTap.label(action.label) : action.label}
     </button>
   );
 }

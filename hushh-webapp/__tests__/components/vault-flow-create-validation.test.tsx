@@ -151,7 +151,7 @@ describe("VaultFlow create validation", () => {
     ).toBeTruthy();
     expect(screen.queryByLabelText("Passphrase")).toBeNull();
     fireEvent.click(
-      screen.getByRole("button", { name: /can't get in\? sign out/i }),
+      screen.getByRole("button", { name: "Sign out" }),
     );
     await waitFor(() => expect(onSignOut).toHaveBeenCalledTimes(1));
   });
@@ -323,7 +323,14 @@ describe("VaultFlow create validation", () => {
     expect(unlockButton.disabled).toBe(true);
     expect(screen.getByText("Use another method")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Passkey" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Recovery key" })).toBeTruthy();
+    const recoveryButton = screen.getByRole("button", { name: "Recovery key" });
+    expect(recoveryButton).toHaveClass("h-11", "min-h-11", "items-start", "rounded-none", "py-0");
+    expect(recoveryButton).not.toHaveClass("w-full");
+    expect(recoveryButton).not.toHaveClass("border");
+    expect(screen.getByText("Use another method").parentElement).toHaveClass(
+      "space-y-[var(--app-form-related-gap)]",
+    );
+    expect(screen.getByLabelText("Vault passphrase")).toHaveClass("rounded-none");
     expect(document.querySelector("[data-vault-flow-icon]")).toHaveClass(
       "bg-[color:var(--app-accent-tint)]",
     );
@@ -399,10 +406,13 @@ describe("VaultFlow create validation", () => {
     render(<VaultFlow user={user} onSuccess={vi.fn()} onSignOut={onSignOut} />);
 
     expect(await screen.findByText(/Unlocking with passkey/i)).toBeTruthy();
-    const signOutEscape = screen.getByRole("button", {
-      name: /can't get in\? sign out/i,
-    }) as HTMLButtonElement;
+    const signOutEscape = screen.getByRole("button", { name: "Sign out" }) as HTMLButtonElement;
     expect(signOutEscape.disabled).toBe(false);
+    expect(screen.getByTestId("vault-use-recovery-key-escape")).toHaveClass(
+      "h-11",
+      "rounded-none",
+    );
+    expect(screen.queryByTestId("vault-use-recovery-key")).toBeNull();
 
     fireEvent.click(signOutEscape);
 
@@ -703,7 +713,7 @@ describe("VaultFlow create validation", () => {
     await screen.findByRole("button", { name: /Unlocking with Face ID/ });
     const fallback = screen.getByRole("button", { name: "Passphrase" });
     expect(fallback).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Recovery key" })).toBeEnabled();
+    expect(screen.getByTestId("vault-use-recovery-key-escape")).toBeEnabled();
     fireEvent.click(fallback);
     expect(await screen.findByLabelText("Vault passphrase")).toBeVisible();
     expect(cancelAuthenticationMock).toHaveBeenCalledWith(expect.any(String));
