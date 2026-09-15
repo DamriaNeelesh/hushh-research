@@ -425,7 +425,7 @@ export function OneSetupHub() {
       as="main"
       width="reading"
       fitContent
-      className="relative isolate max-w-[600px] pb-[calc(20px+env(safe-area-inset-bottom))]"
+      className="relative isolate max-w-[600px]"
       nativeTest={{
         routeId: "/one/setup",
         marker: "native-route-one-setup",
@@ -554,6 +554,10 @@ export function OneSetupHub() {
             </div>
             <div>
               <SetupCompletionFooter
+                // The signed-in app scroll root already reserves the iOS safe
+                // area and persistent Talk to One bar. Reserving it again here
+                // creates an oversized empty tail beneath Finish setup.
+                insetBottom={false}
                 label={masterActionLabel}
                 onComplete={() => void handleMasterAck()}
                 busy={dismissing}
