@@ -309,3 +309,22 @@ tests/services/test_connections_chat_service.py
 tests/services/test_connections_manifest_sync.py
 tests/services/test_runtime_providers.py
 tests/services/test_action_directive_ledger.py
+
+# One Live Voice (Gemini Live on Vertex ADC + typed tool layer)
+tests/one_voice/test_config.py
+tests/one_voice/test_factory_live_client.py
+tests/one_voice/test_readiness_route.py
+tests/one_voice/test_tickets.py
+tests/one_voice/test_relay_protocol.py
+tests/one_voice/test_sharing_posture_enforcement.py
+tests/one_voice/test_location_settings_routes.py
+tests/one_voice/test_tool_registry_contract.py
+tests/one_voice/test_tools_people.py
+tests/one_voice/test_phonetic_person_matcher.py
+tests/one_voice/test_tools_location_state.py
+tests/one_voice/test_tools_sharing.py
+tests/one_voice/test_tools_circles.py
+tests/one_voice/test_tools_sos.py
+tests/one_voice/test_tools_profile.py
+tests/one_voice/test_tools_onboarding.py
+tests/one_voice/test_one_voice_postgres.py

@@ -169,6 +169,38 @@ class ManagedGeminiRuntimeBinding:
             cooldown_seconds=_vertex_location_cooldown_seconds(),
         )
 
+    def build_live_client(self, *, model: str, location: str) -> Any:
+        """Build the one ``genai.Client`` that may open a Gemini Live session.
+
+        Vertex ADC only: the developer-key mode is refused outright, because
+        Live must never run on a hosted API-key pool again. The model id must
+        be a registered native-realtime entry (no aliases, no pass-through)
+        and the location must be one of that entry's regional endpoints. There
+        is deliberately no ``VertexRegionalClient`` failover here: Live runs in
+        exactly one pinned region or not at all.
+        """
+        from google import genai
+
+        from .registry import resolve_live_model_entry
+
+        if self.auth_mode != VERTEX_ADC_AUTH_MODE:
+            raise RuntimeError("Gemini Live requires Vertex ADC")
+        clean_location = str(location or "").strip().lower()
+        clean_model = self.validate_model(model, location=clean_location or None)
+        if not clean_location or clean_location in {"global", "us", "eu"}:
+            raise RuntimeError("Gemini Live requires one regional Vertex location")
+        entry = resolve_live_model_entry(clean_model)
+        if clean_location not in entry.supported_vertex_locations:
+            raise RuntimeError(
+                f"Vertex location {clean_location!r} is not supported for Live model "
+                f"{clean_model!r}"
+            )
+        return genai.Client(
+            vertexai=True,
+            project=self.project,
+            location=clean_location,
+        )
+
     def build_adk_model(
         self,
         model: str,
@@ -406,6 +438,19 @@ def build_managed_runtime_client(runtime_provider: str, managed_credential: str 
     if provider != "gemini" and not key:
         raise RuntimeError("Managed runtime API key is not configured")
     return _build(provider, key, managed=True)
+
+
+def build_managed_live_client(*, model: str, location: str) -> Any:
+    """Managed Gemini Live client from the canonical ADC contract.
+
+    The relay, the readiness probe, and the model-discovery script all come
+    through here so ``genai.Client(`` stays centralized in this module.
+    """
+
+    return ManagedGeminiRuntimeBinding.from_environment().build_live_client(
+        model=model,
+        location=location,
+    )
 
 
 def build_managed_gemini_adk_model(

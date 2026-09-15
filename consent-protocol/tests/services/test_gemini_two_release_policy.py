@@ -88,6 +88,10 @@ def test_no_other_gemini_3_text_id_on_a_code_line() -> None:
                 continue
             for number, line in _code_lines(path):
                 for model_id in _ANY_GEMINI_3_ID.findall(line):
+                    # Native realtime candidates are governed by the Live
+                    # registry, not the two-release text fleet policy.
+                    if "-live-" in model_id or model_id.endswith("-live"):
+                        continue
                     if model_id in SUPPORTED or model_id in allowed:
                         continue
                     offenders.append(f"{path.relative_to(BACKEND_ROOT)}:{number}: {model_id}")

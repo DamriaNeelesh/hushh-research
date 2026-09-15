@@ -1,5 +1,8 @@
 "use client";
 
+import { LocationAreaSwitch } from "@/components/location/location-area-switch";
+import { LocationRedesignSkeleton } from "@/components/one-location/redesign/location-redesign-skeleton";
+import dynamic from "next/dynamic";
 import { prepareCircleManagement, verifyCircleManagementReceipt, circleManagementResult,
   type CircleManagementAction, type CircleManagementBinding } from "@/lib/one-location/command-circle-management";
 import { OwnerOperationGate, SosOperationGate, stopSosShares } from "@/lib/one-location/command-sos";
@@ -15587,7 +15590,8 @@ export function OneLocationAgentPageContent({
   );
 }
 
-export default function OneLocationAgentPage({
+/** Legacy Location hub (bounded command runtime). Retired once Live is on everywhere. */
+export function OneLocationAgentPage({
   mode = "workspace",
   surface = "hub",
   onSetupReadinessChange,
@@ -15601,6 +15605,26 @@ export default function OneLocationAgentPage({
       onSetupReadinessChange={onSetupReadinessChange}
       onSetupComplete={onSetupComplete}
       onSetupSkip={onSetupSkip}
+    />
+  );
+}
+
+// The voice-first area loads only when the server says Live is on, so the
+// legacy hub's module graph (and its tests) stay untouched by the new tree.
+const LocationArea = dynamic(
+  () =>
+    import("@/components/location/location-area").then(
+      (module) => module.LocationArea,
+    ),
+  { ssr: false, loading: () => <LocationRedesignSkeleton /> },
+);
+
+/** One route, two trees: the voice-first Location area when Live is on, the legacy hub otherwise. */
+export default function OneLocationPage(props: OneLocationAgentPageProps = {}) {
+  return (
+    <LocationAreaSwitch
+      live={<LocationArea mode={props.mode} />}
+      legacy={<OneLocationAgentPage {...props} />}
     />
   );
 }

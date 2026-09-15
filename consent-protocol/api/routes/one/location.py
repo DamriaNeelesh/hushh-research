@@ -53,6 +53,10 @@ from hushh_mcp.services.one_location_circle_service import (
     OneLocationCircleError,
     OneLocationCircleService,
 )
+from hushh_mcp.services.one_location_feature_admission import (
+    nearby_presence_cohort,
+    nearby_presence_enabled,
+)
 from hushh_mcp.services.one_location_nearby_presence_service import (
     NearbyPresenceError,
     OneLocationNearbyPresenceService,
@@ -618,52 +622,11 @@ def _retention_auth_enabled() -> bool:
     return True
 
 
-def _nearby_presence_cohort() -> set[str] | None:
-    """Production allowlist. `None` means "no cohort configured"."""
-
-    raw = str(os.getenv("ONE_LOCATION_NEARBY_PRESENCE_COHORT") or "").strip()
-    if not raw:
-        return None
-    if raw.lower() == "all":
-        return set()
-    return {item.strip() for item in raw.split(",") if item.strip()}
-
-
-def _nearby_presence_enabled(user_id: str | None = None) -> bool:
-    """Whether nearby check-in is reachable for this caller.
-
-    Non-production lanes are unchanged: the flow is on unless
-    `ONE_LOCATION_NEARBY_PRESENCE_MODE` names something other than the UAT
-    simulation.
-
-    Production is off unless deliberately opted into, because the reported
-    point is client-supplied and unattestable -- see the continuity guard in
-    `one_location_nearby_presence_service`, which bounds a roaming attack but
-    cannot prove any single check-in. Opting in therefore takes two steps, not
-    one: `ONE_LOCATION_NEARBY_PRESENCE_MODE=production` *and* a cohort. A
-    production rollout with no cohort configured stays closed, so forgetting
-    the second variable fails safe rather than opening the flow to everyone.
-    """
-
-    environment = (
-        str(os.getenv("ENVIRONMENT") or os.getenv("HUSHH_DEPLOY_ENV") or "").strip().lower()
-    )
-    safe_environments = {"development", "dev", "local", "test", "uat", "staging"}
-    mode = str(os.getenv("ONE_LOCATION_NEARBY_PRESENCE_MODE") or "").strip().lower()
-
-    if environment in safe_environments:
-        if mode:
-            return mode in {"uat_simulation", "production"}
-        return True
-
-    if mode != "production":
-        return False
-    cohort = _nearby_presence_cohort()
-    if cohort is None:
-        return False
-    if not cohort:
-        return True
-    return bool(user_id) and str(user_id) in cohort
+# Nearby check-in admission lives in one module so the HTTP routes and the
+# One Live Voice tools gate on the same predicate. The underscore names stay
+# bound here because the surface map and existing tests reference them.
+_nearby_presence_cohort = nearby_presence_cohort
+_nearby_presence_enabled = nearby_presence_enabled
 
 
 # Retained under the old name because the surface map and existing tests

@@ -142,9 +142,11 @@ def test_gemini_command_models_do_not_advertise_native_realtime():
         resolve_model_entry("gemini", "gemini-3.1-flash-live-preview").supports_native_realtime
         is False
     )
+    # The one maintained Live model is registered explicitly as native-realtime
+    # (regional, alias-free); see tests/one_voice/test_factory_live_client.py.
     assert (
         resolve_model_entry("gemini", "gemini-live-2.5-flash-native-audio").supports_native_realtime
-        is False
+        is True
     )
 
 

@@ -46,9 +46,9 @@ import { SiriOneActionHandoff } from "@/components/agent/siri-one-action-handoff
 import { SiriOneEntityIndexPublisher } from "@/components/agent/siri-one-entity-index-publisher";
 import { AgentVoiceEdgeGlow } from "@/components/agent/agent-voice-edge-glow";
 import { OneLocationInteractionSurfaceProvider } from "@/components/one-location/onboarding/location-onboarding-interaction-surface";
-import { LocationCommandDeviceBridge } from "@/components/one-location/onboarding/location-command-device-bridge";
 import { FoundationPublicAmbient } from "@/components/app-ui/foundation-public-ambient";
-import { LocationCommandProvider } from "@/components/agent/location-command-provider";
+import { AgentOwnerGate } from "@/components/agent/agent-owner-gate";
+import { OneVoiceReadinessProvider } from "@/lib/one-voice/readiness";
 import { AppBottomShell } from "@/components/app-ui/app-bottom-shell";
 import { AmbientChromeController } from "@/components/app-ui/ambient-chrome-mask";
 import { resolveRiaRouteTabSet } from "@/lib/navigation/top-shell-tabs";
@@ -616,8 +616,8 @@ function AppShellFrame({ children }: ProvidersProps) {
           <OneLocationInteractionSurfaceProvider>
             <AgentRuntimeStateProvider>
               <AgentPopoverProvider>
-                <LocationCommandProvider>
-                  <LocationCommandDeviceBridge />
+                <OneVoiceReadinessProvider>
+                <AgentOwnerGate>
                   <SiriOneVoiceHandoff />
                   <SiriOneRequestHandoff />
                   <SiriOneActionHandoff />
@@ -787,7 +787,8 @@ function AppShellFrame({ children }: ProvidersProps) {
                       </ConsentNotificationProvider>
                     </Suspense>
                   </ContactInvitationSessionProvider>
-                </LocationCommandProvider>
+                </AgentOwnerGate>
+                </OneVoiceReadinessProvider>
               </AgentPopoverProvider>
               {/*
                 Inside VaultProvider, not beside GlobalVoiceActionHandlers.

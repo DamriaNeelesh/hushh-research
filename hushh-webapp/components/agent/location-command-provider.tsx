@@ -70,8 +70,14 @@ export function useOptionalLocationCommand() {
   return useContext(LocationCommandContext);
 }
 
-/** Sole command and microphone owner; presentation may mount and collapse independently. */
-function useCommandController() {
+/** Sole command and microphone owner; presentation may mount and collapse independently.
+ *
+ * `enabled=false` keeps the context mounted (consumers stay stable) but hands
+ * conversation ownership to the One Live Voice owner: this hook then neither
+ * subscribes to conversation requests nor announces itself owner-ready. Typed
+ * Siri actions keep their validated executor in both modes.
+ */
+function useCommandController(enabled = true) {
   const router = useRouter();
   const runtime = useAgentRuntimeStateOptional();
   const { user } = useAuth();
@@ -378,6 +384,7 @@ function useCommandController() {
   const startRef = useRef(startCapture);
   startRef.current = startCapture;
   useEffect(() => {
+    if (!enabled) return;
     const request = (event: Event) => {
       const value =
         (event as CustomEvent<AgentConversationRequest>).detail || {};
@@ -458,7 +465,7 @@ function useCommandController() {
         cancelPendingRequest,
       );
     };
-  }, [cancelCapture, command, popover, report]);
+  }, [cancelCapture, command, enabled, popover, report]);
   useEffect(() => {
     command.clearReferences();
     return () => command.clearReferences();
@@ -619,8 +626,14 @@ function useCommandController() {
   };
 }
 
-export function LocationCommandProvider({ children }: { children: ReactNode }) {
-  const controller = useCommandController();
+export function LocationCommandProvider({
+  children,
+  enabled = true,
+}: {
+  children: ReactNode;
+  enabled?: boolean;
+}) {
+  const controller = useCommandController(enabled);
   return (
     <LocationCommandContext.Provider value={controller}>
       {children}

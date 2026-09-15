@@ -83,6 +83,18 @@ _MODELS: tuple[ModelEntry, ...] = (
         supports_function_calling=False,
         supported_vertex_locations=("global",),
     ),
+    # Gemini Live (bidirectional audio) on Vertex. Live models are served from
+    # regional endpoints only, so the entry pins its region and never inherits
+    # the global/us/eu multi-region aliases the text fleet uses. Only entries
+    # with ``supports_native_realtime=True`` may be selected by
+    # ``resolve_live_model_entry``; a pass-through id never gains realtime
+    # authority by name. ``aliases`` stays empty on purpose (no aliases rule).
+    ModelEntry(
+        provider="gemini",
+        model="gemini-live-2.5-flash-native-audio",
+        supports_native_realtime=True,
+        supported_vertex_locations=("us-central1",),
+    ),
     # Anthropic -- native SDK adapter.
     ModelEntry(
         provider="anthropic",
@@ -166,3 +178,37 @@ def resolve_model_entry(provider: str | None, model: str | None) -> ModelEntry:
     # default to streaming + function calling on; realtime/caching off until a
     # registry entry declares them.
     return ModelEntry(provider=canonical, model=requested)
+
+
+class LiveModelNotRegisteredError(ValueError):
+    """The requested Live model id is not a registered native-realtime model."""
+
+
+def resolve_live_model_entry(model_id: str | None) -> ModelEntry:
+    """Resolve an explicit Gemini Live model id, failing closed.
+
+    Unlike :func:`resolve_model_entry`, there is no pass-through and no alias
+    lookup: the id must match a registered Gemini entry that declares
+    ``supports_native_realtime=True`` and at least one regional Vertex
+    location. This is what makes ``VERTEX_LIVE_MODEL_ID`` an exact pin rather
+    than a hint.
+    """
+
+    requested = (model_id or "").strip()
+    if not requested:
+        raise LiveModelNotRegisteredError("A Live model id is required")
+    entry = _MODEL_BY_KEY.get(("gemini", requested.lower()))
+    if entry is None or entry.model.lower() != requested.lower():
+        # An alias hit (entry.model != requested) is rejected as well.
+        raise LiveModelNotRegisteredError(f"{requested!r} is not a registered Vertex Live model id")
+    if not entry.supports_native_realtime:
+        raise LiveModelNotRegisteredError(
+            f"{requested!r} is not a native-realtime model and cannot run Gemini Live"
+        )
+    if not entry.supported_vertex_locations or any(
+        location in {"global", "us", "eu"} for location in entry.supported_vertex_locations
+    ):
+        raise LiveModelNotRegisteredError(
+            f"{requested!r} must declare regional Vertex locations only"
+        )
+    return entry

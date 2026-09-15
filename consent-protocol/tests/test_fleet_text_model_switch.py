@@ -90,7 +90,9 @@ def test_registry_holds_exactly_the_last_two_gemini_releases() -> None:
     gemini_rows = [entry for entry in registry._MODELS if entry.provider == "gemini"]
     assert gemini_rows[0].aliases == ("gemini-default", "default")
     assert gemini_rows[0].model == GEMINI_MODEL
-    generation_ids = [entry.model for entry in gemini_rows[1:]]
+    generation_ids = [
+        entry.model for entry in gemini_rows[1:] if not entry.supports_native_realtime
+    ]
     assert generation_ids == ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-embedding-001"]
     assert model_catalog.FLEET_TEXT_MODEL_CHOICES == ("gemini-3.8-flash", "gemini-3.7-flash")
     assert set(model_catalog._LABELS) == set(model_catalog.FLEET_TEXT_MODEL_CHOICES)

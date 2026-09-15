@@ -78,6 +78,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { DisplayNameEditor } from "@/components/profile/display-name-editor";
 import { ProfileAvatarEditor } from "@/components/profile/profile-avatar-editor";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -744,6 +745,15 @@ function ProfilePageContent({
       ? null
       : profileRouteState.panel;
   const activeDetail = activePanel ? profileRouteState.detail : null;
+  // The Display name editor is a local drill-in under Account: the Profile
+  // route vocabulary has no detail for it, so it never reaches the URL and
+  // closes whenever the person leaves the Account panel.
+  const [displayNameEditorOpen, setDisplayNameEditorOpen] = useState(false);
+  useEffect(() => {
+    if (activePanel !== "account" || activeDetail !== null) {
+      setDisplayNameEditorOpen(false);
+    }
+  }, [activeDetail, activePanel]);
   const supportComposeKind =
     activePanel === "support" && activeDetail?.startsWith("support-compose:")
       ? normalizeSupportKind(activeDetail.slice("support-compose:".length))
@@ -2073,7 +2083,7 @@ function ProfilePageContent({
   const resetRowDescription = "Clears saved details. Keeps sign-in.";
   const resetDialogTitle = "Reset account?";
   const resetDialogDescription =
-    "Clears saved details and setup progress. Your sign-in and vault stay.";
+    "Clears saved data and restarts setup. Sign-in and Vault stay.";
 
   const handleVaultUnlockOpenChange = (open: boolean) => {
     setShowVaultUnlock(open);
@@ -2673,6 +2683,10 @@ function ProfilePageContent({
   }
 
   const popProfileStack = () => {
+    if (displayNameEditorOpen) {
+      setDisplayNameEditorOpen(false);
+      return;
+    }
     if (activeDetail) {
       updateProfileView({ panel: activePanel, detail: null }, "replace");
       return;
@@ -3242,11 +3256,15 @@ function ProfilePageContent({
         <SettingsRow
           icon={MapPin}
           title="Location sharing"
-          description="Manage live location."
+          description="Device permission, app sharing, and precision."
           trailing={<Badge variant="secondary">One</Badge>}
           chevron
           stackTrailingOnMobile
-          onClick={() => router.push(ROUTES.ONE_LOCATION)}
+          onClick={() =>
+            router.push(
+              `${ROUTES.ONE_LOCATION}?action=settings&from=${ROUTES.PROFILE}`,
+            )
+          }
         />
         <SettingsRow
           icon={ExternalLink}
@@ -3311,6 +3329,11 @@ function ProfilePageContent({
           iconTone="blue"
           title="Display name"
           description={user.displayName || "Not available"}
+          trailing={
+            <span className="profile-account-inline-action">Change</span>
+          }
+          chevron
+          onClick={() => setDisplayNameEditorOpen(true)}
         />
         <SettingsRow
           icon={Mail}
@@ -4093,6 +4116,21 @@ function ProfilePageContent({
       content: accountContent,
       presentation: "account",
     });
+    if (displayNameEditorOpen && activeDetail === null) {
+      profileStackEntries.push({
+        key: "detail:display-name",
+        title: "Display name",
+        description: "The name people see.",
+        content: (
+          <DisplayNameEditor
+            user={user}
+            onSaved={() => setDisplayNameEditorOpen(false)}
+            onCancel={popProfileStack}
+            className="gap-5"
+          />
+        ),
+      });
+    }
     if (activeDetail === "phone") {
       profileStackEntries.push({
         key: "detail:phone",

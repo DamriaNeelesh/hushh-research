@@ -4136,6 +4136,7 @@
         "location.open_active_shares",
         "location.open_ask",
         "location.open_check_in",
+        "location.open_circles",
         "location.open_create_circle",
         "location.open_invite",
         "location.open_join_circle",
@@ -4144,6 +4145,7 @@
         "location.open_needs_review",
         "location.open_now",
         "location.open_people",
+        "location.open_ratings",
         "location.open_settings",
         "location.open_share",
         "location.open_shared_with_me",
@@ -4164,6 +4166,12 @@
         "location.send_request",
         "location.set_auto_share",
         "location.set_ghost_mode",
+        "location.set_precision",
+        "location.set_sharing_enabled",
+        "location.setup.accept_consent",
+        "location.setup.advance",
+        "location.setup.start",
+        "location.setup.status",
         "location.share_public_link",
         "location.share_selected",
         "location.sos_default",
@@ -4878,12 +4886,15 @@
         "help.open_examples",
         "profile.delete_account",
         "profile.marketplace_visibility.toggle",
+        "profile.set_contact_discoverable",
         "profile.sign_out",
         "profile.support.submit_message",
+        "profile.update_display_name",
         "route.profile",
         "route.profile_access_panel",
         "route.profile_connected_systems",
         "route.profile_pkm_agent_lab",
+        "route.profile_privacy",
         "route.profile_referrals_panel",
         "route.profile_security_panel",
         "route.profile_support_panel"
@@ -9473,5 +9484,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "e96f55422f004f475e40a6e50d1fa70662e1960d7366933b18a66ee2cd332492"
+  "content_sha256": "271a3867da87653f2f822ddfc22e807e976372cc7b20e66803e7ed5db6f59995"
 }

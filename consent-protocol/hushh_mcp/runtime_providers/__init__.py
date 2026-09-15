@@ -20,6 +20,7 @@ from .factory import (
     ManagedGeminiRuntimeBinding,
     build_gemini_byok_adk_model,
     build_managed_gemini_adk_model,
+    build_managed_live_client,
     build_managed_runtime_client,
     build_runtime_client,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "build_generate_content_config",
     "build_gemini_byok_adk_model",
     "build_managed_gemini_adk_model",
+    "build_managed_live_client",
     "build_managed_runtime_client",
     "build_runtime_client",
     "default_model_for_provider",

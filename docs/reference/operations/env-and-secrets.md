@@ -221,9 +221,16 @@ Vertex allowed-models policy still refuses 3.8 (verified live: 400 on `hushh-pda
 lane may flip it only after its project's `constraints/vertexai.allowedModels`
 policy admits the id. `gemini-3.8-flash` was admitted for `hushh-pda-uat` on
 2026-09-02, so the dev lane (whose Gemini project is `hushh-pda-uat`) runs it. UAT's
-Gemini project is `hushh-gemini-bridge`, whose allowlist still rejects it (verified
-2026-09-02: a direct generateContent returns a policy violation), so UAT stays on the
-default until an org-policy admin admits the id there; production likewise. The
+and production's Gemini project is `hushh-vertex-personal54` (`_GENAI_PROJECT_ID` in
+`deploy-uat.yml` / `deploy-production.yml`); UAT runs `gemini-3.8-flash` and
+production pins `gemini-3.7-flash` until an org-policy admin admits 3.8 there.
+
+One Live Voice adds three names on every lane: `ONE_VOICE_LIVE_ENABLED` (kill switch,
+`false` in production until UAT sign-off), `VERTEX_LIVE_MODEL_ID` (an exact Live model
+id that must be a native-realtime entry in `hushh_mcp/runtime_providers/registry.py`;
+the lane's `constraints/vertexai.allowedModels` must admit it) and `VERTEX_LIVE_LOCATION`
+(one regional Vertex endpoint, never `global`). No API key exists for Live anywhere;
+see `docs/reference/one/one-voice-live-tool-contract.md`. The
 deploy-time Vertex readiness probe resolves the alias through the same resolver and
 receives `HUSSH_GEMINI_TEXT_MODEL`, so it validates the lane's switched model, never
 the literal alias. Every text agent names the alias, the memory chain and reducer included; only the

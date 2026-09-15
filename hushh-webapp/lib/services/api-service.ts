@@ -240,7 +240,7 @@ function isLocalNativeHost(host: string | null): boolean {
   return Boolean(host && LOCAL_NATIVE_HOSTS.has(host));
 }
 
-function normalizeNativeBackendUrl(raw: string): string {
+export function normalizeNativeBackendUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/$/, "");
   const platform = Capacitor.getPlatform();
   const backendHost = hostFromUrl(trimmed);
@@ -1442,6 +1442,63 @@ export class ApiService {
     } catch (error) {
       console.warn("[ApiService] getAppReviewModeConfig failed:", error);
       return { enabled: false };
+    }
+  }
+
+  /**
+   * One Live Voice readiness: the single server-owned flag the app reads to
+   * decide which voice owner mounts. Never a build-time flag. Fails closed.
+   *
+   * Web: `/api/one/voice/readiness` through the Next.js proxy (forwards the
+   * Firebase bearer). Native: backend directly.
+   */
+  static async getOneVoiceReadiness(): Promise<{
+    enabled: boolean;
+    status: "ready" | "disabled" | "not_configured" | "provider_unavailable";
+    model: string | null;
+    location: string | null;
+    wsPath: string;
+  }> {
+    const closed = {
+      enabled: false,
+      status: "disabled" as const,
+      model: null,
+      location: null,
+      wsPath: "/api/one/voice/live",
+    };
+    try {
+      const authToken = await this.getFirebaseToken();
+      if (!authToken) return closed;
+      const response = await apiFetch("/api/one/voice/readiness", {
+        method: "GET",
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) return closed;
+      const data = (await response.json().catch(() => ({}))) as {
+        enabled?: unknown;
+        status?: unknown;
+        model?: unknown;
+        location?: unknown;
+        ws_path?: unknown;
+      };
+      const status = data.status;
+      return {
+        enabled: data.enabled === true,
+        status:
+          status === "ready" ||
+          status === "disabled" ||
+          status === "not_configured" ||
+          status === "provider_unavailable"
+            ? status
+            : "disabled",
+        model: typeof data.model === "string" ? data.model : null,
+        location: typeof data.location === "string" ? data.location : null,
+        wsPath: typeof data.ws_path === "string" ? data.ws_path : "/api/one/voice/live",
+      };
+    } catch (error) {
+      console.warn("[ApiService] getOneVoiceReadiness failed:", error);
+      return closed;
     }
   }
 
@@ -2769,6 +2826,11 @@ export class ApiService {
   }
 
   // Helper to get Firebase ID Token for Native calls
+  /** Public accessor for callers outside this class (voice session tickets). */
+  static async getFirebaseIdToken(): Promise<string | undefined> {
+    return this.getFirebaseToken();
+  }
+
   private static async getFirebaseToken(): Promise<string | undefined> {
     if (Capacitor.isNativePlatform()) {
       try {
