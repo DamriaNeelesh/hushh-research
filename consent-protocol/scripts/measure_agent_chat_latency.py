@@ -67,7 +67,9 @@ AGENT_CHAT_PATH = "/api/one/agent-chat"
 DEFAULT_ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
 DEFAULT_REPS = 3
 DEFAULT_GAP_SECONDS = 2.0
-DEFAULT_TURN_TIMEOUT_SECONDS = 90.0
+# Match the One route's execution window; a shorter driver limit can interrupt
+# a valid turn before the backend's own deadline. Latency gates remain separate.
+DEFAULT_TURN_TIMEOUT_SECONDS = 120.0
 DEFAULT_TIMEZONE = "UTC"
 DEFAULT_COUNTERPART = "Alice"
 

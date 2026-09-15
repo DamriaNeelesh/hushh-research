@@ -171,6 +171,21 @@ def test_iter_sse_events_ignores_comments_and_dispatches_trailing_frame():
     assert [e["type"] for e in events] == ["RUN_STARTED", "RUN_FINISHED"]
 
 
+@pytest.mark.parametrize("total_s,expected", [(100.0, "finished"), (121.0, "timeout")])
+def test_default_window_allows_slow_turn_but_remains_bounded(total_s, expected):
+    clock = FakeClock()
+    body = driver.build_run_agent_input("hello", thread_id="t", run_id="r", timezone="UTC")
+    sample = driver.drive_turn(
+        lambda _body: _finished_stream(clock, first_visible_s=5.0, total_s=total_s),
+        body,
+        prompt=driver.PROMPTS[0],
+        rep=0,
+        clock=clock,
+    )
+    assert sample.outcome == expected
+    assert sample.client_total_ms == total_s * 1000
+
+
 def test_drive_turn_marks_first_visible_and_done():
     clock = FakeClock()
     prompt = driver.PROMPTS[0]
