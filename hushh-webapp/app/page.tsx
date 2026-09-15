@@ -155,7 +155,7 @@ function HomeContent() {
       );
     }
     if (!authenticatedRootReady) {
-      return <HushhLoader variant="fullscreen" label="Opening One…" />;
+      return <HushhLoader variant="fullscreen" label="Opening chat…" />;
     }
     return (
       <>

@@ -17,8 +17,10 @@ import type { PreVaultOnboardingAnswers } from "@/lib/services/pre-vault-onboard
 // Unresolved-onboarding users land on the canonical `/one/setup` capability hub
 // (the investor-preferences wizard opens from the hub's finance tile).
 const PRE_VAULT_ROUTE = ROUTES.ONE_SETUP;
-const DEFAULT_HOME_ROUTE = ROUTES.ONE_HOME;
-const NO_VAULT_DEFAULT_ROUTE = ROUTES.ONE_HOME;
+// The canonical post-auth landing is the root Chat workspace. `/one` remains
+// an explicit dashboard destination; it must not win over an organic login.
+const DEFAULT_HOME_ROUTE = ROUTES.HOME;
+const NO_VAULT_DEFAULT_ROUTE = ROUTES.HOME;
 
 function normalizeRedirectPath(path: string | null | undefined): string {
   if (!path || !path.trim()) return DEFAULT_HOME_ROUTE;

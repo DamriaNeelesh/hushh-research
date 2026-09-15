@@ -104,7 +104,7 @@ describe("PostAuthRouteService", () => {
     });
   });
 
-  it("routes an existing organic-login user to One, never a stored persona", async () => {
+  it("routes an existing organic-login user to Chat, never a stored persona", async () => {
     bootstrapStateMock.mockResolvedValue({
       hasVault: true,
       setupCompleted: true,
@@ -118,7 +118,7 @@ describe("PostAuthRouteService", () => {
         redirectPath: ROUTES.HOME,
         idToken: "valid-id-token",
       }),
-    ).resolves.toBe(ROUTES.ONE_HOME);
+    ).resolves.toBe(ROUTES.HOME);
   });
 
   it("preserves an explicit RIA deep link without making RIA the login authority", async () => {
@@ -217,7 +217,7 @@ describe("PostAuthRouteService", () => {
         userId: "user_123",
         redirectPath: ROUTES.ONE_SETUP_KAI,
       }),
-    ).resolves.toBe(ROUTES.ONE_HOME);
+    ).resolves.toBe(ROUTES.HOME);
   });
 
   it("bridges completed pre-vault onboarding before sending no-vault users home", async () => {
@@ -244,7 +244,7 @@ describe("PostAuthRouteService", () => {
         userId: "user_123",
         phoneNumber: "+16505550101",
       }),
-    ).resolves.toBe(ROUTES.ONE_HOME);
+    ).resolves.toBe(ROUTES.HOME);
     expect(updatePreVaultStateMock).toHaveBeenCalledTimes(1);
   });
 
@@ -326,7 +326,7 @@ describe("PostAuthRouteService", () => {
         userId: "user_123",
         phoneNumber: "+16505550101",
       }),
-    ).resolves.toBe(ROUTES.ONE_HOME);
+    ).resolves.toBe(ROUTES.HOME);
     expect(updatePreVaultStateMock).toHaveBeenCalledTimes(1);
   });
 
@@ -361,7 +361,7 @@ describe("PostAuthRouteService", () => {
         userId: "user_123",
         phoneNumber: "",
       }),
-    ).resolves.toBe(buildPhoneMandateRoute(ROUTES.ONE_HOME));
+    ).resolves.toBe(buildPhoneMandateRoute(ROUTES.HOME));
   });
 
   it("does not route no-vault users with a verified phone through the phone mandate", async () => {
@@ -378,7 +378,7 @@ describe("PostAuthRouteService", () => {
         userId: "user_123",
         phoneNumber: "+16505550101",
       }),
-    ).resolves.toBe(ROUTES.ONE_HOME);
+    ).resolves.toBe(ROUTES.HOME);
   });
 
   it("does not route backend phone-verified users back to the phone mandate", async () => {
@@ -396,7 +396,7 @@ describe("PostAuthRouteService", () => {
         phoneNumber: null,
         phoneVerified: true,
       }),
-    ).resolves.toBe(ROUTES.ONE_HOME);
+    ).resolves.toBe(ROUTES.HOME);
   });
 
   it("uses the backend verified-phone claim when a native session omits its local number", async () => {
@@ -415,7 +415,7 @@ describe("PostAuthRouteService", () => {
         phoneNumber: null,
         phoneVerified: null,
       }),
-    ).resolves.toBe(ROUTES.ONE_HOME);
+    ).resolves.toBe(ROUTES.HOME);
   });
 
   it("routes phone-verified no-vault Invite to One users through the shared vault flow", async () => {
@@ -517,7 +517,7 @@ describe("PostAuthRouteService", () => {
         phoneNumber: null,
         hostname: "localhost",
       }),
-    ).resolves.toBe(ROUTES.ONE_HOME);
+    ).resolves.toBe(ROUTES.HOME);
   });
   it("skips the phone mandate for localhost hostname variants in development", async () => {
     vi.stubEnv("NEXT_PUBLIC_APP_ENV", "development");
@@ -535,7 +535,7 @@ describe("PostAuthRouteService", () => {
         phoneNumber: null,
         hostname: "127.0.0.1",
       }),
-    ).resolves.toBe(ROUTES.ONE_HOME);
+    ).resolves.toBe(ROUTES.HOME);
   });
 
   describe("first-run One Setup gate", () => {
@@ -591,7 +591,7 @@ describe("PostAuthRouteService", () => {
           phoneVerified: true,
           enableFirstRunSetupGate: true,
         }),
-      ).resolves.toBe(ROUTES.ONE_HOME);
+      ).resolves.toBe(ROUTES.HOME);
     });
 
     it("does not gate when the caller has not opted in", async () => {
@@ -606,7 +606,7 @@ describe("PostAuthRouteService", () => {
           userId: "user_gate",
           phoneVerified: true,
         }),
-      ).resolves.toBe(ROUTES.ONE_HOME);
+      ).resolves.toBe(ROUTES.HOME);
     });
 
     it("does not gate when an explicit redirect target is present", async () => {
