@@ -1,6 +1,6 @@
 # Agent Chat migration measurements
 
-This record separates saved measurements from checkpoint claims. Specialist migrations have not yet passed their before/after gates. Generated historical run artifacts are preserved in the local regression evidence workspace and are intentionally not tracked.
+This record separates saved measurements from checkpoint claims. The specialist implementation phases are landed on the migration branch, while several live before/after parity gates remain incomplete. Generated historical run artifacts are preserved in the local regression evidence workspace and are intentionally not tracked.
 
 ## Visual Map
 
@@ -75,7 +75,10 @@ A single memory-preference recheck completed in **10,963 ms**, passed its latenc
 
 ## After evidence
 
-No specialist migration has landed in this continuation. Record each phase revision, identical fixtures/model/configuration, per-family accuracy, latency and retained failures here before claiming parity.
+The implementation phases below are landed in this continuation. Record each phase's
+revision, identical fixtures/model/configuration, per-family accuracy, latency and
+retained failures here before claiming behavioral parity. A passing source or unit
+gate does not substitute for an unrun live-provider measurement.
 
 ### Phase G routing decisions
 
