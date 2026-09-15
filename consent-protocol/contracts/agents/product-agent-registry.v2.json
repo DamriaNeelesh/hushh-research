@@ -1301,6 +1301,61 @@
             ],
             "loopback_only": false
           },
+          "description": "Produces one bounded XML-compatible rebuttal statement for Kai's deterministic debate organ.",
+          "id": "agent_kai_debate",
+          "inputs": [],
+          "model": {
+            "credential_ref": null,
+            "mode": "hushh_managed_vertex",
+            "name": "gemini-default",
+            "provider": "gemini",
+            "thinking_level": "low"
+          },
+          "name": "Kai Debate Statement",
+          "outputs": [
+            {
+              "description": "XML-compatible, evidence-backed debate statement.",
+              "name": "statement",
+              "type": "string"
+            }
+          ],
+          "performance": {
+            "latency_p95_ms": 60000,
+            "max_output_tokens": 4096
+          },
+          "privacy": {
+            "context_allowlist": [
+              "kai.debate_context",
+              "pkm.profile_summary"
+            ],
+            "plaintext_telemetry": false
+          },
+          "rollout": {
+            "kill_switch": null,
+            "rollback": "Retain deterministic debate statements and disable model rebuttals.",
+            "strategy": "general"
+          },
+          "runtime": {
+            "adk_mode": "single_turn",
+            "factory": null,
+            "kind": "adk",
+            "transport": [
+              "in_process"
+            ]
+          },
+          "system_instruction": "You are an internal Kai debate analyst. Return one JSON object with a\nsingle `statement` string. The statement must follow the XML-compatible\nformat requested by the caller, including only evidence-backed claims,\nportfolio impact, personalized bull and bear cases, and any requested\nRenaissance verdict. Use only the supplied analyst outputs and context;\nnever invent market data, holdings, prices, or actions. Return JSON only;\nwith no markdown, role labels, or tool claims.\n",
+          "telemetry_namespace": "agent.kai.debate"
+        },
+        {
+          "availability": {
+            "enable_flag": null,
+            "environments": [
+              "development",
+              "uat",
+              "production"
+            ],
+            "loopback_only": false
+          },
           "description": "Conversational Kai surface for grounded financial questions and profile guidance.",
           "id": "agent_kai_chat",
           "inputs": [],

@@ -432,6 +432,43 @@ subagents:
     rollout:
       strategy: general
       rollback: Retain the deterministic valuation analysis and keep the legacy report path disabled.
+  - id: agent_kai_debate
+    name: Kai Debate Statement
+    description: Produces one bounded XML-compatible rebuttal statement for Kai's deterministic debate organ.
+    model:
+      provider: gemini
+      name: gemini-default
+      mode: hushh_managed_vertex
+      thinking_level: low
+    runtime:
+      kind: adk
+      adk_mode: single_turn
+      transport:
+        - in_process
+    system_instruction: |
+      You are an internal Kai debate analyst. Return one JSON object with a
+      single `statement` string. The statement must follow the XML-compatible
+      format requested by the caller, including only evidence-backed claims,
+      portfolio impact, personalized bull and bear cases, and any requested
+      Renaissance verdict. Use only the supplied analyst outputs and context;
+      never invent market data, holdings, prices, or actions. Return JSON only;
+      with no markdown, role labels, or tool claims.
+    outputs:
+      - name: statement
+        type: string
+        description: XML-compatible, evidence-backed debate statement.
+    privacy:
+      context_allowlist:
+        - kai.debate_context
+        - pkm.profile_summary
+      plaintext_telemetry: false
+    telemetry_namespace: agent.kai.debate
+    performance:
+      latency_p95_ms: 60000
+      max_output_tokens: 4096
+    rollout:
+      strategy: general
+      rollback: Retain deterministic debate statements and disable model rebuttals.
   - id: agent_kai_chat
     name: Kai Chat
     description: Conversational Kai surface for grounded financial questions and profile guidance.

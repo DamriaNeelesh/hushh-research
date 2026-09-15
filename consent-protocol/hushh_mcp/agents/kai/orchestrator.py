@@ -78,7 +78,7 @@ class KaiOrchestrator(HushhAgent):
         self.fundamental_agent = FundamentalAgent(processing_mode)
         self.sentiment_agent = SentimentAgent(processing_mode)
         self.valuation_agent = ValuationAgent(processing_mode)
-        self.debate_engine = DebateEngine(risk_profile)
+        self.debate_engine = DebateEngine(risk_profile, user_id=user_id)
         self.decision_generator = DecisionGenerator(risk_profile)
 
         logger.info(
@@ -119,6 +119,7 @@ class KaiOrchestrator(HushhAgent):
             )
 
             # Step 3: Orchestrate debate
+            self.debate_engine.consent_token = consent_token
             debate_result = await self.debate_engine.orchestrate_debate(
                 fundamental_insight=fundamental,
                 sentiment_insight=sentiment,

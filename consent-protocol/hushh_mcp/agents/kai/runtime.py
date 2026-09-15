@@ -27,6 +27,7 @@ _KAI_CHAT_GENE_ID = "agent_kai_chat"
 _KAI_FUNDAMENTAL_GENE_ID = "agent_kai_fundamental"
 _KAI_SENTIMENT_GENE_ID = "agent_kai_sentiment"
 _KAI_VALUATION_GENE_ID = "agent_kai_valuation"
+_KAI_DEBATE_GENE_ID = "agent_kai_debate"
 
 PORTFOLIO_OPTIMIZER_SCHEMA: dict[str, Any] = {
     "type": "OBJECT",
@@ -41,6 +42,11 @@ PORTFOLIO_OPTIMIZER_SCHEMA: dict[str, Any] = {
 }
 
 KAI_ANALYST_SCHEMAS: dict[str, dict[str, Any]] = {
+    _KAI_DEBATE_GENE_ID: {
+        "type": "OBJECT",
+        "properties": {"statement": {"type": "STRING"}},
+        "required": ["statement"],
+    },
     _KAI_FUNDAMENTAL_GENE_ID: {
         "type": "OBJECT",
         "properties": {
@@ -257,6 +263,28 @@ async def run_kai_analyst_turn(
     return json.loads(json.dumps(payload, separators=(",", ":")))
 
 
+async def run_kai_debate_turn(
+    *,
+    prompt: str,
+    user_id: str,
+    consent_token: str,
+    timeout_seconds: float | None = None,
+) -> str:
+    """Run one bounded debate statement through the manifest-owned ADK gene."""
+
+    payload = await run_kai_analyst_turn(
+        gene_id=_KAI_DEBATE_GENE_ID,
+        prompt=prompt,
+        user_id=user_id,
+        consent_token=consent_token,
+        timeout_seconds=timeout_seconds,
+    )
+    statement = str(payload.get("statement") or "").strip()
+    if not statement:
+        raise ValueError("Kai debate gene returned an empty statement")
+    return statement
+
+
 async def run_kai_portfolio_optimizer(
     *,
     prompt: str,
@@ -304,6 +332,7 @@ __all__ = [
     "load_kai_chat_gene",
     "load_kai_portfolio_optimizer_gene",
     "run_kai_analyst_turn",
+    "run_kai_debate_turn",
     "run_kai_chat_turn",
     "run_kai_portfolio_optimizer",
 ]
