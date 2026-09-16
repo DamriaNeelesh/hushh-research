@@ -366,3 +366,28 @@ The local run outputs are retained as `pkm-38-low-thinking.json` and
 directory. Both runs show the bridge is reachable and the 429 is quota/rate
 limiting in the selected personal project. They do not prove quality-gate
 completion; a comparable run after quota recovery is still required.
+
+### Core runtime review closure (September 16)
+
+The post-migration source review found and corrected three shared single-turn
+issues: a process-global schema map keyed by object identity, missing local
+validation for dictionary response schemas, and an implicit 30-second event
+cutoff inside longer caller deadlines. The runtime now uses the agent's own
+schema, validates dictionary schemas with the already-locked jsonschema package
+(declared directly), and gives the one tool-free call its caller-bounded deadline.
+No retry or model-call budget was increased.
+
+Focused offline verification: 53 single-turn, Email, Kai routing/runtime and
+evaluator tests; 11 portfolio optimizer and ADK foundation tests. All 64 passed.
+The agent hierarchy verifier passed. No live Gemini calls were made.
+
+The manual Kai evaluator now supports selected paths, sequential pacing and
+stop-on-first-failure with unattempted cases retained. Its CI tests use mocks.
+The earlier live synthesis 429 is not a CI synthesis workload. Future verification
+should reuse passing evidence and run only failed paths after capacity recovers.
+
+These corrections close the identified core source defects, not the historical
+live accuracy/latency failures. Full migration acceptance still requires the
+outstanding comparable PKM/Kai and final chat evidence above; no failed result
+has been relabeled as a pass. Generate and check dependent artifacts together
+before a single push, rather than using successive remote runs for discovery.
