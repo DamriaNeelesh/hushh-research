@@ -78,9 +78,22 @@ export class PostAuthRouteService {
    * Apply the soft first-run One Setup gate to a home-bound destination.
    *
    * Returns `ROUTES.ONE_SETUP` only when the caller opted in, the login is
-   * organic (no explicit redirect target), and the user has not yet seen the
-   * one-time setup nudge. Otherwise returns the original home route unchanged,
-   * so existing post-auth behavior is preserved for every other path.
+   * organic (no explicit redirect target), the destination isn't the chat
+   * workspace, and the user has not yet seen the one-time setup nudge.
+   * Otherwise returns the original home route unchanged.
+   *
+   * The chat-workspace exclusion is load-bearing, not cosmetic:
+   * `OnboardingJourneyGuard` unconditionally ejects an already
+   * `setupResolved` account from ANY setup surface back to `ROUTES.ONE_HOME`
+   * ("the one place that catches every arrival path after the one-time gate
+   * resolves" — see that guard's own comment). `applyFirstRunSetupGate` is
+   * only ever invoked for a `setupResolved` user, so once `DEFAULT_HOME_ROUTE`
+   * became `ROUTES.HOME` (chat), nudging here sent a resolved user straight
+   * into that guard's eject path: chat -> ONE_SETUP -> immediately bounced to
+   * ONE_HOME, so the person landed on the dashboard instead of chat, or the
+   * nudge, either one. That guard's rule is intentionally absolute (it exists
+   * to stop a dismissed user ever re-entering setup by any path), so the fix
+   * belongs here: stop attempting a redirect the guard can never let land.
    */
   private static applyFirstRunSetupGate(params: {
     userId: string;
@@ -90,6 +103,7 @@ export class PostAuthRouteService {
   }): string {
     if (!params.enableFirstRunSetupGate) return params.homeRoute;
     if (params.hasExplicitRedirect) return params.homeRoute;
+    if (params.homeRoute === ROUTES.HOME) return params.homeRoute;
     if (OneSetupGateService.hasSeen(params.userId)) return params.homeRoute;
     return ROUTES.ONE_SETUP;
   }
