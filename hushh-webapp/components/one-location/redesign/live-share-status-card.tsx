@@ -139,11 +139,11 @@ function LiveShareIdentity({ status }: { status: LiveShareStatus }) {
         }));
     const remaining = Math.max(status.count - slots.length, 0);
     return (
-      <span aria-hidden="true" className="flex h-10 w-14 shrink-0 items-center">
+      <span aria-hidden="true" className="flex h-7 w-14 shrink-0 items-center">
         {slots.map((person, index) => (
           <span
             key={`${person.displayName}-${index}`}
-            className="-ml-2 first:ml-0 inline-flex h-9 w-9 items-center justify-center rounded-full bg-[color:var(--app-secondary-surface)] text-[12px] font-semibold text-[color:var(--app-secondary-label)] ring-2 ring-[color:var(--app-primary-surface)]"
+            className="-ml-2 first:ml-0 inline-flex h-7 w-7 items-center justify-center rounded-full bg-[color:var(--app-secondary-surface)] text-[12px] font-semibold text-[color:var(--app-secondary-label)] ring-2 ring-[color:var(--app-primary-surface)]"
           >
             {person.photoUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
@@ -158,7 +158,7 @@ function LiveShareIdentity({ status }: { status: LiveShareStatus }) {
           </span>
         ))}
         {remaining > 0 ? (
-          <span className="-ml-2 inline-flex h-9 w-9 items-center justify-center rounded-full bg-[color:var(--app-secondary-surface)] text-[11px] font-semibold text-[color:var(--app-secondary-label)] ring-2 ring-[color:var(--app-primary-surface)]">
+          <span className="-ml-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-[color:var(--app-secondary-surface)] text-[11px] font-semibold text-[color:var(--app-secondary-label)] ring-2 ring-[color:var(--app-primary-surface)]">
             +{remaining}
           </span>
         ) : null}
@@ -169,7 +169,7 @@ function LiveShareIdentity({ status }: { status: LiveShareStatus }) {
   return (
     <span
       aria-hidden="true"
-      className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-secondary-surface)] text-[13px] font-semibold text-[color:var(--app-secondary-label)] ring-1 ring-inset ring-[color:var(--app-separator)]"
+      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-secondary-surface)] text-[13px] font-semibold text-[color:var(--app-secondary-label)] ring-1 ring-inset ring-[color:var(--app-separator)]"
     >
       {people[0]?.photoUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
@@ -315,8 +315,8 @@ export function LiveShareStatusCard({
             aria-hidden="true"
             className="h-2 w-2 shrink-0 rounded-full bg-emerald-500 motion-safe:animate-pulse"
           />
-          <span className="text-[13px] font-semibold uppercase tracking-[0.06em] text-emerald-700 dark:text-emerald-300">
-            Live
+          <span className="text-[13px] font-semibold uppercase leading-[18px] tracking-[0.06em] text-emerald-700 dark:text-emerald-300">
+            Sharing now
           </span>
         </span>
 
@@ -357,7 +357,7 @@ export function LiveShareStatusCard({
         )}
       </div>
 
-      <div className="mt-3 flex items-start gap-3">
+      <div className="mt-3 flex items-start gap-2.5">
         <LiveShareIdentity status={status} />
         <div className="min-w-0 flex-1">
           <p
@@ -431,7 +431,7 @@ export function LiveShareStatusCard({
         <Button
           type="button"
           onClick={runChildAction(onShareMore)}
-          className="mt-4 min-h-[48px] w-full rounded-[16px] bg-[color:var(--app-accent)] px-5 font-[family-name:var(--font-app-body)] text-[17px] font-semibold leading-[22px] tracking-[-0.02em] text-white transition-[background-color,transform] hover:bg-[color:var(--app-accent)]/90 active:scale-[0.99]"
+          className="mt-3 h-11 min-h-11 w-full rounded-[14px] bg-[color:var(--app-accent)] px-5 font-[family-name:var(--font-app-body)] !text-[15px] !font-semibold !leading-5 tracking-normal text-white transition-[background-color,transform] hover:bg-[color:var(--app-accent)]/90 active:scale-[0.99]"
           data-ui-contract="occlusion-sensitive"
           data-ui-role="control"
           data-ui-id="location-live-share-more"

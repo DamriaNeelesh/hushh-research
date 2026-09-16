@@ -2160,7 +2160,7 @@ export function AgentBar({ layout = "fixed" }: { layout?: "fixed" | "slot" }) {
         onClick={stopConversation}
         aria-label="End conversation"
         title="Tap to end conversation"
-        className="bottom-chrome-surface relative z-0 flex h-11 min-w-0 flex-1 items-center gap-3 overflow-hidden rounded-full pl-1 pr-2 text-left transition-[background-color,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)]"
+        className="bottom-chrome-surface relative z-0 flex h-[42px] min-w-0 flex-1 items-center gap-3 overflow-hidden rounded-full pl-1 pr-2 text-left transition-[background-color,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)]"
       >
         <span
           aria-hidden
@@ -2224,7 +2224,7 @@ export function AgentBar({ layout = "fixed" }: { layout?: "fixed" | "slot" }) {
         onClick={handleVoiceStartClick}
         aria-label={`Start a voice conversation. ${hint}`}
         title="Start a voice conversation with One"
-        className="agent-bar-voice-launcher press-scale bottom-chrome-surface relative flex h-11 min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-full px-3 text-left transition-[background-color,transform] duration-200 hover:bg-current/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)] dark:hover:bg-current/[0.12]"
+        className="agent-bar-voice-launcher press-scale bottom-chrome-surface relative flex h-[42px] min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-full px-3 text-left transition-[background-color,transform] duration-200 hover:bg-current/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)] dark:hover:bg-current/[0.12]"
       >
         <span
           aria-hidden
@@ -2250,7 +2250,7 @@ export function AgentBar({ layout = "fixed" }: { layout?: "fixed" | "slot" }) {
           onClick={openAgentChat}
           aria-label={`Chat with One. ${hint}`}
           title="Chat with One"
-          className="bottom-chrome-surface press-scale relative flex h-11 min-w-[88px] shrink-0 items-center justify-center gap-1.5 overflow-hidden rounded-full px-3 text-current transition-[background-color,transform] duration-200 hover:bg-current/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)] dark:hover:bg-current/[0.12] sm:min-w-[96px]"
+          className="bottom-chrome-surface press-scale relative flex h-[42px] min-w-[88px] shrink-0 items-center justify-center gap-1.5 overflow-hidden rounded-full px-3 text-current transition-[background-color,transform] duration-200 hover:bg-current/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)] dark:hover:bg-current/[0.12] sm:min-w-[96px]"
         >
           <MessageCircle className="h-[17px] w-[17px]" />
           <span
@@ -2437,7 +2437,9 @@ export function AgentBar({ layout = "fixed" }: { layout?: "fixed" | "slot" }) {
           // The root, public, and signed-in variants share one bar chassis.
           // Route state may add toggles, but cannot fork width or geometry.
           layout === "slot"
-            ? "max-w-[min(calc(100vw-1.5rem),var(--app-agent-bar-max-width))]"
+            ? pathname?.startsWith("/one/location")
+              ? "max-w-[min(calc(100vw-1.5rem),45rem)]"
+              : "max-w-[min(calc(100vw-1.5rem),var(--app-agent-bar-max-width))]"
             : "max-w-[min(calc(100vw-2rem),34rem)]",
           // Single, consolidated transition covering surface color plus the
           // open/close fade+lift. Smoothly eases the bar in/out with the agent

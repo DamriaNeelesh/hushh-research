@@ -167,7 +167,8 @@ export function TopShellTabs({
   return (
     <div
       className={cn(
-        "top-shell-ambient-ink relative flex h-[var(--top-tabs-h)] w-full items-center text-current",
+        "top-shell-ambient-ink relative flex w-full items-center text-current",
+        tabSet.id === "location" ? "h-[34px]" : "h-[var(--top-tabs-h)]",
         usesModuleSegmentedTabs && "justify-center",
       )}
       data-ui-role="agent-tab-bar"
@@ -199,7 +200,9 @@ export function TopShellTabs({
               // generalise this past module hubs: the RIA workspace runs a
               // 96rem shell, and an 880px cap would leave its strip ~600px
               // short per side.
-              "h-9 w-full max-w-[calc(var(--app-shell-agent)-2*var(--page-inline-gutter-standard))] rounded-[10px] bg-[color:var(--app-neutral-fill)] p-0.5"
+              tabSet.id === "location"
+                ? "h-[34px] w-full max-w-[calc(var(--app-shell-agent)-2*var(--page-inline-gutter-standard))] rounded-[10px] bg-[color:var(--app-neutral-fill)] p-0.5"
+                : "h-9 w-full max-w-[calc(var(--app-shell-agent)-2*var(--page-inline-gutter-standard))] rounded-[10px] bg-[color:var(--app-neutral-fill)] p-0.5"
             : "h-full w-full",
         )}
         role="tablist"
@@ -253,8 +256,8 @@ export function TopShellTabs({
                   "ui-text-agent-tab-label relative truncate transition-colors duration-150",
                   usesModuleSegmentedTabs
                     ? isActive
-                      ? "font-semibold text-[color:var(--app-accent)]"
-                      : "font-medium text-[color:var(--app-secondary-label)] hover:text-[color:var(--app-label)]"
+                      ? "!font-semibold !text-[15px] !leading-5 text-[color:var(--app-accent)]"
+                      : "!font-medium !text-[15px] !leading-5 text-[color:var(--app-secondary-label)] hover:text-[color:var(--app-label)]"
                     : isActive
                       ? "text-[color:var(--app-accent)]"
                       : "text-[color:var(--app-label)] hover:text-current",

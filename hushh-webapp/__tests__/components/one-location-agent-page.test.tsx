@@ -1634,13 +1634,11 @@ describe("OneLocationAgentPage", () => {
     expect(
       within(primary).getByRole("button", { name: "Share location" }),
     ).toBeTruthy();
-    expect(within(primary).getByText("You're not sharing")).toBeTruthy();
-    expect(
-      within(primary).getByText("Choose a Circle or contact."),
-    ).toBeTruthy();
+    expect(within(primary).getByText("Not sharing with anyone")).toBeTruthy();
+    expect(within(primary).queryByText("Choose a Circle or contact.")).toBeNull();
 
     const actions = await screen.findByTestId("one-location-now-actions");
-    expect(actions.className).toContain("pt-1");
+    expect(actions.className).toContain("space-y-2.5");
     expect(actions.className).not.toContain("max-w-[282px]");
     expect(
       within(actions).queryByRole("heading", { name: "Actions" }),
@@ -1654,7 +1652,7 @@ describe("OneLocationAgentPage", () => {
       }),
     ).toBeTruthy();
     expect(within(actions).getByText("Ask for location")).toBeTruthy();
-    expect(within(actions).getByText("Check in")).toBeTruthy();
+    expect(within(actions).getByText("Arrival confirm")).toBeTruthy();
     const retiredActionLabel = ["Their", "Location"].join(" ");
     expect(actions.textContent).not.toContain(retiredActionLabel);
     expect(within(actions).queryByText("Confirm Arrival")).toBeNull();
@@ -1662,26 +1660,27 @@ describe("OneLocationAgentPage", () => {
     expect(within(actions).getByText("Emergency alert")).toBeTruthy();
 
     const actionGrid = actions.querySelector("[data-one-location-action-grid]");
-    expect(actionGrid?.className).toContain("grid-cols-1");
-    expect(actionGrid?.className).toContain("min-[360px]:grid-cols-2");
+    expect(actionGrid?.className).toContain("grid-cols-2");
 
     const actionCells = actionGrid?.querySelectorAll(
       "[data-one-location-action-cell]",
     );
     expect(actionCells).toHaveLength(2);
     actionCells?.forEach((cell) => {
-      expect(cell.className).toContain("items-center");
+      expect(cell.className).toContain("flex-col");
       expect(cell.className).toContain("text-center");
-      expect(cell.className).toContain("rounded-[16px]");
-      expect(cell.className).toContain("min-h-[96px]");
-      expect(cell.className).toContain("px-5");
+      expect(cell.className).toContain("h-[62px]");
+      expect(cell.className).toContain("rounded-[14px]");
     });
     expect(
       actionGrid?.querySelector("[data-one-location-action-icon]")?.className,
     ).toContain("text-[color:var(--app-accent)]");
     expect(
-      actionGrid?.querySelector("[data-one-location-action-icon]")?.className,
-    ).toContain("[&>svg]:h-8");
+      actionGrid?.querySelector('[data-location-menu-icon="ask"]'),
+    ).toHaveAttribute("width", "21");
+    expect(
+      actionGrid?.querySelector('[data-location-menu-icon="checkIn"]'),
+    ).toHaveAttribute("width", "21");
     expect(
       actionGrid?.querySelectorAll("[data-one-location-action-icon] svg"),
     ).toHaveLength(2);
@@ -1749,7 +1748,7 @@ describe("OneLocationAgentPage", () => {
       "leading-[18px]",
       "font-normal",
     );
-    expect(status.textContent).toBe("Location off");
+    expect(status.textContent).toBe("Off");
     // Still the switch's description wherever it renders.
     expect(
       screen
@@ -1794,7 +1793,7 @@ describe("OneLocationAgentPage", () => {
     // keeps meaning visible without wrapping the title.
     expect(locationStatus.querySelector(".sm\\:hidden")).toBeNull();
     expect(locationStatus.querySelector(".hidden.sm\\:inline")).toBeNull();
-    expect(locationStatus.textContent).toBe("Location off");
+    expect(locationStatus.textContent).toBe("Off");
     expect(locationStatus).not.toHaveAttribute("aria-hidden");
     expect(
       screen.getByRole("switch", { name: "Turn location on" }),
@@ -1813,7 +1812,7 @@ describe("OneLocationAgentPage", () => {
       name: "Turn location off",
     });
     expect(locationOnSwitch).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText("Location on")).toBeTruthy();
+    expect(screen.getByText("On")).toBeTruthy();
 
     fireEvent.click(locationOnSwitch);
     await waitFor(() =>
@@ -1821,7 +1820,7 @@ describe("OneLocationAgentPage", () => {
         screen.getByRole("switch", { name: "Turn location on" }),
       ).toHaveAttribute("aria-checked", "false"),
     );
-    expect(screen.getByText("Location off")).toBeTruthy();
+    expect(screen.getByText("Off")).toBeTruthy();
     expect(mockRevokeGrant).not.toHaveBeenCalled();
   });
 
@@ -2055,7 +2054,7 @@ describe("OneLocationAgentPage", () => {
     fireEvent.click(
       await screen.findByRole("switch", { name: "Turn location off" }),
     );
-    await waitFor(() => expect(screen.getByText("Location off")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Off")).toBeTruthy());
 
     await act(async () => {
       resolveApproval?.({
@@ -2140,7 +2139,7 @@ describe("OneLocationAgentPage", () => {
     await act(async () => {
       releaseFix();
     });
-    await waitFor(() => expect(screen.getByText("Location on")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("On")).toBeTruthy());
   });
 
   it("does not let a late fix undo a pause made while it was in flight", async () => {
@@ -2157,7 +2156,7 @@ describe("OneLocationAgentPage", () => {
       name: "Turn location off",
     });
     fireEvent.click(onSwitch);
-    await waitFor(() => expect(screen.getByText("Location off")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Off")).toBeTruthy());
 
     // The fix belongs to an intent the person has already replaced. Applying it
     // would silently turn location back on after they turned it off.
@@ -2167,7 +2166,7 @@ describe("OneLocationAgentPage", () => {
     expect(
       screen.getByRole("switch", { name: "Turn location on" }),
     ).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByText("Location off")).toBeTruthy();
+    expect(screen.getByText("Off")).toBeTruthy();
   });
 
   it("pauses the device without waiting on, or first probing, nearby presence", async () => {
@@ -2207,7 +2206,7 @@ describe("OneLocationAgentPage", () => {
 
     fireEvent.click(onSwitch);
 
-    await waitFor(() => expect(screen.getByText("Location off")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Off")).toBeTruthy());
     await waitFor(() => expect(mockCheckoutNearby).toHaveBeenCalledTimes(1));
     // Still in flight while the device already reads as paused.
     expect(releaseCheckout).not.toBeNull();
@@ -3691,7 +3690,7 @@ describe("OneLocationAgentPage", () => {
     // The header agrees with what the person just did.
     await waitFor(() =>
       expect(screen.getByTestId("one-location-header-status").textContent).toBe(
-        "Location on",
+        "On",
       ),
     );
     expect(
