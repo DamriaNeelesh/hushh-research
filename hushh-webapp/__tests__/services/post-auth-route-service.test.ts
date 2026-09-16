@@ -543,7 +543,15 @@ describe("PostAuthRouteService", () => {
       OneSetupGateService.reset("user_gate");
     });
 
-    it("keeps a completed vault user at Chat even when the local nudge is unseen", async () => {
+    // These two used to assert ROUTES.ONE_SETUP for an unseen first-run vault
+    // user. That was correct while the default home route was ROUTES.ONE_HOME
+    // (the dashboard) -- a setup surface a resolved user could safely visit
+    // and leave. Once the canonical home route became ROUTES.HOME (chat),
+    // the same redirect walked straight into OnboardingJourneyGuard's
+    // unconditional "eject a resolved account from any setup surface" rule,
+    // so the person never reached the nudge OR chat -- they landed back on
+    // the dashboard instead. See `applyFirstRunSetupGate`'s comment.
+    it("does not nudge a first-run vault user into setup when the destination is chat", async () => {
       bootstrapStateMock.mockResolvedValue({
         hasVault: true,
         setupCompleted: true,
@@ -559,7 +567,7 @@ describe("PostAuthRouteService", () => {
       ).resolves.toBe(ROUTES.HOME);
     });
 
-    it("keeps completed setup authoritative without a vault or local seen flag", async () => {
+    it("does not nudge a first-run no-vault user into setup when the destination is chat", async () => {
       bootstrapStateMock.mockResolvedValue({
         hasVault: false,
         setupCompleted: true,

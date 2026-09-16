@@ -199,9 +199,19 @@ def source_metadata() -> dict:
     return {"git_sha": revision, "working_tree_dirty": bool(status.strip())}
 
 
-async def run(report_path: Path, timeout_seconds: float) -> dict:
+async def run(
+    report_path: Path,
+    timeout_seconds: float,
+    *,
+    paths: tuple[str, ...] = PATHS,
+    interval_seconds: float = 10,
+) -> dict:
     if report_path.exists():
         raise FileExistsError("Refusing to overwrite existing measurement report")
+    if not paths or len(set(paths)) != len(paths) or any(path not in PATHS for path in paths):
+        raise ValueError("Select unique supported runtime paths")
+    if not 0 <= interval_seconds <= 300:
+        raise ValueError("interval must be between zero and 300 seconds")
     source = source_metadata()
     report_path.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation also prevents concurrent runs from sharing the same report.
@@ -245,6 +255,9 @@ async def run(report_path: Path, timeout_seconds: float) -> dict:
             "chat runtime, not HTTP route or persistence",
             "no before/after accuracy or latency claim",
         ],
+        "selected_paths": list(paths),
+        "unattempted_paths": list(paths),
+        "interval_seconds": interval_seconds,
         "results": [],
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,17 +277,22 @@ async def run(report_path: Path, timeout_seconds: float) -> dict:
                 lambda **kwargs: instrument(original_chat, **kwargs),
             )
         )
-        for path in PATHS:
+        for index, path in enumerate(paths):
+            if index:
+                await asyncio.sleep(interval_seconds)
             requests = []
             report["results"].append(await measure(path, invoke, requests, timeout_seconds))
-            report["ok"] = len(report["results"]) == len(PATHS) and all(
+            report["ok"] = len(report["results"]) == len(paths) and all(
                 row["completed"] for row in report["results"]
             )
+            report["unattempted_paths"] = list(paths[index + 1 :])
             report_path.write_text(json.dumps(report, indent=2) + "\n")
             print(
                 f"{path}: {'passed' if report['results'][-1]['completed'] else 'failed'}",
                 flush=True,
             )
+            if not report["results"][-1]["completed"]:
+                break
     return report
 
 
@@ -282,12 +300,26 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=120)
+    parser.add_argument("--paths", nargs="+", choices=PATHS, default=list(PATHS))
+    parser.add_argument("--interval-seconds", type=float, default=10)
     args = parser.parse_args()
     if args.report.exists():
         parser.error("Refusing to overwrite existing measurement report")
     if not 0 < args.timeout_seconds <= 180:
         parser.error("timeout must be greater than zero and at most 180 seconds")
-    return 0 if asyncio.run(run(args.report, args.timeout_seconds))["ok"] else 1
+    if len(set(args.paths)) != len(args.paths):
+        parser.error("paths must be unique")
+    if not 0 <= args.interval_seconds <= 300:
+        parser.error("interval must be between zero and 300 seconds")
+    result = asyncio.run(
+        run(
+            args.report,
+            args.timeout_seconds,
+            paths=tuple(args.paths),
+            interval_seconds=args.interval_seconds,
+        )
+    )
+    return 0 if result["ok"] else 1
 
 
 if __name__ == "__main__":

@@ -130,3 +130,33 @@ def test_known_fixture_count_is_present(text):
 def test_nonempty_but_unresponsive_chat_fails():
     with pytest.raises(ValueError, match="fixture_holding_count_missing"):
         smoke.require_completed("chat", "I cannot determine that.")
+
+
+@pytest.mark.parametrize("fails", [True, False])
+async def test_selected_paths_checkpoint_and_stop_without_replaying(tmp_path, monkeypatch, fails):
+    import json
+
+    from hushh_mcp import runtime_providers
+
+    monkeypatch.setattr(smoke, "source_metadata", lambda: {"git_sha": "fixture"})
+    monkeypatch.setattr(runtime_providers, "build_managed_gemini_adk_model", lambda _: object())
+    monkeypatch.setattr(smoke, "validate_binding", lambda _: {"model": smoke.MODEL})
+    calls = []
+
+    async def measure(path, invoke_fn, requests, timeout_seconds):
+        calls.append(path)
+        return {"path": path, "completed": not fails}
+
+    monkeypatch.setattr(smoke, "measure", measure)
+    sleep = AsyncMock()
+    monkeypatch.setattr(smoke.asyncio, "sleep", sleep)
+    report_path = tmp_path / "report.json"
+    report = await smoke.run(report_path, 1, paths=("synthesis", "chat"), interval_seconds=12)
+    assert calls == (["synthesis"] if fails else ["synthesis", "chat"])
+    assert report["ok"] is (not fails)
+    assert report["unattempted_paths"] == (["chat"] if fails else [])
+    assert json.loads(report_path.read_text()) == report
+    if fails:
+        sleep.assert_not_awaited()
+    else:
+        sleep.assert_awaited_once_with(12)
