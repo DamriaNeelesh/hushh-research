@@ -668,11 +668,11 @@ describe("VaultFlow create validation", () => {
     unlockGeneratedDefaultVaultMock.mockRejectedValueOnce(
       Object.assign(new Error("Cancelled"), { name: "NotAllowedError" }),
     );
-    render(<VaultFlow user={gateUser} onSuccess={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Unlock with Passkey" }));
-    await screen.findByRole("button", { name: "Passkey" });
     document.documentElement.setAttribute("data-vault-unlock-hard-gate", "true");
     try {
+      render(<VaultFlow user={gateUser} onSuccess={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Unlock with Passkey" }));
+      await screen.findByRole("button", { name: "Passkey" });
       fireEvent.click(screen.getByRole("button", { name: "Passkey" }));
       await waitFor(() => expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(2));
     } finally {
