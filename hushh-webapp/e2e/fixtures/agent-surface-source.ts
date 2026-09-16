@@ -123,7 +123,7 @@ const headerContainerClass = one(
 
 const identityClass = one(
   header,
-  /<div className="(flex min-w-0 items-center gap-3)">/,
+  /<div className="(flex min-w-0 items-center gap-3[^"]*)">/,
   "identity cluster class",
   WORKSPACE_PATH,
 )[1];
@@ -153,8 +153,15 @@ const subtitleExpression = flatten(
 
 const clusterClass = one(
   header,
-  /<div className="(flex shrink-0 items-center gap-2)">/,
+  /<div className="(ml-auto flex min-w-0 max-w-full items-center justify-end gap-2[^"]*)">/,
   "right-hand cluster class",
+  WORKSPACE_PATH,
+)[1];
+
+const pickerClusterClass = one(
+  header,
+  /<div className="(ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2[^"]*)">/,
+  "picker cluster class",
   WORKSPACE_PATH,
 )[1];
 
@@ -198,7 +205,7 @@ const slotMatch = one(
 
 const pickerGateMatch = one(
   header,
-  /\{\s*([^{}\n]+?)\s*\?\s*\(\s*<Select\b/,
+  /\{\s*([^{}\n]+?)\s*\?\s*\(\s*modelPreference\s*\?\s*\(\s*<Select\b/,
   "the picker's own guard",
   WORKSPACE_PATH,
 );
@@ -348,6 +355,7 @@ export const AGENT_SURFACE_SOURCE = {
     containerClass: headerContainerClass,
     identityClass,
     clusterClass,
+    pickerClusterClass,
     nameClass: nameMatch[1],
     /** `isPuppySurface ? "Puppy One" : "One"`, run by the fixture. */
     nameExpression: flatten(nameMatch[2]),

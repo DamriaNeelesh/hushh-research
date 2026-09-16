@@ -5370,11 +5370,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         >
           <div
             className={cn(
-            "agent-chat-header flex shrink-0 flex-wrap touch-pan-y items-center justify-between gap-3 bg-background/90 px-4 pb-2 pt-[max(0.5rem,var(--app-safe-area-top-effective,0px))] backdrop-blur-2xl sm:px-5 lg:grid lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]",
+            "agent-chat-header grid grid-cols-[minmax(0,1fr)_auto] shrink-0 touch-pan-y items-center justify-between gap-3 bg-background/90 px-4 pb-2 pt-[max(0.5rem,var(--app-safe-area-top-effective,0px))] backdrop-blur-2xl sm:px-5 lg:grid lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]",
             "min-h-[3.75rem] border-b border-black/[0.04] dark:border-white/[0.06] lg:px-6",
           )}
         >
-            <div className="flex min-w-0 items-center gap-3 lg:col-start-1 lg:row-start-1">
+            <div className="flex min-w-0 items-center gap-3 col-start-1 row-start-1">
               <ShellActionSurface
                 variant="icon"
                 className="lg:hidden"
@@ -5427,7 +5427,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               </div>
             </div>
 
-            <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-2 lg:col-start-2 lg:row-start-1 lg:ml-0">
+            <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-2 col-start-2 row-start-1 lg:ml-0">
               {/*
                 The compact segmented control at header scale. The full-width
                 filter primitive was tried here first and stood ~44px tall
@@ -5469,7 +5469,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 className="w-auto shrink-0"
               />
             </div>
-            <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 lg:col-start-3 lg:row-start-1">
+            <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 col-span-2 row-start-2 lg:col-span-1 lg:col-start-3 lg:row-start-1">
               {/* A fixed slot, present whenever this person HAS a picker,
                   so switching surfaces cannot slide the toggle sideways under
                   the thumb that just pressed it. This is the same jump the
@@ -5479,9 +5479,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   a spacer carrying only max-w collapses to zero; and no slot
                   at all for someone with a single model, so the header does
                   not reserve space for a control they never see. */}
-              {!isPuppySurface &&
-              (modelPreferenceLoading || (canPickOneModel && modelPreference)) ? (
-                <span className="flex w-[7.5rem] shrink-0 justify-end sm:w-[9.5rem]">
+              {modelPreferenceLoading || canPickOneModel && modelPreference ? (
+                <span className="flex min-h-11 w-[7.5rem] shrink-0 justify-end sm:w-[9.5rem]">
                   {/* One's model picker names the CLOUD model and writes One's
                       preference. In Puppy One it would assert a Gemini is running
                       on the owner's machine, and choosing an item would silently
