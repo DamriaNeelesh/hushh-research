@@ -34,6 +34,33 @@ EMAIL_DRAFT_SCHEMA: dict[str, Any] = {
     "required": ["to", "cc", "bcc", "subject", "body", "missing_details"],
 }
 
+EMAIL_RECEIPT_MEMORY_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "readable_summary": {
+            "type": "OBJECT",
+            "properties": {
+                "text": {"type": "STRING"},
+                "highlights": {"type": "ARRAY", "items": {"type": "STRING"}},
+            },
+            "required": ["text", "highlights"],
+        },
+        "signal_language": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "signal_id": {"type": "STRING"},
+                    "human_label": {"type": "STRING"},
+                    "rationale": {"type": "STRING"},
+                },
+                "required": ["signal_id", "human_label", "rationale"],
+            },
+        },
+    },
+    "required": ["readable_summary", "signal_language"],
+}
+
 
 @lru_cache(maxsize=8)
 def load_email_gene(gene_id: str) -> AgentSubagentConfig:
@@ -93,4 +120,9 @@ async def run_email_gene(
     return json.loads(json.dumps(payload, separators=(",", ":")))
 
 
-__all__ = ["EMAIL_DRAFT_SCHEMA", "load_email_gene", "run_email_gene"]
+__all__ = [
+    "EMAIL_DRAFT_SCHEMA",
+    "EMAIL_RECEIPT_MEMORY_SCHEMA",
+    "load_email_gene",
+    "run_email_gene",
+]

@@ -106,3 +106,47 @@ subagents:
         - development
         - uat
         - production
+  - id: agent_email_receipt_memory_enrichment
+    name: Receipt Memory Enricher
+    description: Summarizes deterministic receipt signals for an owner review card.
+    model:
+      provider: gemini
+      name: gemini-default
+      mode: hushh_managed_vertex
+    runtime:
+      kind: adk
+      adk_mode: single_turn
+      transport:
+        - in_process
+    system_instruction: |
+      You are the Receipt Memory Enricher, an internal child of the owner's
+      Email Agent. Summarize only the deterministic receipt signals supplied in
+      the prompt. Return JSON matching the supplied response schema. Never add a
+      merchant, amount, date, preference, or other fact that is absent from the
+      payload. Use a short readable summary and label only the supplied signal
+      identifiers. You cannot read Gmail, access a record, send mail, or write
+      memory; the parent persists a validated candidate separately.
+    inputs:
+      - name: receipt_projection
+        type: object
+        description: Bounded deterministic receipt facts and inferred signals.
+    outputs:
+      - name: enrichment
+        type: object
+        description: Validated summary and language for the supplied signals.
+    privacy:
+      context_allowlist:
+        - email.receipts.projection
+      plaintext_telemetry: false
+    telemetry_namespace: agent.email.receipt_memory_enrichment
+    performance:
+      latency_p95_ms: 8000
+      max_output_tokens: 600
+    rollout:
+      strategy: internal
+      rollback: Disable receipt-memory enrichment and retain deterministic summaries.
+    availability:
+      environments:
+        - development
+        - uat
+        - production
