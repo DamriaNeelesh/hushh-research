@@ -929,13 +929,13 @@ async def test_create_public_link_reused_and_service_duration_cap():
 
     fake.errors["create_public_invite"] = OneLocationAgentError(
         "LOCATION_DURATION_INVALID",
-        "A public location link can stay live for at most 1 hour.",
+        "A public location link can stay live for at most 2 hours.",
         status_code=422,
     )
     capped = await spec.handler(ctx, spec.input_model.model_validate({"duration_hours": 2}))
     assert capped.status == "rejected"
     assert capped.reason_code == "LOCATION_DURATION_INVALID"
-    assert capped.spoken_facts == ["A public location link can stay live for at most 1 hour."]
+    assert capped.spoken_facts == ["A public location link can stay live for at most 2 hours."]
 
 
 # -- revoke_public_link ----------------------------------------------------------

@@ -1165,8 +1165,8 @@ class CreatePublicLinkInput(ToolInput):
     duration_hours: float = Field(
         default=1,
         gt=0,
-        le=24,
-        description="How long the link stays live, in hours: 0.25, 0.5, or 1 (at most one hour). Default 1.",
+        le=2,
+        description="How long the link stays live, in hours: 0.25, 1, or 2 (at most two hours). Default 1.",
     )
 
 
@@ -1416,7 +1416,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         input_model=CreatePublicLinkInput,
         output_model=CreatePublicLinkResult,
         description=(
-            "Create an expiring public location link anyone can open, for at most one hour. "
+            "Create an expiring public location link anyone can open, for at most two hours. "
             "Returns the URL and a client_step to open the share sheet."
         ),
         handler=create_public_link,
