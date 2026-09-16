@@ -21,10 +21,10 @@ import type { ButtonProps } from "@/components/ui/button";
  * The presence was always going to end on its own timer; checking out early
  * flips its status, destroys the anchor key, and can be redone in three taps.
  * `destructive` is this product's signal for SOS, delete, revoke and stop
- * sharing. This can still be the primary active-state action; it just must not
- * borrow the emergency color.
+ * sharing — spending it here would both dilute that signal and make the calm
+ * "you are checked in" state read as an alarm.
  */
-export const CHECK_OUT_BUTTON_VARIANT: ButtonProps["variant"] = "default";
+export const CHECK_OUT_BUTTON_VARIANT: ButtonProps["variant"] = "secondary";
 
 /**
  * The desktop side rail, in rem.
