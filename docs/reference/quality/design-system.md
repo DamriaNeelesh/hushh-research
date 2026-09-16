@@ -44,6 +44,10 @@ This contract keeps shadcn as the vendor primitive layer, makes Morphy UX the st
 12. Agent-aware dialogs, popovers, sheets, menus, and confirmations publish authored
     interaction-layer metadata from app-level composition. Stock primitives remain
     registry-safe and contain no app action ids or voice semantics.
+13. Interactive menu and option rows expose the pointer affordance at the shared
+    primitive layer (`DropdownMenuItem`, checkbox/radio/submenu items, `CommandItem`,
+    `SelectItem`, and `ComboboxItem`). Disabled rows retain their disabled pointer
+    behavior and cannot be activated.
 
 ## Morphy Extension Allowlist
 1. CTA-level behavior on top of stock button semantics.

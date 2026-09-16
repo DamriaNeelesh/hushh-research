@@ -1235,18 +1235,6 @@ function resolveTopShellBreadcrumbInner(
     };
   }
 
-  if (pathname === ROUTES.PROFILE_SECURITY_DEVICES) {
-    return {
-      backHref: ROUTES.PROFILE,
-      width: "profile",
-      align: "center",
-      items: [
-        { label: "Profile", href: ROUTES.PROFILE },
-        { label: "Trusted devices" },
-      ],
-    };
-  }
-
   const { panel, detail } = resolveProfileRouteState(pathname, searchParams);
   const panelLabel = profilePanelLabel(panel);
   if (!panel || !panelLabel) {

@@ -66,7 +66,7 @@ export function ProfilePane({ open, onOpenChange }: ProfilePaneProps) {
         side="right"
         showCloseButton={false}
         contentDragDismiss={false}
-        className="w-full max-w-none gap-0 overflow-hidden p-0 sm:w-[min(92vw,560px)] sm:max-w-[560px]"
+        className="w-full max-w-none transform-gpu gap-0 overflow-hidden p-0 data-[state=open]:will-change-transform data-[state=closed]:will-change-transform sm:w-[min(92vw,560px)] sm:max-w-[560px]"
         aria-label="Profile"
         data-testid="profile-pane"
       >

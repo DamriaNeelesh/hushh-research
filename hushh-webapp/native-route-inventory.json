@@ -1,7 +1,7 @@
 {
   "generated_at": "2026-09-02",
-  "total_routes": 121,
-  "native_required_routes": 104,
+  "total_routes": 120,
+  "native_required_routes": 103,
   "excluded_routes": 17,
   "routes": [
     {
@@ -988,18 +988,6 @@
       "initialRoute": "/login?redirect=%2Fone%2Fprofile%2Fsecurity",
       "expectedMarker": "native-route-profile",
       "expectedRoute": "/one/profile/security",
-      "autoReviewerLogin": true,
-      "expectedAuth": "authenticated",
-      "allowedDataStates": [
-        "loaded"
-      ]
-    },
-    {
-      "route": "/one/profile/security/devices",
-      "classification": "native-required-functional",
-      "initialRoute": "/login?redirect=%2Fone%2Fprofile%2Fsecurity%2Fdevices",
-      "expectedMarker": "native-route-profile",
-      "expectedRoute": "/one/profile/security/devices",
       "autoReviewerLogin": true,
       "expectedAuth": "authenticated",
       "allowedDataStates": [

@@ -391,7 +391,7 @@ export function SettingsRow({
 }: {
   asChild?: boolean;
   children?: ReactNode;
-  icon?: LucideIcon;
+  icon?: React.ComponentType<any>;
   leading?: ReactNode;
   title: ReactNode;
   description?: ReactNode;

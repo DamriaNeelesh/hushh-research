@@ -987,7 +987,8 @@ export function AuthStep({
         },
       ];
 
-  const showReviewer = nativeTestConfig.enabled && nativeReviewerVisible;
+  const showReviewer =
+    (nativeTestConfig.enabled && nativeReviewerVisible) || reviewModeConfig.enabled;
 
   return (
     <main
