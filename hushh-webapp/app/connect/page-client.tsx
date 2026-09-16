@@ -18,12 +18,18 @@ import {
 
 import {
   AppPageContentRegion,
+  AppPageHeaderRegion,
   AppPageShell,
 } from "@/components/app-ui/app-page-shell";
 import { NearbyDirectories } from "@/components/connect/nearby-directories";
 import { PageHeader } from "@/components/app-ui/page-sections";
+import { SectionLabel } from "@/components/app-ui/typography";
 import { TopShellTabs } from "@/components/app-ui/top-shell-tabs";
-import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
+import {
+  SettingsGroup,
+  SettingsPresentationProvider,
+  SettingsRow,
+} from "@/components/app-ui/settings-ui";
 import { ConnectCirclesTab } from "@/components/connect/circles/connect-circles-tab";
 import { SurfaceStack } from "@/components/app-ui/surfaces";
 import { buildInviteToOneShare } from "@/lib/connect/invite-to-one";
@@ -65,6 +71,7 @@ import {
   CONNECT_CIRCLE_ACTION_PARAM,
   CONNECT_CIRCLE_ID_PARAM,
   CONNECT_SEARCH_QUERY_PARAM,
+  CONNECT_REVIEW_PERSON_PARAM,
   CONNECT_SURFACE_PARAM,
   connectCircleTaskTitle,
   isFocusedConnectCircleTask,
@@ -494,6 +501,7 @@ export default function ConnectPageClient() {
   const isFocusedCircleTask = isFocusedConnectCircleTask(
     surface,
     circleFlowAction,
+    circleFlowId,
   );
 
   // Every navigation on this page passes `scroll: false`, because the surface
@@ -531,6 +539,7 @@ export default function ConnectPageClient() {
   const directoryMenuRef = useRef<HTMLDivElement | null>(null);
   const directoryMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [directoryMenuOpen, setDirectoryMenuOpen] = useState(false);
+  const useWebDirectoryPopover = !isNative();
   const searchQueryParam = (searchParams.get(CONNECT_SEARCH_QUERY_PARAM) ?? "")
     .trim()
     .slice(0, 160);
@@ -1876,19 +1885,17 @@ export default function ConnectPageClient() {
         searching: query.trim().length > 0,
       },
     };
-  },
-    [
-      circleFlowAction,
-      circlesState.count,
-      connectionsTotalCount,
-      error,
-      isFocusedCircleTask,
-      loading,
-      query,
-      surface,
-      tab,
-    ],
-  );
+  }, [
+    circleFlowAction,
+    circlesState.count,
+    connectionsTotalCount,
+    error,
+    isFocusedCircleTask,
+    loading,
+    query,
+    surface,
+    tab,
+  ]);
   usePublishVoiceSurfaceMetadata(connectVoiceSurfaceMetadata);
 
   // Each of these brings the directory surface forward before touching the hub
@@ -2494,127 +2501,10 @@ export default function ConnectPageClient() {
         errorMessage: surface === "circles" ? circlesState.error : error,
       }}
     >
-      {isFocusedCircleTask ? (
-        <AppPageContentRegion className="min-w-0 overflow-x-hidden pb-6 sm:pb-8">
-          <div className="mx-auto w-full max-w-[560px] pt-5 sm:pt-6">
-            <ConnectCirclesTab
-              onStateChange={setCirclesState}
-              currentUserId={user?.uid ?? null}
-              onRequestConnection={sendConnectRequest}
-              onCancelConnectionRequest={cancelConnectionRequest}
-              refreshToken={circleRefreshToken}
-            />
-          </div>
-        </AppPageContentRegion>
-      ) : (
-      <AppPageContentRegion className="min-w-0 space-y-4 overflow-x-hidden pb-[var(--app-bottom-content-clearance)]">
-        <PageHeader
-          title="Connect"
-          titleRole="agent"
-          className="[&_[data-slot=page-header-row]]:!items-center"
-        />
-
-        <SurfaceStack compact>
-          <div
-            ref={connectStackRef}
-            className="relative space-y-4 sm:space-y-5"
-          >
-            {/* Where the header sits when it is NOT pinned, held open as a 1px
-                line so an observer can watch that spot leave the scrollport.
-                Absolutely positioned, so it is out of flow: `space-y-*` gives a
-                first child `margin-block-end` only, which an absolute box with
-                `top: 0` cannot act on, and the strips below keep their rhythm.
-                Reading the header itself would prove nothing -- once pinned it
-                never leaves, which is the whole point of it. */}
-            <div
-              ref={stickyPinSentinelRef}
-              data-testid="connect-sticky-pin-sentinel"
-              aria-hidden
-              className="pointer-events-none absolute inset-x-0 top-0 h-px"
-            />
-            <div
-              ref={stickyHeaderRef}
-              data-testid="connect-sticky-header"
-              // Written by the observer above. Declared here so the attribute
-              // exists from the first paint rather than arriving a frame later,
-              // which is a frame of the cover in the wrong state.
-              data-pinned="false"
-              className={CONNECT_STICKY_HEADER_CLASSNAME}
-            >
-              <TopShellTabs
-                tabSet={{
-                  ...CONNECT_SURFACE_TAB_DEFINITION,
-                  activeValue: surface,
-                }}
-                navigationMode="push"
-              />
-              {surface !== "circles" ? (
-                <div className="flex min-h-11 items-center justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div ref={directoryMenuRef} className="relative">
-                      <button
-                        ref={directoryMenuButtonRef}
-                        type="button"
-                        aria-haspopup="menu"
-                        aria-expanded={directoryMenuOpen}
-                        aria-label={`Current directory: ${CONNECT_TAB_LABEL[tab]}`}
-                        className="inline-flex min-h-11 items-center gap-1.5 rounded-full px-1 text-[17px] font-semibold leading-[22px] text-[color:var(--app-primary-label)] transition-colors hover:text-[color:var(--app-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
-                        onClick={() =>
-                          setDirectoryMenuOpen((current) => !current)
-                        }
-                      >
-                        {CONNECT_TAB_LABEL[tab]}
-                        <ChevronDown
-                          className="h-4 w-4 text-[color:var(--app-secondary-label)]"
-                          aria-hidden
-                        />
-                      </button>
-                      {directoryMenuOpen ? (
-                        <div
-                          role="menu"
-                          className="absolute left-0 top-full z-30 mt-1 w-[184px] overflow-hidden rounded-[14px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-standard)] p-1 shadow-[0_10px_30px_rgba(0,0,0,0.10)] dark:shadow-[0_10px_30px_rgba(0,0,0,0.35)]"
-                        >
-                          {CONNECT_DIRECTORY_TABS.map((option) => {
-                            const active = tab === option.value;
-                            return (
-                              <button
-                                key={option.value}
-                                type="button"
-                                role="menuitemradio"
-                                aria-checked={active}
-                                className={cn(
-                                  "flex min-h-11 w-full items-center justify-between rounded-[10px] px-3 text-left text-[15px] font-medium leading-5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]",
-                                  active
-                                    ? "text-[color:var(--app-accent)]"
-                                    : "text-[color:var(--app-primary-label)] hover:bg-[color:var(--app-secondary-fill)]",
-                                )}
-                                onClick={() => {
-                                  setTab(option.value);
-                                  setDirectoryMenuOpen(false);
-                                  window.requestAnimationFrame(() =>
-                                    directoryMenuButtonRef.current?.focus(),
-                                  );
-                                }}
-                              >
-                                <span>{option.label}</span>
-                                {active ? (
-                                  <Check
-                                    className="h-4 w-4"
-                                    aria-hidden="true"
-                                  />
-                                ) : null}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            {surface === "circles" ? (
+      <SettingsPresentationProvider density="compact">
+        {isFocusedCircleTask ? (
+          <AppPageContentRegion className={CONNECT_PAGE_CONTENT_CLASSNAME}>
+            <div className="mx-auto w-full max-w-[560px]">
               <ConnectCirclesTab
                 onStateChange={setCirclesState}
                 currentUserId={user?.uid ?? null}
@@ -3429,54 +3319,27 @@ export default function ConnectPageClient() {
                                 )}
                             </SettingsGroup>
                           </div>
-                        ) : people.length > 0 ? (
-                          <span className="sr-only">All people loaded</span>
-                        ) : null}
-                        {isSelectionMode &&
-                          selectedPeople.size > 0 &&
-                          batchConnectDraft === null && (
-                            <div className="flex justify-center border-t border-[color:var(--app-card-border-standard)] px-3 py-4">
-                              <Button
-                                type="button"
-                                variant="blue"
-                                effect="fill"
-                                disabled={isConnectingMultiple}
-                                onClick={() => {
-                                  // Everyone picked, not everyone picked who is still on
-                                  // screen. Reading the selection back off the rendered
-                                  // page is what dropped page one's picks on reaching
-                                  // page two.
-                                  void openBatchConnectDraft([
-                                    ...selectedPeople.values(),
-                                  ]);
-                                }}
-                              >
-                                {`Review ${selectedPeople.size}`}
-                              </Button>
-                            </div>
-                          )}
-                      </SettingsGroup>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </SurfaceStack>
-      </AppPageContentRegion>
-      )}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </SurfaceStack>
+            </AppPageContentRegion>
+          </>
+        )}
 
-      <Dialog
-        open={batchConnectDraft !== null}
-        onOpenChange={(open) => {
-          if (!open && !isConnectingMultiple) setBatchConnectDraft(null);
-        }}
-      >
-        <DialogContent className="gap-5 max-h-[85vh] flex flex-col overflow-hidden bg-[color:var(--app-card-surface-default-solid)]">
-          <div className="shrink-0 space-y-5">
-            <DialogHeader className="text-left">
-              <DialogTitle>Send connection requests</DialogTitle>
-              {/*
+        <Dialog
+          open={batchConnectDraft !== null && batchConnectDraft.ownerId === user?.uid}
+          onOpenChange={(open) => {
+            if (!open && !isConnectingMultiple) closeBatchConnectDraft();
+          }}
+        >
+          <DialogContent className="gap-5 max-h-[85vh] flex flex-col overflow-hidden bg-[color:var(--app-card-surface-default-solid)]">
+            <div className="shrink-0 space-y-5">
+              <DialogHeader className="text-left">
+                <DialogTitle>Send connection requests</DialogTitle>
+                {/*
                 This said "This only sends a connection request." That was true
                 while the bulk path could not carry capabilities. It can now, so
                 the sentence became a promise the sheet no longer keeps whenever

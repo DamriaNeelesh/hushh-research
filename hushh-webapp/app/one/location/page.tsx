@@ -6945,8 +6945,43 @@ export function OneLocationAgentPageContent({
     [activeOwnerGrants, liveShareStatus?.stoppableGrantId],
   );
 
+  /**
+   * Publish one authoritative duration mutation, then reconcile from a read
+   * that is guaranteed to have started after it.
+   *
+   * Both the visible editor and the governed voice action reach the same API.
+   * Keeping the cache fence here prevents either caller from joining a state
+   * refresh that began before the PATCH and repainting the old duration.
+   */
+  const reconcileGrantDurationMutation = useCallback(
+    (updatedGrant: OneLocationGrant) => {
+      const activeUserId = auth.userId;
+      if (!activeUserId) {
+        void refresh({ background: true }).catch(() => null);
+        return;
+      }
+
+      const priorRefresh = refreshInFlightRef.current;
+      const merged = updatedGrant?.id
+        ? OneLocationStateResource.mergeOwnerGrant(
+            activeUserId,
+            updatedGrant,
+            state ?? undefined,
+          )
+        : false;
+      if (!merged) OneLocationStateResource.invalidate(activeUserId);
+
+      void (async () => {
+        if (priorRefresh) await priorRefresh;
+        await refresh({ background: true });
+      })().catch(() => null);
+    },
+    [auth.userId, refresh, state],
+  );
+
   const handleSaveLiveShareDuration = useCallback(async () => {
-    const grantId = liveShareDurationGrantId ?? liveShareStatus?.stoppableGrantId;
+    const grantId =
+      liveShareDurationGrantId ?? liveShareStatus?.stoppableGrantId;
     if (!vaultOwnerToken || !grantId) return;
     const grant = activeOwnerGrants.find((row) => row.id === grantId);
     if (!grant || isSmsTriggeredGrant(grant)) return;
@@ -6981,9 +7016,6 @@ export function OneLocationAgentPageContent({
       toast.success("Time updated.");
       setLiveShareDurationEditing(false);
       setLiveShareDurationGrantId(null);
-      // Held until the list has reconciled, so the card's countdown is already
-      // reading the new expiry when the editor closes.
-      await refresh({ background: true }).catch(() => null);
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -7007,7 +7039,8 @@ export function OneLocationAgentPageContent({
   // the wheel would otherwise still be pointing at a share that is gone.
   useEffect(() => {
     if (!liveShareDurationEditing) return;
-    const grantId = liveShareDurationGrantId ?? liveShareStatus?.stoppableGrantId;
+    const grantId =
+      liveShareDurationGrantId ?? liveShareStatus?.stoppableGrantId;
     if (!grantId || !activeOwnerGrants.some((grant) => grant.id === grantId)) {
       setLiveShareDurationEditing(false);
       setLiveShareDurationGrantId(null);
@@ -7711,9 +7744,15 @@ export function OneLocationAgentPageContent({
     async (
       reason?: string | null,
       durationHoursOverride?: string,
+      commandContext?: LocalOnboardingActionContext,
     ): Promise<LocationRequestSendResult> => {
+      const requestOwners = commandContext?.preparedBinding && vaultOwnerToken
+        ? resolvePreparedAudience(commandContext.preparedBinding,
+            await readAllCommandPeople((page) => OneLocationService.listRecipientsPage({ vaultOwnerToken, page, limit: 100 })), auth.userId,
+            { requireEncryptionKey: false })
+        : selectedRequestOwners;
       const failedResult = { sent: false, completed: false };
-      if (!vaultOwnerToken || !selectedRequestOwners.length)
+      if (!vaultOwnerToken || !requestOwners.length)
         return failedResult;
       if (!auth.user || !auth.userId) {
         toast.error("Refresh your session before sending a location request.");
@@ -7819,6 +7858,7 @@ export function OneLocationAgentPageContent({
         if (isTransientOneApiError(error)) {
           await refresh().catch(() => null);
         }
+        if (!currentCommand()) return { sent: successCount > 0, completed: false };
         if (successCount > 0) {
           resetRequestComposer(sentUserIds);
         }
@@ -11962,8 +12002,9 @@ export function OneLocationAgentPageContent({
       : selectedRequestOwners.map((person) => ({ userId: person.userId, name: recipientLabel(person) }));
     const ownerNames = commandedOwners.map((person) => person.name.trim()).filter(Boolean);
     const names = ownerNames.join(", ");
-    const result = await handleRequestAccess(null, requestedDuration);
-    if (!result.sent) {
+    const executionContext = context?.preparedBinding ? {...context,preparedBinding:pendingAudienceBinding(context.preparedBinding,context.continuation)} : context;
+    const result = await handleRequestAccess(null, requestedDuration, context?.operationId ? executionContext : undefined);
+    if (!result.sent || (context?.operationId && !result.completed)) {
       return {
         status: "blocked" as const,
         summary: result.sent ? "Some requests were sent. Review Requests before taking another action." : "The request could not be confirmed. Review Requests before trying again.",

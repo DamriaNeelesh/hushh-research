@@ -90,15 +90,10 @@ export function IntroStep({ onLogin }: { onLogin?: () => void }) {
             🤫
           </span>
 
-          <h1 className={styles.title}>
-            <span className={styles.molten}>
-              One
-            </span>
-
-            <h1 className={styles.title} aria-label="One">
-              <span className={styles.srOnly}>One</span>
-              <FigmaOneLogo />
-            </h1>
+          <h1 className={styles.title} aria-label="One">
+            <span className={styles.srOnly}>One</span>
+            <FigmaOneLogo />
+          </h1>
 
             <p className={styles.tagline}>
               Your agents. Yours to own.

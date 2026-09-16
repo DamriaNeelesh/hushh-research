@@ -6385,23 +6385,6 @@ describe("OneLocationAgentPage", () => {
       screen.getByRole("button", { name: "Send request" }),
     ).toBeEnabled();
   });
-
-
-
-    fireEvent.change(screen.getByPlaceholderText(/search/i), {
-      target: { value: "Tru" },
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.queryByTestId("one-location-ask-section-header:recent"),
-      ).toBeNull();
-      expect(
-        screen.queryByTestId("one-location-ask-section-header:all"),
-      ).toBeNull();
-    });
-  });
-
   it("keeps Ask for location as one compact list of people who can receive a new ask", async () => {
     // The roster carries `role="list"`, and every entry in it is wrapped as a
     // `listitem`. The new compact treatment removes section headers entirely,

@@ -112,6 +112,7 @@ type PhoneVerificationFlowProps = {
   onCancel?: () => void;
   sendCodeLabel?: string;
   confirmLabel?: string;
+  codePresentation?: "default" | "onboarding";
   primaryActionClassName?: string;
   className?: string;
   helperText?: ReactNode;
@@ -364,6 +365,7 @@ export function PhoneVerificationFlow({
   onCancel,
   sendCodeLabel,
   confirmLabel,
+  codePresentation = "default",
   primaryActionClassName,
   className,
   helperText,

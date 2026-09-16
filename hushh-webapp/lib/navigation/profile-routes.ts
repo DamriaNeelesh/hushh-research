@@ -248,34 +248,6 @@ export function buildProfileRoute(params?: {
         params?.searchParams,
       );
     }
-    if (detail === "voice-changelog") {
-      return appendQuery(
-        ROUTES.PROFILE_PREFERENCES_KAI,
-        {},
-        params?.searchParams,
-      );
-    }
-    if (detail === "gemini") {
-      return appendQuery(
-        ROUTES.PROFILE_PREFERENCES_GEMINI,
-        {},
-        params?.searchParams,
-      );
-    }
-    if (detail === "device") {
-      return appendQuery(
-        ROUTES.PROFILE_PREFERENCES_DEVICE,
-        {},
-        params?.searchParams,
-      );
-    }
-    if (detail === "voice") {
-      return appendQuery(
-        ROUTES.PROFILE_PREFERENCES_VOICE,
-        {},
-        params?.searchParams,
-      );
-    }
     return appendQuery(ROUTES.PROFILE_PREFERENCES, {}, params?.searchParams);
   }
 

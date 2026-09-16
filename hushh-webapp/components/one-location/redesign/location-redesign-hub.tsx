@@ -610,7 +610,10 @@ export type LocationHubViewModel = {
   liveShareDurationHours: string;
   setLiveShareDurationHours: (v: string) => void;
   liveShareDurationSaving: boolean;
-  onEditLiveShareDurationStart: (grantId?: string) => void;
+  onEditLiveShareDurationStart: (
+    grantId?: string,
+    trigger?: HTMLElement,
+  ) => void;
   onEditLiveShareDurationCancel: () => void;
   onSaveLiveShareDuration: () => void;
   onCreatePublicInvite: () => void;
@@ -1758,7 +1761,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
         // flow slug nobody had wired up quietly rendered "Share outside your
         // Circle" instead of failing visibly.
         null}
-      </div>,
+       </div>
     );
   }
 
@@ -1866,7 +1869,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           </LocationHubPanel>
         </SwipeViews>
       </div>
-    </div>,
+     </div>
   );
 }
 
@@ -2085,7 +2088,7 @@ function NowHub({
             vm.liveShare.grantCount === 1 &&
             vm.liveShare.stoppableGrantId &&
             !vm.liveShare.singleGrantIsSms
-              ? vm.onEditLiveShareDurationStart
+              ? (trigger) => vm.onEditLiveShareDurationStart(undefined, trigger)
               : undefined
           }
           onShareMore={onStartShare}
@@ -2293,7 +2296,7 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
           data-voice-label="Share location"
           aria-label="Share location"
           onClick={onClick}
-          className="inline-flex h-11 min-h-11 w-full items-center justify-center rounded-[14px] bg-[color:var(--app-accent)] px-5 !text-[15px] !font-semibold !leading-5 text-[color:var(--app-accent-fg)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-accent-hover)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
+           className="mx-auto inline-flex h-11 min-h-11 w-[76%] items-center justify-center rounded-[14px] bg-[color:var(--app-accent)] px-5 !text-[15px] !font-semibold !leading-5 text-[color:var(--app-accent-fg)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-accent-hover)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
         >
           <ButtonLabel
             as="span"
@@ -2371,7 +2374,7 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
                 className="block min-w-0 !text-[15px] !font-semibold !leading-5"
               >
                 {item.title}
-              </RowLabel>
+              </ButtonLabel>
             </span>
           </button>
         ))}
@@ -4864,7 +4867,7 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
                 onClick={vm.onCreatePublicInvite}
                 isLoading={vm.busy === "publicInvite"}
                 data-voice-control-id="one-location-action-temp-link"
-                className="h-11 min-h-11 w-fit min-w-[9rem] rounded-[14px] px-5 text-[15px] font-semibold leading-5 text-[color:var(--app-accent-fg)] bg-[color:var(--app-accent)] hover:bg-[color:var(--app-accent)]/90"
+                 className="mx-auto block h-11 min-h-11 w-[76%] min-w-0 rounded-[14px] px-5 text-[15px] font-semibold leading-5 text-[color:var(--app-accent-fg)] bg-[color:var(--app-accent)] hover:bg-[color:var(--app-accent)]/90"
               >
                 {vm.busy === "publicInvite"
                   ? "Creating link…"
@@ -6141,18 +6144,6 @@ function AskFlow({
       ),
     [rosterRecipientRows, statusByRecipient],
   );
-  const askRecipientRows = searchActive
-    ? rosterRecipientRows
-    : eligibleRecipientRows;
-  const pendingNewRequestCount = useMemo(
-    () =>
-      vm.requestedByMe.filter(
-        (request) =>
-          request.status === "pending" && !request.extendsGrantId,
-      ).length,
-    [vm.requestedByMe],
-  );
-
   /**
    * Whether anything on screen is actually measured against the clock.
    *

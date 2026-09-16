@@ -373,6 +373,7 @@ export function PhoneMandatePageContent() {
               <div className={styles.existingBurst}><OneArcIllustration /></div>
             )}
             <span className={styles.hushhVisual} aria-hidden="true">🤫</span>
+          </div>
 
         {/* Verification is a focused task, not a hero. Keep the heading tight
             so the active field row can clear the native keyboard. */}
@@ -413,6 +414,7 @@ export function PhoneMandatePageContent() {
             className="gap-5"
           />
           <div id="recaptcha-container" className="mt-3 min-h-0" />
+        </div>
         </div>
       </div>
     </main>

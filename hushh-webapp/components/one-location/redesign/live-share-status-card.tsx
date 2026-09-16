@@ -302,6 +302,12 @@ export function LiveShareStatusCard({
       event.stopPropagation();
       action?.();
     };
+  const runDurationAction =
+    (action?: (trigger: HTMLButtonElement) => void) =>
+    (event: MouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation();
+      action?.(event.currentTarget);
+    };
 
   return (
     <section
@@ -448,7 +454,7 @@ export function LiveShareStatusCard({
           <Button
             variant="ghost"
             size="sm"
-            onClick={runChildAction(onChangeDuration)}
+            onClick={runDurationAction(onChangeDuration)}
             className={cn(
               LIVE_SHARE_ACTION_CLASSNAME,
               "mx-auto text-[color:var(--app-accent)]",

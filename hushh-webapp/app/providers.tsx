@@ -72,6 +72,7 @@ import {
 import { getKaiChromeState } from "@/lib/navigation/kai-chrome-state";
 import { recordDestinationEntry } from "@/lib/navigation/section-back-origin";
 import { isFocusedConnectCircleTask } from "@/lib/navigation/connect-routes";
+import { isFocusedLocationBottomTask } from "@/lib/navigation/location-routes";
 import {
   ROUTES,
   isFoundationPublicRoute,
@@ -206,19 +207,18 @@ function AppShellFrame({ children }: ProvidersProps) {
       locationAction === "sms-contacts" ||
       locationAction === "create-circle" ||
       locationAction === "circle-detail");
-  const focusedSosChromeFlow =
-    shellPathname === ROUTES.ONE_LOCATION && locationAction === "sos";
   const focusedConnectCircleChromeFlow =
     shellPathname === ROUTES.CONNECT &&
     isFocusedConnectCircleTask(
       searchParams?.get("tab") ?? null,
       searchParams?.get("action") ?? null,
+      searchParams?.get("circleId") ?? null,
     );
   // Focused query-scoped Location flows clear the bottom command/navigation
   // stack while keeping the top shell route context.
   const bottomChromeHidden =
     hidesPersistentChrome ||
-    focusedSosChromeFlow ||
+    focusedLocationBottomTask ||
     focusedConnectCircleChromeFlow;
   const effectiveHideCommandBar =
     chromeState.hideCommandBar ||
