@@ -80,6 +80,15 @@ revision, identical fixtures/model/configuration, per-family accuracy, latency a
 retained failures here before claiming behavioral parity. A passing source or unit
 gate does not substitute for an unrun live-provider measurement.
 
+### Phase H cleanup: retired summary reducer
+
+The unused `agent_summary_reducer` manifest and its generated registry and hierarchy
+entries were removed in `b8e5ff1fb`. Active documentation was then corrected to remove
+the retired name and stale package count in `414446811`. A repository search now finds
+no active `summary_reducer` reference. The focused manifest and authority suites pass
+(`120 passed`), and the full protocol gate passes (`4,025 passed, 191 skipped`), with
+the unrelated live-provider failures below still retained as acceptance evidence.
+
 ### Phase G routing decisions
 
 Calendar remains on One's existing deterministic toolset. The measured Gemini 3.7
