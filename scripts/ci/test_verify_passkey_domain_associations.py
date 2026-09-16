@@ -75,3 +75,40 @@ def test_asset_links_accepts_credentials_and_web_app_link_relations() -> None:
         expected_package="com.hushh.app",
         expected_fingerprints={"AA:BB"},
     )
+
+
+def test_shared_rp_accepts_credentials_without_app_links() -> None:
+    MODULE._verify_aasa(
+        {"webcredentials": {"apps": ["TEAM.com.hushh.app"]}},
+        "TEAM.com.hushh.app", require_app_links=False,
+    )
+    MODULE._verify_asset_links(
+        _asset_links(relations=["delegate_permission/common.get_login_creds"]),
+        expected_package="com.hushh.app", expected_fingerprints={"AA:BB"},
+        require_app_links=False,
+    )
+
+
+@pytest.mark.parametrize("apps", [[], ["OTHER.com.hushh.app"]])
+def test_shared_rp_rejects_unauthorized_ios_app(apps: list[str]) -> None:
+    with pytest.raises(RuntimeError, match="webcredentials"):
+        MODULE._verify_aasa(
+            {"webcredentials": {"apps": apps}}, "TEAM.com.hushh.app",
+            require_app_links=False,
+        )
+
+
+@pytest.mark.parametrize("defect", ["relation", "package", "fingerprint"])
+def test_shared_rp_rejects_unauthorized_android_app(defect: str) -> None:
+    payload = _asset_links(relations=["delegate_permission/common.get_login_creds"])
+    if defect == "relation":
+        payload[0]["relation"] = ["delegate_permission/common.handle_all_urls"]
+    elif defect == "package":
+        payload[0]["target"]["package_name"] = "other.app"
+    else:
+        payload[0]["target"]["sha256_cert_fingerprints"] = ["CC:DD"]
+    with pytest.raises(RuntimeError, match="Digital Asset Links"):
+        MODULE._verify_asset_links(
+            payload, expected_package="com.hushh.app", expected_fingerprints={"AA:BB"},
+            require_app_links=False,
+        )

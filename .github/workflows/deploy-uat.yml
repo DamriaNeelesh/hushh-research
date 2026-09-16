@@ -1075,10 +1075,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Validate UAT OAuth app links and retain shared production RP credentials.
+          # Production OAuth routes are verified by its own deployment.
           python3 scripts/ops/verify_passkey_domain_associations.py \
             --project "${{ env.GCP_PROJECT_ID }}" \
             --origin "${{ env.APP_FRONTEND_ORIGIN }}" \
-            --origin "https://one.hushh.ai"
+            --credentials-only-origin "https://one.hushh.ai"
 
       - name: Post-deploy UAT schema contract gate
         id: postdeploy-db-gate
