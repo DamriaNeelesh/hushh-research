@@ -1643,7 +1643,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   // Which model runs this person's agent. The catalog is served, so a new
   // generation appears here without a client release.
   const [modelPreference, setModelPreference] = useState<ModelPreference | null>(null);
-  const [modelPreferenceLoading, setModelPreferenceLoading] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedAgentPrompt[]>([]);
   const [editingQueuedPromptId, setEditingQueuedPromptId] = useState<
