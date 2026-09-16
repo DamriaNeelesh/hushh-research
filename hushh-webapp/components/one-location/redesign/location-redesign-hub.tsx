@@ -4602,8 +4602,9 @@ export function PeopleHub({
 /* =================================================================== */
 
 const PUBLIC_LINK_DURATION_OPTIONS = [
-  { value: "0.5", label: "30 min" },
+  { value: "0.25", label: "15 min" },
   { value: "1", label: "1 hour" },
+  { value: "2", label: "2 hours" },
 ] as const;
 
 function publicLinkStatusLabel(label?: string | null): string {

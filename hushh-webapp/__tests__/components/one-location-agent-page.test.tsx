@@ -4938,8 +4938,9 @@ describe("OneLocationAgentPage", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText("Duration")).toBeTruthy();
-    expect(screen.getByRole("radio", { name: "30 min" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "15 min" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "1 hour" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "2 hours" })).toBeTruthy();
     expect(screen.queryByText("Active links")).toBeNull();
     expect(screen.queryByText("Link stays live for")).toBeNull();
     // The paragraph that used to sit under the heading is gone.

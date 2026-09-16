@@ -531,7 +531,7 @@ def _hash_public_value(value: str) -> str:
 # digest. Rows minted before this carry no version marker, so their token stays
 # unrecoverable and the payload simply omits the URL -- unchanged behaviour for
 # them, rather than a wrong link.
-# A public link is readable by anyone who holds it, so its ceiling is one hour
+# A public link is readable by anyone who holds it, so its ceiling is two hours
 # and the screen says so.
 #
 # The screen was the ONLY thing saying so. `normalize_duration_hours` allows up
@@ -542,9 +542,9 @@ def _hash_public_value(value: str) -> str:
 #
 # Rejected rather than clamped: silently shortening what was asked for is how
 # the client-side clamp hid this in the first place, and no shipped client can
-# reach this branch -- every public-link caller already clamps to one hour
+# reach this branch -- every public-link caller already clamps to two hours
 # before it posts.
-PUBLIC_INVITE_MAX_DURATION_HOURS = 1.0
+PUBLIC_INVITE_MAX_DURATION_HOURS = 2.0
 
 _PUBLIC_INVITE_TOKEN_DOMAIN = b"one-location-public-invite-token:v1:"
 _PUBLIC_INVITE_CODE_VERSION = "derived-v1"
@@ -7612,7 +7612,7 @@ class OneLocationAgentService:
         if duration > PUBLIC_INVITE_MAX_DURATION_HOURS:
             raise OneLocationAgentError(
                 "LOCATION_DURATION_INVALID",
-                "A public location link can stay live for at most 1 hour.",
+                "A public location link can stay live for at most 2 hours.",
                 status_code=422,
             )
         # Validated before either branch below: a malformed snapshot is a 422
