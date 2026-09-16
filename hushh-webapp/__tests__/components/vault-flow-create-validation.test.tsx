@@ -321,7 +321,8 @@ describe("VaultFlow create validation", () => {
     }) as HTMLButtonElement;
 
     expect(unlockButton.disabled).toBe(true);
-    expect(screen.getByText("Use another method")).toBeTruthy();
+    expect(screen.queryByText("Use another method")).toBeNull();
+    expect(screen.getByText("Can't get in?")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Passkey" })).toBeTruthy();
     const recoveryButton = screen.getByRole("button", { name: "Recovery key" });
     expect(recoveryButton).toHaveClass(
@@ -333,13 +334,18 @@ describe("VaultFlow create validation", () => {
     );
     expect(recoveryButton).not.toHaveClass("w-full");
     expect(recoveryButton).not.toHaveClass("border");
-    expect(screen.getByText("Use another method").parentElement).toHaveClass(
-      "space-y-[var(--app-form-related-gap)]",
+    expect(screen.getByTestId("vault-unlock-escape-group")).toHaveClass(
       "mx-auto",
       "w-full",
       "max-w-[21rem]",
+      "pt-[var(--app-form-section-gap)]",
       "text-center",
     );
+    expect(screen.getByText("Can't get in?").parentElement).toHaveClass(
+      "gap-[var(--app-form-related-gap)]",
+      "text-center",
+    );
+    expect(screen.queryByTestId("vault-unlock-method-divider")).toBeNull();
     expect(screen.getByLabelText("Vault passphrase")).toHaveClass("rounded-none");
     expect(document.querySelector("[data-vault-flow-icon]")).toHaveClass(
       "bg-[color:var(--app-accent-tint)]",
@@ -357,7 +363,8 @@ describe("VaultFlow create validation", () => {
 
     render(<VaultFlow user={user} onSuccess={vi.fn()} />);
 
-    expect(await screen.findByText("Use another method")).toBeTruthy();
+    expect(await screen.findByText("Can't get in?")).toBeTruthy();
+    expect(screen.queryByText("Use another method")).toBeNull();
     const passphraseButton = screen.getByRole("button", { name: "Passphrase" });
     expect(passphraseButton).toHaveClass(
       "h-11",
@@ -368,15 +375,17 @@ describe("VaultFlow create validation", () => {
     );
     expect(passphraseButton).not.toHaveClass("border");
     expect(passphraseButton).not.toHaveClass("self-start");
-    expect(screen.getByText("Use another method").parentElement).toHaveClass(
+    expect(screen.getByTestId("vault-unlock-escape-group")).toHaveClass(
       "mx-auto",
       "w-full",
       "max-w-[21rem]",
+      "pt-[var(--app-form-section-gap)]",
       "text-center",
     );
     expect(screen.queryByTestId("vault-unlock-method-divider")).toBeNull();
     expect(screen.getByRole("button", { name: "Recovery key" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Passkey" })).toBeNull();
+    expect(screen.getByTestId("vault-unlock-escape-group").textContent?.match(/·/g)).toHaveLength(1);
   });
 
   it("keeps recovery unlock compact and returns to available methods", async () => {
@@ -393,7 +402,14 @@ describe("VaultFlow create validation", () => {
 
     expect(await screen.findByLabelText("Recovery Key")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Unlock" })).toBeTruthy();
-    expect(screen.getByText("Use another method")).toBeTruthy();
+    expect(screen.queryByText("Use another method")).toBeNull();
+    expect(screen.getByText("Can't get in?")).toBeTruthy();
+    expect(screen.getByTestId("vault-recovery-escape-group")).toHaveClass(
+      "mx-auto",
+      "max-w-[21rem]",
+      "pt-[var(--app-form-section-gap)]",
+      "text-center",
+    );
     expect(screen.getByRole("button", { name: "Passphrase" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Passkey" })).toBeTruthy();
     expect(document.querySelector("[data-vault-flow-icon]")).toHaveClass(
@@ -410,9 +426,16 @@ describe("VaultFlow create validation", () => {
     render(<VaultFlow user={user} onSuccess={vi.fn()} />);
 
     expect(await screen.findByLabelText("Vault passphrase")).toBeTruthy();
-    expect(screen.getByText("Use another method")).toBeTruthy();
+    expect(screen.queryByText("Use another method")).toBeNull();
+    expect(screen.getByText("Can't get in?")).toBeTruthy();
+    expect(screen.getByTestId("vault-unlock-escape-group")).toHaveClass(
+      "max-w-[21rem]",
+      "pt-[var(--app-form-section-gap)]",
+    );
+    expect(screen.queryByTestId("vault-unlock-method-divider")).toBeNull();
     expect(screen.queryByRole("button", { name: "Passkey" })).toBeNull();
     expect(screen.getByRole("button", { name: "Recovery key" })).toBeTruthy();
+    expect(screen.getByTestId("vault-unlock-escape-group").textContent).not.toContain("·");
   });
 
   it("keeps the hard-gate Sign out escape tappable while passkey unlock is pending", async () => {
@@ -435,11 +458,20 @@ describe("VaultFlow create validation", () => {
     const signOutEscape = screen.getByRole("button", { name: "Sign out" }) as HTMLButtonElement;
     expect(signOutEscape.disabled).toBe(false);
     expect(signOutEscape).toHaveClass("inline-flex", "items-start", "h-11");
-    expect(screen.getByTestId("vault-unlock-method-divider")).toBeTruthy();
+    expect(screen.queryByTestId("vault-unlock-method-divider")).toBeNull();
+    expect(screen.getByTestId("vault-unlock-escape-group")).toHaveClass(
+      "max-w-[42rem]",
+      "pt-[var(--app-form-section-gap)]",
+    );
     expect(screen.getByText("Can't get in?").parentElement).toHaveClass(
       "flex-col",
       "items-center",
     );
+    const escapeGroup = screen.getByTestId("vault-unlock-escape-group");
+    expect(escapeGroup.textContent).toContain("Passphrase");
+    expect(escapeGroup.textContent).toContain("Recovery key");
+    expect(escapeGroup.textContent).toContain("Sign out");
+    expect(escapeGroup.textContent?.match(/·/g)).toHaveLength(2);
     expect(screen.getByTestId("vault-use-recovery-key-escape")).toHaveClass(
       "h-11",
       "rounded-none",
