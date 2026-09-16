@@ -291,8 +291,8 @@ with a dirty working tree (new evaluator plus concurrent unrelated edits):
 
 All six observed the expected manifest agent and Gemini 3.8 model. The five
 successes do not erase the synthesis failure, establish before/after accuracy,
-or complete migration acceptance. Reports remain under
-`consent-protocol/artifacts/regression/`; all model inputs in these runs were synthetic.
+or complete migration acceptance. The ignored local regression outputs are
+retained for inspection; all model inputs in these runs were synthetic.
 
 Verification of the evaluator changes: full backend runner **3,918 passed,
 191 skipped**, followed by the all-test-file import check; focused evaluator
