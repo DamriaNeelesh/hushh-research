@@ -61,6 +61,42 @@ EMAIL_RECEIPT_MEMORY_SCHEMA: dict[str, Any] = {
     "required": ["readable_summary", "signal_language"],
 }
 
+EMAIL_REQUEST_CLASSIFIER_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "is_information_request": {"type": "BOOLEAN"},
+        "confidence": {"type": "NUMBER"},
+        "requested_field_labels": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "requested_domains": {"type": "ARRAY", "items": {"type": "STRING"}},
+    },
+    "required": [
+        "is_information_request",
+        "confidence",
+        "requested_field_labels",
+        "requested_domains",
+    ],
+}
+
+EMAIL_RECEIPT_EXTRACTOR_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "is_receipt": {"type": "BOOLEAN"},
+        "confidence": {"type": "NUMBER"},
+        "merchant_name": {"type": "STRING", "nullable": True},
+        "order_id": {"type": "STRING", "nullable": True},
+        "amount": {"type": "NUMBER", "nullable": True},
+        "currency": {"type": "STRING", "nullable": True},
+    },
+    "required": [
+        "is_receipt",
+        "confidence",
+        "merchant_name",
+        "order_id",
+        "amount",
+        "currency",
+    ],
+}
+
 
 @lru_cache(maxsize=8)
 def load_email_gene(gene_id: str) -> AgentSubagentConfig:
@@ -122,6 +158,8 @@ async def run_email_gene(
 
 __all__ = [
     "EMAIL_DRAFT_SCHEMA",
+    "EMAIL_REQUEST_CLASSIFIER_SCHEMA",
+    "EMAIL_RECEIPT_EXTRACTOR_SCHEMA",
     "EMAIL_RECEIPT_MEMORY_SCHEMA",
     "load_email_gene",
     "run_email_gene",
