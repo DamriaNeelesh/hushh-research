@@ -194,3 +194,35 @@ Focused debate tests pass (70/70); the full backend runner passes (3,867
 passed, 191 skipped), and the One Voice web gate passes (362/362). No live
 Gemini debate run is claimed here, so provider latency, quota behavior, and
 end-to-end debate quality remain open acceptance work.
+
+### September 16 continuation: Gemini 3.8 live Nav acceptance
+
+The unchanged 22-case Nav fixture ran once on `gemini-3.8-flash` through
+`hushh-vertex-personal54/global`, at `0e896f20581323ab6a78f04d2ec51db61cab20b6`.
+The report marks the tree dirty because conformance-test scaffolding was added
+while the run was active; production Nav/Consent source was unchanged during it.
+The live report is `artifacts/regression/after-20260916/nav-adk-38-current-1x.json`.
+
+- First-tool and response-shape rates: **21/22 (95.45%)** each.
+- Median latency: **7,669.7 ms**; p95: **13,875.6 ms**; maximum: **18,712.6 ms**.
+- Observed ADK model requests: **54** (not a count of transport retries).
+- `explain_revoke` failed with provider `429 RESOURCE_EXHAUSTED`; it remains in
+  the denominator. No quota-versus-capacity cause is established.
+- The 90% accuracy thresholds passed for this single repetition; the unchanged
+  median ≤4s and p95 ≤8s gates failed. This is not three-repetition acceptance,
+  Connections coverage, or full One chat completion proof.
+
+Reproduce with the existing process-local environment loaded, selecting the
+personal54 bridge and `GOOGLE_CLOUD_LOCATION=global`:
+
+```sh
+.venv/bin/python scripts/eval_specialist_turns.py --mode adk \
+  --model gemini-3.8-flash --runs 1 \
+  --report artifacts/regression/after-20260916/nav-adk-38-current-1x.json
+```
+
+The CLI rejects an existing report path; choose a new path for a repeat. Official
+A2A v1 Kai rehearsal remains explicitly deferred by the approved plan, rather
+than a newly added migration acceptance requirement. Real-model conformance
+recordings, downstream specialist measurements and final full-chat performance
+remain separate acceptance requirements.
