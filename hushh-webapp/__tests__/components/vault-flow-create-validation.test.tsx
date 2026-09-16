@@ -587,7 +587,7 @@ describe("VaultFlow create validation", () => {
     );
 
     const firstFlow = render(<VaultFlow user={webUser} onSuccess={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Unlock with Passkey" }));
+    await waitFor(() => expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(1),
     );
@@ -617,7 +617,7 @@ describe("VaultFlow create validation", () => {
     );
 
     const firstFlow = render(<VaultFlow user={webUser} onSuccess={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Unlock with Passkey" }));
+    await waitFor(() => expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(1));
     expect(
       await screen.findByRole("button", { name: "Unlock with Passkey" }),
     ).toBeTruthy();
@@ -645,7 +645,6 @@ describe("VaultFlow create validation", () => {
     getOrIssueVaultOwnerTokenMock.mockRejectedValue(new Error("Service unavailable"));
     const onSuccess = vi.fn();
     const first = render(<VaultFlow user={tokenUser} onSuccess={onSuccess} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Unlock with Passkey" }));
     await waitFor(() => expect(getOrIssueVaultOwnerTokenMock).toHaveBeenCalledTimes(1));
     first.unmount();
     render(<VaultFlow user={tokenUser} onSuccess={onSuccess} />);
@@ -745,15 +744,13 @@ describe("VaultFlow create validation", () => {
     expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(1);
   });
 
-  it("requires an explicit web passkey button, never authentication on mount or focus", async () => {
+  it("automatically attempts web passkey once on mount, never again on focus", async () => {
     checkVaultMock.mockResolvedValue(true);
     getVaultStateMock.mockResolvedValue(vaultState("generated_default_web_prf", [passphraseWrapper, passkeyWrapper]));
     render(<VaultFlow user={{ uid: "web-explicit-gesture" } as typeof user} onSuccess={vi.fn()} />);
-    const button = await screen.findByRole("button", { name: "Unlock with Passkey" });
-    fireEvent(window, new Event("focus"));
-    expect(unlockGeneratedDefaultVaultMock).not.toHaveBeenCalled();
-    fireEvent.click(button);
     await waitFor(() => expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(1));
+    fireEvent(window, new Event("focus"));
+    expect(unlockGeneratedDefaultVaultMock).toHaveBeenCalledTimes(1);
   });
 
   it("keeps verified passphrase unlock usable if optional quick-unlock discovery fails", async () => {

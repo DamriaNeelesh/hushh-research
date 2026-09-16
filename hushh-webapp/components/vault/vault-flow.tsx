@@ -1372,7 +1372,6 @@ export function VaultFlow({
       document.documentElement.hasAttribute("data-vault-unlock-hard-gate");
     if (
       isVaultUnlocked ||
-      !Capacitor.isNativePlatform() ||
       anotherHardGateIsActive ||
       step !== "unlock" ||
       !hasActiveGeneratedWrapper ||
