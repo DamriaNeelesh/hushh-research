@@ -605,16 +605,16 @@ function FeedPageSession({
               </section>
             ) : null}
 
-            {hasRegularActionables ? (
-              <section aria-label="Needs you">
-                <SectionLabel>Needs you</SectionLabel>
-                <SettingsGroup separatorInset>
-                  {regularActionables.map((item) => (
-                    <FeedActionableRow key={item.id} item={item} />
-                  ))}
-                </SettingsGroup>
-              </section>
-            ) : null}
+          {hasRegularActionables ? (
+            <section aria-label="Needs you">
+              <SectionLabel>Needs you</SectionLabel>
+              <div className="divide-y divide-[color:var(--foundation-hairline)]">
+                {regularActionables.map((item) => (
+                  <FeedActionableRow key={item.id} item={item} />
+                ))}
+              </div>
+            </section>
+          ) : null}
 
             {contentLoading && !hasHistory && !hasActionables ? (
               <FeedRowsSkeleton />

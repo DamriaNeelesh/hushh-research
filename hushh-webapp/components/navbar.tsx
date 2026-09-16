@@ -491,7 +491,9 @@ export const Navbar = ({
         className="pointer-events-none mx-auto flex w-full justify-center"
         style={{
           maxWidth:
-            "min(calc(100vw - 1.5rem), var(--app-bottom-shell-max-width))",
+            pathname?.startsWith("/one/location")
+              ? "min(calc(100vw - 1.5rem), 45rem)"
+              : "min(calc(100vw - 1.5rem), var(--app-bottom-shell-max-width))",
         }}
       >
         <div
@@ -518,6 +520,7 @@ export const Navbar = ({
                 "kai-bottom-nav-pill relative z-10 w-full chrome-bottom-foreground",
                 "[&_[role=radio]]:min-h-11",
                 "[&_[aria-checked=true]]:text-[color:var(--app-accent)] [&_[aria-checked=true]]:font-medium",
+                "[&_[role=radio]>span:last-of-type]:!text-[10px] [&_[role=radio]>span:last-of-type]:!leading-[13px]",
                 "[&_[data-segment-indicator]]:bg-transparent [&_[data-segment-indicator]]:shadow-none [&_[data-segment-indicator]]:backdrop-blur-none",
               )}
             />

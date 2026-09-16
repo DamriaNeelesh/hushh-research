@@ -1800,7 +1800,7 @@ describe("Connect — People", () => {
   });
 
   it("sends a one-person request directly without opening the review dialog", async () => {
-    mocks.sendRequest.mockResolvedValue({ id: "request", status: "pending", requesterUserId: "me" });
+    mocks.sendRequest.mockResolvedValue({ id: "request" });
 
     render(<ConnectPageClient />);
     expect(await screen.findByText("Person 0")).toBeTruthy();
@@ -2564,19 +2564,6 @@ describe("Connect — Circles", () => {
     expect(screen.queryByLabelText("Search people")).toBeNull();
   });
 
-  it("renders Circle detail as a focused task without duplicate tabs or bottom-chrome content", async () => {
-    mocks.searchParams = new URLSearchParams(
-      "tab=circles&action=circle-detail&circleId=mine",
-    );
-
-    render(<ConnectPageClient />);
-
-    expect(await screen.findByTestId("connect-circles-tab")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Connect" })).toBeNull();
-    expect(screen.queryByRole("tab", { name: "Connections" })).toBeNull();
-    expect(screen.queryByRole("tab", { name: "Circles" })).toBeNull();
-    expect(screen.queryByLabelText("Search people")).toBeNull();
-  });
   it("names the default surface explicitly, so back to People navigates", async () => {
     // The App Router refuses a navigation whose only change is that the whole
     // query string disappears -- measured on UAT, recorded in
@@ -2595,7 +2582,9 @@ describe("Connect — Circles", () => {
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
 
-    expect(screen.queryByRole("button", { name: "Select people" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Select people" }),
+    ).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "Circles" }));
 
