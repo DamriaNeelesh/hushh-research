@@ -249,3 +249,52 @@ The full repository backend runner after adding this replay suite passed:
 **3,870 passed, 191 skipped**, followed by the all-test-file import check.
 Concurrent frontend/One-manifest edits from another session were preserved;
 this evidence does not certify those separate changes or waived browser flows.
+
+### September 16 downstream runtime acceptance
+
+The synthetic PKM release chain ran on Gemini 3.8 through personal54/global with
+shadow reads disabled. The first run stopped on case 10 with `schema_invalid`,
+but the evaluator raised before saving its report. Its log remains local;
+no aggregate accuracy is claimed for that lost partial report. The evaluator
+now saves partial fail-fast results and unattempted counts, distinguishes outer
+timeouts from other exceptions without saving exception messages, and lets the
+45-second runtime budget finish before its own cancellation boundary. Quality
+thresholds are unchanged. A stale import test that expected keyword fallback on
+an unavailable model now asserts the current fail-closed response.
+
+The corrected run (`after-20260916/pkm-38-release-chain-v2.json`) evaluated **7/24**
+cases in **135.69s**, retaining **17 unattempted**. It stopped on an inner
+structure-agent timeout (30,001.61ms); the outer evaluation captured the result
+at 44,956.84ms rather than mislabeling it as an outer timeout. Domain accuracy and
+durable-domain coverage were **71.43%**, fallback **14.29%**. The run fails its
+unchanged quality gates. A provider429 also occurred; that alone does not prove
+the cause of the later timeout.
+
+The existing `run_kai_accuracy_suite.py` benchmarks direct-provider PDF extraction,
+not migrated Kai analyst/debate/chat execution. The new fixture-only
+`eval_kai_adk_synthetic.py` exercises six actual runtime paths, requires expected
+agent/model receipts, rejects fallback as completion, checkpoints each result
+and refuses to overwrite historical reports. It is explicitly a smoke test,
+not a financial accuracy benchmark or full debate/HTTP persistence rehearsal.
+
+Live report `after-20260916/kai-adk-synthetic.json` records source `2790418ae`
+with a dirty working tree (new evaluator plus concurrent unrelated edits):
+
+| Runtime path | Result | Duration |
+| --- | --- | --- |
+| Fundamental analyst | Passed | 5,620ms |
+| Sentiment analyst | Passed | 2,858ms |
+| Valuation analyst | Passed | 2,087ms |
+| One debate statement | Passed | 3,699ms |
+| Synthesis | Failed: provider429 followed by fallback | 14,548ms |
+| Chat with supplied synthetic context | Passed | 6,331ms |
+
+All six observed the expected manifest agent and Gemini 3.8 model. The five
+successes do not erase the synthesis failure, establish before/after accuracy,
+or complete migration acceptance. Reports remain under
+`consent-protocol/artifacts/regression/`; all model inputs in these runs were synthetic.
+
+Verification of the evaluator changes: full backend runner **3,918 passed,
+191 skipped**, followed by the all-test-file import check; focused evaluator
+suites **48 passed**. Synthetic-only runs now omit unused shadow-user identifiers
+from newly generated reports. No runtime quality threshold was relaxed.
