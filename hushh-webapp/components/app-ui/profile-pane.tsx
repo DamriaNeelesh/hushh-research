@@ -4,6 +4,7 @@ import { ArrowLeft, X } from "lucide-react";
 import { usePathname, useSearchParams } from "next/navigation";
 
 import { ProfilePage } from "@/components/profile/profile-workspace-page";
+import { useVault } from "@/lib/vault/vault-context";
 import {
   canGoBackProfilePane,
   popProfilePaneLocation,
@@ -29,6 +30,7 @@ type ProfilePaneProps = {
  * right-side presentation used by the shell and native edge gesture.
  */
 export function ProfilePane({ open, onOpenChange }: ProfilePaneProps) {
+  const { isVaultUnlocked } = useVault();
   const pathname = usePathname() || "/";
   const searchParams = useSearchParams();
   const paneState = resolveProfilePaneUrlState(searchParams);
@@ -52,6 +54,11 @@ export function ProfilePane({ open, onOpenChange }: ProfilePaneProps) {
                     ? "Invite friends"
                     : "Help & feedback"
       : "Profile";
+
+  // URL state requests a destination, not admission. Keep it for resume, but
+  // unmount the modal while the vault gate owns the screen (including cold
+  // loads and manual relocks), so no sheet or focus trap covers unlock.
+  if (!isVaultUnlocked) return null;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange} modal>

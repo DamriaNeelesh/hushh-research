@@ -313,6 +313,7 @@ export function useRouteTransition() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const mounted = useRef(false);
+  const previousPathname = useRef(pathname);
   const routeKey = searchParams.size
     ? `${pathname}?${searchParams.toString()}`
     : pathname;
@@ -374,6 +375,8 @@ export function useRouteTransition() {
   //   • browser back/forward + reduced-motion-skipped nav: state is "idle"; we
   //     still reveal the incoming frame.
   useEffect(() => {
+    const pathnameChanged = previousPathname.current !== pathname;
+    previousPathname.current = pathname;
     if (!mounted.current) {
       mounted.current = true;
       return;
@@ -423,7 +426,7 @@ export function useRouteTransition() {
       setRouteState("idle");
       return;
     }
-    playEnter();
+    if (pathnameChanged) playEnter();
     settleCommittedIntent("route_key_settled");
   }, [pathname, routeKey]);
 }
