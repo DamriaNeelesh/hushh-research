@@ -10,15 +10,6 @@ function read(relativePath: string) {
 }
 
 describe("private-agent chat shell contract", () => {
-  it("uses a stable narrow-header grid and anchors the custom-label model menu to its trigger", () => {
-    const workspace = read("components/agent/agent-chat-workspace.tsx");
-    expect(workspace).toContain("agent-chat-header grid grid-cols-[minmax(0,1fr)_auto]");
-    expect(workspace).toContain("ml-auto flex min-w-0 max-w-full flex-wrap");
-    expect(workspace).toMatch(/<SelectContent\s+position="popper"\s+align="end"\s+collisionPadding=\{12\}/);
-    expect(workspace).toContain("max-w-[calc(100vw-1.5rem)]");
-    expect(workspace).toContain("min-h-11 w-auto max-w-full min-w-0");
-  });
-
   it("keeps the floating frame singular and lets the workspace reach its edges", () => {
     const workspace = read("components/agent/agent-chat-workspace.tsx");
     const providers = read("app/providers.tsx");
@@ -159,7 +150,7 @@ describe("private-agent chat shell contract", () => {
     // the "Puppy" chip does not slide out from under the thumb that pressed
     // it. This is the same jump the status slot beside it was widened to stop.
     expect(workspace).toContain(
-      'className="flex min-h-11 w-[7.5rem] shrink-0 justify-end sm:w-[9.5rem]"',
+      'className="flex w-[7.5rem] shrink-0 justify-end sm:w-[9.5rem]"',
     );
     // And the control names the agent it configures, not just "Model".
     expect(workspace).toContain('aria-label="One\'s model"');

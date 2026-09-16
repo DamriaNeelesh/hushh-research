@@ -133,7 +133,6 @@ function decide(mode: Mode, variant: Variant) {
   const scope = {
     isPuppySurface: mode === "puppy",
     canPickOneModel: variant.canPickOneModel,
-    modelPreferenceLoading: false,
     modelPreference: MODEL_PREFERENCE,
   };
   const slotted = variant.applyShippedGate
@@ -224,8 +223,6 @@ function renderScreen(mode: Mode, variant: Variant): string {
       <div data-testid="agent-header-cluster" class="${SRC.header.clusterClass}">
         <div role="radiogroup" data-testid="agent-toggle" aria-label="${escapeHtml(SRC.toggle.ariaLabel)}"
              class="${SRC.toggle.containerClass} w-auto shrink-0">${segments}</div>
-      </div>
-      <div class="${SRC.header.pickerClusterClass}">
         ${slot}
         <span class="${SRC.header.statusClass}" role="status" aria-live="polite">${escapeHtml(statusText)}</span>
       </div>

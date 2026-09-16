@@ -5370,11 +5370,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         >
           <div
             className={cn(
-            "agent-chat-header grid grid-cols-[minmax(0,1fr)_auto] shrink-0 touch-pan-y items-center justify-between gap-3 bg-background/90 px-4 pb-2 pt-[max(0.5rem,var(--app-safe-area-top-effective,0px))] backdrop-blur-2xl sm:px-5 lg:grid lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]",
-            "min-h-[3.75rem] border-b border-black/[0.04] dark:border-white/[0.06] lg:px-6",
-          )}
-        >
-            <div className="flex min-w-0 items-center gap-3 col-start-1 row-start-1">
+              "agent-chat-header flex shrink-0 touch-pan-y items-center justify-between gap-3 bg-background/90 px-4 pt-[var(--agent-chat-header-safe-top)] backdrop-blur-2xl sm:px-5",
+              "min-h-[calc(3.75rem+var(--agent-chat-header-safe-top))] sm:min-h-[calc(4rem+var(--app-safe-area-top-effective,0px))] sm:pt-[var(--app-safe-area-top-effective,0px)] lg:px-6",
+            )}
+          >
+            <div className="flex min-w-0 items-center gap-3">
               <ShellActionSurface
                 variant="icon"
                 className="lg:hidden"
@@ -5427,7 +5427,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               </div>
             </div>
 
-            <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-2 col-start-2 row-start-1 lg:ml-0">
+            <div className="flex shrink-0 items-center gap-2">
               {/*
                 The compact segmented control at header scale. The full-width
                 filter primitive was tried here first and stood ~44px tall
@@ -5468,8 +5468,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 ]}
                 className="w-auto shrink-0"
               />
-            </div>
-            <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 col-span-2 row-start-2 lg:col-span-1 lg:col-start-3 lg:row-start-1">
               {/* A fixed slot, present whenever this person HAS a picker,
                   so switching surfaces cannot slide the toggle sideways under
                   the thumb that just pressed it. This is the same jump the
@@ -5479,87 +5477,66 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   a spacer carrying only max-w collapses to zero; and no slot
                   at all for someone with a single model, so the header does
                   not reserve space for a control they never see. */}
-              {modelPreferenceLoading || canPickOneModel && modelPreference ? (
-                <span className="flex min-h-11 w-[7.5rem] shrink-0 justify-end sm:w-[9.5rem]">
-                  {/* One's model picker names the CLOUD model and writes One's
-                      preference. In Puppy One it would assert a Gemini is running
-                      on the owner's machine, and choosing an item would silently
-                      rewrite the other agent's model with no visible consequence
-                      on the screen being looked at. Gated, not merely hidden: the
-                      write must not stay reachable from the on-device surface. */}
-                  {!isPuppySurface ? (
-                    modelPreference ? (
-                      <Select
-                        value={modelPreference.effective_model}
-                        onValueChange={(nextModel) => {
-                          const previous = modelPreference;
-                          // Optimistic: the picker must not stall the header while the
-                          // write lands. A failure restores exactly what was showing.
-                          setModelPreference({
-                            ...previous,
-                            effective_model: nextModel,
-                          });
-                          void (async () => {
-                            try {
-                              if (!user) return;
-                              const saved = await ModelPreferenceService.set(
-                                await user.getIdToken(),
-                                nextModel,
-                              );
-                              setModelPreference(saved);
-                            } catch {
-                              setModelPreference(previous);
-                            }
-                          })();
-                        }}
-                      >
-                        <SelectTrigger
-                          data-testid="agent-chat-model-picker"
-                          // Names the agent it configures, so it still says which
-                          // one when it is read out of context.
-                          aria-label="One's model"
-                          title={`Running ${modelPreference.effective_model}`}
-                          className="min-h-11 w-auto max-w-full min-w-0 gap-1 rounded-full border-0 bg-foreground/[0.045] px-2.5 text-[11px] font-medium text-muted-foreground"
-                        >
-                          {/* "3.8 Flash", not "Gemini 3.8 Flash": every option is a
-                              Gemini, so the shared word is the one thing a narrow
-                              header cannot afford. The full label stays in the menu
-                              and in the tooltip. */}
-                          <span className="truncate">
-                            {(
-                              modelPreference.choices.find(
-                                (choice) =>
-                                  choice.model_id ===
-                                  modelPreference.effective_model,
-                              )?.label ?? modelPreference.effective_model
-                            ).replace(/^Gemini\s+/i, "")}
-                          </span>
-                        </SelectTrigger>
-                        <SelectContent
-                          position="popper"
-                          align="end"
-                          collisionPadding={12}
-                          className="max-w-[calc(100vw-1.5rem)]"
-                        >
-                          {modelPreference.choices.map((choice) => (
-                            <SelectItem key={choice.model_id} value={choice.model_id}>
-                              {choice.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <span
-                        data-testid="agent-chat-model-picker"
-                        role="status"
-                        aria-label="One's model is loading"
-                        className="inline-flex min-h-11 w-auto min-w-[5.5rem] items-center justify-center rounded-full bg-foreground/[0.045] px-2.5 text-[11px] font-medium text-muted-foreground"
-                      >
-                        Loading model
-                      </span>
-                    )
-                  ) : null}
-                </span>
+              {canPickOneModel && modelPreference ? (
+              <span className="flex w-[7.5rem] shrink-0 justify-end sm:w-[9.5rem]">
+              {/* One's model picker names the CLOUD model and writes One's
+                  preference. In Puppy One it would assert a Gemini is running
+                  on the owner's machine, and choosing an item would silently
+                  rewrite the other agent's model with no visible consequence
+                  on the screen being looked at. Gated, not merely hidden: the
+                  write must not stay reachable from the on-device surface. */}
+              {!isPuppySurface ? (
+                <Select
+                  value={modelPreference.effective_model}
+                  onValueChange={(nextModel) => {
+                    const previous = modelPreference;
+                    // Optimistic: the picker must not stall the header while the
+                    // write lands. A failure restores exactly what was showing.
+                    setModelPreference({ ...previous, effective_model: nextModel });
+                    void (async () => {
+                      try {
+                        if (!user) return;
+                        const saved = await ModelPreferenceService.set(
+                          await user.getIdToken(),
+                          nextModel,
+                        );
+                        setModelPreference(saved);
+                      } catch {
+                        setModelPreference(previous);
+                      }
+                    })();
+                  }}
+                >
+                  <SelectTrigger
+                    data-testid="agent-chat-model-picker"
+                    // Names the agent it configures, so it still says which
+                    // one when it is read out of context.
+                    aria-label="One's model"
+                    title={`Running ${modelPreference.effective_model}`}
+                    className="h-8 w-auto max-w-full shrink-0 gap-1 rounded-full border-0 bg-foreground/[0.045] px-2.5 text-[11px] font-medium text-muted-foreground"
+                  >
+                    {/* "3.8 Flash", not "Gemini 3.8 Flash": every option is a
+                        Gemini, so the shared word is the one thing a narrow
+                        header cannot afford. The full label stays in the menu
+                        and in the tooltip. */}
+                    <span className="truncate">
+                      {(
+                        modelPreference.choices.find(
+                          (choice) => choice.model_id === modelPreference.effective_model,
+                        )?.label ?? modelPreference.effective_model
+                      ).replace(/^Gemini\s+/i, "")}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    {modelPreference.choices.map((choice) => (
+                      <SelectItem key={choice.model_id} value={choice.model_id}>
+                        {choice.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
+              </span>
               ) : null}
               {/* A fixed slot, always present. This used to mount and unmount
                   with the status, and because the cluster is shrink-0 the whole
