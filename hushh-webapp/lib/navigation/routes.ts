@@ -483,6 +483,9 @@ export function isOnboardingAdmissionExemptRoute(pathname: string): boolean {
     isFirebaseSessionOnlyRoute(normalizedPathname) ||
     normalizedPathname === ROUTES.GETTING_STARTED ||
     normalizedPathname === ROUTES.PHONE_MANDATE ||
+    // Local-only visual fixture; it must not be blocked by the signed-in
+    // setup admission gate when reviewing UI without mail authentication.
+    normalizedPathname === "/one-location-links-visual-preview" ||
     // Reached straight from the phone mandate when the number the adviser just
     // verified is on an SEC filing, before any capability is active.
     normalizedPathname === ROUTES.RIA_CLAIM ||

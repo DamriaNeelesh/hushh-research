@@ -951,8 +951,8 @@ function locationHeaderStatusText(vm: LocationHubViewModel): string {
     paused: vm.locationPaused,
     accuracyLimited: vm.locationAccuracyLimited,
   });
-  if (status === "Location on") return "On";
-  if (status === "Location off") return "Off";
+  if (status === "Location on") return "Location on";
+  if (status === "Location off") return "Location off";
   return status;
 }
 
@@ -962,7 +962,7 @@ function LocationHeaderStatus({ vm }: { vm: LocationHubViewModel }) {
     <span
       id={LOCATION_HEADER_STATUS_ID}
       data-testid="one-location-header-status"
-      className="mt-1 block w-full whitespace-nowrap font-[family-name:var(--font-app-body)] text-right text-[13px] font-medium leading-[18px] tracking-[-0.01em] text-[color:var(--app-secondary-label)]"
+      className="mt-1 block w-full whitespace-nowrap text-center font-[family-name:var(--font-app-body)] text-[13px] font-medium leading-[18px] tracking-[-0.01em] text-[color:var(--app-secondary-label)]"
     >
       {locationHeaderStatusText(vm)}
     </span>
@@ -986,7 +986,7 @@ function LocationHeaderActions({ vm }: { vm: LocationHubViewModel }) {
     <div
       role="group"
       aria-label="Location"
-      className="ml-auto flex min-h-0 w-[92px] shrink-0 flex-col items-end justify-center overflow-visible"
+      className="ml-auto flex min-h-0 w-[92px] shrink-0 flex-col items-center justify-center overflow-visible"
       data-testid="one-location-header-actions"
     >
       <Switch
@@ -4155,7 +4155,7 @@ export function PeopleHub({
 
   return (
     <div className="pt-4 sm:pt-5" data-testid="one-location-people-hub">
-      <div className="mx-auto w-full max-w-[640px] space-y-5">
+      <div className="mx-auto w-full max-w-[640px] space-y-4">
         {!hasSearch ? (
           <CircleSummaryGroup
             circles={vm.circles}
@@ -4167,37 +4167,28 @@ export function PeopleHub({
 
         <section
           aria-labelledby="one-location-people-heading"
-          className="space-y-3"
+          className="space-y-2"
           data-testid="one-location-people-connections"
         >
-          {!hasSearch ? (
-            <div className="flex items-center justify-between gap-4">
-              <h2
-                id="one-location-people-heading"
-                className="text-[20px] font-semibold leading-[25px] tracking-[-0.3px] text-[color:var(--app-section-label)]"
-              >
-                People
-              </h2>
-              {addConnectionsMenu}
-            </div>
-          ) : (
-            <span id="one-location-people-heading" className="sr-only">
-              People
-            </span>
-          )}
+          <span id="one-location-people-heading" className="sr-only">
+            People
+          </span>
 
-          <div
-            className={cn(
-              "[&_input]:h-[46px] [&_input]:rounded-[14px] [&_input]:border-0 [&_input]:bg-[color:var(--app-primary-surface)] [&_input]:pl-[46px] [&_input]:pr-[18px] [&_input]:text-[16px] [&_input]:leading-[22px] dark:[&_input]:bg-[color:var(--app-secondary-surface)]",
-              "[&_svg]:left-[18px] [&_svg]:text-[color:var(--app-tertiary-label)]",
-            )}
-            data-testid="one-location-people-search"
-          >
-            <PersonSearchInput
-              value={vm.recipientSearch}
-              onChange={vm.setRecipientSearch}
-              placeholder="Search people"
-            />
+          <div className="flex items-center gap-2">
+            <div
+              className={cn(
+                "min-w-0 flex-1 [&_input]:h-[46px] [&_input]:rounded-[14px] [&_input]:border-0 [&_input]:bg-[color:var(--app-primary-surface)] [&_input]:pl-[46px] [&_input]:pr-[18px] [&_input]:text-[16px] [&_input]:leading-[22px] dark:[&_input]:bg-[color:var(--app-secondary-surface)]",
+                "[&_svg]:left-[18px] [&_svg]:text-[color:var(--app-tertiary-label)]",
+              )}
+              data-testid="one-location-people-search"
+            >
+              <PersonSearchInput
+                value={vm.recipientSearch}
+                onChange={vm.setRecipientSearch}
+                placeholder="Search people"
+              />
+            </div>
+            {!hasSearch ? addConnectionsMenu : null}
           </div>
 
           {filtered.length ? (
