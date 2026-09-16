@@ -47,8 +47,8 @@ import {
 // Kept in sync with the route-transition motion tokens in globals.css
 // (--motion-route-exit-duration / --motion-route-enter-duration). Longer,
 // gentler beats so navigation glides instead of feeling abrupt.
-const EXIT_MS = 300;
-const ENTER_MS = 360;
+const EXIT_MS = 120;
+const ENTER_MS = 160;
 const MAX_PENDING_MS = 9_000;
 
 type RouteTransitionState = "idle" | "pending" | "entering";

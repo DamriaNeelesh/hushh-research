@@ -922,8 +922,8 @@ textarea {
    * gentler than overlays so navigation feels graceful, not abrupt. The exit
    * eases out softly and the enter glides in with a long decelerate. Keep the
    * JS beats in use-route-transition.ts in sync with these values. */
-  --motion-route-exit-duration: 300ms;
-  --motion-route-enter-duration: 360ms;
+  --motion-route-exit-duration: 120ms;
+  --motion-route-enter-duration: 160ms;
   --motion-route-exit-ease: cubic-bezier(0.4, 0, 0.2, 1);
   --motion-route-enter-ease: cubic-bezier(0.16, 0.84, 0.28, 1);
 
@@ -5883,19 +5883,16 @@ html[data-accent="gold"].dark {
  * link clicks, sets `data-route-transition` on <html>, fades the current page
  * out, then pushes the route. The incoming page fades in via the same tokens.
  *
- *   pending  → outgoing page fades + lifts away (exit, accelerate)
- *   entering → incoming page fades + settles in (enter, decelerate)
+ *   pending  → outgoing page fades away (exit)
+ *   entering → incoming page fades in (enter)
  *
  * The envelope is the existing app shell content node, so no extra wrapper is
- * introduced. Only opacity/transform animate → GPU-composited, 60fps.
+ * introduced. The route envelope animates opacity only.
  * ========================================================================== */
 :root[data-route-transition="pending"] [data-app-shell-content="true"] {
   opacity: 0;
-  transform: translateY(6px);
-  transition:
-    opacity var(--motion-route-exit-duration) var(--motion-route-exit-ease),
-    transform var(--motion-route-exit-duration) var(--motion-route-exit-ease);
-  will-change: opacity, transform;
+  transition: opacity var(--motion-route-exit-duration) var(--motion-route-exit-ease) 0ms;
+  will-change: opacity;
 }
 
 /* Enter is opacity-only here so it never fights the GSAP enter (which owns the
