@@ -10,7 +10,6 @@ import {
   useState,
 } from "react";
 import type { ReactElement, ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
 import { ChevronRight, X } from "lucide-react";
 import { Slot } from "radix-ui";
 

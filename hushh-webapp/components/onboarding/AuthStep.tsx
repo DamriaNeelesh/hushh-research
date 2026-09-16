@@ -1197,16 +1197,3 @@ function AppleIcon() {
     </svg>
   );
 }
-
-function HandshakePrivacyIcon({ className = "h-[26px] w-[32px] shrink-0" }: { className?: string }) {
-  return (
-    <Image
-      src="/privacy-handshake.png"
-      alt="Privacy Handshake"
-      width={65}
-      height={52}
-      className={cn("object-contain", className)}
-      unoptimized
-    />
-  );
-}

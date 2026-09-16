@@ -1,18 +1,5 @@
 
-import {
-  BookMarked,
-  CalendarDays,
-  ContactRound,
-  CreditCard,
-  FileCheck2,
-  KeyRound,
-  Landmark,
-  Mail,
-  MapPin,
-  Store,
-  UsersRound,
-  type LucideIcon,
-} from "lucide-react";
+import { type LucideIcon } from "lucide-react";
 
 import {
   FinanceAgentIcon,

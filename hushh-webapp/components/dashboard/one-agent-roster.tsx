@@ -718,6 +718,7 @@ export function OneAgentRoster({
 }: {
   capabilityStatusById: Record<string, CapabilityStatus>;
   userId?: string | null;
+  displayName?: string | null;
 }) {
   const cachedMetrics = useCachedAgentMetrics(userId);
   const setupDismissed = Boolean(

@@ -1675,9 +1675,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const consumeHandoff = useOneConversationSession(
     (state) => state.consumeHandoff,
   );
-  const clearConversationSession = useOneConversationSession(
-    (state) => state.clearSession,
-  );
   const consumedHandoffIdRef = useRef<string | null>(null);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);

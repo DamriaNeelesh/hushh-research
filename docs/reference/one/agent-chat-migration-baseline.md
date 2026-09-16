@@ -391,3 +391,18 @@ live accuracy/latency failures. Full migration acceptance still requires the
 outstanding comparable PKM/Kai and final chat evidence above; no failed result
 has been relabeled as a pass. Generate and check dependent artifacts together
 before a single push, rather than using successive remote runs for discovery.
+
+### Admin landing integration verification (September 16)
+
+PR #6803 integration exposed stale `route.one_agents` action metadata from main,
+a roster prop mismatch, an accessibility verifier tied to only `aria-label`,
+and unused frontend declarations. Preserve the published action semantics,
+accept either a direct accessible label or its existing linked Agents heading,
+and regenerate gateway, graph, workflow catalog and topology together.
+The roster retains its caller-compatible prop type. Frontend cleanup removes
+unused bindings and captures the recipient-loader callback for its effect.
+
+Full backend runner: 4,032 passed, 191 skipped; lint, type analysis and security
+checks passed. Generated contract verification and 19 offline voice tests passed.
+These checks made no live Gemini requests. Admin identity and live main branch
+protection were verified; landing still requires exact-head remote CI success.

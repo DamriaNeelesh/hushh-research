@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import type { LucideIcon, LucideProps } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 

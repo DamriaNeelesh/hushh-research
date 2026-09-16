@@ -25,10 +25,7 @@ import { isSmsTriggeredGrant } from "@/lib/one-location/notifications";
 import type { OneLocationGrant } from "@/lib/one-location/types";
 import { cn } from "@/lib/utils";
 import {
-  ACTIVE_SHARE_CHANGE_TIME_CLASSNAME,
-  ACTIVE_SHARE_LANE_ACTIONS_CLASSNAME,
   ACTIVE_SHARE_LANE_ROW_CLASSNAME,
-  ACTIVE_SHARE_STOP_CLASSNAME,
 } from "./active-share-row-layout";
 
 import { ShareCountdownText } from "./live-share-status-card";
