@@ -226,3 +226,26 @@ A2A v1 Kai rehearsal remains explicitly deferred by the approved plan, rather
 than a newly added migration acceptance requirement. Real-model conformance
 recordings, downstream specialist measurements and final full-chat performance
 remain separate acceptance requirements.
+
+### Nav/Consent real-model conformance
+
+Two fixture-only Gemini 3.8 recordings now live under
+`consent-protocol/tests/conformance/nav/`: active sharing and revoked history.
+They use the production Nav builder, a real Consent child and synthetic
+owner/service boundaries. Offline replay checks parent/child model requests,
+leaf calls, actions and complete outer session state with a refusing model and
+socket guard. Three focused tests pass, including rejection of tampered child
+arguments and recorded responses. The test is included in the backend CI manifest.
+
+ADK 2.9's stock plugins drop nested plugin configuration, overwrite the shared
+recording file and skip AgentTool execution during replay. Test-local adapters
+preserve these specific sequential Nav/Consent exchanges without changing
+production behavior. They do not establish general concurrent-graph replay,
+Connections or public-wrapper acceptance. Fixture documentation records that
+boundary and regeneration procedure. Live latency and other specialist
+acceptance remain open.
+
+The full repository backend runner after adding this replay suite passed:
+**3,870 passed, 191 skipped**, followed by the all-test-file import check.
+Concurrent frontend/One-manifest edits from another session were preserved;
+this evidence does not certify those separate changes or waived browser flows.
