@@ -89,6 +89,23 @@ no active `summary_reducer` reference. The focused manifest and authority suites
 (`120 passed`), and the full protocol gate passes (`4,025 passed, 191 skipped`), with
 the unrelated live-provider failures below still retained as acceptance evidence.
 
+### September 16 Email auxiliary genes
+
+The remaining Email-owned model calls are now manifest-owned single-turn genes in
+`3ccb254a9`: the opt-in personal-information request classifier and the bounded
+receipt extractor. Their services use the shared Email single-turn runtime with
+schema-constrained outputs and turn-local authority sentinels; no direct
+`google.genai` generation path remains in either classifier. Existing read-only,
+fail-closed behavior and deterministic receipt classification remain unchanged.
+The generated product-agent registries are current.
+
+Static checks and focused verification passed: Python compilation, Ruff, registry
+freshness, Email runtime/manifest/registry tests, and the Gmail classifier/receipt
+service tests yielded **117 passed**. One unrelated pre-existing test failed because
+the branch's migration manifest ends at `223_one_location_setup_progress.sql`, while
+that test still assumes the Gmail migration `220_gmail_personal_information_request_initial_inbox_scan.sql`
+is last; no schema-order change was made here. No live Gemini calls were issued.
+
 ### September 16 deterministic ADK/conformance gate
 
 The current branch reran the offline acceptance surfaces without contacting Gemini:
