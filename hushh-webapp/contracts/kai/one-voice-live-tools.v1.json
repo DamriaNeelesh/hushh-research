@@ -582,7 +582,7 @@
     },
     {
       "circle_args": [],
-      "description": "Create an expiring public location link anyone can open, for at most one hour. Returns the URL and a client_step to open the share sheet.",
+      "description": "Create an expiring public location link anyone can open, for at most two hours. Returns the URL and a client_step to open the share sheet.",
       "firebase_plane": false,
       "gateway_action_id": "location.create_public_link",
       "name": "create_public_link",
@@ -591,9 +591,9 @@
         "properties": {
           "duration_hours": {
             "default": 1,
-            "description": "How long the link stays live, in hours: 0.25, 0.5, or 1 (at most one hour). Default 1.",
+            "description": "How long the link stays live, in hours: 0.25, 1, or 2 (at most two hours). Default 1.",
             "exclusiveMinimum": 0,
-            "maximum": 24,
+            "maximum": 2,
             "title": "Duration Hours",
             "type": "number"
           }

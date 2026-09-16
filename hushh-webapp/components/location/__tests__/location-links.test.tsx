@@ -150,11 +150,13 @@ describe("LocationLinks", () => {
         invite({
           id: "invite-old",
           status: "expired",
+          createdAt: new Date(Date.now() - 120_000).toISOString(),
           expiresAt: new Date(Date.now() - 3_600_000).toISOString(),
         }),
         invite({
           id: "invite-gone",
           status: "revoked",
+          createdAt: new Date(Date.now() - 180_000).toISOString(),
           revokedAt: new Date(Date.now() - 60_000).toISOString(),
         }),
       ]),
@@ -213,7 +215,7 @@ describe("LocationLinks", () => {
     );
   });
 
-  it("creates a link with a position coarsened to the account precision, at most one hour", async () => {
+  it("creates a link with a position coarsened to the account precision, at most two hours", async () => {
     sharing.precision = "approximate";
     render(<LocationLinks />);
     await screen.findAllByTestId("link-row");
@@ -238,13 +240,13 @@ describe("LocationLinks", () => {
     expect(call.locationSnapshot.accuracyM).toBeGreaterThanOrEqual(1000);
   });
 
-  it("offers only durations of one hour or less", () => {
+  it("offers the requested 15-minute, 1-hour and 2-hour durations", () => {
     render(<LocationLinks />);
     const radios = screen.getAllByRole("radio");
     expect(radios.map((radio) => radio.textContent)).toEqual([
       "15 min",
-      "30 min",
       "1 hour",
+      "2 hours",
     ]);
   });
 

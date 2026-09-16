@@ -304,12 +304,12 @@ class ReferralRequest(_CamelModel):
 
 
 class CreatePublicInviteRequest(_CamelModel):
-    # `le=1`, not `le=24`. A public link is readable by anyone holding it, which
+    # `le=2`, not `le=24`. A public link is readable by anyone holding it, which
     # is a different promise from a private share to a named person who can be
     # un-shared -- and 24 was the private ceiling, copied. The service checks it
     # again (PUBLIC_INVITE_MAX_DURATION_HOURS): this stops the request at the
     # edge with a field-level error, that one holds for every other caller.
-    duration_hours: float = Field(default=1, alias="durationHours", gt=0, le=1)
+    duration_hours: float = Field(default=1, alias="durationHours", gt=0, le=2)
     location_snapshot: dict[str, Any] | None = Field(default=None, alias="locationSnapshot")
     command_operation_id: str | None = Field(
         default=None, alias="commandOperationId", pattern=r"^[a-f0-9]{64}$"

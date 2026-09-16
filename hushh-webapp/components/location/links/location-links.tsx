@@ -3,7 +3,7 @@
 /**
  * `/one/location?view=links` — temporary public location links.
  *
- * A link is live for at most one hour and anyone holding it can open it. Every
+ * A link is live for at most two hours and anyone holding it can open it. Every
  * row shows the state the server persisted (active, expired, revoked), and
  * Revoke ends a live one on the spot. The position a new link carries is
  * captured on this device and coarsened to the account's precision
@@ -66,14 +66,14 @@ import { usePublishVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metada
 const SCREEN_ID = "one_location_links";
 const VOICE_ACTIONS = deriveLocationVoiceActions(SCREEN_ID);
 
-/** Public links are capped at one hour; these are the only windows offered. */
+/** Public links are capped at two hours; these are the only windows offered. */
 export const PUBLIC_LINK_DURATIONS: ReadonlyArray<{
   hours: number;
   label: string;
 }> = [
   { hours: 0.25, label: "15 min" },
-  { hours: 0.5, label: "30 min" },
   { hours: 1, label: "1 hour" },
+  { hours: 2, label: "2 hours" },
 ];
 
 const LINK_TOOLS = new Set([
@@ -386,7 +386,7 @@ export function LocationLinks() {
       <TaskFlowHeader
         eyebrow="Location"
         title="Links"
-        description="A temporary link anyone can open. It stops working after at most one hour, or the moment you revoke it."
+        description="A temporary link anyone can open. It stops working after at most two hours, or the moment you revoke it."
       />
 
       {pendingRevoke ? (
