@@ -543,7 +543,7 @@ describe("PostAuthRouteService", () => {
       OneSetupGateService.reset("user_gate");
     });
 
-    it("routes a first-run vault user to setup when the gate is enabled and unseen", async () => {
+    it("keeps a completed vault user at Chat even when the local nudge is unseen", async () => {
       bootstrapStateMock.mockResolvedValue({
         hasVault: true,
         setupCompleted: true,
@@ -556,10 +556,10 @@ describe("PostAuthRouteService", () => {
           phoneVerified: true,
           enableFirstRunSetupGate: true,
         }),
-      ).resolves.toBe(ROUTES.ONE_SETUP);
+      ).resolves.toBe(ROUTES.HOME);
     });
 
-    it("routes a first-run no-vault user to setup when the gate is enabled and unseen", async () => {
+    it("keeps completed setup authoritative without a vault or local seen flag", async () => {
       bootstrapStateMock.mockResolvedValue({
         hasVault: false,
         setupCompleted: true,
@@ -574,7 +574,7 @@ describe("PostAuthRouteService", () => {
           phoneVerified: true,
           enableFirstRunSetupGate: true,
         }),
-      ).resolves.toBe(ROUTES.ONE_SETUP);
+      ).resolves.toBe(ROUTES.HOME);
     });
 
     it("does not gate when the setup nudge has already been seen", async () => {
