@@ -962,6 +962,7 @@ function locationHeaderStatusText(vm: LocationHubViewModel): string {
 /** The status stays with the switch and may wrap rather than clip on a narrow phone. */
 function LocationHeaderStatus({
   vm,
+  onToggle,
 }: {
   vm: LocationHubViewModel;
   onToggle: () => void;
@@ -969,6 +970,7 @@ function LocationHeaderStatus({
   return (
     <button
       type="button"
+      onClick={onToggle}
       id={LOCATION_HEADER_STATUS_ID}
       data-testid="one-location-header-status"
       className="mt-1 block w-full whitespace-nowrap text-center font-[family-name:var(--font-app-body)] text-[13px] font-medium leading-[18px] tracking-[-0.01em] text-[color:var(--app-secondary-label)]"
@@ -1976,6 +1978,7 @@ function LocationHubPanel({ children }: { children: ReactNode }) {
 
 function NowHub({
   vm,
+  onEditLiveShareDurationStart,
   onStartShare,
   onCheckIn,
   onSos,
@@ -2077,7 +2080,7 @@ function NowHub({
             vm.liveShare.grantCount === 1 &&
             vm.liveShare.stoppableGrantId &&
             !vm.liveShare.singleGrantIsSms
-              ? (trigger) => vm.onEditLiveShareDurationStart(undefined, trigger)
+              ? (trigger) => onEditLiveShareDurationStart(undefined, trigger)
               : undefined
           }
           onShareMore={onStartShare}
@@ -2547,6 +2550,7 @@ function LocationDetailFlow({
   collapsedGrantIds,
   onRequestLocation,
   onStartShare,
+  onEditLiveShareDurationStart,
   onCollapseGrant,
   onExpandGrant,
 }: {
@@ -2763,8 +2767,8 @@ function LocationDetailFlow({
                           <button
                             type="button"
                             className="min-h-8 text-[15px] font-medium text-[color:var(--app-accent)]"
-                            onClick={() =>
-                              vm.onEditLiveShareDurationStart(single.id)
+                            onClick={(event) =>
+                              onEditLiveShareDurationStart(single.id, event.currentTarget)
                             }
                           >
                             {single.durationMode === "until_stopped"
@@ -2781,7 +2785,7 @@ function LocationDetailFlow({
                             group={group}
                             counterpartName={name}
                             onStopGrant={vm.onStopGrant}
-                            onChangeEndTime={vm.onEditLiveShareDurationStart}
+                            onChangeEndTime={onEditLiveShareDurationStart}
                             revokingGrantId={vm.revokingGrantId}
                           />
                         </div>

@@ -406,3 +406,13 @@ Full backend runner: 4,032 passed, 191 skipped; lint, type analysis and security
 checks passed. Generated contract verification and 19 offline voice tests passed.
 These checks made no live Gemini requests. Admin identity and live main branch
 protection were verified; landing still requires exact-head remote CI success.
+
+The existing Location regression pack exposed two main-integration behavior
+regressions: the visible status button had no toggle handler, and duration
+editing bypassed the owning callback that records the focus-return trigger.
+Both paths now use their existing callbacks, including each share lane's trigger.
+The accompanying stale layout/copy assertions now verify current accessible
+labels, keyboard order, command-capture ownership and preserved routing.
+The pack initially passed 1,054/1,069; the five affected files passed 181/184
+after correction, and all three remaining cases passed on their focused rerun.
+TypeScript and lint for the affected files passed. No live provider tests ran.
