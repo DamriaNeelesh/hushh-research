@@ -318,8 +318,8 @@ completion claims:
 | Gemini 3.8 Flash, personal54/global | 1/24 | schema, intent, mutation, and domain each 100% for the completed case | global Vertex 429; inner timeout; 23 cases unattempted |
 | Gemini 3.7 Flash, personal54/global | 2/24 | schema, intent, mutation, and domain each 100% for completed cases | global Vertex 429; fallback 50%; inner timeout 1; inner budget exhausted 2; 22 cases unattempted |
 
-Reports: `artifacts/regression/after-20260916/pkm-38-low-thinking.json` and
-`artifacts/regression/after-20260916/pkm-37-low-thinking.json`. Both runs show
-the bridge is reachable and the 429 is quota/rate limiting in the selected
-personal project. They do not prove quality-gate completion; a comparable run
-after quota recovery is still required.
+The local run outputs are retained as `pkm-38-low-thinking.json` and
+`pkm-37-low-thinking.json` under the operator's ignored regression-artifact
+directory. Both runs show the bridge is reachable and the 429 is quota/rate
+limiting in the selected personal project. They do not prove quality-gate
+completion; a comparable run after quota recovery is still required.
