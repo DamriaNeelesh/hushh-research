@@ -4384,48 +4384,41 @@ export function PeopleHub({
 
         <section
           aria-labelledby="one-location-people-heading"
-          className="space-y-3"
+          className="space-y-2"
           data-testid="one-location-people-connections"
         >
-          {!hasSearch ? (
-            <div className="flex items-center justify-between gap-4">
-              <SectionLabel
-                as="h2"
-                compact
-                id="one-location-people-heading"
-                className="min-w-0"
-              >
-                People
-              </SectionLabel>
-              {addConnectionsMenu}
-            </div>
-          ) : (
-            <span id="one-location-people-heading" className="sr-only">
-              People
-            </span>
-          )}
+          <h2 id="one-location-people-heading" className="sr-only">
+            People
+          </h2>
 
-          <div
-            className={cn(
-              "[&_input]:h-11 [&_input]:rounded-[13px] [&_input]:border-0 [&_input]:bg-[color:var(--app-primary-surface)] [&_input]:pl-11 [&_input]:pr-4 [&_input]:text-[15px] [&_input]:leading-5 dark:[&_input]:bg-[color:var(--app-secondary-surface)]",
-              "[&_svg]:left-4 [&_svg]:text-[color:var(--app-tertiary-label)]",
-            )}
-            data-testid="one-location-people-search"
-          >
-            <PersonSearchInput
-              value={vm.recipientSearch}
-              onChange={vm.setRecipientSearch}
-              placeholder="Search people"
-            />
-          </div>
+          <div className="relative space-y-2">
+            {!hasSearch ? (
+              <div className="absolute right-0 top-0">
+                {addConnectionsMenu}
+              </div>
+            ) : null}
 
-          {filtered.length ? (
             <div
-              className={LOCATION_GROUP_SURFACE}
-              data-testid="one-location-people-list"
-              aria-busy={vm.recipientPageLoading || undefined}
+              className={cn(
+                "min-w-0 pr-[52px] [&_input]:h-11 [&_input]:rounded-[13px] [&_input]:border-0 [&_input]:bg-[color:var(--app-primary-surface)] [&_input]:pl-11 [&_input]:pr-4 [&_input]:text-[15px] [&_input]:leading-5 dark:[&_input]:bg-[color:var(--app-secondary-surface)]",
+                "[&_svg]:left-4 [&_svg]:text-[color:var(--app-tertiary-label)]",
+              )}
+              data-testid="one-location-people-search"
             >
-              {filtered.map((recipient, index) => {
+              <PersonSearchInput
+                value={vm.recipientSearch}
+                onChange={vm.setRecipientSearch}
+                placeholder="Search people"
+              />
+            </div>
+
+            {filtered.length ? (
+              <div
+                className={LOCATION_GROUP_SURFACE}
+                data-testid="one-location-people-list"
+                aria-busy={vm.recipientPageLoading || undefined}
+              >
+                {filtered.map((recipient, index) => {
                 const name = vm.recipientLabel(recipient);
                 const outgoingGroup =
                   ownerGroupsByUserId.get(recipient.userId) ?? null;
@@ -4451,91 +4444,93 @@ export function PeopleHub({
                   (isGenericConnectionCopy(vm.recipientSubtitle(recipient))
                     ? "Connected"
                     : vm.recipientSubtitle(recipient));
-                return (
-                  <PersonRow
-                    key={recipient.userId}
-                    name={name}
-                    profileHref={
-                      recipient.publicPersonRef
-                        ? buildPersonProfileRoute(recipient.publicPersonRef, {
-                            from: ROUTES.ONE_LOCATION,
-                          })
-                        : null
-                    }
-                    photoUrl={recipient.photoUrl}
-                    verified={Boolean(recipient.isRia)}
-                    expansion={
-                      outgoingGroup && !singleGrant ? (
-                        <div id={lanesId} hidden={!lanesExpanded}>
-                          <PersonShareLanes
-                            group={outgoingGroup}
-                            counterpartName={name}
-                            onStopGrant={vm.onStopGrant}
-                            revokingGrantId={vm.revokingGrantId}
+                  return (
+                    <PersonRow
+                      key={recipient.userId}
+                      name={name}
+                      profileHref={
+                        recipient.publicPersonRef
+                          ? buildPersonProfileRoute(recipient.publicPersonRef, {
+                              from: ROUTES.ONE_LOCATION,
+                            })
+                          : null
+                      }
+                      photoUrl={recipient.photoUrl}
+                      verified={Boolean(recipient.isRia)}
+                      expansion={
+                        outgoingGroup && !singleGrant ? (
+                          <div id={lanesId} hidden={!lanesExpanded}>
+                            <PersonShareLanes
+                              group={outgoingGroup}
+                              counterpartName={name}
+                              onStopGrant={vm.onStopGrant}
+                              revokingGrantId={vm.revokingGrantId}
+                            />
+                          </div>
+                        ) : null
+                      }
+                      subtitle={subtitle}
+                      active={status.active}
+                      first={index === 0}
+                      onOpen={
+                        status.kind !== "neutral" &&
+                        !(outgoingGroup && !singleGrant)
+                          ? () => setSelectedPersonId(recipient.userId)
+                          : undefined
+                      }
+                      action={
+                        outgoingGroup && !singleGrant ? (
+                          <ShareLanesDisclosure
+                            expanded={lanesExpanded}
+                            onToggle={() => toggleLaneExpansion(recipient.userId)}
+                            controlsId={lanesId}
+                            label={`Manage your shares with ${name}`}
                           />
-                        </div>
-                      ) : null
-                    }
-                    subtitle={subtitle}
-                    active={status.active}
-                    first={index === 0}
-                    onOpen={
-                      status.kind !== "neutral" &&
-                      !(outgoingGroup && !singleGrant)
-                        ? () => setSelectedPersonId(recipient.userId)
-                        : undefined
-                    }
-                    action={
-                      outgoingGroup && !singleGrant ? (
-                        <ShareLanesDisclosure
-                          expanded={lanesExpanded}
-                          onToggle={() => toggleLaneExpansion(recipient.userId)}
-                          controlsId={lanesId}
-                          label={`Manage your shares with ${name}`}
-                        />
-                      ) : status.kind === "neutral" && shareReady ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => onStartShare(recipient.userId)}
-                          aria-label={`Share with ${name}`}
-                          className="relative h-9 min-h-9 rounded-full px-2 text-[15px] font-medium text-[color:var(--app-accent)] after:absolute after:-inset-y-1 after:inset-x-0 after:content-[''] hover:bg-transparent hover:text-[color:var(--app-accent-hover)]"
-                        >
-                          Share
-                        </Button>
-                      ) : null
-                    }
-                  />
-                );
-              })}
-              {vm.recipientPageHasMore ? (
-                <div
-                  ref={loadMoreSentinelRef}
-                  role="status"
-                  data-testid="one-location-people-load-more-sentinel"
-                  className="border-t border-[color:var(--app-separator)] px-4 py-3 text-center text-[13px] leading-[18px] text-[color:var(--app-secondary-label)]"
-                >
-                  {vm.recipientPageLoading ? "Loading more…" : ""}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="[&>[data-ui-role=grouped-card]]:rounded-[var(--app-radius-md)] [&>[data-ui-role=grouped-card]]:!bg-[color:var(--app-primary-surface)] [&>[data-ui-role=grouped-card]]:shadow-[var(--app-card-shadow-standard)] dark:[&>[data-ui-role=grouped-card]]:shadow-none">
-              <EmptyState
-                title={
-                  hasSearch
-                    ? `No match for “${vm.recipientSearch.trim()}”`
-                    : "No people yet"
-                }
-                description={
-                  hasSearch
-                    ? "They may not be in your connections yet."
-                    : "Find or invite someone to start sharing privately."
-                }
-                action={addPeopleEmptyAction}
-              />
-            </div>
-          )}
+                        ) : status.kind === "neutral" && shareReady ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => onStartShare(recipient.userId)}
+                            aria-label={`Share with ${name}`}
+                            className="relative h-9 min-h-9 rounded-full px-2 text-[15px] font-medium text-[color:var(--app-accent)] after:absolute after:-inset-y-1 after:inset-x-0 after:content-[''] hover:bg-transparent hover:text-[color:var(--app-accent-hover)]"
+                          >
+                            Share
+                          </Button>
+                        ) : null
+                      }
+                    />
+                  );
+                })}
+                {vm.recipientPageHasMore ? (
+                  <div
+                    ref={loadMoreSentinelRef}
+                    role="status"
+                    data-testid="one-location-people-load-more-sentinel"
+                    className="border-t border-[color:var(--app-separator)] px-4 py-3 text-center text-[13px] leading-[18px] text-[color:var(--app-secondary-label)]"
+                  >
+                    {vm.recipientPageLoading ? "Loading more…" : ""}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="[&>[data-ui-role=grouped-card]]:rounded-[var(--app-radius-md)] [&>[data-ui-role=grouped-card]]:!bg-[color:var(--app-primary-surface)] [&>[data-ui-role=grouped-card]]:shadow-[var(--app-card-shadow-standard)] dark:[&>[data-ui-role=grouped-card]]:shadow-none">
+                <EmptyState
+                  title={
+                    hasSearch
+                      ? `No match for “${vm.recipientSearch.trim()}”`
+                      : "No people yet"
+                  }
+                  description={
+                    hasSearch
+                      ? "They may not be in your connections yet."
+                      : "Find or invite someone to start sharing privately."
+                  }
+                  action={addPeopleEmptyAction}
+                />
+              </div>
+            )}
+
+          </div>
         </section>
       </div>
 
