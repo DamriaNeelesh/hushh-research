@@ -264,6 +264,12 @@ export function resolveTopShellTabSet(routeKey: string): TopShellTabSet | null {
     };
   }
 
+  return resolvePublicKnowledgeTopShellTabSet(routeKey);
+}
+
+export function resolveRiaRouteTabSet(routeKey: string): TopShellTabSet | null {
+  const { pathname } = splitRouteKey(routeKey);
+
   if (
     pathname === ROUTES.RIA_HOME ||
     pathname === ROUTES.RIA_PROFILE ||
@@ -279,7 +285,7 @@ export function resolveTopShellTabSet(routeKey: string): TopShellTabSet | null {
     };
   }
 
-  return resolvePublicKnowledgeTopShellTabSet(routeKey);
+  return null;
 }
 
 /**

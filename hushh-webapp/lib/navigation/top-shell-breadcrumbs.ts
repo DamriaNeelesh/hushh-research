@@ -45,6 +45,25 @@ export type TopShellBreadcrumbConfig = {
   hideBack?: boolean;
 };
 
+/**
+ * Keep the visible top-bar trail to immediate context only.
+ *
+ * Resolvers retain their complete hierarchy for deterministic back navigation,
+ * but rendering more than the parent and current page crowds the compact app
+ * bar and turns every ancestor into a truncated fragment. The app root remains
+ * implicit on inner One routes, matching the existing top-shell convention.
+ */
+export function visibleTopShellBreadcrumbItems(
+  items: TopShellBreadcrumbItem[],
+): TopShellBreadcrumbItem[] {
+  const cleaned = items.filter(
+    (item) => typeof item.label === "string" && item.label.trim().length > 0,
+  );
+  const withoutImplicitRoot =
+    cleaned[0]?.label === "One" ? cleaned.slice(1) : cleaned;
+  return withoutImplicitRoot.slice(-2);
+}
+
 function titleizeSegment(segment: string): string {
   return segment
     .split("-")
@@ -69,6 +88,9 @@ function oneLocationActionLabel(action: string): string {
     invite: "Invite to Circle",
     "temp-link": "Public link",
     "check-in": "Check-In",
+    // Must equal the flow's TaskFlowHeader title exactly, or the trail and the
+    // screen stop reading as the same place.
+    "places-visited": "Places you've been",
     "private-check-in": "Private Check-In",
     "active-shares": "Active shares",
     "shared-with-me": "Shared with me",
@@ -79,6 +101,13 @@ function oneLocationActionLabel(action: string): string {
     "sms-contacts": "Emergency contacts",
     settings: "Settings",
     privacy: "Settings",
+    // Voice-first Location area flows. Each label must equal the flow's own
+    // TaskFlowHeader title.
+    "create-circle": "New circle",
+    "join-circle": "Join circle",
+    "circle-detail": "Circle",
+    "invite-circle": "Invite to circle",
+    ratings: "Ratings",
   };
   return labels[action] ?? titleizeSegment(action);
 }
@@ -103,7 +132,6 @@ export function resolveSmsContactsBackAction(
 function profilePanelLabel(panel: ProfilePanel | null): string | null {
   if (panel === "account") return "Account";
   if (panel === "my-data") return "Memory";
-  if (panel === "access") return "Access & sharing";
   if (panel === "connected-systems") return "Connected Systems";
   if (panel === "preferences") return "Preferences";
   if (panel === "security") return "Security";
@@ -153,6 +181,7 @@ function profileOriginCrumbLabel(backHref: string): string {
     [ROUTES.ONE_LOCATION]: "Location",
     [ROUTES.GMAIL]: "Gmail",
     [ROUTES.PKM]: "Memory",
+    [ROUTES.PKM_RECENT]: "Recently learned",
     [ROUTES.ONE_MARKETPLACE]: "Marketplace",
     [ROUTES.CONNECTED_SYSTEMS]: "Connected Systems",
     [ROUTES.CONSENTS]: "Consent Center",
@@ -168,6 +197,7 @@ function profileDetailLabel(detail: string | null): string | null {
   if (!detail) return null;
   if (detail.startsWith("domain:")) return "Domain detail";
   if (detail.startsWith("connection:")) return "Connection detail";
+  if (detail === "sharing") return "Sharing";
   if (detail === "appearance") return "Appearance";
   if (detail === "kai-preferences") return "Finance preferences";
   if (detail === "gemini") return "Gemini";
@@ -271,6 +301,19 @@ function resolveTopShellBreadcrumbInner(
         // Matches the on-screen title; a crumb that disagrees with the heading
         // reads as two different screens.
         { label: "Choose your AI" },
+      ],
+    };
+  }
+
+  // Wallet is reached from the One home roster tile; the way out is One.
+  if (pathname === ROUTES.ONE_WALLET) {
+    return {
+      backHref: ROUTES.ONE_HOME,
+      width: "content",
+      align: "center",
+      items: [
+        { label: "One", href: ROUTES.ONE_HOME },
+        { label: "Wallet" },
       ],
     };
   }
@@ -466,33 +509,16 @@ function resolveTopShellBreadcrumbInner(
       backHref: ROUTES.ONE_HOME,
       width: "content",
       align: "center",
-      items: [
-        { label: "One", href: ROUTES.ONE_HOME },
-        { label: "RIA" },
-        { label: "Profile" },
-      ],
+      items: [],
     };
   }
 
-  // Debate config is a read-only sub-view of Picks (/ria/picks?view=debate):
-  // it deepens one level below Picks, so back returns to Picks, not RIA home.
-  // Checked before the generic riaSubroutes loop, which would otherwise match
-  // the query-stripped /ria/picks pathname and flatten it to a 3-crumb Picks.
-  if (
-    (pathname === ROUTES.RIA_PICKS ||
-      pathname.startsWith(`${ROUTES.RIA_PICKS}/`)) &&
-    searchParams?.get("view") === "debate"
-  ) {
+  if (pathname === ROUTES.RIA_PICKS) {
     return {
-      backHref: ROUTES.RIA_PICKS,
+      backHref: ROUTES.RIA_PROFILE,
       width: "content",
       align: "center",
-      items: [
-        { label: "One", href: ROUTES.ONE_HOME },
-        { label: "RIA", href: ROUTES.RIA_PROFILE },
-        { label: "Picks", href: ROUTES.RIA_PICKS },
-        { label: "Debate" },
-      ],
+      items: [],
     };
   }
 
@@ -643,7 +669,7 @@ function resolveTopShellBreadcrumbInner(
       backHref: ROUTES.RIA_PROFILE,
       width: "profile",
       align: "center",
-      items: [{ label: "RIA", href: ROUTES.RIA_PROFILE }, { label: "Clients" }],
+      items: [],
     };
   }
 
@@ -772,7 +798,20 @@ function resolveTopShellBreadcrumbInner(
       // whichever one opened it (see resolveSmsContactsBackAction).
       const hubView = String(searchParams?.get("view") || "").trim();
       const smsContactsSource = searchParams?.get("source");
-      if (action === "sms-contacts" && smsContactsSource === "sos") {
+      // `?action=sms-contacts` immediately redirects (replace) to
+      // `?action=circle-detail` once the SMS Circle exists -- Issue #5426's
+      // "contacts moved into Circles" redirect above. `source=sos` rides
+      // along on that replace, so the screen the person is actually looking
+      // at carries `action=circle-detail`, not `sms-contacts`. This check
+      // used to only match `sms-contacts`, which is the URL for maybe one
+      // paint before the redirect fires -- so the SOS-aware back target
+      // below was effectively dead, and back fell through to the generic
+      // circle-detail case (`?view=people`), dropping the person on the
+      // People tab instead of back into their SOS.
+      if (
+        (action === "sms-contacts" || action === "circle-detail") &&
+        smsContactsSource === "sos"
+      ) {
         return {
           backHref: `${ROUTES.ONE_LOCATION}?action=sos`,
           width: "profile",
@@ -839,6 +878,29 @@ function resolveTopShellBreadcrumbInner(
       width: "profile",
       align: "center",
       items: [{ label: fromProfile ? "Profile" : "One" }],
+    };
+  }
+
+  // Reached only from Profile > Account (profile-workspace-page.tsx pushes
+  // ROUTES.ONE_WALLET_CARD from the "Apple Wallet" row), and it had no entry
+  // here at all -- so the resolver returned null, the top shell rendered no
+  // breadcrumb, and the screen had no way back out. The Back control inside
+  // the workspace is a stage control (setStage("manage")); it moves between
+  // steps of the pass flow and exists in only one of them, so it was never
+  // the way out of the surface.
+  if (pathname === ROUTES.ONE_WALLET_CARD) {
+    return {
+      backHref: ROUTES.PROFILE_ACCOUNT,
+      width: "profile",
+      align: "center",
+      items: [
+        { label: "Profile", href: ROUTES.PROFILE },
+        { label: "Account", href: ROUTES.PROFILE_ACCOUNT },
+        // Matches WALLET_CARD_COPY.profileEntry.title, the row that leads
+        // here. Kept as a literal rather than an import so a navigation
+        // module does not reach into a component folder for a string.
+        { label: "Apple Wallet" },
+      ],
     };
   }
 
@@ -911,6 +973,19 @@ function resolveTopShellBreadcrumbInner(
       width: "profile",
       align: "center",
       items: [{ label: "One", href: ROUTES.ONE_HOME }, { label: "Memory" }],
+    };
+  }
+
+  if (pathname === ROUTES.PKM_RECENT) {
+    return {
+      backHref: ROUTES.PKM,
+      width: "profile",
+      align: "center",
+      items: [
+        { label: "One", href: ROUTES.ONE_HOME },
+        { label: "Memory", href: ROUTES.PKM },
+        { label: "Recently learned" },
+      ],
     };
   }
 
@@ -1071,7 +1146,6 @@ function resolveTopShellBreadcrumbInner(
             label: profileOriginCrumbLabel(originBackHref),
             href: originBackHref,
           },
-          { label: "Profile" },
         ],
       };
     }
@@ -1099,51 +1173,56 @@ function resolveTopShellBreadcrumbInner(
     pathname === `${ROUTES.PROFILE}/pkm` ||
     pathname === `${ROUTES.PROFILE}/pkm-agent-lab`
   ) {
-    const privacyHref = profilePanelHref("access");
+    const memoryHref = profilePanelHref("my-data");
     return {
-      backHref: privacyHref,
+      backHref: memoryHref,
       width: "profile",
       align: "center",
       items: [
-        { label: "Profile", href: privacyHref },
-        { label: "Privacy", href: privacyHref },
+        { label: "Profile", href: memoryHref },
+        { label: "Memory", href: memoryHref },
         { label: "PKM Agent" },
       ],
     };
   }
 
-  // Voice's changelog is a third level nested under the Voice detail screen,
-  // one deeper than the generic panel/detail breadcrumb below can express (it
-  // only carries a single detail label). Back must retrace to Voice itself,
-  // not to Preferences.
-  if (pathname === ROUTES.PROFILE_PREFERENCES_VOICE_CHANGELOG) {
-    const preferencesHref = profilePanelHref("preferences");
+  // The per-connection revoke detail sits one level below the Memory → Sharing
+  // sub-view, deeper than the generic panel/detail breadcrumb can express.
+  if (pathname === ROUTES.PROFILE_ACCESS_CONNECTION) {
+    const memoryHref = profilePanelHref("my-data");
+    const sharingHref = buildProfileRoute({
+      panel: "my-data",
+      detail: "sharing",
+    });
     return {
-      backHref: ROUTES.PROFILE_PREFERENCES_VOICE,
+      backHref: sharingHref,
       width: "profile",
       align: "center",
       items: [
         { label: "Profile", href: ROUTES.PROFILE },
-        { label: "Preferences", href: preferencesHref },
-        { label: "Voice", href: ROUTES.PROFILE_PREFERENCES_VOICE },
-        { label: "What's new" },
+        { label: "Memory", href: memoryHref },
+        { label: "Sharing", href: sharingHref },
+        { label: "Connection detail" },
       ],
     };
   }
 
-  // Same third-level nesting as the changelog above, for the "what can I
-  // say" examples screen.
-  if (pathname === ROUTES.PROFILE_PREFERENCES_VOICE_EXAMPLES) {
+  // The former examples and changelog URLs are retained as command-settings
+  // aliases. They intentionally render no handwritten phrases or Live-era
+  // history, so navigation presents the current command surface directly.
+  if (
+    pathname === ROUTES.PROFILE_PREFERENCES_VOICE_CHANGELOG ||
+    pathname === ROUTES.PROFILE_PREFERENCES_VOICE_EXAMPLES
+  ) {
     const preferencesHref = profilePanelHref("preferences");
     return {
-      backHref: ROUTES.PROFILE_PREFERENCES_VOICE,
+      backHref: preferencesHref,
       width: "profile",
       align: "center",
       items: [
         { label: "Profile", href: ROUTES.PROFILE },
         { label: "Preferences", href: preferencesHref },
-        { label: "Voice", href: ROUTES.PROFILE_PREFERENCES_VOICE },
-        { label: "What can I say" },
+        { label: "Location commands" },
       ],
     };
   }

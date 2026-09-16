@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { EmblaCarouselType } from "embla-carousel";
 
-import { SwipeViews } from "@/lib/morphy-ux/ui/swipe-views";
+import { SwipeViews, clampSwipePosition } from "@/lib/morphy-ux/ui/swipe-views";
 import { requestTopShellTabSelection } from "@/lib/navigation/top-shell-tab-swipe-progress";
 
 const embla = vi.hoisted(() => ({
@@ -48,6 +48,12 @@ const OPTIONS = [
 ] as const;
 
 describe("SwipeViews", () => {
+  it("clamps shared tab progress at the first and last workspace pane", () => {
+    expect(clampSwipePosition(-0.24, 3)).toBe(0);
+    expect(clampSwipePosition(0.65, 3)).toBe(0.65);
+    expect(clampSwipePosition(2.31, 3)).toBe(2);
+  });
+
   beforeEach(() => {
     embla.selectedIndex = 0;
     embla.scrollProgress = 0;
@@ -256,10 +262,20 @@ describe("SwipeViews", () => {
   });
 
   it("lets a nested pager own its horizontal drag", () => {
+    const nestedOptions = [
+      ...OPTIONS,
+      { value: "third", label: "Third" },
+    ] as const;
+    embla.selectedIndex = 1;
     render(
-      <SwipeViews tabSetId="nested" activeValue="first" options={OPTIONS}>
+      <SwipeViews
+        tabSetId="nested"
+        activeValue="second"
+        options={nestedOptions}
+      >
         <div>first panel content</div>
         <div>second panel content</div>
+        <div>third panel content</div>
       </SwipeViews>,
     );
 
@@ -272,16 +288,70 @@ describe("SwipeViews", () => {
     outerRoot.append(nestedRoot);
 
     const watchDrag = embla.options?.watchDrag as (
-      api: Pick<EmblaCarouselType, "rootNode">,
+      api: Pick<EmblaCarouselType, "rootNode" | "selectedScrollSnap">,
       event: Event,
     ) => boolean;
 
-    expect(
-      watchDrag({ rootNode: () => outerRoot }, { target: nestedTarget } as Event),
-    ).toBe(false);
-    expect(
-      watchDrag({ rootNode: () => nestedRoot }, { target: nestedTarget } as Event),
-    ).toBe(true);
+    const outerApi = {
+      rootNode: () => outerRoot,
+      selectedScrollSnap: () => 1,
+    };
+    const nestedApi = {
+      rootNode: () => nestedRoot,
+      selectedScrollSnap: () => 1,
+    };
+
+    expect(watchDrag(outerApi, { target: nestedTarget } as Event)).toBe(false);
+    expect(watchDrag(nestedApi, { target: nestedTarget } as Event)).toBe(true);
+  });
+
+  it("does not apply the edge fallback to nested horizontal interactions", () => {
+    const onSelectionChange = vi.fn();
+    const onSelectionCommit = vi.fn();
+    const root = embla.rootNode!;
+    root.dataset.swipeViewsRoot = "true";
+    const nestedScroller = document.createElement("div");
+    nestedScroller.setAttribute("data-swipe-views-horizontal-scroll", "true");
+    const scrollerTarget = document.createElement("button");
+    nestedScroller.append(scrollerTarget);
+    const nestedPager = document.createElement("div");
+    nestedPager.dataset.swipeViewsRoot = "true";
+    const pagerTarget = document.createElement("button");
+    nestedPager.append(pagerTarget);
+    root.append(nestedScroller, nestedPager);
+
+    render(
+      <SwipeViews
+        tabSetId="nested-edge"
+        activeValue="first"
+        options={OPTIONS}
+        onSelectionChange={onSelectionChange}
+        onSelectionCommit={onSelectionCommit}
+      >
+        <div>first panel content</div>
+        <div>second panel content</div>
+      </SwipeViews>,
+    );
+
+    for (const target of [scrollerTarget, pagerTarget]) {
+      target.dispatchEvent(
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          clientX: 100,
+          clientY: 20,
+        }),
+      );
+      target.dispatchEvent(
+        new MouseEvent("pointerup", {
+          bubbles: true,
+          clientX: 20,
+          clientY: 20,
+        }),
+      );
+    }
+
+    expect(onSelectionChange).not.toHaveBeenCalled();
+    expect(onSelectionCommit).not.toHaveBeenCalled();
   });
 
   describe("viewport resize", () => {
@@ -372,6 +442,93 @@ describe("SwipeViews", () => {
       const view = renderPager();
       view.unmount();
       expect(disconnected).toBe(true);
+    });
+  });
+
+  describe("heightMode='active'", () => {
+    // Regression for the Analysis workspace (Debate / Summary / Detailed
+    // View) rendering two panes partially overlapped: the outgoing pane was
+    // immediately clamped to the incoming pane's (often shorter) height while
+    // still visibly sliding off-screen, because the Analysis page opted out
+    // of the default height hold with `holdHeightDuringTransition={false}`.
+    // `holdHeightDuringTransition` defaults to `true` precisely so an
+    // outgoing pane keeps its own height for the length of the transition;
+    // only an explicit opt-out should clip it early.
+    const originalRaf = globalThis.requestAnimationFrame;
+
+    beforeEach(() => {
+      globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+        cb(0);
+        return 1;
+      }) as typeof globalThis.requestAnimationFrame;
+    });
+
+    afterEach(() => {
+      globalThis.requestAnimationFrame = originalRaf;
+    });
+
+    it("does not clip the outgoing pane's height mid-transition by default", () => {
+      const view = render(
+        <SwipeViews
+          tabSetId="height-default"
+          activeValue="first"
+          options={OPTIONS}
+          heightMode="active"
+        >
+          <div>first panel content</div>
+          <div>second panel content</div>
+        </SwipeViews>,
+      );
+
+      view.rerender(
+        <SwipeViews
+          tabSetId="height-default"
+          activeValue="second"
+          options={OPTIONS}
+          heightMode="active"
+        >
+          <div>first panel content</div>
+          <div>second panel content</div>
+        </SwipeViews>,
+      );
+
+      const outgoingPanel = view.container.querySelector(
+        "#top-shell-height-default-panel-first",
+      );
+      expect(outgoingPanel).not.toHaveStyle({ overflow: "hidden" });
+    });
+
+    it("clips the outgoing pane's height when holdHeightDuringTransition is explicitly disabled", () => {
+      const view = render(
+        <SwipeViews
+          tabSetId="height-nohold"
+          activeValue="first"
+          options={OPTIONS}
+          heightMode="active"
+          holdHeightDuringTransition={false}
+        >
+          <div>first panel content</div>
+          <div>second panel content</div>
+        </SwipeViews>,
+      );
+
+      view.rerender(
+        <SwipeViews
+          tabSetId="height-nohold"
+          activeValue="second"
+          options={OPTIONS}
+          heightMode="active"
+          holdHeightDuringTransition={false}
+        >
+          <div>first panel content</div>
+          <div>second panel content</div>
+        </SwipeViews>,
+      );
+
+      const outgoingPanel = view.container.querySelector(
+        "#top-shell-height-nohold-panel-first",
+      );
+      expect(outgoingPanel).toHaveStyle({ overflow: "hidden" });
     });
   });
 });

@@ -19,6 +19,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { SharedWithMeCard } from "@/components/one-location/redesign/cards";
+import {
+  ACTIVE_SHARE_CHANGE_TIME_CLASSNAME,
+  ACTIVE_SHARE_LANE_ACTIONS_CLASSNAME,
+  ACTIVE_SHARE_LANE_ROW_CLASSNAME,
+  ACTIVE_SHARE_STOP_CLASSNAME,
+} from "@/components/one-location/redesign/active-share-row-layout";
 import { PersonShareLanes } from "@/components/one-location/redesign/share-lanes";
 import {
   grantLaneLabel,
@@ -172,6 +178,38 @@ describe("per-share Stop inside a person's row", () => {
     ).not.toBeDisabled();
   });
 
+  it("keeps Change time immediately before Stop in one responsive action cluster", () => {
+    const [group] = groupGrantsByCounterpart([ordinary], "owner");
+    render(
+      <PersonShareLanes
+        group={group!}
+        counterpartName="Rohan Mehta"
+        onChangeEndTime={vi.fn()}
+        onStopGrant={vi.fn()}
+      />,
+    );
+
+    const row = screen.getByTestId("one-location-share-lane");
+    const change = screen.getByRole("button", {
+      name: "Change end time for Rohan Mehta",
+    });
+    const stop = screen.getByRole("button", {
+      name: "Stop the location share with Rohan Mehta",
+    });
+    const actions = change.parentElement;
+
+    expect(row).toHaveClass(...ACTIVE_SHARE_LANE_ROW_CLASSNAME.split(" "));
+    expect(actions).toHaveClass(
+      ...ACTIVE_SHARE_LANE_ACTIONS_CLASSNAME.split(" "),
+    );
+    expect(change).toHaveClass(
+      ...ACTIVE_SHARE_CHANGE_TIME_CLASSNAME.split(" "),
+    );
+    expect(stop).toHaveClass(...ACTIVE_SHARE_STOP_CLASSNAME.split(" "));
+    expect(actions?.children[0]).toBe(change);
+    expect(actions?.children[1]).toBe(stop);
+  });
+
   it("says Stop viewing on the receiving side -- and still one per share", () => {
     // `revoke_grant` accepts the recipient as well as the owner and records
     // the difference as `recipient_revoke`, so this side really can act. The
@@ -288,6 +326,11 @@ const HUB = path.join(
   "components/one-location/redesign/location-redesign-hub.tsx",
 );
 const source = readFileSync(HUB, "utf8");
+const LIVE_SHARE_STATUS_CARD = path.join(
+  process.cwd(),
+  "components/one-location/redesign/live-share-status-card.tsx",
+);
+const liveShareStatusCardSource = readFileSync(LIVE_SHARE_STATUS_CARD, "utf8");
 
 describe("hub wiring", () => {
   it("no longer binds a person's Stop to the FIRST grant it can find", () => {
@@ -295,7 +338,9 @@ describe("hub wiring", () => {
     // exact shape of the bug: one tap, one grant stopped, the other left live
     // with nothing on screen admitting it exists.
     expect(source).not.toContain("(g) => g.recipientUserId === r.userId");
-    expect(source).toContain("ownerGroupsByUserId.get(r.userId)");
+    expect(source).toContain("const ownerGroupsByUserId = useMemo(() => {");
+    expect(source).toContain("ownerGroupsByUserId.get(recipient.userId)");
+    expect(source).toContain("ShareLanesDisclosure");
   });
 
   it("renders every people-listing surface from grouped grants", () => {
@@ -323,6 +368,8 @@ describe("hub wiring", () => {
     // The common case must not have grown a step: the chevron appears only for
     // somebody who genuinely holds two.
     expect(source).toContain("group.grants.length === 1");
-    expect(source).toContain("shareGroup.grants.length === 1");
+    expect(liveShareStatusCardSource).toContain(
+      "status.grantCount === 1 && Boolean(status.stoppableGrantId)",
+    );
   });
 });

@@ -112,15 +112,23 @@ describe("navigation routes", () => {
     expect(buildProfileRoute({ panel: "preferences", detail: "gemini" })).toBe(
       "/one/profile/preferences/gemini",
     );
+    expect(buildProfileRoute({ panel: "preferences", detail: "voice" })).toBe(
+      "/one/profile/preferences/voice",
+    );
     expect(buildProfileRoute({ panel: "security", detail: "vault" })).toBe(
       "/one/profile/security/vault",
     );
     expect(
       buildProfileRoute({ panel: "my-data", detail: "domain:finance" }),
     ).toBe("/one/profile/my-data/domain?key=finance");
+    // Sharing and its per-connection detail are sub-views of the unified Memory
+    // panel but keep the legacy /one/profile/access URLs for deep-link parity.
     expect(
-      buildProfileRoute({ panel: "access", detail: "connection:abc 123" }),
+      buildProfileRoute({ panel: "my-data", detail: "connection:abc 123" }),
     ).toBe("/one/profile/access/connection?id=abc+123");
+    expect(buildProfileRoute({ panel: "my-data", detail: "sharing" })).toBe(
+      "/one/profile/access",
+    );
     expect(
       buildProfileRoute({
         panel: "support",
@@ -157,7 +165,24 @@ describe("navigation routes", () => {
         "/one/profile",
         "tab=privacy&detail=connection:abc",
       ),
-    ).toEqual({ panel: "access", detail: "connection:abc" });
+    ).toEqual({ panel: "my-data", detail: "connection:abc" });
+    expect(resolveProfileRouteState("/one/profile/access")).toEqual({
+      panel: "my-data",
+      detail: "sharing",
+    });
+    expect(
+      resolveProfileRouteState(
+        "/one/profile/preferences/voice/changelog",
+      ),
+    ).toEqual({ panel: "preferences", detail: "voice" });
+    expect(
+      resolveProfileRouteState(
+        "/one/profile/preferences/voice/examples",
+      ),
+    ).toEqual({ panel: "preferences", detail: "voice" });
+    expect(
+      resolveProfileRouteState("/one/profile/access/connection", "id=abc"),
+    ).toEqual({ panel: "my-data", detail: "connection:abc" });
     expect(resolveProfileRouteState("/one/profile/regulatory")).toEqual({
       panel: null,
       detail: null,
@@ -186,6 +211,18 @@ describe("navigation routes", () => {
         "panel=gmail&detail=gmail-actions",
       ),
     ).toBe("/one/gmail");
+    expect(
+      buildCanonicalProfileRouteFromLegacyQuery(
+        "/one/profile",
+        "panel=preferences&detail=voice-changelog",
+      ),
+    ).toBe("/one/profile/preferences/voice");
+    expect(
+      buildCanonicalProfileRouteFromLegacyQuery(
+        "/one/profile",
+        "panel=preferences&detail=voice-examples",
+      ),
+    ).toBe("/one/profile/preferences/voice");
   });
 
   it("preserves query parameter integrity for ria workspace tabs", () => {

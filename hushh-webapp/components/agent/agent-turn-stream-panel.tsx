@@ -6,6 +6,8 @@ import {
   AppStreamPanel,
   type AppStreamProgressItem,
 } from "@/components/app-ui/stream-progress-panel";
+import { AgentStructuredExperienceView } from "@/components/agent/agent-structured-experience";
+import type { AgentStructuredExperience } from "@/lib/agent/agui-structured-experiences";
 import type { AgentChatToolEvent, AgentSource } from "@/lib/services/agent-chat-client";
 
 export type AgentVisibleStreamStatus = "running" | "done" | "blocked" | "error";
@@ -28,6 +30,7 @@ export type AgentTurnStreamPanelProps = {
   className?: string;
   thinkingText?: string;
   sources?: AgentSource[];
+  structuredExperience?: AgentStructuredExperience | null;
 };
 
 const MAX_VISIBLE_SOURCES = 8;
@@ -38,6 +41,7 @@ const SOURCE_SUMMARIES: Record<string, { badge: string; message: string }> = {
   agent_connected_systems: { badge: "Specialist", message: "Connections assistant consulted." },
   agent_connections: { badge: "Specialist", message: "Connections assistant consulted." },
   agent_nav: { badge: "Specialist", message: "Consent assistant consulted." },
+  agent_personal_information: { badge: "Specialist", message: "Memory assistant consulted." },
   agent_kai: { badge: "Specialist", message: "Finance specialist consulted." },
   web: { badge: "Web", message: "Public web research consulted." },
 };
@@ -116,6 +120,7 @@ export function AgentTurnStreamPanel({
   className,
   thinkingText,
   sources = [],
+  structuredExperience = null,
 }: AgentTurnStreamPanelProps) {
   const progressItems = useMemo<AppStreamProgressItem[]>(
     () =>
@@ -128,9 +133,10 @@ export function AgentTurnStreamPanel({
     [streamEvents]
   );
   const specialistItems = useMemo(() => normalizeSpecialistSources(sources), [sources]);
-  // Provider reasoning is deliberately not rendered. Consumer activity is
-  // limited to sanitized tool, memory, and specialist lifecycle facts.
-  void thinkingText;
+  // Provider reasoning is rendered again (founder directive 2026-09-02): the
+  // owner asked to see the agent think. It stays inside the activity panel,
+  // below the sanitized tool/memory/specialist lifecycle facts, so it is
+  // available without competing with the answer.
 
   return (
     <AppStreamPanel
@@ -138,6 +144,20 @@ export function AgentTurnStreamPanel({
       progressItems={[...progressItems, ...specialistItems]}
       responseText={responseText}
       response={response}
+      structuredContent={
+        structuredExperience ? (
+          <AgentStructuredExperienceView experience={structuredExperience} />
+        ) : null
+      }
+      thinkingTitle="One is thinking"
+      thinkingContent={
+        thinkingText && thinkingText.trim() ? (
+          <p className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+            {thinkingText.trim()}
+          </p>
+        ) : null
+      }
+      thinkingClassName="bg-transparent dark:bg-transparent"
       responsePendingLabel="One is preparing your response."
       isStreaming={isStreaming}
       isError={isError}

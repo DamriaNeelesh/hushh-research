@@ -17,7 +17,10 @@ import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.Scope
+import com.google.firebase.FirebaseNetworkException
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.OAuthProvider
@@ -40,10 +43,26 @@ import org.json.JSONObject
 @CapacitorPlugin(name = "HushhAuth")
 class HushhAuthPlugin : Plugin() {
 
+    private enum class TokenRefreshRejection(val bridgeCode: String, val bridgeMessage: String) {
+        USER_NOT_FOUND("auth/user-not-found", "The account no longer exists."),
+        USER_DISABLED("auth/user-disabled", "The account has been disabled."),
+        INVALID_USER_TOKEN("auth/invalid-user-token", "The current Firebase session is no longer valid."),
+        USER_TOKEN_EXPIRED("auth/user-token-expired", "The current Firebase session is no longer valid."),
+        NETWORK_REQUEST_FAILED(
+            "auth/network-request-failed",
+            "Firebase could not be reached to validate the session."
+        ),
+        INTERNAL_ERROR("auth/internal-error", "Firebase could not validate the current session.")
+    }
+
     private val TAG = "HushhAuth"
     private lateinit var googleSignInClient: GoogleSignInClient
     private var pendingCall: PluginCall? = null
+    private var pendingGmailConnectCall: PluginCall? = null
+    private var pendingCalendarConnectCall: PluginCall? = null
     private lateinit var signInLauncher: ActivityResultLauncher<Intent>
+    private lateinit var gmailConnectLauncher: ActivityResultLauncher<Intent>
+    private lateinit var calendarConnectLauncher: ActivityResultLauncher<Intent>
 
     // Current user data
     private var currentIdToken: String? = null
@@ -73,6 +92,16 @@ class HushhAuthPlugin : Plugin() {
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             handleSignInResult(result.resultCode, result.data)
+        }
+        gmailConnectLauncher = activity.registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            handleGmailConnectResult(result.data)
+        }
+        calendarConnectLauncher = activity.registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            handleCalendarConnectResult(result.data)
         }
     }
 
@@ -213,6 +242,138 @@ class HushhAuthPlugin : Plugin() {
             }
     }
 
+    // ==================== Gmail Connect ====================
+
+    /**
+     * Requests Gmail consent separately from Firebase sign-in. The platform SDK
+     * returns a one-time server authorization code; no Gmail credential is
+     * persisted by this plugin.
+     */
+    @PluginMethod
+    fun connectGmail(call: PluginCall) {
+        val serverClientId = call.getString("serverClientId")?.trim()
+        val purpose = call.getString("purpose")?.trim() ?: "read"
+        if (serverClientId.isNullOrEmpty()) {
+            call.reject("Missing Google server client ID")
+            return
+        }
+        if (pendingGmailConnectCall != null) {
+            call.reject("Gmail connection is already in progress")
+            return
+        }
+
+        pendingGmailConnectCall = call
+        val gmailScopes = mutableListOf(Scope("https://www.googleapis.com/auth/gmail.readonly"))
+        if (purpose == "send") {
+            gmailScopes.add(Scope("https://www.googleapis.com/auth/gmail.send"))
+        }
+        val gmailOptions = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestServerAuthCode(serverClientId, true)
+            .requestEmail()
+            .requestScopes(gmailScopes.first(), *gmailScopes.drop(1).toTypedArray())
+            .build()
+        val gmailSignInClient = GoogleSignIn.getClient(activity, gmailOptions)
+
+        activity.runOnUiThread {
+            gmailConnectLauncher.launch(gmailSignInClient.signInIntent)
+        }
+    }
+
+    private fun handleGmailConnectResult(data: Intent?) {
+        val call = pendingGmailConnectCall ?: run {
+            Log.e(TAG, "❌ [HushhAuth] No pending Gmail connection call")
+            return
+        }
+
+        try {
+            val account = GoogleSignIn.getSignedInAccountFromIntent(data)
+                .getResult(ApiException::class.java)
+            val serverAuthCode = account.serverAuthCode
+            if (serverAuthCode.isNullOrBlank()) {
+                call.reject("Google did not return a Gmail authorization code")
+            } else {
+                call.resolve(JSObject().put("serverAuthCode", serverAuthCode))
+            }
+        } catch (error: ApiException) {
+            Log.e(TAG, "❌ [HushhAuth] Gmail connection failed: ${error.statusCode} - ${error.message}")
+            if (error.statusCode == 12501) {
+                call.reject("Gmail connection was cancelled", "USER_CANCELLED")
+            } else {
+                call.reject("Gmail sign-in failed: ${error.message}")
+            }
+        } finally {
+            pendingGmailConnectCall = null
+        }
+    }
+
+    // ==================== Calendar Connect ====================
+
+    /** Requests the least-privileged Calendar scope set for the selected action. */
+    @PluginMethod
+    fun connectCalendar(call: PluginCall) {
+        val serverClientId = call.getString("serverClientId")?.trim()
+        val accessLevel = call.getString("accessLevel")?.trim() ?: "read"
+        if (serverClientId.isNullOrEmpty()) {
+            call.reject("Missing Google server client ID")
+            return
+        }
+        if (accessLevel != "read" && accessLevel != "manage") {
+            call.reject("Unsupported Calendar access level")
+            return
+        }
+        if (pendingCalendarConnectCall != null) {
+            call.reject("Calendar connection is already in progress")
+            return
+        }
+
+        pendingCalendarConnectCall = call
+        val calendarScopes = mutableListOf(
+            Scope(
+                if (accessLevel == "manage") {
+                    "https://www.googleapis.com/auth/calendar.events"
+                } else {
+                    "https://www.googleapis.com/auth/calendar.events.readonly"
+                }
+            ),
+            Scope("https://www.googleapis.com/auth/calendar.freebusy")
+        )
+        val calendarOptions = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestServerAuthCode(serverClientId, true)
+            .requestEmail()
+            .requestScopes(calendarScopes.first(), *calendarScopes.drop(1).toTypedArray())
+            .build()
+        val calendarSignInClient = GoogleSignIn.getClient(activity, calendarOptions)
+        activity.runOnUiThread {
+            calendarConnectLauncher.launch(calendarSignInClient.signInIntent)
+        }
+    }
+
+    private fun handleCalendarConnectResult(data: Intent?) {
+        val call = pendingCalendarConnectCall ?: run {
+            Log.e(TAG, "❌ [HushhAuth] No pending Calendar connection call")
+            return
+        }
+        try {
+            val account = GoogleSignIn.getSignedInAccountFromIntent(data)
+                .getResult(ApiException::class.java)
+            val serverAuthCode = account.serverAuthCode
+            if (serverAuthCode.isNullOrBlank()) {
+                call.reject("Google did not return a Calendar authorization code")
+            } else {
+                call.resolve(JSObject().put("serverAuthCode", serverAuthCode))
+            }
+        } catch (error: ApiException) {
+            Log.e(TAG, "❌ [HushhAuth] Calendar connection failed: ${error.statusCode} - ${error.message}")
+            if (error.statusCode == 12501) {
+                call.reject("Calendar connection was cancelled", "USER_CANCELLED")
+            } else {
+                call.reject("Calendar sign-in failed: ${error.message}")
+            }
+        } finally {
+            pendingCalendarConnectCall = null
+        }
+    }
+
     // ==================== Sign Out ====================
 
     @PluginMethod
@@ -239,27 +400,79 @@ class HushhAuthPlugin : Plugin() {
 
     // ==================== Get ID Token ====================
 
+    private fun tokenRefreshRejection(exception: Exception?): TokenRefreshRejection {
+        val firebaseCode = (exception as? FirebaseAuthException)?.errorCode
+        return when (firebaseCode) {
+            "ERROR_USER_NOT_FOUND" -> TokenRefreshRejection.USER_NOT_FOUND
+            "ERROR_USER_DISABLED" -> TokenRefreshRejection.USER_DISABLED
+            "ERROR_INVALID_USER_TOKEN" -> TokenRefreshRejection.INVALID_USER_TOKEN
+            "ERROR_USER_TOKEN_EXPIRED" -> TokenRefreshRejection.USER_TOKEN_EXPIRED
+            "ERROR_NETWORK_REQUEST_FAILED" -> TokenRefreshRejection.NETWORK_REQUEST_FAILED
+            else -> if (
+                exception is FirebaseNetworkException ||
+                exception?.cause is FirebaseNetworkException
+            ) {
+                TokenRefreshRejection.NETWORK_REQUEST_FAILED
+            } else {
+                TokenRefreshRejection.INTERNAL_ERROR
+            }
+        }
+    }
+
+    private fun rejectForcedTokenRefresh(call: PluginCall, exception: Exception?) {
+        val rejection = if (exception == null) {
+            TokenRefreshRejection.INVALID_USER_TOKEN
+        } else {
+            tokenRefreshRejection(exception)
+        }
+
+        // Localized SDK details are diagnostic-only. The bridge exposes a
+        // stable code plus a non-localized message for deterministic handling.
+        Log.w(
+            TAG,
+            "⚠️ [HushhAuth] Firebase token refresh failed [${rejection.bridgeCode}]: " +
+                (exception?.localizedMessage ?: "no live Firebase token")
+        )
+        call.reject(rejection.bridgeMessage, rejection.bridgeCode)
+    }
+
     @PluginMethod
     fun getIdToken(call: PluginCall) {
         val user = firebaseAuth.currentUser
+        val forceRefresh = call.getBoolean("forceRefresh", false) ?: false
         
         if (user != null) {
-            // Priority 1: Get fresh token from Firebase SDK (auto-refreshes if needed)
-            user.getIdToken(false).addOnCompleteListener(activity) { task ->
+            // Firebase owns forced-refresh authority. In that mode, a failed
+            // refresh must not be hidden by the Keystore's unexpired token.
+            user.getIdToken(forceRefresh).addOnCompleteListener(activity) { task ->
                 if (task.isSuccessful) {
                     val token = task.result?.token
-                    currentIdToken = token
-                    // Update storage with fresh token
-                    if (token != null && currentUser != null) {
-                        saveCredentialsToSecureStorage(token, currentAccessToken ?: "", currentUser!!)
+                    if (!token.isNullOrBlank()) {
+                        currentIdToken = token
+                        // Update storage with fresh token
+                        if (currentUser != null) {
+                            saveCredentialsToSecureStorage(token, currentAccessToken ?: "", currentUser!!)
+                        }
+                        call.resolve(JSObject().put("idToken", token))
+                    } else if (forceRefresh) {
+                        rejectForcedTokenRefresh(call, null)
+                    } else {
+                        resolveFromStorage(call)
                     }
-                    call.resolve(JSObject().put("idToken", token))
                 } else {
-                    Log.w(TAG, "⚠️ [HushhAuth] Failed to refresh token: ${task.exception?.message}")
-                    // Fallback to storage if network fails
-                    resolveFromStorage(call)
+                    if (forceRefresh) {
+                        rejectForcedTokenRefresh(call, task.exception)
+                    } else {
+                        Log.w(TAG, "⚠️ [HushhAuth] Failed to refresh token: ${task.exception?.message}")
+                        // Normal reads retain the offline secure-storage fallback.
+                        resolveFromStorage(call)
+                    }
                 }
             }
+        } else if (forceRefresh) {
+            // A forced validation request with no live Firebase principal must
+            // be terminal; returning null lets callers resurrect cached state.
+            rejectForcedTokenRefresh(call, null)
         } else {
             // Priority 2: Fallback to Secure Storage/Memory if SDK isn't ready
             resolveFromStorage(call)

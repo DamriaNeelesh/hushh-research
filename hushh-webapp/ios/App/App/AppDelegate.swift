@@ -6,6 +6,9 @@ import FirebaseMessaging
 import GoogleSignIn
 import UserNotifications
 import AVFoundation
+#if canImport(AppIntents)
+import AppIntents
+#endif
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -21,6 +24,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private let nativeTestConfig = NativeTestConfiguration()
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+#if canImport(AppIntents)
+        if #available(iOS 16.0, *) {
+            HusshOneAppShortcuts.updateAppShortcutParameters()
+        }
+#endif
         // Ensure Firebase is initialized once for native plugins and auth flows.
         // `FirebaseApp.app()` logs an error when no default app exists, even
         // when that is the normal first-launch state. Inspect the registry so
@@ -37,6 +45,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
 
         NativeTestResetter.resetAppStateIfNeeded(configuration: nativeTestConfig)
+        requestVoiceDeviceTestMicrophonePermissionIfNeeded()
 
         prepareEmergencySmsSound()
         registerNotificationCategories()
@@ -83,11 +92,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
-        // Sent when the application is about to move from active to inactive state. This can occur for certain types of temporary interruptions (such as an incoming phone call or SMS message) or when the user quits the application and it begins the transition to the background state.
-        // Use this method to pause ongoing tasks, disable timers, and invalidate graphics rendering callbacks. Games should use this method to pause the game.
+        // Cover the WebView before iOS captures an app-switcher snapshot. The
+        // cover remains after resume until JavaScript acknowledges this exact
+        // lifecycle generation after the resumed document is ready to be shown.
+        HushhSessionPrivacyShield.shared.protectForAppInactive()
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
+        HushhSessionPrivacyShield.shared.markAppBackgrounded()
         // Use this method to release shared resources, save user data, invalidate timers, and store enough application state information to restore your application to its current state in case it is terminated later.
         // If your application supports background execution, this method is called instead of applicationWillTerminate: when the user quits.
     }
@@ -98,7 +110,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         // Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
+        HushhSessionPrivacyShield.shared.markAppActive()
         logNotificationSettings(context: "applicationDidBecomeActive")
+        OneVoiceInvocationCoordinator.shared.publishAvailability(state: "foregrounded")
+        OneSystemActionInvocationCoordinator.shared.publishAvailability(state: "foregrounded")
+        OneSystemRequestInvocationCoordinator.shared.publishAvailability(state: "foregrounded")
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
@@ -138,6 +154,20 @@ extension AppDelegate: MessagingDelegate {
 }
 
 private extension AppDelegate {
+    /// Physical-device CI uses this DEBUG-only launch argument to surface the
+    /// normal iOS microphone prompt before the benchmark. It has no release
+    /// behavior, does not persist audio, and does not bypass user consent.
+    func requestVoiceDeviceTestMicrophonePermissionIfNeeded() {
+#if DEBUG
+        guard ProcessInfo.processInfo.arguments.contains("-HUSSHVoiceDevicePermissionBootstrap") else {
+            return
+        }
+        let session = AVAudioSession.sharedInstance()
+        guard session.recordPermission == .undetermined else { return }
+        session.requestRecordPermission { _ in }
+#endif
+    }
+
     func registerNotificationCategories() {
         let reviewAction = UNNotificationAction(
             identifier: Self.consentReviewAction,

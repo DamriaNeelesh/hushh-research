@@ -30,7 +30,10 @@ const GMAIL_RECONCILE_TIMEOUT_MS = resolveSlowRequestTimeoutMs(30_000, {
   overrideEnvKey: "HUSHH_KAI_GMAIL_RECONCILE_TIMEOUT_MS",
 });
 const GMAIL_CONNECT_COMPLETE_TIMEOUT_MS = resolveSlowRequestTimeoutMs(30_000, {
-  developmentFloorMs: 30_000,
+  // Local development uses the UAT-backed Cloud SQL proxy. OAuth persistence
+  // can legitimately spend longer waiting for that shared pool than the
+  // ordinary Gmail read budget; keep a bounded margin for the callback.
+  developmentFloorMs: 45_000,
   overrideEnvKey: "HUSHH_KAI_GMAIL_CONNECT_COMPLETE_TIMEOUT_MS",
 });
 function isGmailPath(path: string): boolean {
@@ -38,14 +41,21 @@ function isGmailPath(path: string): boolean {
 }
 
 function isUpstreamTimeoutError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const normalizedMessage = error.message.toLowerCase();
+  const name =
+    error && typeof error === "object" && "name" in error
+      ? String((error as { name?: unknown }).name || "")
+      : "";
+  const normalizedMessage =
+    error && typeof error === "object" && "message" in error
+      ? String((error as { message?: unknown }).message || "").toLowerCase()
+      : String(error || "").toLowerCase();
   const causeCode =
-    typeof (error as Error & { cause?: { code?: unknown } }).cause?.code === "string"
-      ? (error as Error & { cause: { code: string } }).cause.code
+    error && typeof error === "object" && "cause" in error &&
+    typeof (error as { cause?: { code?: unknown } }).cause?.code === "string"
+      ? (error as { cause: { code: string } }).cause.code
       : "";
   return (
-    error.name === "TimeoutError" ||
+    name === "TimeoutError" ||
     normalizedMessage.includes("timed out") ||
     normalizedMessage.includes("timeout") ||
     causeCode === "UND_ERR_HEADERS_TIMEOUT"
@@ -64,8 +74,12 @@ function isClientAbortError(error: unknown): boolean {
 
 function resolveUpstreamSignal(
   requestSignal: AbortSignal,
-  timeoutMs: number | null
+  timeoutMs: number | null,
+  options?: { ignoreClientAbort?: boolean }
 ): AbortSignal {
+  if (options?.ignoreClientAbort) {
+    return timeoutMs ? AbortSignal.timeout(timeoutMs) : new AbortController().signal;
+  }
   if (!timeoutMs) {
     return requestSignal;
   }
@@ -280,7 +294,13 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
       method: request.method,
       headers: headers,
       body: body,
-      signal: resolveUpstreamSignal(request.signal, upstreamTimeoutMs),
+      // The callback page can close as soon as the provider hands control
+      // back. Its single-use code exchange must still finish within the
+      // bounded server timeout so the Gmail opener can recover from persisted
+      // connection state on focus/close.
+      signal: resolveUpstreamSignal(request.signal, upstreamTimeoutMs, {
+        ignoreClientAbort: path === "gmail/connect/complete",
+      }),
     });
 
     // Check for SSE stream response
@@ -335,6 +355,21 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
 
     return withRequestIdJson(requestId, data);
   } catch (error) {
+    // AbortSignal.timeout() may surface as an AbortError with an "aborted"
+    // message in some Node/Undici versions. Check timeout first or a server
+    // deadline is incorrectly reported to the browser as a user cancellation.
+    if (isUpstreamTimeoutError(error)) {
+      console.error(
+        `[Kai API] request_id=${requestId} upstream_timeout path=${path}`,
+        summarizeProxyError(error),
+      );
+      return withRequestIdJson(
+        requestId,
+        buildUpstreamFailurePayload(path, error),
+        { status: 504 },
+      );
+    }
+
     if (isClientAbortError(error)) {
       console.info(`[Kai API] request_id=${requestId} client_aborted path=${path}`);
       return withRequestIdJson(

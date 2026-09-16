@@ -6,7 +6,9 @@ import path from "node:path";
 const repoRoot = process.cwd();
 const iosInfoPlistPath = path.join(repoRoot, "ios/App/App/Info.plist");
 const androidManifestPath = path.join(repoRoot, "android/app/src/main/AndroidManifest.xml");
+const androidContactsPluginPath = path.join(repoRoot, "android/app/src/main/java/com/hussh/app/plugins/HushhContacts/HushhContactsPlugin.kt");
 const routesPath = path.join(repoRoot, "lib/navigation/routes.ts");
+const routeLayoutPath = path.join(repoRoot, "lib/navigation/app-route-layout.contract.json");
 const inventoryPath = path.join(repoRoot, "native-route-inventory.json");
 
 function fail(message) {
@@ -71,22 +73,25 @@ if (!contactsUsageMatch?.[1]?.trim()) {
   fail("iOS Info.plist must include non-empty NSContactsUsageDescription.");
 }
 
-// Brand spelling in the strings iOS actually shows a person: the app name under
-// the icon, in Settings, and in every permission prompt. These are already
-// correct, and this asserts they stay that way — issue #5422 was a brand
-// misspelling that shipped because nothing checked notification/app copy.
+// Keep the distributed bundle identity at the unique, previously accepted
+// "Hussh One" while the visible and spoken system name remains the intentional
+// Siri-facing "Agent One". These fields are separate contracts and must not collapse
+// back to the globally generic bundle name that App Store Connect rejected.
 //
-// Scoped to display copy on purpose. `hushh` is load-bearing elsewhere in this
-// same file — the `hushh` CFBundleURLScheme and the com.hushh.app bundle
-// identifier — and renaming either would break deep links and code signing.
-const IOS_PRODUCT_NAME = "Hussh One";
-for (const key of ["CFBundleDisplayName", "CFBundleName"]) {
+// Scoped to visible/spoken copy on purpose. The `hushh` CFBundleURLScheme and
+// com.hushh.app bundle identifier remain load-bearing for deep links/signing.
+const expectedIosNames = new Map([
+  ["CFBundleDisplayName", "Agent One"],
+  ["CFBundleName", "Hussh One"],
+  ["CFBundleSpokenName", "Agent One"],
+]);
+for (const [key, expected] of expectedIosNames) {
   const match = infoPlist.match(
     new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`)
   );
-  if (match?.[1] !== IOS_PRODUCT_NAME) {
+  if (match?.[1] !== expected) {
     fail(
-      `iOS Info.plist ${key} must be "${IOS_PRODUCT_NAME}" (found "${match?.[1] ?? "missing"}").`
+      `iOS Info.plist ${key} must be "${expected}" (found "${match?.[1] ?? "missing"}").`
     );
   }
 }
@@ -140,6 +145,21 @@ if (!androidManifest.includes('android.permission.READ_CONTACTS')) {
 if (androidManifest.includes('android.permission.ACCESS_BACKGROUND_LOCATION')) {
   fail("One Location Agent v1 must not request android.permission.ACCESS_BACKGROUND_LOCATION.");
 }
+const androidContactsPlugin = read(androidContactsPluginPath);
+const androidDeviceRegion = androidContactsPlugin.match(
+  /private fun deviceRegion\(\): String\?[\s\S]*?\n    private fun resolveContacts/,
+)?.[0];
+if (!androidDeviceRegion?.includes("simCountryIso")) {
+  fail("Android contact matching must derive its strongest region from the SIM.");
+}
+if (
+  androidDeviceRegion.includes("networkCountryIso") ||
+  androidDeviceRegion.includes("Locale.getDefault().country")
+) {
+  fail(
+    "Android must not label roaming-network or UI-locale fallbacks as home number-plan evidence; the shared resolver owns fallback after the verified account phone.",
+  );
+}
 const androidMainActivity = androidManifest.match(
   /<activity\b(?=[^>]*android:name="\.MainActivity")[^>]*>/,
 );
@@ -153,11 +173,23 @@ if (!infoPlist.includes("<string>location</string>")) {
 }
 
 const routeValues = routeValuesFromRoutesTs(read(routesPath));
+const routeLayout = JSON.parse(read(routeLayoutPath));
+const redirectOnlyRoutes = new Set(
+  routeLayout
+    .filter((route) => route?.mode === "redirect")
+    .map((route) => route.route),
+);
 const inventory = JSON.parse(read(inventoryPath));
 const inventoryRoutes = inventory.routes || [];
 const inventoryRouteSet = new Set(inventoryRoutes.map((route) => route.route));
 
-const missingRoutes = routeValues.filter((route) => !inventoryRouteSet.has(route));
+// Compatibility routes are web redirects, not native destinations. They remain
+// in ROUTES so inbound links and the web proxy stay typed, but must not force a
+// native inventory entry or native smoke surface of their own.
+const missingRoutes = routeValues.filter(
+  (route) =>
+    !inventoryRouteSet.has(route) && !redirectOnlyRoutes.has(route),
+);
 if (missingRoutes.length > 0) {
   fail(`native-route-inventory.json is missing ROUTES entries: ${missingRoutes.join(", ")}`);
 }
@@ -195,6 +227,25 @@ const markerlessRequiredRoutes = inventoryRoutes
   .map((route) => route.route);
 if (markerlessRequiredRoutes.length > 0) {
   fail(`native-required routes need expectedMarker: ${markerlessRequiredRoutes.join(", ")}`);
+}
+
+// An `excluded-*` classification drops a route out of every parity check above.
+// That is the one place tri-flow can be lost silently: marking a route excluded
+// costs nothing and no reviewer sees why. The PR template already demands the
+// layer be "explicitly marked as not applicable with the reason" -- this makes
+// the inventory hold that reason, so the claim is reviewable instead of implied.
+const EXCLUSION_REASON_MIN_LENGTH = 40;
+const unjustifiedExclusions = inventoryRoutes
+  .filter((route) => String(route.classification || "").startsWith("excluded"))
+  .filter(
+    (route) => String(route.reason || "").trim().length < EXCLUSION_REASON_MIN_LENGTH
+  )
+  .map((route) => route.route);
+if (unjustifiedExclusions.length > 0) {
+  fail(
+    "excluded routes need a `reason` explaining why the native layer does not apply " +
+      `(min ${EXCLUSION_REASON_MIN_LENGTH} chars): ${unjustifiedExclusions.join(", ")}`
+  );
 }
 
 const nonCanonicalProfileLaunches = inventoryRoutes

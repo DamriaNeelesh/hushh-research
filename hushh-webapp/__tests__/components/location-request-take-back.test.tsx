@@ -10,8 +10,8 @@
 // owner approves, or the owner denies. A wrong name or a changed mind was
 // permanent until the other side happened to answer.
 //
-// Two surfaces show a sent request, so both are checked here: the person row
-// on Request location, and the "Requests sent" list on the hub. The hub's
+// Two surfaces manage a sent request: the searchable Ask roster and the
+// People actions sheet. Both use the same withdrawal callback. The hub's
 // flows are internals of a ~3000-line module, so their wiring is asserted as a
 // source contract -- the pattern this repo already uses for hub placement --
 // while the row's own behaviour is rendered for real.
@@ -61,9 +61,7 @@ describe("the row for someone you already asked", () => {
 
   it("still says access when the row really is a live share", () => {
     // The default has to survive: most rows carrying this control are shares.
-    render(
-      <TrustedPersonCard name="Neelesh Meena" onRemove={vi.fn()} />,
-    );
+    render(<TrustedPersonCard name="Neelesh Meena" onRemove={vi.fn()} />);
     expect(screen.getByLabelText("Remove Neelesh Meena's access")).toBeTruthy();
   });
 
@@ -84,12 +82,13 @@ describe("the row for someone you already asked", () => {
   });
 });
 
-describe("Request location wires the take-back to the pending ask", () => {
+describe("Ask for location wires take-back to its searchable roster", () => {
   const ask = functionBody("AskFlow");
 
-  it("offers it on a row whose request is still unanswered", () => {
+  it("offers pending request management on the matching person", () => {
+    expect(ask).toContain("showStateActions && pendingRequestId");
+    expect(ask).toContain("Take back your request to ${recipientLabel}");
     expect(ask).toContain("vm.onWithdrawRequest(pendingRequestId)");
-    expect(ask).toContain("const pendingRequestId = status.pendingRequestId");
   });
 
   it("keeps the live-share revoke on rows that have a grant", () => {
@@ -105,44 +104,27 @@ describe("Request location wires the take-back to the pending ask", () => {
   });
 });
 
-describe("the Requests sent list", () => {
-  it("gives a pending row a way out instead of only naming its state", () => {
-    // The trailing slot used to be the bare word "Pending": the state was
-    // reported, and there was nothing to do about it.
-    expect(source).toContain("Take back");
-    expect(source).toContain("vm.onWithdrawRequest(request.id)");
+describe("People request management", () => {
+  const people = functionBody("PeopleHub");
+  const actions = functionBody("PersonActionsDialog");
+
+  it("cancels the selected request through the person actions sheet", () => {
+    expect(people).toContain("void vm.onWithdrawRequest(selectedPendingRequest.id)");
+    expect(people).toContain("onCancelRequest=");
+    expect(actions).toContain("onClick={onCancelRequest}");
   });
 
-  it("does not put a word beside the button", () => {
-    // Measured, not preferred. "Pending" plus the button came to 161px in a
-    // `shrink-0` trailing slot, against the shipped Edit/Stop pair's 115px --
-    // enough to wrap the person's name onto a second line at 320px and grow
-    // the row from 70px to 166px.
-    //
-    // The sibling contract in e2e/ measures that, but it measures a CAPTURED
-    // fixture: re-adding the word here would not change the fixture and would
-    // not turn it red. This assertion is what closes that gap, so the two are
-    // load-bearing together, not redundant.
-    const pendingBranchStart = source.indexOf('request.status === "pending" ?');
-    expect(pendingBranchStart).toBeGreaterThan(-1);
-    const pendingBranchEnd = source.indexOf(
-      "requestStatusWord(request.status)",
-      pendingBranchStart,
-    );
-    expect(pendingBranchEnd).toBeGreaterThan(pendingBranchStart);
-    const pendingBranch = source
-      .slice(pendingBranchStart, pendingBranchEnd)
-      // The comment explaining the decision says "Pending" itself.
-      .replace(/^\s*\/\/.*$/gm, "");
-    expect(pendingBranch.trim().length).toBeGreaterThan(0);
-    expect(pendingBranch).not.toContain("Pending");
-    expect(pendingBranch).not.toContain("MUTED_TEXT");
+  it("disables cancellation while the selected request is being withdrawn", () => {
+    expect(actions).toContain('title={cancelBusy ? "Cancelling…" : "Cancel request"}');
+    expect(actions).toContain("disabled={cancelBusy}");
+    expect(actions).toContain("withdrawingRequestId === pendingRequest?.id");
   });
 
-  it("stops calling a settled request pending", () => {
-    // Everything not live read "Pending", so a request the person had already
-    // withdrawn still claimed to be waiting on somebody.
-    expect(source).toContain("requestStatusWord(request.status)");
-    expect(source).toContain('if (status === "cancelled") return "Taken back"');
+  it("does not present expired cached requests as pending", () => {
+    expect(people).toContain("isLocationRequestPending(request, vm.nowMs)");
+    expect(people).toContain("[vm.nowMs, vm.requestedByMe]");
+    const ask = functionBody("AskFlow");
+    expect(ask).toContain("isLocationRequestPending(request, statusNowMs)");
+    expect(ask).toContain("[statusNowMs, vm.requestedByMe]");
   });
 });

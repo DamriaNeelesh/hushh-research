@@ -25,7 +25,7 @@ This contract keeps shadcn as the vendor primitive layer, makes Morphy UX the st
 2. Use Morphy when the change belongs to the reusable design-system layer.
 3. Keep `components/ui` overwrite-safe with `npx shadcn@latest add ... --overwrite`.
 4. Do not place app-specific components inside `components/ui`.
-5. Shared segmented tabs live in `@/lib/morphy-ux/ui/segmented-tabs` and are re-exported through `SettingsSegmentedTabs` for app-level composition. The paired swipeable content pager is `SwipeViews` at `@/lib/morphy-ux/ui/swipe-views` (see Lean Route Headers And Responsive Lists below) — use it instead of a new carousel/tab-content implementation whenever a page has more than one locally-selectable view.
+5. Tab ownership is semantic and canonical. Route/query-owned workspace navigation uses `TopShellTabs` backed by `TOP_SHELL_TAB_REGISTRY`; locally selectable views and filters use `SegmentedTabs` from `@/lib/morphy-ux/ui/segmented-tabs`. Do not introduce compatibility names or route-local tab primitives. `SegmentedTabs` owns `tablist`/`tab` semantics, selected state, and roving Arrow/Home/End keyboard focus. The paired swipeable content pager is `SwipeViews` at `@/lib/morphy-ux/ui/swipe-views` (see Lean Route Headers And Responsive Lists below) — use it instead of a new carousel/tab-content implementation whenever a page has more than one locally-selectable view.
 6. Morphy button, card, and surface primitives must compose stock primitives.
 7. The liquid-glass lab is experimental and not part of the Kai production design contract.
 8. `AppPageShell` and `FullscreenFlowShell` own the route container contract; feature files must not replace that contract with route-local `max-w-* mx-auto px-*` wrappers.
@@ -127,8 +127,9 @@ Forbidden:
 7. Use shared gutter tokens instead of route-local page padding:
    - `--page-inline-gutter-standard`
    - `--page-surface-overscan`
-8. **Apple design grammar** (adopted principles; enforced by `verify:accent-tokens`):
+8. **Apple design grammar** (adopted principles; enforced by shared primitive tests and `verify:design-system` where applicable):
    - Radius grammar: shapes carry meaning. `--app-radius-pill` = action signal (CTAs, chips, search, toggles); `--app-radius-lg` (18px) = compact utility cards (the shipped `--app-card-radius-*` 20/22/24 contract remains canonical for app cards); `--app-radius-sm` (8px) = compact utility rects. Do not invent radii between the stops in new components.
+   - Field geometry: direct-entry controls use `--app-input-radius`, which resolves to the capsule stop `--app-radius-pill`. `Input`, `InputGroup`, `Textarea`, `SelectTrigger`, `CommandInput`, and combobox field shells use it; compound controls keep only their outer shell rounded. Use `--app-form-field-gap` (label/control), `--app-form-related-gap` (label/related action), and `--app-form-section-gap` (primary/secondary sections) instead of local spacing guesses. Credential-related method groups keep the descriptor on its own line and center the action row below it inside a full-width `max-w-[21rem]` measure. When the hard-gate escape group is also present, use centered columns with one vertically centered divider; when only one group exists, omit the divider and keep the group centered. Visible link text stays close to the descriptor while the transparent control retains a 44px hit area; do not add pill padding, `self-start` offsets, or a left-anchored row. Hard-gate escape actions use the same two-line structure, with Recovery key and Sign out sharing the second row.
    - Press physics: the system-wide active state is the `.press-scale` utility (`--motion-press-scale: 0.95`, transform-only, reduced-motion aware), layered with the md-ripple. Wired into the Morphy Button and all segmented primitives; do not write per-component press styles.
    - Weight ladder: 300 / 400 / 600 / 700. Weight 500 (`font-medium`) is deliberately absent from `lib/morphy-ux`; labels are 400, active/strong emphasis is 600, weight 300 is a rare opt-in "airy" cue (`.type-lead-airy`).
    - Typography rungs: `.type-lead` (28/400), `.type-lead-airy` (24/300), `.type-tagline` (21/600), `.type-dense-link` (17/400/2.41) join the Foundation scale for editorial/marketing surfaces.
@@ -224,6 +225,17 @@ use equal fixed tracks from the central registry. They remain visible and
 interactive above the ambient mask on every responsive surface; route bodies
 may supply only the paired pager, never another tab row.
 
+`TopShellTabs` and `SegmentedTabs` keep distinct navigation semantics but share
+one Morphy visual anatomy: a quiet neutral rail, one moving solid selection
+surface, readable active/inactive labels, and the same focus and motion
+grammar. Location is the visual reference for every tab set; route-specific
+underlines, borders, and alternate active pills are prohibited.
+
+Selected labels use `--app-accent` in both light and dark mode, including
+Location, Connect, and Consent Center. Label typography must preserve that
+selected colour rather than override it with the neutral text token. Dense
+four-tab strips keep every label readable at the supported phone widths.
+
 `SwipeViews` (`@/lib/morphy-ux/ui/swipe-views`) is that paired pager and the
 one canonical primitive for any route or panel with more than one
 locally-selectable content view, whether the selection is query-backed
@@ -231,7 +243,7 @@ locally-selectable content view, whether the selection is query-backed
 Detailed split) or purely local state (Marketplace, Profile's PKM Agent Lab).
 It keeps every pane mounted (`aria-hidden`, never unmounted) and reports
 selection in two stages — `onSelectionChange` fires immediately for the
-visible pill/underline, `onSelectionCommit` fires after the drag settles for
+visible selection pill, `onSelectionCommit` fires after the drag settles for
 the URL or state write that should not sit in the pointer/scroll hot path.
 Use `panelInset="page"` when the surrounding shell has cancelled its own
 gutter (Finance/Location's full-bleed layout); use the default
@@ -239,7 +251,7 @@ gutter (Finance/Location's full-bleed layout); use the default
 (Marketplace, Profile, Analysis, Consent Center). Do not build a new
 swipeable-pane implementation, and do not reach for the stock shadcn
 `components/ui/carousel` for tab content — `SwipeViews` is the only one with
-the tab-underline swipe-progress sync (`lib/navigation/top-shell-tab-swipe-progress.ts`)
+the tab-selection swipe-progress sync (`lib/navigation/top-shell-tab-swipe-progress.ts`)
 that the top shell's pill relies on.
 
 Motion has one standard content-enter expression across One and every

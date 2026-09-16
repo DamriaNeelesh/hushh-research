@@ -14,6 +14,7 @@ import logging
 from typing import Optional
 
 from db.db_client import get_db
+from hushh_mcp.consent.internal_path_keys import is_internal_manifest_path
 from hushh_mcp.consent.pkm_scope_policy import is_private_pkm_export_scope
 from hushh_mcp.constants import ConsentScope
 
@@ -430,7 +431,7 @@ class DynamicScopeGenerator:
             path_result = (
                 self.db.table("pkm_manifest_paths")
                 .select(
-                    "domain,json_path,path_type,exposure_eligibility,consent_label,scope_handle"
+                    "domain,json_path,path_type,segment_id,exposure_eligibility,consent_label,scope_handle"
                 )
                 .eq("user_id", user_id)
                 .execute()
@@ -747,6 +748,12 @@ class DynamicScopeGenerator:
                     continue
                 if not self._is_exportable_scope(domain=domain, path=path):
                     continue
+                # Plumbing is never a person's information. The structural
+                # check below this one only ever compared a depth-1 segment, so
+                # `profile.domain_intent.primary` published while
+                # `domain_intent` was blocked. This reads every segment.
+                if is_internal_manifest_path(path):
+                    continue
                 manifest_externalizable_paths.add((domain, path))
                 top_level = path.split(".", 1)[0]
                 registry_meta = registry_by_top_level.get((domain, top_level), {})
@@ -800,6 +807,10 @@ class DynamicScopeGenerator:
                 continue
             if not self._is_exportable_scope(domain=domain, path=path):
                 continue
+            # Same rule, same reason, at the emitter that produced the twenty-four
+            # rows a person actually saw.
+            if is_internal_manifest_path(path):
+                continue
             domain_internal = self._is_internal_only_domain(domain)
             top_level = path.split(".", 1)[0]
             registry_meta = registry_by_top_level.get((domain, top_level), {})
@@ -813,6 +824,8 @@ class DynamicScopeGenerator:
                     "scope": self.generate_scope(domain, path),
                     "domain": domain,
                     "path": path,
+                    "path_type": str(row.get("path_type") or "leaf").strip().lower(),
+                    "segment_id": str(row.get("segment_id") or "root").strip().lower() or "root",
                     "wildcard": False,
                     "source_kind": "pkm_manifest_paths",
                     "registry_handle": str(row.get("scope_handle") or "").strip()

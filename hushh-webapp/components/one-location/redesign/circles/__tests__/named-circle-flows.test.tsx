@@ -1313,6 +1313,77 @@ describe("named Circle flows", () => {
     );
   });
 
+  it("shows every member of a joined Circle and Connect only for the four strangers", async () => {
+    const members: OneLocationCircleDetail["members"] = [
+      {
+        userId: "owner-user",
+        displayName: "Circle owner",
+        role: "owner",
+        phoneVerified: true,
+        secureLocationReady: true,
+        relationship: "connected",
+      },
+      {
+        userId: "viewer-user",
+        displayName: "You",
+        role: "member",
+        phoneVerified: true,
+        secureLocationReady: true,
+        relationship: "self",
+      },
+      ...Array.from({ length: 4 }, (_, index) => ({
+        userId: `known-${index + 1}`,
+        displayName: `Connected member ${index + 1}`,
+        role: "member" as const,
+        phoneVerified: true,
+        secureLocationReady: true,
+        relationship: "connected" as const,
+      })),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        userId: `stranger-${index + 1}`,
+        displayName: `New member ${index + 1}`,
+        role: "member" as const,
+        phoneVerified: true,
+        secureLocationReady: true,
+        relationship: "none" as const,
+        canConnect: true,
+      })),
+    ];
+    const joinedCircle: OneLocationCircleDetail = {
+      ...circle("circle-1", "Friends of friends"),
+      role: "member",
+      memberCount: 10,
+      viewerCapabilities: {
+        canInviteMembers: false,
+        canViewInviteCode: false,
+        canRotateInviteCode: false,
+        canManageCircle: false,
+        canModerateInvites: false,
+      },
+      members,
+    };
+
+    render(
+      <CircleDetailFlow
+        circleId="circle-1"
+        {...detailProps(async () => joinedCircle)}
+        currentUserId="viewer-user"
+      />,
+    );
+
+    const roster = await screen.findByTestId("one-location-circle-members");
+    const rosterRows = roster.querySelector(
+      '[data-slot="settings-group-shell"] > div',
+    );
+    expect(rosterRows?.children).toHaveLength(10);
+    expect(screen.getAllByText("10 people").length).toBeGreaterThanOrEqual(1);
+    expect(
+      within(roster).getAllByRole("button", { name: /^Connect with / }),
+    ).toHaveLength(4);
+    expect(within(roster).getByText("Connected member 4")).toBeTruthy();
+    expect(within(roster).getByText("New member 4")).toBeTruthy();
+  });
+
   it("sends an incoming request to where it can actually be answered", async () => {
     const onConnectMember = vi.fn(async () => undefined);
     const ownerCircle = {
@@ -1686,7 +1757,7 @@ describe("named Circle flows", () => {
     expect(screen.queryByText("No members found")).not.toBeInTheDocument();
   });
 
-  it("bounds the Members list to a scrollable region instead of growing the page indefinitely", async () => {
+  it("uses the page scroller on phones and bounds the Members list on larger screens", async () => {
     const rosterCircle = {
       ...circle("circle-1", "Meena Family"),
       memberLimit: 100,
@@ -1711,9 +1782,7 @@ describe("named Circle flows", () => {
 
     await screen.findByText("Synced Contact 0");
 
-    // "Delete circle" sits after the roster in source order; it must still
-    // mount even with 81 rows above it, because the roster scrolls inside
-    // its own bounded region instead of pushing the rest of the page down.
+    // "Delete circle" remains in source order even with 81 rows above it.
     expect(
       screen.getByRole("button", { name: "Delete circle" }),
     ).toBeInTheDocument();
@@ -1722,9 +1791,17 @@ describe("named Circle flows", () => {
     const shell = membersGroup.querySelector(
       '[data-slot="settings-group-shell"]',
     );
-    expect(shell?.className).toContain("max-h-[60vh]");
+    expect(shell?.className).toContain("sm:max-h-[60vh]");
+    expect(shell?.className).not.toMatch(/(?:^|\s)max-h-\[60vh\](?:\s|$)/);
     const scrollRegion = shell?.firstElementChild as HTMLElement | null;
-    expect(scrollRegion?.className).toContain("overflow-y-auto");
+    expect(scrollRegion?.className).toContain("sm:overflow-y-auto");
+    expect(scrollRegion?.className).toContain("sm:overscroll-contain");
+    expect(scrollRegion?.className).not.toMatch(
+      /(?:^|\s)overflow-y-auto(?:\s|$)/,
+    );
+    expect(scrollRegion?.className).not.toMatch(
+      /(?:^|\s)overscroll-contain(?:\s|$)/,
+    );
   });
 
   it("keeps the member search bar hidden for a small Circle", async () => {

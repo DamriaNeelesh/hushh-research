@@ -51,17 +51,24 @@ import {
 } from "@/components/one-location/redesign/tokens";
 import { roleClasses } from "@/lib/morphy-ux/tokens/semantic-roles";
 import { buildConsentCenterHref } from "@/lib/consent/consent-sheet-route";
-import { ROUTES } from "@/lib/navigation/routes";
+import { ROUTES, buildPersonProfileRoute } from "@/lib/navigation/routes";
 import {
   CIRCLE_NAME_INPUT_CLASSNAME,
   CIRCLE_NAME_ROW_CLASSNAME,
 } from "@/components/one-location/redesign/circles/circle-name-row-layout";
 import {
+  CIRCLE_DETAIL_HEADER_CLASSNAME,
+  CIRCLE_DETAIL_HEADER_COPY_CLASSNAME,
   CIRCLE_MEMBERS_CARD_SCROLL_CLASSNAME,
   CIRCLE_MEMBERS_CARD_SHELL_CLASSNAME,
   CIRCLE_MEMBER_ACTION_CLASSNAME,
+  CIRCLE_MEMBER_ACTION_COPY_CLASSNAME,
+  CIRCLE_MEMBER_STACKED_ACTION_CLASSNAME,
   CIRCLE_MEMBER_AVATAR_CLASSNAME,
+  CIRCLE_MEMBER_NAME_CLASSNAME,
+  CIRCLE_MEMBER_NAME_ROW_CLASSNAME,
   CIRCLE_MEMBER_ROW_CLASSNAME,
+  CIRCLE_MEMBER_SECONDARY_CLASSNAME,
   CIRCLE_MEMBER_TRAILING_CLASSNAME,
 } from "@/components/one-location/redesign/circles/circle-member-row-layout";
 import { CircleMemberActionsMenu } from "@/components/one-location/redesign/circles/circle-member-actions-menu";
@@ -97,7 +104,6 @@ import { ContactSourceBadge } from "@/components/connections/contact-source-badg
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
 import { LOCATION_SEARCH_INPUT_CLASSNAME } from "@/components/one-location/redesign/selectors";
 import { relationshipCta } from "@/lib/connections/relationship-label";
-import { othersCountLabel } from "@/lib/one-location/circle-member-count";
 import { ActionMenu } from "@/components/app-ui/action-menu";
 import { cn } from "@/lib/utils";
 import {
@@ -151,13 +157,11 @@ function circleInitials(value: string): string {
 }
 
 /**
- * Subtitle for the "Your circles" list row, e.g. "2 members".
+ * Subtitle for the "Your circles" list row, e.g. "3 people".
  *
- * Counts OTHER members (everyone except the viewer) so it matches the Circle
- * Detail subtitle, which filters out the current user. The backend
- * `memberCount` includes the viewer — always a member of a circle shown in
- * their own list — so subtracting one yields the same number both places.
- * `Math.max(0, ...)` guards a transient zero.
+ * Counts everyone in the Circle, owner included — matching the Circle Detail
+ * subtitle, which does the same. The backend `memberCount` already includes
+ * the owner (they always hold a membership row), so this is the raw count.
  *
  * The kind used to lead this line — "Family · 0 members". Reported from QA:
  * the circle created during onboarding is filed under Family by default and
@@ -166,15 +170,10 @@ function circleInitials(value: string): string {
  * There are three kinds and nothing on this screen acts on any of them, so
  * the word was decoration in front of the fact. The count stands alone.
  */
-/** Re-exported so existing importers keep working; the rule itself now lives
- *  in `lib/one-location/circle-member-count`, because four other screens were
- *  rendering the raw server count and disagreeing with this one. */
-export { othersCountLabel };
-
 function circleListPeopleLabel(memberCount: number | null | undefined): string {
-  const others = Math.max(0, Number(memberCount || 0) - 1);
-  if (others <= 0) return "Only you";
-  return `${others} ${others === 1 ? "person" : "people"}`;
+  const count = Math.max(0, Number(memberCount || 0));
+  if (count <= 1) return "Only you";
+  return `${count} people`;
 }
 
 type CircleListGroupKey = "owned" | "joined";
@@ -471,7 +470,7 @@ export function CirclesSection({
                   <UsersRound className="h-5 w-5" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[15px] font-semibold text-foreground">
+                  <p className="whitespace-normal text-[15px] font-semibold text-foreground [overflow-wrap:anywhere]">
                     {invite.circleName}
                   </p>
                   <p className={MUTED_TEXT}>
@@ -537,6 +536,7 @@ export function CirclesSection({
             >
               <SectionLabel
                 as="h3"
+                compact
                 className="px-[6px] text-[13px] font-normal leading-[18px] text-[color:var(--app-secondary-label)]"
               >
                 {group.title}
@@ -1101,30 +1101,33 @@ function CircleMemberRow({
   // The one second line that is asking for something rather than reporting.
   const secondaryNeedsSetup =
     member.role !== "owner" && !member.secureLocationReady;
+  const hasRelationshipControl = Boolean(pendingLabel || actionCta);
 
   return (
     <div className={CIRCLE_MEMBER_ROW_CLASSNAME}>
       <ConnectionPersonAvatar
         label={member.displayName}
         photoUrl={member.photoUrl}
+        size="list"
         verified={Boolean(member.isRia)}
         className={CIRCLE_MEMBER_AVATAR_CLASSNAME}
       />
-      <div className="min-w-0 flex-1">
-        {/* `truncate`, not `break-words`. A long name used to wrap to three
-            lines and push its own row to twice the height of its neighbours,
-            which is the other half of what a 320px phone was showing. */}
-        <p
-          className="flex min-w-0 items-center gap-1.5 text-[15px] font-semibold leading-5 text-foreground"
-          title={member.displayName}
-        >
-          <span className="min-w-0 truncate">{member.displayName}</span>
+      <div
+        className={cn(
+          "min-w-0 flex-1",
+          hasRelationshipControl && CIRCLE_MEMBER_ACTION_COPY_CLASSNAME,
+        )}
+      >
+        <p className={CIRCLE_MEMBER_NAME_ROW_CLASSNAME}>
+          <span className={CIRCLE_MEMBER_NAME_CLASSNAME}>
+            {member.displayName}
+          </span>
           {member.connectedFromContacts ? <ContactSourceBadge /> : null}
         </p>
         <p
           className={cn(
             MUTED_TEXT,
-            "truncate",
+            CIRCLE_MEMBER_SECONDARY_CLASSNAME,
             // The amber pair `WARNING_SURFACE` already uses for caution copy,
             // not the flat `--app-warning`: that token is the #ff9500 glyph
             // tone and measures ~2.2:1 on this card, well under the 4.5:1 a
@@ -1140,7 +1143,12 @@ function CircleMemberRow({
           <span className="sr-only">Connected on One</span>
         ) : null}
       </div>
-      <div className={CIRCLE_MEMBER_TRAILING_CLASSNAME}>
+      <div
+        className={cn(
+          CIRCLE_MEMBER_TRAILING_CLASSNAME,
+          hasRelationshipControl && CIRCLE_MEMBER_STACKED_ACTION_CLASSNAME,
+        )}
+      >
         {pendingLabel && !canCancelRequest ? (
           <span
             className="px-1 text-[13px] font-medium leading-5 text-muted-foreground"
@@ -1221,6 +1229,13 @@ function CircleMemberRow({
             that offer nothing, so the kebab column exists on every row. */}
         <CircleMemberActionsMenu
           displayName={member.displayName}
+          profileHref={
+            member.publicPersonRef
+              ? buildPersonProfileRoute(member.publicPersonRef, {
+                  from: ROUTES.ONE_LOCATION,
+                })
+              : null
+          }
           initials={circleInitials(member.displayName)}
           photoUrl={member.photoUrl}
           verified={Boolean(member.isRia)}
@@ -1900,11 +1915,13 @@ export function CircleDetailFlow({
 
       {circle ? (
         <>
-          <div className="flex items-start justify-between gap-4 px-1">
-            <TaskFlowHeader
-              title={circle.name}
-              description={visibleMemberSummary}
-            />
+          <div className={CIRCLE_DETAIL_HEADER_CLASSNAME}>
+            <div className={CIRCLE_DETAIL_HEADER_COPY_CLASSNAME}>
+              <TaskFlowHeader
+                title={circle.name}
+                description={visibleMemberSummary}
+              />
+            </div>
             {isOwner && circle.systemKind !== "trusted" ? (
               <Button
                 type="button"
@@ -2275,16 +2292,18 @@ export function CircleDetailFlow({
                             return (
                               <SettingsRow
                                 key={connection.userId}
+                                layout="person"
                                 leading={
                                   <ConnectionPersonAvatar
+                                    size="list"
                                     photoUrl={connection.photoUrl ?? null}
                                     label={connection.displayName}
                                     verified={Boolean(connection.isRia)}
                                   />
                                 }
                                 title={
-                                  <span className="flex min-w-0 items-center gap-1.5">
-                                    <span className="min-w-0 truncate">
+                                  <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                                    <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
                                       {connection.displayName}
                                     </span>
                                     {connection.connectedFromContacts ? (
@@ -2393,6 +2412,7 @@ export function CircleDetailFlow({
                           {pendingInvites.map((invite) => (
                             <SettingsRow
                               key={invite.id}
+                              layout="person"
                               leading={
                                 <ConnectionPersonAvatar
                                   label={
@@ -2400,7 +2420,7 @@ export function CircleDetailFlow({
                                     "One connection"
                                   }
                                   photoUrl={invite.inviteePhotoUrl}
-                                  className="h-10 w-10"
+                                  size="list"
                                 />
                               }
                               title={
@@ -2466,9 +2486,11 @@ export function CircleDetailFlow({
           >
             <div className="flex items-baseline justify-between gap-3 px-1.5">
               <SectionLabel
-                id={CIRCLE_MEMBERS_HEADING_ID}
+                as="div"
+                compact
                 role="heading"
                 aria-level={2}
+                id={CIRCLE_MEMBERS_HEADING_ID}
               >
                 Members
               </SectionLabel>

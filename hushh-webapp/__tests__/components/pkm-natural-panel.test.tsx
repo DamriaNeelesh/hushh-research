@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within, cleanup } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PkmNaturalPanel } from "@/components/profile/pkm-natural-panel";
@@ -6,6 +6,7 @@ import * as AgentPkmAutoSavePolicy from "@/lib/agent/agent-pkm-auto-save-policy"
 import { ConsentCenterService } from "@/lib/services/consent-center-service";
 import { PersonalKnowledgeModelService } from "@/lib/services/personal-knowledge-model-service";
 import { PkmWriteCoordinator } from "@/lib/services/pkm-write-coordinator";
+import { PkmDomainResourceService } from "@/lib/pkm/pkm-domain-resource";
 
 const { addToPKM, clearAgentPkmContext, previewAgentPkmMemory } = vi.hoisted(() => ({
   addToPKM: vi.fn(),
@@ -103,6 +104,31 @@ function baseMetadata() {
   };
 }
 
+// A domain manifest whose `profile` scope is a materialized, consumer-visible
+// share bundle — the shape buildPkmShareBundles() keeps. `posture` sets whether
+// the scope is currently "ask before sharing" (consent_required) or private.
+function financialManifest(posture: "consent_required" | "private") {
+  return {
+    domain: "financial",
+    manifest_version: 7,
+    scope_registry: [
+      {
+        scope_handle: "financial.profile",
+        scope_label: "Profile",
+        visibility_posture: posture,
+        exposure_enabled: posture !== "private",
+        summary_projection: {
+          top_level_scope_path: "profile",
+          materialization_state: "materialized",
+          materialized_leaf_count: 2,
+          consumer_visible: true,
+          internal_only: false,
+        },
+      },
+    ],
+  };
+}
+
 const FULL_BLOB = {
   financial: {
     profile: { risk_profile: "balanced" },
@@ -127,9 +153,17 @@ describe("PkmNaturalPanel — Memory redesign", () => {
     vi.spyOn(PersonalKnowledgeModelService, "loadDomainData").mockResolvedValue(
       FULL_BLOB.financial as never,
     );
-    vi.spyOn(PersonalKnowledgeModelService, "loadFullBlob").mockResolvedValue(
-      FULL_BLOB as never,
-    );
+    vi.spyOn(PkmDomainResourceService, "getManyStaleFirst").mockImplementation(async (params) => {
+      const snapshots = Object.fromEntries(
+        params.domains
+          .filter((domain) => domain in FULL_BLOB)
+          .map((domain) => [domain, { data: FULL_BLOB[domain as keyof typeof FULL_BLOB] }]),
+      );
+      for (const [domain, snapshot] of Object.entries(snapshots)) {
+        params.onProgress?.({ domain, snapshot: snapshot as never, failed: false });
+      }
+      return { snapshots: snapshots as never, failedDomains: [] };
+    });
     vi.spyOn(PersonalKnowledgeModelService, "getMutationSharingImpact").mockImplementation(
       async ({ domain, scopePath }) => ({
         activeRecipientCount: domain === "financial" && scopePath === "profile" ? 1 : 0,
@@ -160,18 +194,40 @@ describe("PkmNaturalPanel — Memory redesign", () => {
     addToPKM.mockResolvedValue({ attempted: 1, saved: 1, failed: 0, domains: ["financial"], results: [] });
   });
 
-  async function openMainScreen() {
-    render(<PkmNaturalPanel />);
-    return screen.findByRole("button", { name: "Open memory: Risk Profile" });
+  // Home shows one "Recently learned" row into /one/pkm/recent; the memory
+  // rows themselves render in the recent view.
+  async function openMainScreen(view: "home" | "recent" = "home") {
+    render(<PkmNaturalPanel view={view} />);
+    if (view === "recent") {
+      return screen.findByRole("button", { name: "Open memory: Risk Profile" });
+    }
+    return screen.findByTestId("memory-recently-learned-row");
   }
 
-  it("shows search, Recently learned, and Categories with newest memory first", async () => {
+  it("shows search, one Recently learned row into its route, and Categories", async () => {
     await openMainScreen();
 
     expect(screen.getByRole("searchbox", { name: "Search Memory" })).toBeTruthy();
 
-    const recent = screen.getByTestId("memory-recently-learned");
-    const recentNames = within(recent)
+    const recentRow = screen.getByTestId("memory-recently-learned-row");
+    expect(recentRow).toHaveTextContent("Recently learned");
+    expect(recentRow).toHaveTextContent("3 memories");
+    expect(screen.queryByRole("button", { name: "Open memory: Risk Profile" })).toBeNull();
+    fireEvent.click(within(recentRow).getByRole("button"));
+    expect(push).toHaveBeenCalledWith("/one/pkm/recent");
+
+    expect(screen.getByText("Categories")).toBeTruthy();
+
+    // Tab viewport tracks the active pane's height (no frozen tallest-pane
+    // height leaving dead space under shorter tabs like Sharing).
+    expect(
+      document.querySelector("[data-swipe-views-height-mode]")?.getAttribute("data-swipe-views-height-mode"),
+    ).toBe("active");
+  });
+
+  it("recent view lists memories newest first", async () => {
+    await openMainScreen("recent");
+    const recentNames = within(screen.getByTestId("memory-recent-list"))
       .getAllByRole("button")
       .map((node) => node.getAttribute("aria-label"));
     // Financial (updated today) sorts ahead of Preferences (updated a week ago).
@@ -180,15 +236,6 @@ describe("PkmNaturalPanel — Memory redesign", () => {
     expect(recentNames.indexOf("Open memory: Risk Profile")).toBeLessThan(
       recentNames.indexOf("Open memory: Seat Choice"),
     );
-
-    expect(screen.getByText("Recently learned")).toBeTruthy();
-    expect(screen.getByText("Categories")).toBeTruthy();
-
-    // Tab viewport tracks the active pane's height (no frozen tallest-pane
-    // height leaving dead space under shorter tabs like Sharing).
-    expect(
-      document.querySelector("[data-swipe-views-height-mode]")?.getAttribute("data-swipe-views-height-mode"),
-    ).toBe("active");
   });
 
   it("lists only consumer-visible, non-empty categories with correct counts", async () => {
@@ -205,6 +252,23 @@ describe("PkmNaturalPanel — Memory redesign", () => {
     expect(screen.queryByTestId("memory-category-work")).toBeNull();
     expect(screen.queryByTestId("memory-category-runtime_secrets")).toBeNull();
     expect(screen.queryByText(/sk-must-not-render/)).toBeNull();
+  });
+
+  it("keeps available memories visible when another domain cannot be opened", async () => {
+    vi.spyOn(PkmDomainResourceService, "getManyStaleFirst").mockImplementation(async (params) => {
+      const snapshot = { data: FULL_BLOB.financial };
+      params.onProgress?.({ domain: "financial", snapshot: snapshot as never, failed: false });
+      return {
+        snapshots: { financial: snapshot } as never,
+        failedDomains: ["preferences"],
+      };
+    });
+
+    await openMainScreen();
+
+    expect(screen.getByTestId("memory-recently-learned-row")).toHaveTextContent("2 memories");
+    expect(screen.getByText("Some saved details couldn’t be refreshed. Your available details are still here.")).toBeTruthy();
+    expect(screen.queryByText("One hasn’t saved anything yet.")).toBeNull();
   });
 
   it("opens a category into nested levels and Back walks up one level", async () => {
@@ -261,7 +325,7 @@ describe("PkmNaturalPanel — Memory redesign", () => {
   });
 
   it("shows value and per-scope sharing only — never a guessed source or timestamp", async () => {
-    await openMainScreen();
+    await openMainScreen("recent");
     fireEvent.click(screen.getByRole("button", { name: "Open memory: Risk Profile" }));
 
     expect(await screen.findByRole("heading", { name: "Risk Profile" })).toBeTruthy();
@@ -275,7 +339,9 @@ describe("PkmNaturalPanel — Memory redesign", () => {
     // profile scope is shared for financial in this fixture.
     await waitFor(() => expect(meta).toHaveTextContent("Shared"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    // Categories live on the home; the recent view only lists memories.
+    cleanup();
+    await openMainScreen();
     fireEvent.click(screen.getByRole("button", { name: "Open category: Financial" }));
     fireEvent.click(await screen.findByRole("button", { name: "Open Accounts" }));
     fireEvent.click(await screen.findByRole("button", { name: "Open memory: Primary Bank" }));
@@ -302,7 +368,7 @@ describe("PkmNaturalPanel — Memory redesign", () => {
       return { saveState: "saved", success: true, fullBlob: { financial: plan.domainData } };
     });
 
-    await openMainScreen();
+    await openMainScreen("recent");
     fireEvent.click(screen.getByRole("button", { name: "Open memory: Risk Profile" }));
     await screen.findByRole("heading", { name: "Risk Profile" });
     await waitFor(() =>
@@ -341,7 +407,7 @@ describe("PkmNaturalPanel — Memory redesign", () => {
       return { saveState: "saved", success: true, fullBlob: { financial: plan.domainData } };
     });
 
-    await openMainScreen();
+    await openMainScreen("recent");
     fireEvent.click(screen.getByRole("button", { name: "Open memory: Risk Profile" }));
     await screen.findByRole("heading", { name: "Risk Profile" });
     await waitFor(() =>
@@ -365,7 +431,7 @@ describe("PkmNaturalPanel — Memory redesign", () => {
       new Error("impact unavailable"),
     );
 
-    await openMainScreen();
+    await openMainScreen("recent");
     fireEvent.click(screen.getByRole("button", { name: "Open memory: Risk Profile" }));
     await screen.findByRole("heading", { name: "Risk Profile" });
 
@@ -383,7 +449,7 @@ describe("PkmNaturalPanel — Memory redesign", () => {
     expect(within(savedPanel).queryByRole("switch")).toBeNull();
     expect(within(savedPanel).queryByTestId("memory-auto-save-row")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Add" }));
     const toggle = await screen.findByRole("switch", {
       name: "Turn automatic memory saving on",
     });
@@ -402,7 +468,7 @@ describe("PkmNaturalPanel — Memory redesign", () => {
 
   it("keeps the review-first Add flow intact", async () => {
     await openMainScreen();
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Add" }));
 
     const note = await screen.findByRole("textbox", { name: "Memory note" });
     fireEvent.change(note, { target: { value: "I prefer morning flights whenever possible." } });
@@ -432,5 +498,152 @@ describe("PkmNaturalPanel — Memory redesign", () => {
     expect(screen.getByTestId("memory-category-financial")).toBeTruthy();
     expect(screen.queryByText(/no active access/i)).toBeNull();
     expect(screen.queryByText(/shared/i)).toBeNull();
+  });
+
+  // ── Issue #6307: item sharing acts in place, never opens the Consent Center ──
+  describe("memory item sharing — in place, no Consent Center redirect", () => {
+    async function openRiskProfileSharing() {
+      await openMainScreen("recent");
+      fireEvent.click(screen.getByRole("button", { name: "Open memory: Risk Profile" }));
+      await screen.findByRole("heading", { name: "Risk Profile" });
+      fireEvent.click(screen.getByRole("button", { name: "Open sharing settings" }));
+      return screen.findByRole("switch", { name: "Make this memory private" });
+    }
+
+    it("opens sharing on the same memory screen and never routes to /consents", async () => {
+      vi.spyOn(PersonalKnowledgeModelService, "getDomainManifest").mockResolvedValue(
+        financialManifest("consent_required") as never,
+      );
+
+      const toggle = await openRiskProfileSharing();
+
+      // The control is right here, and the memory screen is still mounted.
+      expect(toggle).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Risk Profile" })).toBeTruthy();
+      // No navigation at all — specifically not to the Consent Center.
+      expect(push).not.toHaveBeenCalled();
+      expect(push).not.toHaveBeenCalledWith(expect.stringContaining("/consent"));
+    });
+
+    it("changes this memory's own scope through the PKM scope-exposure contract", async () => {
+      vi.spyOn(PersonalKnowledgeModelService, "getDomainManifest").mockResolvedValue(
+        financialManifest("consent_required") as never,
+      );
+      const updateScopeExposure = vi
+        .spyOn(PersonalKnowledgeModelService, "updateScopeExposure")
+        .mockResolvedValue({
+          success: true,
+          manifest: financialManifest("private") as never,
+          revokedGrantCount: 1,
+          revokedGrantIds: ["grant_1"],
+        } as never);
+
+      const toggle = await openRiskProfileSharing();
+      fireEvent.click(toggle);
+
+      await waitFor(() => expect(updateScopeExposure).toHaveBeenCalledTimes(1));
+      expect(updateScopeExposure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "reviewer",
+          domain: "financial",
+          expectedManifestVersion: 7,
+          changes: [{ scopeHandle: "financial.profile", visibilityPosture: "private" }],
+        }),
+      );
+      // Grant revocation is left to the backend default — never opted out of here.
+      expect(updateScopeExposure.mock.calls[0][0]).not.toHaveProperty(
+        "revokeMatchingActiveGrants",
+      );
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it("surfaces a redacted error and stays on the memory when the change fails", async () => {
+      vi.spyOn(PersonalKnowledgeModelService, "getDomainManifest").mockResolvedValue(
+        financialManifest("consent_required") as never,
+      );
+      vi.spyOn(PersonalKnowledgeModelService, "updateScopeExposure").mockRejectedValue(
+        new Error("scope_exposure server stack trace"),
+      );
+
+      const toggle = await openRiskProfileSharing();
+      fireEvent.click(toggle);
+
+      expect(
+        await screen.findByText("Sharing choices couldn’t be updated. Refresh and try again."),
+      ).toBeTruthy();
+      // No server detail leaked, no crash, no redirect.
+      expect(screen.queryByText(/server stack trace/)).toBeNull();
+      expect(screen.getByRole("heading", { name: "Risk Profile" })).toBeTruthy();
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it("re-verifies recipients after revoking sharing so the row drops 'Shared'", async () => {
+      let financialProfileShared = true;
+      vi.spyOn(PersonalKnowledgeModelService, "getMutationSharingImpact").mockImplementation(
+        async ({ domain, scopePath }) => {
+          const shared =
+            domain === "financial" && scopePath === "profile" && financialProfileShared;
+          return {
+            activeRecipientCount: shared ? 1 : 0,
+            recipientLabels: shared ? ["Planner Pro"] : [],
+            entersNextExportRevision: false,
+            summary: "ok",
+            affectedGrantIds: [],
+            affectedExportIds: [],
+          };
+        },
+      );
+      vi.spyOn(PersonalKnowledgeModelService, "getDomainManifest").mockResolvedValue(
+        financialManifest("consent_required") as never,
+      );
+      vi.spyOn(PersonalKnowledgeModelService, "updateScopeExposure").mockImplementation(
+        async () => {
+          // Backend revokes the matching grant; the next impact check must see it.
+          financialProfileShared = false;
+          return {
+            success: true,
+            manifest: financialManifest("private") as never,
+            revokedGrantCount: 1,
+            revokedGrantIds: ["grant_1"],
+          } as never;
+        },
+      );
+
+      await openMainScreen("recent");
+      fireEvent.click(screen.getByRole("button", { name: "Open memory: Risk Profile" }));
+      await screen.findByRole("heading", { name: "Risk Profile" });
+      const meta = screen.getByTestId("memory-detail-meta");
+      await waitFor(() => expect(meta).toHaveTextContent("Shared"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Open sharing settings" }));
+      fireEvent.click(await screen.findByRole("switch", { name: "Make this memory private" }));
+
+      await waitFor(() =>
+        expect(PersonalKnowledgeModelService.updateScopeExposure).toHaveBeenCalled(),
+      );
+      await waitFor(() => expect(meta).toHaveTextContent("Private"));
+      expect(meta).not.toHaveTextContent("Shared");
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when the scope has no materialized share bundle", async () => {
+      vi.spyOn(PersonalKnowledgeModelService, "getDomainManifest").mockResolvedValue(null);
+      const updateScopeExposure = vi.spyOn(
+        PersonalKnowledgeModelService,
+        "updateScopeExposure",
+      );
+
+      await openMainScreen("recent");
+      fireEvent.click(screen.getByRole("button", { name: "Open memory: Risk Profile" }));
+      await screen.findByRole("heading", { name: "Risk Profile" });
+      fireEvent.click(screen.getByRole("button", { name: "Open sharing settings" }));
+
+      expect(
+        await screen.findByText(/Sharing controls for this memory aren’t available right now/),
+      ).toBeTruthy();
+      expect(screen.queryByRole("switch")).toBeNull();
+      expect(updateScopeExposure).not.toHaveBeenCalled();
+      expect(push).not.toHaveBeenCalled();
+    });
   });
 });

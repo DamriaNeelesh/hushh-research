@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, validator
 
 from api.middleware import require_firebase_auth
 from api.middlewares.rate_limit import RateLimits, limiter
+from hushh_mcp.services.actor_identity_service import ActorIdentityService
 from hushh_mcp.services.connections_service import ConnectionsError, ConnectionsService
 from hushh_mcp.services.ria_iam_service import (
     IAMSchemaNotReadyError,
@@ -180,6 +181,12 @@ async def sync_contacts(
         }
     service = _service()
     try:
+        sync_started_at = await run_in_threadpool(service.begin_contact_sync)
+        # Authentication background work runs after the response. Guarantee
+        # the requester's verified-phone shadow is ready in this request too,
+        # so a first contact-sync tap cannot fail merely because no earlier
+        # authenticated response finished its warmup yet.
+        await ActorIdentityService().sync_from_firebase(firebase_uid, force=False)
         # Charge before querying the discovery index. This is intentionally a
         # Postgres authority rather than an in-process limiter so production
         # remains bounded across Cloud Run instances without paid Redis infra.
@@ -192,13 +199,30 @@ async def sync_contacts(
             firebase_uid,
             phone_lookups=lookups,
         )
-        return await run_in_threadpool(
+        result = await run_in_threadpool(
             lambda: service.sync_contact_matches(
                 firebase_uid,
                 phone_lookups=lookups,
                 matches=matches,
+                sync_started_at=sync_started_at,
             )
         )
+        # Metadata-only runtime evidence. Never log a uid, lookup id, digest,
+        # trailing digits, contact name, or response item from this boundary.
+        logger.info(
+            "contact_sync.completed lookup_count=%s candidate_count=%s "
+            "matched_count=%s auto_connected_count=%s "
+            "already_connected_count=%s suppressed_count=%s "
+            "indeterminate_count=%s",
+            len(lookups),
+            len(matches),
+            int(result.get("matchedCount") or 0),
+            int(result.get("autoConnectedCount") or 0),
+            int(result.get("alreadyConnectedCount") or 0),
+            int(result.get("suppressedCount") or 0),
+            len(result.get("indeterminateLookupIds") or []),
+        )
+        return result
     except IAMSchemaNotReadyError as exc:
         raise HTTPException(
             status_code=503,
@@ -206,8 +230,14 @@ async def sync_contacts(
         ) from exc
     except RIAIAMPolicyError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise _handle(exc) from exc
+    except ConnectionsError as exc:
+        raise _handle(exc) from None
+    except Exception as exc:  # noqa: BLE001 - SQL exceptions can contain submitted phone proofs
+        # SQLAlchemy includes bound parameters in exception text/tracebacks.
+        # Even a failed proof query must not persist lookup ids, hashes, or
+        # phone digits through the generic connections exception logger.
+        logger.error("contact_sync.failed error=%s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Contact sync failed.") from None
 
 
 @router.get("/connections/{counterpart_user_id}/scope-catalog")
@@ -217,6 +247,17 @@ def connection_scope_catalog(
 ):
     try:
         return _service().get_scope_catalog(firebase_uid, counterpart_user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.get("/connections/{counterpart_user_id}/context")
+def connection_person_context(
+    counterpart_user_id: str = Path(..., min_length=1, max_length=128),
+    firebase_uid: str = Depends(require_firebase_auth),
+):
+    try:
+        return _service().get_person_context(firebase_uid, counterpart_user_id)
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
 

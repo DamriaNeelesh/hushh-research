@@ -18,18 +18,25 @@ const mocks = vi.hoisted(() => ({
   cancel: vi.fn(),
   removeConnection: vi.fn(),
   getScopeCatalog: vi.fn(),
+  getPersonContext: vi.fn(),
   searchInformationScopes: vi.fn(),
   onConnectionCapabilityMutated: vi.fn(),
   onConnectionGraphMutated: vi.fn(),
   routerPush: vi.fn(),
+  routerReplace: vi.fn(),
   searchParams: new URLSearchParams(),
   shareLink: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  isNative: vi.fn(() => false),
   // The real hook hands back the same user across renders. Rebuilding it per
   // render would retrigger every effect keyed on it and spin forever, which
   // would say nothing about the page.
   user: { uid: "me", getIdToken: async () => "id-token" },
+  // AuthContext hydrates a verified backend phone separately when Firebase's
+  // User has no phoneNumber (notably the native UAT verification path).
+  authPhoneNumber: null as string | null,
+  resolveVerifiedPhoneNumber: vi.fn(),
   // Contact sync hides its control until it knows a source exists, and the
   // probe below is what decides. jsdom has no `navigator.contacts`, so the real
   // plugin answers "unavailable", the control never renders, and a suite that
@@ -37,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   contactsPermissionState: "prompt" as "prompt" | "granted" | "unavailable",
   syncContactSignals: vi.fn(),
   toastInfo: vi.fn(),
+  requestContactCheck: vi.fn(() => true),
 }));
 
 vi.mock("@/lib/capacitor", () => ({
@@ -56,6 +64,10 @@ vi.mock("@/lib/capacitor", () => ({
   },
 }));
 
+vi.mock("@/lib/capacitor/platform", () => ({
+  isNative: mocks.isNative,
+}));
+
 // Only the network-facing call is replaced. `describeContactSyncOutcome` and
 // the error types stay real, because they are what turn a result into the copy
 // and the remedy a person is actually shown.
@@ -66,10 +78,28 @@ vi.mock("@/lib/one-location/contact-signals", async (importOriginal) => ({
   syncOneLocationContactSignals: mocks.syncContactSignals,
 }));
 
+vi.mock("@/lib/contacts/use-contact-discoverability-consent", () => ({
+  useContactDiscoverabilityConsent: () => ({
+    requestContactCheck: mocks.requestContactCheck,
+    preference: { status: "decided", enabled: false, ruleVersion: 1 },
+    dialogProps: {
+      open: false,
+      ready: false,
+      loading: false,
+      savingChoice: null,
+      error: null,
+      actionLabel: "Sync contacts",
+      onOpenChange: vi.fn(),
+      onChoose: vi.fn(),
+      onRetry: vi.fn(),
+    },
+  }),
+}));
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     push: mocks.routerPush,
-    replace: vi.fn(),
+    replace: mocks.routerReplace,
     back: vi.fn(),
   }),
   usePathname: () => "/one/connect",
@@ -80,7 +110,11 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/hooks/use-auth", () => ({
-  useRequireAuth: () => ({ user: mocks.user }),
+  useRequireAuth: () => ({
+    user: mocks.user,
+    phoneNumber: mocks.authPhoneNumber,
+    resolveVerifiedPhoneNumber: mocks.resolveVerifiedPhoneNumber,
+  }),
 }));
 
 // The debounce itself is covered by its own hook test; collapsing it here keeps
@@ -99,6 +133,7 @@ vi.mock("@/lib/services/connections-service", () => ({
     cancel: mocks.cancel,
     removeConnection: mocks.removeConnection,
     getScopeCatalog: mocks.getScopeCatalog,
+    getPersonContext: mocks.getPersonContext,
     searchInformationScopes: mocks.searchInformationScopes,
   },
 }));
@@ -124,6 +159,43 @@ function chooseDirectory(name: "People" | "RIAs" | "Around you") {
   fireEvent.click(screen.getByRole("menuitemradio", { name }));
 }
 
+function mockDirectoryObserver() {
+  const observers: Array<{
+    notify: IntersectionObserverCallback;
+    targets: Set<Element>;
+  }> = [];
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      targets = new Set<Element>();
+      constructor(notify: IntersectionObserverCallback) {
+        observers.push({ notify, targets: this.targets });
+      }
+      observe = (target: Element) => {
+        this.targets.add(target);
+      };
+      unobserve = (target: Element) => {
+        this.targets.delete(target);
+      };
+      disconnect = () => {
+        this.targets.clear();
+      };
+    },
+  );
+  return () => {
+    const sentinel = screen.getByTestId("connect-load-more-row");
+    const observer = observers.find((entry) => entry.targets.has(sentinel));
+    if (!observer) return false;
+    const entries = [
+      { target: sentinel, isIntersecting: true },
+    ] as IntersectionObserverEntry[];
+    observer.notify(entries, {} as IntersectionObserver);
+    return true;
+  };
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
 vi.mock("sonner", () => ({
   toast: {
     success: mocks.toastSuccess,
@@ -147,7 +219,7 @@ vi.mock("@/lib/share/share-link", async () => {
 
 import ConnectPageClient from "@/app/connect/page-client";
 import { ShareUnavailableError } from "@/lib/share/share-link";
-import { resolveLocalOnboardingHandler } from "@/lib/agent/local-onboarding-actions";
+import { resolveLocalOnboardingHandler, prepareLocalOnboardingAction } from "@/lib/agent/local-onboarding-actions";
 import {
   parseVoiceCard,
   parseVoiceConfirm,
@@ -188,8 +260,96 @@ const EVERYONE = Array.from({ length: 100 }, (_, index) =>
   person(`u${index}`, `Person ${index}`),
 );
 
+describe("Location command connection prerequisite",()=>{
+  it("discards the previous person's review and pending catalog when the requested person changes",async()=>{
+    mocks.searchParams=new URLSearchParams("reviewPerson=u9");
+    mocks.getPersonContext.mockResolvedValueOnce({person:person("u9","First target"),request:null})
+      .mockResolvedValue({person:{...person("u10","Already connected"),relationship:"connected"},request:null});
+    const catalog=deferred<any>();
+    mocks.getScopeCatalog.mockReturnValueOnce(catalog.promise);
+    const view=render(<ConnectPageClient/>);
+    await screen.findByRole("dialog",{name:"Send connection requests"});
+    mocks.searchParams=new URLSearchParams("reviewPerson=u10");
+    view.rerender(<ConnectPageClient/>);
+    await waitFor(()=>expect(screen.queryByRole("dialog",{name:"Send connection requests"})).toBeNull());
+    await act(async()=>catalog.resolve({counterpartUserId:"u9",items:[],offerableItems:[]}));
+    expect(screen.queryByRole("dialog",{name:"Send connection requests"})).toBeNull();
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+    expect(mocks.routerReplace).not.toHaveBeenCalled();
+  });
+
+  it("correlates a freshly discovered incoming request redirect to its exact person review",async()=>{
+    mocks.searchParams=new URLSearchParams("reviewPerson=u9");
+    mocks.getPersonContext.mockResolvedValue({person:{...person("u9","Incoming"),relationship:"pending_incoming"},request:{id:"request-9",direction:"incoming",status:"pending"}});
+    render(<ConnectPageClient/>);
+    await waitFor(()=>expect(mocks.routerPush).toHaveBeenCalled());
+    const destination=new URL(mocks.routerPush.mock.calls[0]![0],"https://app.invalid");
+    expect(destination.searchParams.get("from")).toBe("/one/connect?reviewPerson=u9");
+    expect(destination.searchParams.get("requestId")).toBe("request-9");
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+  });
+  it("opens the actual scope review without sending and can reopen after cancellation",async()=>{
+    mocks.searchParams = new URLSearchParams("reviewPerson=u9");
+    mocks.getPersonContext.mockResolvedValue({person:person("u9","Command Person"),request:null});
+    const view = render(<ConnectPageClient/>);
+    const dialog = await screen.findByRole("dialog",{name:"Send connection requests"});
+    await within(dialog).findByRole("button",{name:"Send requests"});
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button",{name:"Cancel"}));
+    view.rerender(<ConnectPageClient/>);
+    await waitFor(()=>expect(screen.queryByRole("dialog",{name:"Send connection requests"})).toBeNull());
+    expect(mocks.routerReplace).toHaveBeenCalledWith("/one/connect");
+    mocks.searchParams=new URLSearchParams("reviewPerson=u9");
+    view.rerender(<ConnectPageClient/>);
+    await screen.findByRole("dialog",{name:"Send connection requests"});
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+  });
+
+  it("discards the old owner's pending catalog even after A to B to A",async()=>{
+    mocks.searchParams=new URLSearchParams("reviewPerson=u9");
+    mocks.getPersonContext.mockResolvedValueOnce({person:person("u9","Owner A target"),request:null})
+      .mockResolvedValue({person:{...person("u9","Pending"),relationship:"pending_outgoing"},request:{id:"r",direction:"outgoing",status:"pending"}});
+    const catalog = deferred<any>();
+    mocks.getScopeCatalog.mockReturnValueOnce(catalog.promise);
+    const view=render(<ConnectPageClient/>);
+    await screen.findByRole("dialog",{name:"Send connection requests"});
+    const ownerA=mocks.user;
+    mocks.user={uid:"owner-b",getIdToken:async()=>"token-b"};
+    view.rerender(<ConnectPageClient/>);
+    await waitFor(()=>expect(screen.queryByRole("dialog",{name:"Send connection requests"})).toBeNull());
+    mocks.user=ownerA;
+    view.rerender(<ConnectPageClient/>);
+    await act(async()=>catalog.resolve({counterpartUserId:"u9",items:[],offerableItems:[]}));
+    expect(screen.queryByRole("dialog",{name:"Send connection requests"})).toBeNull();
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+  });
+
+  it("treats a raced reverse request as incoming review, never as a sent or accepted connection",async()=>{
+    mocks.searchParams=new URLSearchParams("reviewPerson=u9");
+    mocks.getPersonContext.mockResolvedValue({person:person("u9","Command Person"),request:null});
+    mocks.sendRequest.mockResolvedValue({id:"incoming-request",status:"pending",requesterUserId:"u9",addresseeUserId:"me"});
+    render(<ConnectPageClient/>);
+    const dialog=await screen.findByRole("dialog",{name:"Send connection requests"});
+    const send=await within(dialog).findByRole("button",{name:"Send requests"});
+    await waitFor(()=>expect(send).not.toBeDisabled());
+    fireEvent.click(send);
+    await waitFor(()=>expect(mocks.routerPush).toHaveBeenCalledWith(expect.stringContaining("incoming-request")));
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("1 incoming request needs your review.");
+    expect(mocks.sendRequest).toHaveBeenCalledOnce();
+  });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.user = {uid:"me",getIdToken:async()=>"id-token"};
+  mocks.getPersonContext.mockReset();
+  mocks.routerReplace.mockImplementation((href:string)=>{mocks.searchParams=new URLSearchParams(href.split("?")[1] || "");});
+  mocks.requestContactCheck.mockReturnValue(true);
+  mocks.authPhoneNumber = "+919000000001";
+  mocks.resolveVerifiedPhoneNumber.mockImplementation(
+    async () => mocks.authPhoneNumber,
+  );
+  mocks.isNative.mockReturnValue(false);
   // A leaked search query in sessionStorage would silently seed the next
   // test's render, the same way a leaked `?tab=` would.
   window.sessionStorage.clear();
@@ -240,6 +400,158 @@ beforeEach(() => {
 });
 
 describe("Connect — People", () => {
+  it("places one directory selector below connections and keeps every directory reachable", async () => {
+    render(<ConnectPageClient />);
+    await screen.findByText("Person 0");
+    const selector = screen.getByRole("button", {
+      name: "Current directory: People",
+    });
+    expect(
+      screen
+        .getByRole("button", { name: "My connections (0)" })
+        .compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      within(screen.getByTestId("connect-sticky-header")).queryByRole(
+        "button",
+        { name: /Current directory:/ },
+      ),
+    ).toBeNull();
+    expect(selector.closest('[role="heading"]')).toBeNull();
+    for (const name of ["RIAs", "Around you", "People"] as const) {
+      chooseDirectory(name);
+      await screen.findByRole("button", { name: `Current directory: ${name}` });
+      expect(
+        screen.getAllByRole("button", { name: /Current directory:/ }),
+      ).toHaveLength(1);
+    }
+    await screen.findByText("Person 0");
+  });
+
+  it("keeps My connections collapsed until its disclosure pill is pressed", async () => {
+    mocks.listConnections.mockResolvedValue([
+      {
+        connectionId: "c-disclosure",
+        userId: "u-disclosure",
+        displayName: "Collapsed Friend",
+        photoUrl: null,
+      },
+    ]);
+
+    render(<ConnectPageClient />);
+
+    const toggle = await screen.findByRole("button", {
+      name: "My connections (1)",
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveAttribute(
+      "aria-controls",
+      "connect-my-connections-panel",
+    );
+    const panel = document.getElementById(
+      "connect-my-connections-panel",
+    );
+    expect(panel).toBeTruthy();
+    expect(
+      panel?.closest('[data-slot="settings-group-shell"]'),
+    ).toHaveClass("hidden");
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(
+      panel?.closest('[data-slot="settings-group-shell"]'),
+    ).not.toHaveClass("hidden");
+    expect(
+      await screen.findByRole("button", {
+        name: "Remove connection with Collapsed Friend",
+      }),
+    ).toBeTruthy();
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      panel?.closest('[data-slot="settings-group-shell"]'),
+    ).toHaveClass("hidden");
+  });
+
+  it("discards a late append after a new search starts", async () => {
+    const oldPage = deferred<{
+      items: ReturnType<typeof person>[];
+      hasMore: boolean;
+    }>();
+    mocks.searchDirectory
+      .mockResolvedValueOnce({
+        items: [person("first", "First user")],
+        hasMore: true,
+      })
+      .mockImplementationOnce(() => oldPage.promise)
+      .mockResolvedValueOnce({
+        items: [person("new", "New search result")],
+        hasMore: false,
+      });
+    render(<ConnectPageClient />);
+    await screen.findByText("First user");
+    fireEvent.click(screen.getByRole("button", { name: "Load more people" }));
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(2));
+    fireEvent.change(screen.getByLabelText("Search people"), {
+      target: { value: "New" },
+    });
+    await screen.findByText("New search result");
+    await act(async () => {
+      oldPage.resolve({
+        items: [person("late", "Old late result")],
+        hasMore: true,
+      });
+    });
+    expect(screen.queryByText("First user")).toBeNull();
+    expect(screen.queryByText("Old late result")).toBeNull();
+    expect(screen.getByText("New search result")).toBeTruthy();
+    expect(mocks.searchDirectory.mock.calls.at(-1)?.[0]).toMatchObject({
+      page: 1,
+      query: "New",
+    });
+  });
+
+  it("clears accumulated People rows when the RIA directory fails", async () => {
+    mocks.searchDirectory
+      .mockResolvedValueOnce({
+        items: [person("people", "People directory user")],
+        hasMore: false,
+      })
+      .mockRejectedValueOnce(new Error("Temporary directory failure"));
+    render(<ConnectPageClient />);
+    await screen.findByText("People directory user");
+    chooseDirectory("RIAs");
+    await screen.findByText("Advisors are unavailable");
+    expect(screen.queryByText("People directory user")).toBeNull();
+    expect(mocks.searchDirectory.mock.calls.at(-1)?.[0]).toMatchObject({
+      page: 1,
+      audience: "ria",
+    });
+  });
+
+  it("restarts the directory from page one after contact sync changes connections", async () => {
+    mocks.syncContactSignals.mockResolvedValueOnce({
+      ...emptyContactSyncResult(),
+      autoConnectedCount: 1,
+    });
+    render(<ConnectPageClient />);
+    await screen.findByText("Person 0");
+    fireEvent.click(screen.getByRole("button", { name: "Load more people" }));
+    await screen.findByText("Person 20");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Sync contacts" }),
+    );
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(3));
+    expect(
+      mocks.searchDirectory.mock.calls.map(([options]) => options.page),
+    ).toEqual([1, 2, 1]);
+    await waitFor(() => expect(screen.queryByText("Person 20")).toBeNull());
+    expect(screen.getByText("Person 0")).toBeTruthy();
+  });
+
   it("shows viewer-relative contact provenance on a fresh connection read", async () => {
     mocks.listConnections.mockResolvedValue([
       {
@@ -275,9 +587,11 @@ describe("Connect — People", () => {
     const myConnections = await screen.findByTestId(
       "connect-my-connections-group",
     );
-    const connectionName = await within(myConnections).findByText(
-      "Scoped Friend",
+    fireEvent.click(
+      screen.getByRole("button", { name: "My connections (1)" }),
     );
+    const connectionName =
+      await within(myConnections).findByText("Scoped Friend");
     const connectionAction = connectionName.closest("button");
     expect(connectionAction).toBeTruthy();
 
@@ -332,7 +646,10 @@ describe("Connect — People", () => {
 
     render(<ConnectPageClient />);
 
-    expect(await screen.findByText("My connections (5000)")).toBeTruthy();
+    const connectionsToggle = await screen.findByRole("button", {
+      name: "My connections (5000)",
+    });
+    fireEvent.click(connectionsToggle);
     fireEvent.click(
       screen.getByRole("button", { name: "Load more connections" }),
     );
@@ -343,6 +660,24 @@ describe("Connect — People", () => {
     expect(mocks.listConnectionsPage).toHaveBeenCalledWith(
       expect.objectContaining({ page: 2, limit: 50, audience: "all" }),
     );
+  });
+
+  it("keeps rows on refresh failure and offers a display-only retry", async () => {
+    const page = { items: [{ connectionId: "c-kept", userId: "u-kept", displayName: "Kept Friend", photoUrl: null }],
+      page: 1, hasMore: false, totalCount: 1, audience: "all" as const };
+    mocks.listConnectionsPage.mockResolvedValueOnce(page)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({ ...page, items: [...page.items,
+        { connectionId: "c-restored", userId: "u-restored", displayName: "Restored Friend", photoUrl: null }], totalCount: 2 });
+    render(<ConnectPageClient />);
+    expect(await screen.findByText("Kept Friend")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh contacts" }));
+    expect(await screen.findByText("Could not refresh connections")).toBeTruthy();
+    expect(screen.getByText("Kept Friend")).toBeTruthy();
+    fireEvent.click(screen.getByText("Could not refresh connections"));
+    expect(await screen.findByText("Restored Friend")).toBeTruthy();
+    expect(screen.queryByText("Could not refresh connections")).toBeNull();
+    expect(screen.getByText("My connections (2)")).toBeTruthy();
   });
 
   it("blocks Load More while a removal event refreshes page 1", async () => {
@@ -399,6 +734,9 @@ describe("Connect — People", () => {
     render(<ConnectPageClient />);
 
     expect(await screen.findByText("Current Person")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "My connections (3)" }),
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "Load more connections" }),
     );
@@ -509,22 +847,17 @@ describe("Connect — People", () => {
     expect(await screen.findByText("Current Person")).toBeTruthy();
     expect(mocks.listConnectionsPage).toHaveBeenCalledTimes(1);
 
-    // Refresh is a control, not part of the heading text. It used to be a
-    // child of the `title` node, which SettingsGroup renders inside an element
-    // carrying `role="heading"` -- a button there is folded into the heading's
-    // accessible name and is never offered as something to press. The two
-    // assertions below are what keep it out: the heading's name is the plain
-    // text, and the button is not a descendant of it.
-    const connectionsHeading = screen
-      .getAllByRole("heading")
-      .find((node) => node.textContent?.includes("connections"));
-    expect(connectionsHeading).toBeTruthy();
+    // The disclosure and refresh controls are siblings. This prevents an
+    // interactive refresh button from being folded into the disclosure's
+    // accessible name.
+    const connectionsDisclosure = screen.getByRole("button", {
+      name: "My connections (1)",
+    });
     expect(
-      connectionsHeading?.contains(
+      connectionsDisclosure.contains(
         screen.getByRole("button", { name: "Refresh contacts" }),
       ),
     ).toBe(false);
-    expect(connectionsHeading?.textContent).not.toContain("Refresh");
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh contacts" }));
 
@@ -631,6 +964,9 @@ describe("Connect — People", () => {
 
     expect(await screen.findByText("First Person")).toBeTruthy();
     fireEvent.click(
+      screen.getByRole("button", { name: "My connections (2)" }),
+    );
+    fireEvent.click(
       screen.getByRole("button", { name: "Load more connections" }),
     );
     const remove = await screen.findByRole("button", {
@@ -668,22 +1004,39 @@ describe("Connect — People", () => {
     expect(screen.getByText("Person 0")).toBeTruthy();
   });
 
-  it("offers in-list progressive loading rather than visible pagination", async () => {
-    // A bounded first screenful was the right instinct, but refusing to page
-    // left the rest of the directory unreachable. Both now hold: a screenful
-    // by default, and a way through it.
-    render(<ConnectPageClient />);
+  it.each(["People", "RIAs"] as const)(
+    "appends %s users when the scroll sentinel enters view",
+    async (directory) => {
+      const enter = mockDirectoryObserver();
+      render(<ConnectPageClient />);
+      await screen.findByText("Person 0");
+      if (directory === "RIAs") {
+        chooseDirectory("RIAs");
+        await screen.findByText("Person 0");
+      }
+      const before = mocks.searchDirectory.mock.calls.length;
+      // Both directories render "Person 0". That text can still belong to
+      // the previous list while the new sentinel's observer is attaching.
+      await waitFor(() => {
+        act(() => {
+          expect(enter()).toBe(true);
+          enter();
+        });
+      });
+      await screen.findByText("Person 20");
+      expect(screen.getByText("Person 0")).toBeTruthy();
+      expect(mocks.searchDirectory).toHaveBeenCalledTimes(before + 1);
+      expect(mocks.searchDirectory.mock.calls.at(-1)?.[0]).toMatchObject({
+        page: 2,
+        audience: directory === "RIAs" ? "ria" : "people",
+      });
+      expect(
+        screen.queryByRole("button", { name: /previous page/i }),
+      ).toBeNull();
+    },
+  );
 
-    expect(await screen.findByText("Search by name.")).toBeTruthy();
-    expect(
-      await screen.findByRole("button", { name: "Load 20 more people" }),
-    ).toBeTruthy();
-    expect(screen.queryByLabelText("People per page")).toBeNull();
-    expect(screen.queryByLabelText("Next page")).toBeNull();
-    expect(screen.queryByLabelText("Previous page")).toBeNull();
-  });
-
-  it("reads heading, then instruction, then the field they describe", async () => {
+  it("reads the directory selector, then instruction, then the search field", async () => {
     // QA, on a phone: "people ke neeche supporting line is search by name, but
     // search bar upar hai". The field was rendered ABOVE the "People" heading,
     // so the sentence telling you how to use it ("Search by name.") appeared
@@ -693,7 +1046,9 @@ describe("Connect — People", () => {
     render(<ConnectPageClient />);
 
     const supporting = await screen.findByText("Search by name.");
-    const heading = screen.getByRole("heading", { name: "People", level: 2 });
+    const heading = screen.getByRole("button", {
+      name: "Current directory: People",
+    });
     const field = screen.getByLabelText("Search people");
 
     // DOCUMENT_POSITION_FOLLOWING: the argument comes AFTER the node.
@@ -712,15 +1067,13 @@ describe("Connect — People", () => {
     ).toBeTruthy();
   });
 
-  it("keeps load-more inside the grouped list as a compact row", async () => {
+  it("keeps a manual load fallback inside the list", async () => {
     render(<ConnectPageClient />);
-
     const row = await screen.findByTestId("connect-load-more-row");
-    expect(row.className).not.toContain("flex-col");
-    expect(row.className).toContain("min-h-14");
     expect(
-      within(row).getByRole("button", { name: "Load 20 more people" }),
+      within(row).getByRole("button", { name: "Load more people" }),
     ).toBeTruthy();
+    expect(row.closest('[data-slot="settings-group-shell"]')).toBeTruthy();
     expect(screen.queryByTestId("connect-pager-row")).toBeNull();
   });
 
@@ -728,9 +1081,7 @@ describe("Connect — People", () => {
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Load 20 more people" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Load more people" }));
 
     await waitFor(() => {
       const latest =
@@ -740,7 +1091,39 @@ describe("Connect — People", () => {
       expect(latest).toMatchObject({ page: 2, limit: 20 });
     });
     expect(await screen.findByText("Person 20")).toBeTruthy();
+    // The next batch extends the same list, preserving earlier users.
     expect(screen.getByText("Person 0")).toBeTruthy();
+    expect(screen.queryByText("Page 2")).toBeNull();
+  });
+
+  it("keeps loaded users on failure and retries the failed page without skipping it", async () => {
+    const enter = mockDirectoryObserver();
+    mocks.searchDirectory
+      .mockResolvedValueOnce({ items: EVERYONE.slice(0, 20), hasMore: true })
+      .mockRejectedValueOnce(new Error("Temporary failure"))
+      .mockResolvedValueOnce({ items: EVERYONE.slice(19, 40), hasMore: false });
+    render(<ConnectPageClient />);
+    await screen.findByText("Person 0");
+    act(() => {
+      enter();
+    });
+    const retry = await screen.findByRole("button", {
+      name: "Retry loading people",
+    });
+    expect(screen.getByText("Person 0")).toBeTruthy();
+    act(() => {
+      expect(enter()).toBe(false);
+    });
+    expect(mocks.searchDirectory).toHaveBeenCalledTimes(2);
+    fireEvent.click(retry);
+    await screen.findByText("Person 20");
+    expect(
+      mocks.searchDirectory.mock.calls.map(([options]) => options.page),
+    ).toEqual([1, 2, 2]);
+    expect(screen.getAllByText("Person 19")).toHaveLength(1);
+    expect(screen.getByText("Person 0")).toBeTruthy();
+    expect(screen.queryByTestId("connect-load-more-row")).toBeNull();
+    expect(screen.getByText("All people loaded")).toBeTruthy();
   });
 
   it("keeps the visible directory stable while the next page loads", async () => {
@@ -766,13 +1149,11 @@ describe("Connect — People", () => {
     render(<ConnectPageClient />);
     expect(await screen.findByText("Person 0")).toBeTruthy();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Load 20 more people" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Load more people" }));
 
-    await waitFor(() =>
-      expect(screen.getByText("Loading more…")).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByText("Loading…")).toBeTruthy());
+    // The page being left stays put until its replacement arrives, so the list
+    // never blanks mid-step.
     expect(screen.getByText("Person 0")).toBeTruthy();
     expect(screen.queryByText("Finding people…")).toBeNull();
 
@@ -787,7 +1168,7 @@ describe("Connect — People", () => {
 
     expect(await screen.findByText("Person 20")).toBeTruthy();
     expect(screen.getByText("Person 0")).toBeTruthy();
-    expect(screen.queryByText("Loading more…")).toBeNull();
+    expect(screen.queryByText("Loading…")).toBeNull();
   });
 
   it("opens the full directory once a name is typed", async () => {
@@ -1062,9 +1443,7 @@ describe("Connect — People", () => {
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Load 20 more people" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Load more people" }));
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(2));
     expect(mocks.searchDirectory.mock.calls[1][0]).toMatchObject({ page: 2 });
 
@@ -1089,11 +1468,11 @@ describe("Connect — People", () => {
 
     const search = resolveLocalOnboardingHandler("connect.search_people");
     expect(search).not.toBeNull();
-    act(() => {
-      expect(search!({ person: "Person 9" })).toMatchObject({
-        status: "succeeded",
-      });
+    let result: Awaited<ReturnType<NonNullable<typeof search>>> | undefined;
+    await act(async () => {
+      result = await search!({ person: "Person 9" });
     });
+    expect(result).toMatchObject({ status: "succeeded" });
 
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(2));
     expect(mocks.searchDirectory.mock.calls[1][0]).toMatchObject({
@@ -1102,20 +1481,32 @@ describe("Connect — People", () => {
     });
   });
 
+  it.each(["missing-id", "u-other"])("does not downgrade selected user %s to the spoken name", async (userId) => {
+    mocks.searchDirectory.mockResolvedValue({ items: [person("u9", "Person 9"), person("u-other", "Different Person")], hasMore: false, page: 1 });
+    render(<ConnectPageClient />);
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
+    const handler = resolveLocalOnboardingHandler("connect.send_request")!;
+    let result;
+    await act(async () => { result = await handler({ person: "Person 9", userId }); });
+    expect(result).toMatchObject({ status: "blocked" });
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+  });
+
   it("sends a confirmed request only to one exact spoken name", async () => {
     mocks.searchDirectory.mockResolvedValue({
       items: [person("u9", "Person 9")],
       hasMore: false,
       page: 1,
     });
-    mocks.sendRequest.mockResolvedValue({ id: "request-9" });
+    mocks.sendRequest.mockResolvedValue({ id: "request-9", status: "pending", requesterUserId: "me" });
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(1));
 
     const sendRequest = resolveLocalOnboardingHandler("connect.send_request");
     expect(sendRequest).not.toBeNull();
     let result:
-      Awaited<ReturnType<NonNullable<typeof sendRequest>>> | undefined;
+      | Awaited<ReturnType<NonNullable<typeof sendRequest>>>
+      | undefined;
     await act(async () => {
       result = await sendRequest!({ person: "Person 9" });
     });
@@ -1139,6 +1530,39 @@ describe("Connect — People", () => {
         offeredScopeHandles: [],
       }),
     );
+  });
+
+  it("prepares an exact send without effects and rejects stale preparation", async () => {
+    mocks.searchDirectory.mockResolvedValue({ items: [person("u9", "Person 9")], hasMore: false, page: 1 });
+    render(<ConnectPageClient />);
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
+    const slots = { person: "Person 9", userId: "u9" };
+    const prepared = await prepareLocalOnboardingAction("connect.send_request", slots);
+    expect(prepared?.status).toBe("ready");
+    if (prepared?.status !== "ready") throw new Error("Preparation failed");
+    expect(prepared.binding).toMatchObject({ person: "Person 9", userId: "u9" });
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+    mocks.searchDirectory.mockResolvedValue({ items: [person("other-owner-id", "Person 9")], hasMore: false, page: 1 });
+    const result = await resolveLocalOnboardingHandler("connect.send_request")!(slots, { directiveId: "confirmed", preparedBinding: prepared.binding });
+    expect(result.status).toBe("blocked");
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+  });
+
+  it("executes a send with the same owner-prepared binding", async () => {
+    mocks.searchDirectory.mockResolvedValue({ items: [person("u9", "Person 9")], hasMore: false, page: 1 });
+    mocks.sendRequest.mockResolvedValue({ id: "prepared-request", status: "pending", requesterUserId: "me" });
+    render(<ConnectPageClient />);
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
+    const slots = { person: "Person 9", userId: "u9" };
+    const prepared = await prepareLocalOnboardingAction("connect.send_request", slots);
+    if (prepared?.status !== "ready") throw new Error("Preparation failed");
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+    expect((await resolveLocalOnboardingHandler("connect.send_request")!(slots, { preparedBinding: prepared.binding })).status).toBe("blocked");
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+    let result;
+    await act(async () => { result = await resolveLocalOnboardingHandler("connect.send_request")!(slots, { directiveId: "confirmed", preparedBinding: prepared.binding }); });
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(mocks.sendRequest).toHaveBeenCalledWith(expect.objectContaining({ addresseeUserId: "u9" }));
   });
 
   it("refuses to guess between similar directory matches before sending", async () => {
@@ -1224,13 +1648,14 @@ describe("Connect — People", () => {
       hasMore: false,
       page: 1,
     });
-    mocks.sendRequest.mockResolvedValue({ id: "request-10" });
+    mocks.sendRequest.mockResolvedValue({ id: "request-10", status: "pending", requesterUserId: "me" });
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(1));
 
     const sendRequest = resolveLocalOnboardingHandler("connect.send_request");
     let result:
-      Awaited<ReturnType<NonNullable<typeof sendRequest>>> | undefined;
+      | Awaited<ReturnType<NonNullable<typeof sendRequest>>>
+      | undefined;
     await act(async () => {
       result = await sendRequest!({
         person: "Ankit Kumar Singh",
@@ -1260,13 +1685,14 @@ describe("Connect — People", () => {
       hasMore: false,
       page: 1,
     });
-    mocks.sendRequest.mockResolvedValue({ id: "request-9" });
+    mocks.sendRequest.mockResolvedValue({ id: "request-9", status: "pending", requesterUserId: "me" });
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(1));
 
     const sendRequest = resolveLocalOnboardingHandler("connect.send_request");
     let result:
-      Awaited<ReturnType<NonNullable<typeof sendRequest>>> | undefined;
+      | Awaited<ReturnType<NonNullable<typeof sendRequest>>>
+      | undefined;
     await act(async () => {
       result = await sendRequest!({ person: "Abdul Rashid" });
     });
@@ -1287,13 +1713,14 @@ describe("Connect — People", () => {
       hasMore: false,
       page: 1,
     });
-    mocks.sendRequest.mockResolvedValue({ id: "request-9" });
+    mocks.sendRequest.mockResolvedValue({ id: "request-9", status: "pending", requesterUserId: "me" });
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(1));
 
     const sendRequest = resolveLocalOnboardingHandler("connect.send_request");
     let result:
-      Awaited<ReturnType<NonNullable<typeof sendRequest>>> | undefined;
+      | Awaited<ReturnType<NonNullable<typeof sendRequest>>>
+      | undefined;
     await act(async () => {
       result = await sendRequest!({ person: "Abdul Rashid" });
     });
@@ -1314,7 +1741,8 @@ describe("Connect — People", () => {
 
     const sendRequest = resolveLocalOnboardingHandler("connect.send_request");
     let result:
-      Awaited<ReturnType<NonNullable<typeof sendRequest>>> | undefined;
+      | Awaited<ReturnType<NonNullable<typeof sendRequest>>>
+      | undefined;
     await act(async () => {
       result = await sendRequest!({ person: "Abdul" });
     });
@@ -1544,6 +1972,31 @@ describe("Connect — removing a connection", () => {
     maskedEmail: "r***d@gmail.com",
   };
 
+  it("rejects a selected connection whose label changed", async () => {
+    mocks.listConnections.mockResolvedValue([RASHID]);
+    render(<ConnectPageClient />);
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
+    const handler = resolveLocalOnboardingHandler("connect.remove_connection")!;
+    const result = await handler({ person: "Someone Else", connectionId: "c-1" }, { directiveId: "confirmed" });
+    expect(result.status).toBe("blocked");
+    expect(mocks.removeConnection).not.toHaveBeenCalled();
+  });
+
+  it("prepares removal and revalidates the same binding before executing", async () => {
+    mocks.listConnections.mockResolvedValue([RASHID]);
+    render(<ConnectPageClient />);
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
+    const slots = { person: "Rashid", connectionId: "c-1" };
+    const prepared = await prepareLocalOnboardingAction("connect.remove_connection", slots);
+    expect(prepared?.status).toBe("ready");
+    if (prepared?.status !== "ready") throw new Error("Preparation failed");
+    expect(mocks.removeConnection).not.toHaveBeenCalled();
+    await act(async () => {
+      await resolveLocalOnboardingHandler("connect.remove_connection")!(slots, { directiveId: "confirmed", preparedBinding: prepared.binding });
+    });
+    expect(mocks.removeConnection).toHaveBeenCalledWith(expect.objectContaining({ connectionId: "c-1" }));
+  });
+
   it("asks before removing, and does not remove on the asking turn", async () => {
     // The one action here that cannot be walked back. A name misheard once is
     // a connection gone with no undo, so the spoken turn may only raise the
@@ -1571,7 +2024,7 @@ describe("Connect — removing a connection", () => {
     expect(confirm?.consequence).toContain("share");
   });
 
-  it("removes only when the card confirms it", async () => {
+  it("refuses a model-supplied confirmation slot", async () => {
     mocks.listConnections.mockResolvedValue([RASHID]);
     mocks.removeConnection.mockResolvedValue({});
     render(<ConnectPageClient />);
@@ -1585,6 +2038,30 @@ describe("Connect — removing a connection", () => {
         connectionId: "c-1",
         confirmed: true,
       });
+    });
+
+    expect(result).toMatchObject({ status: "blocked" });
+    expect(mocks.removeConnection).not.toHaveBeenCalled();
+  });
+
+  it("removes only after a trusted in-app confirmation", async () => {
+    mocks.listConnections.mockResolvedValue([RASHID]);
+    mocks.removeConnection.mockResolvedValue({});
+    render(<ConnectPageClient />);
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(1));
+
+    const remove = resolveLocalOnboardingHandler("connect.remove_connection");
+    let result: Awaited<ReturnType<NonNullable<typeof remove>>> | undefined;
+    await act(async () => {
+      result = await remove!(
+        {
+          person: "Rashid",
+          connectionId: "c-1",
+        },
+        {
+          humanConfirmationToken: "test-confirmation-token",
+        },
+      );
     });
 
     expect(result).toMatchObject({ status: "succeeded" });
@@ -1669,9 +2146,15 @@ describe("Connect — the phone-width geometry QA reported", () => {
     expect(classes.has("justify-end")).toBe(true);
   });
 
-  it("keeps My connections scrollable when the list grows", async () => {
-    // Three connections fit naturally. A hundred should not turn the top of
-    // Connect into a full-page receipt before the search field appears.
+  it("caps My connections on every viewport, phones included", async () => {
+    // Phones were once left uncapped because an earlier bound trapped touch
+    // gestures in the inner scroller and let the fixed bottom chrome cover the
+    // row owning the gesture. Uncapped is its own bug though: a long roster
+    // pushes the directory section below it out of reach. The bound is back,
+    // and `overscroll-contain` is what keeps it safe -- it stops a scroll that
+    // reaches the roster's end from chaining into the page behind it. The cap
+    // is measured in `dvh` so it tracks the visible viewport rather than
+    // measuring a phone as though its browser chrome were absent.
     mocks.listConnections.mockResolvedValue(
       Array.from({ length: 12 }, (_, index) => ({
         connectionId: `c-${index}`,
@@ -1688,10 +2171,18 @@ describe("Connect — the phone-width geometry QA reported", () => {
       '[data-testid="connect-my-connections-group"] [data-inset-separators="true"]',
     );
     expect(list).toBeTruthy();
-    expect(list!.className).toContain("max-h-[232px]");
+    // Unprefixed, so the bound applies on phones too.
+    expect(list!.className).toContain("max-h-[min(42dvh,18rem)]");
     expect(list!.className).toContain("overflow-y-auto");
+    // The mitigation the phone bound depends on. Without it the roster chains
+    // its scroll into the page and the old gesture trap comes back.
     expect(list!.className).toContain("overscroll-contain");
-    expect(list!.className).toContain("sm:max-h-[320px]");
+    // Not re-introduced behind a breakpoint: the cap is unconditional now.
+    expect(list!.className).not.toMatch(/(?:^|\s)sm:max-h-\[320px\](?:\s|$)/);
+    expect(list!.className).not.toMatch(/(?:^|\s)sm:overflow-y-auto(?:\s|$)/);
+    // A viewport unit that ignores browser chrome would let the list run under
+    // the fixed bottom bars on a phone.
+    expect(list!.className).not.toMatch(/max-h-\[[^\]]*\bvh\b/);
   });
 
   it("asks for the search field in two words", async () => {
@@ -1975,6 +2466,48 @@ describe("Connect — inviting someone who is not on One yet", () => {
 });
 
 describe("Connect — Circles", () => {
+  it("opens the directory filter as a portalled material popover on web", async () => {
+    render(<ConnectPageClient />);
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: /Current directory:/ }));
+
+    const menu = await screen.findByTestId("connect-directory-menu");
+    const anchor = screen.getByTestId("connect-directory-menu-anchor");
+    expect(anchor.contains(menu)).toBe(false);
+    expect(menu).toHaveAttribute("data-slot", "popover-content");
+    expect(menu.className).toContain("backdrop-blur-2xl");
+    expect(menu.className).toContain("shadow-[0_18px_48px");
+    expect(menu.className).not.toContain("absolute");
+    expect(
+      within(menu).getByRole("menuitemradio", { name: "People" }),
+    ).toBeTruthy();
+    expect(
+      within(menu).getByRole("menuitemradio", { name: "RIAs" }),
+    ).toBeTruthy();
+    expect(
+      within(menu).getByRole("menuitemradio", { name: "Around you" }),
+    ).toBeTruthy();
+  });
+
+  it("keeps the existing inline directory menu when running in native", async () => {
+    mocks.isNative.mockReturnValue(true);
+    render(<ConnectPageClient />);
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: /Current directory:/ }));
+
+    const menu = await screen.findByTestId("connect-directory-menu");
+    const anchor = screen.getByTestId("connect-directory-menu-anchor");
+    expect(anchor.contains(menu)).toBe(true);
+    expect(menu).not.toHaveAttribute("data-slot", "popover-content");
+    expect(menu.className).toContain("absolute left-0 top-full");
+    expect(menu.className).toContain(
+      "bg-[color:var(--app-card-surface-default-solid)]",
+    );
+    expect(menu.className).not.toContain("app-card-surface-standard");
+  });
+
   it("opens on People when the URL says nothing", async () => {
     render(<ConnectPageClient />);
 
@@ -2133,6 +2666,103 @@ describe("Connect — contact sync", () => {
     ).toBeTruthy();
   });
 
+  it("preserves connection outcomes and partial warnings through the shared results retry", async () => {
+    const matches = [
+      {
+        lookupId: "new",
+        userId: "new",
+        displayName: "Asha Rao",
+        photoUrl: null,
+        outcome: "auto_connected" as const,
+      },
+      {
+        lookupId: "existing",
+        userId: "existing",
+        displayName: "Meena Shah",
+        photoUrl: null,
+        outcome: "already_connected" as const,
+      },
+      {
+        lookupId: "removed",
+        userId: "removed",
+        displayName: "Ravi Kumar",
+        photoUrl: null,
+        outcome: "suppressed" as const,
+      },
+    ];
+    mocks.syncContactSignals.mockResolvedValueOnce({
+      ...emptyContactSyncResult(),
+      matches,
+      matchedUserIds: matches.map((match) => match.userId),
+      totalContacts: 3,
+      readContactCount: 3,
+      checkedContactCount: 3,
+      matchedContactCount: 3,
+      autoConnectedCount: 1,
+      alreadyConnectedCount: 1,
+      suppressedCount: 1,
+      partial: true,
+      limited: true,
+    });
+    render(<ConnectPageClient />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Sync contacts" }),
+    );
+    const sheet = await screen.findByRole("dialog", {
+      name: "Contact sync results",
+    });
+
+    for (const [name, status] of [
+      ["Asha Rao", "Connected now"],
+      ["Meena Shah", "Already connected"],
+      ["Ravi Kumar", "Kept disconnected"],
+    ]) {
+      expect(
+        within(within(sheet).getByText(name).closest("li")!).getByText(status),
+      ).toBeInTheDocument();
+    }
+    expect(
+      within(sheet).getByText("Only part of your contact list was checked."),
+    ).toBeInTheDocument();
+    expect(mocks.sendRequest).not.toHaveBeenCalled();
+
+    mocks.syncContactSignals.mockResolvedValueOnce(emptyContactSyncResult());
+    fireEvent.click(within(sheet).getByRole("button", { name: "Sync again" }));
+    await within(sheet).findByText(/No eligible contacts matched/);
+    expect(within(sheet).queryByText("Asha Rao")).toBeNull();
+    expect(mocks.syncContactSignals).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the verified auth-context phone when Firebase has no phone", async () => {
+    // UAT/native phone verification writes the authoritative phone to the
+    // backend identity and AuthContext, while Firebase's User can remain
+    // phone-less. Dropping this value makes an Indian national contact hash as
+    // a plausible US number on an en-US iPhone/browser and silently match 0.
+    mocks.authPhoneNumber = "+919000000001";
+    mocks.syncContactSignals.mockImplementationOnce(async (options) => {
+      await expect(options.resolveAccountPhoneNumber?.()).resolves.toBe(
+        "+919000000001",
+      );
+      await expect(options.resolveIdToken?.()).resolves.toBe("id-token");
+      return emptyContactSyncResult();
+    });
+    render(<ConnectPageClient />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Sync contacts" }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.syncContactSignals).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountPhoneNumber: "+919000000001",
+          resolveAccountPhoneNumber: expect.any(Function),
+          resolveIdToken: expect.any(Function),
+        }),
+      ),
+    );
+  });
+
   it("does not offer it on the RIAs tab", async () => {
     mocks.listConnections.mockResolvedValue([]);
     render(<ConnectPageClient />);
@@ -2156,7 +2786,7 @@ describe("Connect — contact sync", () => {
     try {
       render(<ConnectPageClient />);
 
-      await screen.findByRole("heading", { name: "People" });
+      await screen.findByRole("button", { name: "Current directory: People" });
       await waitFor(() =>
         expect(
           screen.queryByRole("button", { name: "Sync contacts" }),
@@ -2180,7 +2810,9 @@ describe("Connect — contact sync", () => {
     const sync = await screen.findByRole("button", {
       name: "Sync contacts",
     });
-    const heading = screen.getByRole("heading", { name: "People" });
+    const heading = screen.getByRole("button", {
+      name: "Current directory: People",
+    });
 
     expect(heading.contains(sync)).toBe(false);
     expect(heading.textContent).not.toContain("Sync");
@@ -2234,11 +2866,9 @@ describe("Connect — contact sync", () => {
     // The sheet is half of what this change puts on Connect. Without these,
     // deleting its mount breaks no test in this file.
     expect(await screen.findByText("Contact sync results")).toBeTruthy();
-    expect(
-      screen.getByText("No Hushh accounts matched in this sync."),
-    ).toBeTruthy();
+    expect(screen.getByText(/No eligible contacts matched/)).toBeTruthy();
     expect(mocks.toastInfo.mock.calls[0][0]).toBe(
-      "No Hushh users matched this time",
+      "No eligible contacts matched",
     );
   });
 });

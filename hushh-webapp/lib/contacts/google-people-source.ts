@@ -29,18 +29,16 @@
 
 import type { HushhContactsReadResult } from "@/lib/capacitor";
 import { isNative } from "@/lib/capacitor/platform";
+import { contactInvitationsEnabled } from "@/lib/contacts/invitation-candidates";
 import type { MarketplaceContactSource } from "@/lib/marketplace/contact-matching";
 
 const PEOPLE_CONNECTIONS_URL =
   "https://people.googleapis.com/v1/people/me/connections";
 
 /**
- * Exactly the two fields the pipeline consumes.
- *
- * `contact-matching.ts` reads `displayName` and `phoneNumbers` and nothing
- * else — `HushhContactRecord.emailAddresses` is declared and never used. Asking
- * for photos, addresses or organisations would be collecting data we have no
- * use for, from people who are not our users.
+ * Baseline matching fields. The invitation flag adds emailAddresses solely
+ * for session-local personal invitation selection. No additional OAuth scope,
+ * server-side read, persistent sync token or contact cache is introduced.
  */
 const PERSON_FIELDS = "names,phoneNumbers";
 
@@ -55,11 +53,60 @@ const READ_SOURCE = "READ_SOURCE_TYPE_CONTACT";
 const PAGE_SIZE = 1000;
 
 /**
- * Pages are bounded rather than followed to exhaustion. Five pages match the
+ * Pages are bounded rather than followed to exhaustion. Ten pages match the
  * contact-sync read budget; a larger account is reported as truncated and its
  * unreturned rows stay explicitly unchecked rather than being called unmatched.
  */
-const MAX_PAGES = 5;
+const MAX_PAGES = 10;
+export const GOOGLE_PEOPLE_REQUEST_TIMEOUT_MS = 30_000;
+
+async function readPeoplePage(
+  url: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<PeopleConnectionsResponse> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted)
+    throw new DOMException("Contact sync ended.", "AbortError");
+  signal?.addEventListener("abort", abort, { once: true });
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      controller.abort();
+      reject(
+        new Error(
+          "Google Contacts took too long to respond. Check your connection and try again.",
+        ),
+      );
+    }, GOOGLE_PEOPLE_REQUEST_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([
+      (async () => {
+        const response = await fetch(url, {
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(
+            response.status === 401
+              ? "Google contact access expired. Connect again to keep going."
+              : response.status === 403
+                ? "Google Contacts access is unavailable for this app or account. Try again later."
+                : "Could not read your Google contacts. Try again in a moment.",
+          );
+        }
+        return (await response.json()) as PeopleConnectionsResponse;
+      })(),
+      timeout,
+    ]);
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", abort);
+  }
+}
 
 export type GoogleContactsAvailability = "connectable" | "unconfigured";
 
@@ -69,6 +116,7 @@ type PeoplePerson = {
   resourceName?: string | null;
   names?: PeopleName[];
   phoneNumbers?: PeoplePhone[];
+  emailAddresses?: { value?: string | null }[];
 };
 type PeopleConnectionsResponse = {
   connections?: PeoplePerson[];
@@ -112,22 +160,21 @@ function displayNameOf(person: PeoplePerson): string | null {
 /**
  * The number string to normalize, chosen deliberately.
  *
- * Google returns `canonicalForm` (its own E.164) beside `value` (whatever the
- * person typed). Using `canonicalForm` is the obvious shortcut and it is wrong:
- * `lib/contacts/phone-normalization.ts` exists so BOTH sides of the hash reach
- * byte-identical E.164 through ONE implementation. Google's parser and
- * `libphonenumber-js` need not agree at the edges, and the moment they disagree
- * the digest misses silently and the person is told nobody matched.
- *
- * `canonicalForm` is used only when `value` is empty, and even then it goes
- * THROUGH the normalizer, never around it.
+ * Google defines `canonicalForm` as its output-only ITU-T E.164 form. That is
+ * stronger country evidence than `value`, which can be a national number from
+ * any country in a globally mixed address book. Prefer a syntactically valid
+ * canonical form and still send it THROUGH our normalizer downstream. Falling
+ * back to `value` is safe only when Google omitted or malformed the canonical
+ * field; emitting both could hash a wrong regional interpretation as well.
  */
 function phoneStringsOf(person: PeoplePerson): string[] {
   return (person.phoneNumbers ?? [])
     .map((phone) => {
+      const canonical = String(phone?.canonicalForm || "").trim();
+      if (/^\+[1-9]\d{6,14}$/.test(canonical)) return canonical;
       const typed = String(phone?.value || "").trim();
       if (typed) return typed;
-      return String(phone?.canonicalForm || "").trim();
+      return "";
     })
     .filter(Boolean);
 }
@@ -141,6 +188,7 @@ function phoneStringsOf(person: PeoplePerson): string[] {
  */
 export function googlePeopleContactSource(
   token: string,
+  signal?: AbortSignal,
 ): MarketplaceContactSource {
   return async ({ limit }) => {
     const contacts: HushhContactsReadResult["contacts"] = [];
@@ -151,7 +199,12 @@ export function googlePeopleContactSource(
 
     do {
       const url = new URL(PEOPLE_CONNECTIONS_URL);
-      url.searchParams.set("personFields", PERSON_FIELDS);
+      url.searchParams.set(
+        "personFields",
+        contactInvitationsEnabled()
+          ? `${PERSON_FIELDS},emailAddresses`
+          : PERSON_FIELDS,
+      );
       url.searchParams.set("pageSize", String(PAGE_SIZE));
       url.searchParams.set("sources", READ_SOURCE);
       if (pageToken) url.searchParams.set("pageToken", pageToken);
@@ -159,21 +212,7 @@ export function googlePeopleContactSource(
       // somebody's address book, and there is nowhere in this design to keep
       // one — nothing here is persisted.
 
-      const response = await fetch(url.toString(), {
-        cache: "no-store",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) {
-        throw new Error(
-          response.status === 401
-            ? "Google contact access expired. Connect again to keep going."
-            : response.status === 403
-              ? "Google Contacts access is unavailable for this app or account. Try again later."
-              : "Could not read your Google contacts. Try again in a moment.",
-        );
-      }
-
-      const payload = (await response.json()) as PeopleConnectionsResponse;
+      const payload = await readPeoplePage(url.toString(), token, signal);
       totalPeople = Number(payload.totalPeople || 0) || totalPeople;
 
       for (const person of payload.connections ?? []) {
@@ -186,6 +225,14 @@ export function googlePeopleContactSource(
           id: String(person.resourceName || "") || null,
           displayName: displayNameOf(person),
           phoneNumbers,
+          ...(contactInvitationsEnabled()
+            ? {
+                hasPhoneEntries: (person.phoneNumbers ?? []).length > 0,
+                emailAddresses: (person.emailAddresses ?? [])
+                  .map((email) => String(email.value ?? ""))
+                  .filter(Boolean),
+              }
+            : {}),
         });
       }
 

@@ -34,6 +34,11 @@ import type { OneLocationCircleSummary } from "@/lib/one-location/types";
 import type { DirectoryPerson } from "@/lib/services/connections-service";
 import { ROUTES } from "@/lib/navigation/routes";
 import { VaultContext } from "@/lib/vault/vault-context";
+import { trackEvent } from "@/lib/observability/client";
+import {
+  oneLocationCountBucket,
+  trackOneLocationJourneyAction,
+} from "@/lib/observability/location-events";
 
 /**
  * Circles, on Connect.
@@ -118,21 +123,20 @@ function systemKindOf(circle: OneLocationCircleSummary): string | null {
  * person was never asked, so the row opened by naming a category they had not
  * picked ahead of the only number on the line that was true.
  *
- * The viewer is excluded from the count for the same reason the Location list
- * excludes them: "3 people" reading as two others and yourself is the answer
- * to a question nobody asked.
+ * The count includes the owner, matching Circle Detail -- excluding them made
+ * this row disagree with the screen one tap away over the same Circle.
  */
 export function circleRowDescription(circle: OneLocationCircleSummary): string {
-  const others = Math.max(0, Number(circle.memberCount || 0) - 1);
+  const count = Math.max(0, Number(circle.memberCount || 0));
   const kind = systemKindOf(circle);
   const owns = circle.role === "owner";
-  const people = others === 1 ? "1 person" : `${others} people`;
+  const people = count === 1 ? "1 person" : `${count} people`;
 
   // Trusted is owner-scoped by the server, so the only viewer who can reach
   // this line is its owner. Guarded anyway: "Everyone you're connected to" on
   // somebody else's roster would be a false statement about the reader.
   if (kind === "trusted" && owns) {
-    return others === 0
+    return count <= 1
       ? SYSTEM_CIRCLE_COPY.trusted.description
       : `${SYSTEM_CIRCLE_COPY.trusted.description} · ${people}`;
   }
@@ -144,9 +148,9 @@ export function circleRowDescription(circle: OneLocationCircleSummary): string {
       ? SYSTEM_CIRCLE_COPY.sms.description
       : "You'll get their SMS";
     if (!owns) return lead;
-    return others === 0 ? `${lead} · no one yet` : `${lead} · ${people}`;
+    return count <= 1 ? `${lead} · no one yet` : `${lead} · ${people}`;
   }
-  return others === 0 ? "No members yet" : people;
+  return count <= 1 ? "No members yet" : people;
 }
 
 /** Circles you own first, with product-managed circles pinned above named ones. */
@@ -237,6 +241,27 @@ export function ConnectCirclesTab({
   ).trim();
   const joinCode =
     String(searchParams.get(CIRCLE_JOIN_CODE_PARAM) || "").trim() || undefined;
+  const trackedSurfaceRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const signature = `${action ?? "list"}:${circleIdParam ? "detail" : "none"}:${joinCode ? "code" : "none"}`;
+    if (trackedSurfaceRef.current === signature) return;
+    trackedSurfaceRef.current = signature;
+    const analyticsAction =
+      action === "create-circle"
+        ? "circle_create_started"
+        : action === "join-circle"
+          ? "circle_join_started"
+          : action === "circle-detail"
+            ? "circle_opened"
+            : "circle_tab_opened";
+    trackOneLocationJourneyAction({
+      action: analyticsAction,
+      routeId: "connect",
+      entrySurface: "connect_circles",
+      targetType: "circle",
+    });
+  }, [action, circleIdParam, joinCode]);
 
   useEffect(() => {
     if (!vaultOwnerToken) {
@@ -437,6 +462,11 @@ export function ConnectCirclesTab({
         busy={busy}
         onSubmit={async (name, kind) => {
           const circle = await withBusy(() => actions.createCircle(name, kind));
+          trackEvent("one_location_circle_created", {
+            route_id: "connect",
+            result: "success",
+            circle_kind: kind,
+          });
           // `replace`, so back from the new Circle returns to the list rather
           // than to the form that just succeeded.
           go({ action: "circle-detail", circleId: circle.id }, "replace");
@@ -458,6 +488,12 @@ export function ConnectCirclesTab({
         onResolve={(code) => withBusy(() => actions.resolveCode(code))}
         onJoin={async (code) => {
           const circle = await withBusy(() => actions.joinCircle(code));
+          trackOneLocationJourneyAction({
+            action: "circle_joined",
+            routeId: "connect",
+            entrySurface: "connect_circles",
+            targetType: "circle",
+          });
           go({ action: "circle-detail", circleId: circle.id }, "replace");
           setReloadToken((token) => token + 1);
         }}
@@ -495,10 +531,25 @@ export function ConnectCirclesTab({
           withBusy(() => actions.generateCode(circleId, rotate))
         }
         onCopyCode={actions.copyCode}
-        onShareCode={actions.shareCode}
+        onShareCode={async (circle, code) => {
+          await actions.shareCode(circle, code);
+          trackOneLocationJourneyAction({
+            action: "circle_code_shared",
+            routeId: "connect",
+            entrySurface: "connect_circles",
+            targetType: "circle",
+          });
+        }}
         onShareWithMember={(circleId) => shareWithMember(circleId)}
         onRemoveMember={async (circleId, userId) => {
           await withBusy(() => actions.removeMember(circleId, userId));
+          trackOneLocationJourneyAction({
+            action: "circle_member_removed",
+            routeId: "connect",
+            entrySurface: "connect_circles",
+            targetType: "circle",
+            countBucket: "1",
+          });
           setReloadToken((token) => token + 1);
         }}
         onConnectMember={async (_circleId, userId, person) => {
@@ -533,17 +584,44 @@ export function ConnectCirclesTab({
         onLoadEligibleConnectionsPage={actions.loadEligibleConnectionsPage}
         onInviteConnections={async (circleId, userIds) => {
           await withBusy(() => actions.inviteConnections(circleId, userIds));
+          trackOneLocationJourneyAction({
+            action: "circle_member_invited",
+            routeId: "connect",
+            entrySurface: "connect_circles",
+            targetType: "circle",
+            countBucket: oneLocationCountBucket(userIds.length),
+          });
           // The roster on screen is stale the moment somebody is added. It
           // used to stay stale until the person navigated away and back.
           setReloadToken((token) => token + 1);
         }}
-        onCancelMemberInvite={actions.cancelMemberInvite}
+        onCancelMemberInvite={async (inviteId) => {
+          await actions.cancelMemberInvite(inviteId);
+          trackOneLocationJourneyAction({
+            action: "circle_invite_cancelled",
+            routeId: "connect",
+            entrySurface: "connect_circles",
+            targetType: "circle",
+          });
+        }}
         onLeave={async (circleId) => {
           await withBusy(() => actions.leaveCircle(circleId));
+          trackOneLocationJourneyAction({
+            action: "circle_left",
+            routeId: "connect",
+            entrySurface: "connect_circles",
+            targetType: "circle",
+          });
           closeFlow();
         }}
         onDelete={async (circleId) => {
           await withBusy(() => actions.deleteCircle(circleId));
+          trackOneLocationJourneyAction({
+            action: "circle_deleted",
+            routeId: "connect",
+            entrySurface: "connect_circles",
+            targetType: "circle",
+          });
           closeFlow();
         }}
       />
@@ -679,8 +757,9 @@ export function ConnectCirclesTab({
             icon={Plus}
             iconTone="indigo"
             title="New circle"
-            description="Name a group and invite people you're connected to."
+            description="Create a group for your connections."
             density="compact"
+            textOverflow="truncate"
             chevron
             onClick={() => go({ action: "create-circle" })}
             testId="connect-circle-create"
@@ -689,8 +768,9 @@ export function ConnectCirclesTab({
             icon={KeyRound}
             iconTone="gray"
             title="Join with code"
-            description="Enter the 12-character code someone shared with you."
+            description="Enter a shared 12-character code."
             density="compact"
+            textOverflow="truncate"
             chevron
             onClick={() => go({ action: "join-circle" })}
             testId="connect-circle-join"

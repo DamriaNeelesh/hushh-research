@@ -62,6 +62,35 @@ The current PKM runtime stores Personal Knowledge Model payloads as segmented en
 - Public scope discovery must use handles and coarse metadata, not path leakage.
 - Financial can remain protected while the broader PKM architecture expands across many domains.
 
+## Reserved domain: wallet (2026-09-01)
+
+Wallet cards (the `wallet` domain) are a reserved owner-managed PKM domain, not a new table or a
+`vault.*` scope. Decisions of record:
+
+- One `pkm_blobs` row holds the whole domain; the plaintext inside has exactly
+  two top-level branches, `summary` (nickname, brand, last4, expiry, issuing
+  region per card id) and `secrets` (PAN, CVV, PIN, cardholder name per card
+  id). Branch names line up 1:1 with the two consent-requestable scopes
+  (`attr.wallet.summary.*`, `attr.wallet.secrets.*`) and the
+  `secrets` key matches the client memory-context prune pattern, so card data
+  can never ride into model context even if the domain-level guard regressed.
+- Encryption is client-side under the vault key (the `runtime_secrets`
+  template, including the conflict-retry commit); the server stores ciphertext
+  plus a non-secret summary envelope it validates on every write: brand enum,
+  last4 shape, expiry shape, `normalize_country_hint` on the issuing region,
+  region-locked schemes (RuPay/Mir/Elo/Verve) confined to their home markets,
+  and outright refusal of any secret-shaped key in the envelope. Full
+  PAN/Luhn validation is client-only, by BYOK construction.
+- Sharing deviates deliberately from the `source_library` template: the two
+  branch wildcards are externally requestable (owner approves each grant,
+  delivery via the consent-gated encrypted export); domain wildcard, exact
+  paths, and public projection stay closed. This records the founder decision
+  (2026-09-01) that superseded the earlier "never store CVV/PIN" stance with
+  the consumer-vault model.
+- The Cards specialist (`agent_wallet`) has no server-side data authority; all
+  card operations execute in the owner's browser through Action Gateway
+  client handlers.
+
 ## Revisions and zero-loss upgrades
 
 - Active reads use one coherent domain snapshot containing ciphertext, content revision,
@@ -82,3 +111,54 @@ The current PKM runtime stores Personal Knowledge Model payloads as segmented en
 - v7 writes are fail-closed behind a server kill switch. Reader compatibility and shadow
   rehearsal ship before any v7 persistence is enabled. The policy is checked again at
   commit time so activating the kill switch also blocks an already-issued v7 claim.
+
+## Decision: large pasted recaps become Memory through review, never through a secret (2026-09-02)
+
+A multi-section recap pasted into Agent chat is prepared section by section
+(`lib/pkm/pkm-natural-language-ingestion.ts`): numbered and Markdown headings
+are chunk and segmentation boundaries, existing domain manifests travel with
+every proposal so facts land in scopes that already exist, and one failed
+section is reported as `failed` instead of discarding the rest. Before any card
+reaches the owner, the in-session decrypted working set is checked locally:
+an exact duplicate is dropped and a near match is forced to `confirm_first`.
+A card number inside a pasted recap is redacted on the device before the text leaves it (the last four digits stay for orientation) and the summary says so; a plain chat message carrying one is still blocked. The structurer refuses any passage carrying a card number, security code,
+credential, government id, or bank account (`reject_sensitive_secret`,
+`write_mode: do_not_save`), so a secret is excluded and the owner is pointed
+to the secure form rather than redirected into a plain memory. The review is
+grouped by domain › scope with per-item keep or skip; nothing is written until
+the owner saves the kept items, and `add_to_pkm` now carries the exact passage
+the model meant (`source_text`) instead of the whole turn.
+
+## Decision: structured KYC capture and product-default auto-save (2026-09-04)
+
+One may automatically capture eligible facts that an owner intentionally types
+in One Chat or the Gmail KYC import/chat flow. A vault with no saved preference
+uses the product default, while an explicit owner opt-out remains authoritative.
+The write receipt records the distinction: a default write uses
+`product_default_auto_save_policy` with a policy version/effective time; a
+setting chosen by the owner continues to use `owner_auto_save_policy`. The PKM
+settings control and a chat receipt make the behavior visible and reversible.
+
+This does not turn every message into memory. Secrets, ambiguous or
+low-confidence claims, corrections/deletions, and facts with active sharing
+recipients remain review-first. Failed background writes do not change the
+conversation result and surface an explicit failure notification.
+
+`kyc_identity_v1` is a profile of the existing `/api/pkm/memory/proposals`
+contract, not another memory system. It uses one constrained extraction pass
+for a pasted or chat-entered KYC description, writes only explicit stable facts
+to existing `identity.identity_profile`, its `education` subtree, or
+`professional.profile`, and retains source type/update metadata. It never
+stores an unstructured "about me" blob. The same pass may produce a
+review-first, structured general-PKM fact for a safe durable detail that does
+not fit the KYC registry, so it is not silently discarded. A versioned
+field/alias registry is shared by ingestion, Gmail classification, retrieval,
+and drafting.
+
+Targeted KYC requests first resolve the registry fields, then decrypt only the
+matching manifest-backed encrypted segments in the unlocked client. Exact
+canonical IDs and aliases rank before path and lexical matches. The five-minute
+in-memory cache is invalidated per changed domain after a write. This phase has
+no server-side vector database, no embeddings, and no Gmail-content RAG: Gmail
+content remains outside PKM and is classified transiently under its separate
+consent boundary.

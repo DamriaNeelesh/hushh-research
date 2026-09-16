@@ -15,8 +15,8 @@ does not publish a voice or Search action.
 
 | Mode | User input | Storage | User-facing scope |
 | --- | --- | --- | --- |
-| `hushh_managed_vertex` | None | No user secret | Default typed and live private-agent experience through Hussh workload identity |
-| `byok` | Google AI Studio Gemini API key or Google Cloud Vertex API key with project and location | Encrypted PKM only | Typed private-agent turns; Live is an explicit, separately gated compatibility path |
+| `hushh_managed_vertex` | None | No user secret | Typed private-agent turns and Location commands through Hussh workload identity |
+| `byok` | Google AI Studio Gemini API key or Google Cloud Vertex API key with project and location | Encrypted PKM only | Typed private-agent turns; command recording uses the managed provider |
 
 The key transport is explicit: `developer_api` uses the Google AI Studio
 endpoint, while `vertex_api_key` uses the Google Cloud Vertex endpoint and
@@ -27,6 +27,67 @@ transport or configured Google OAuth client. It must not be represented as a
 working route until both are in place. Service-account JSON is not accepted. Existing encrypted
 Gemini configuration remains readable after the UI move from Profile; legacy
 BYOK values default to `developer_api`, so no storage migration is required.
+
+### Fleet text model switch (2026-09-02)
+
+Every text agent manifest names the alias `gemini-default`; the alias resolves to
+`constants.GEMINI_MODEL`, which reads `HUSSH_GEMINI_TEXT_MODEL` (deploy substitution
+`_HUSSH_GEMINI_TEXT_MODEL`) and falls back to `FLEET_TEXT_MODEL_DEFAULT`. One value moves
+the whole fleet; a lane may flip it only after its project's Vertex
+`constraints/vertexai.allowedModels` policy admits the id. UAT runs `gemini-3.8-flash`
+(admitted in `hushh-pda-uat` on 2026-09-02); production stays on the default until its
+allowlist changes. Every text agent, including the memory chain and the summary reducer, names the alias
+(founder directive 2026-09-02: the fleet runs Flash; founder rule 2026-09-14: the catalog
+lists only the last two Gemini releases, today `gemini-3.8-flash` and `gemini-3.7-flash`, and
+a roll-forward replaces the older one, never adds a third; `gemini-3.1-pro-preview` and
+`gemini-3.1-flash-lite` are retired). The Live head is pinned by
+`VERTEX_LIVE_MODEL_ID` (an exact id read once at request time, no manifest alias)
+and runs only in `VERTEX_LIVE_LOCATION` while `ONE_VOICE_LIVE_ENABLED` is on.
+`tests/test_fleet_text_model_switch.py` refuses any manifest that pins a Flash generation.
+
+### Knobs removed as valueless (2026-09-02)
+
+There is one name for the fleet text model and one way to override it. These were
+removed because each was either an alias of `GEMINI_MODEL` or an environment key no
+lane set, and every one of them implied a choice that did not exist:
+
+| Removed | Why |
+|---|---|
+| `GEMINI_MODEL_VERTEX` | Always equal to `GEMINI_MODEL`; the name implied a separate Vertex model. |
+| `KAI_PORTFOLIO_IMPORT_PRIMARY_MODEL` | Same value again, under a third name. |
+| `KAI_PORTFOLIO_IMPORT_MODEL` (env) | Read by the portfolio route, set by no lane. |
+| `AGENT_ONE_SPECIALIST_MODEL` (env) | Set by no lane, and it froze the specialist model at import. |
+| `GMAIL_RECEIPT_LLM_MODEL` (env) | Pinned `gemini-2.5-flash-lite` in the local env, quietly outside the Flash-only rule. |
+| `KAI_RECEIPT_MEMORY_LLM_MODEL` (env) | Read by the receipt memory service, set by no lane. |
+
+Removing them is behaviour-preserving in every deployed lane, because no lane set any of
+them. Locally, Gmail receipt extraction moves off the pinned 2.5 generation and onto the
+fleet model like everything else.
+
+### Who chooses the model (2026-09-02)
+
+The environment names a default, never the only possibility. A turn resolves its model
+at call time through `hushh_mcp/services/model_preference_service.py`, highest tier first:
+
+1. **the person's own choice** — `one_model_preferences` (migration 196), set from Agent
+   chat (`set_preferred_model`) or `PUT /api/one/models/preference`, and validated against
+   the served catalog on write;
+2. **the lane default** — `HUSSH_GEMINI_TEXT_MODEL`, read by module attribute rather than
+   copied into any consumer;
+3. **`FLEET_TEXT_MODEL_DEFAULT`** — 3.8 Flash. Every lane that can serve it runs it;
+   production pins 3.7 in its workflow until its allowed-models policy admits 3.8.
+
+The catalog of choices lives in `hushh_mcp/runtime_providers/model_catalog.py` and is
+derived from the provider registry, so adding a generation is one registry row plus one
+entry in `FLEET_TEXT_MODEL_CHOICES`; no client release and no browser environment variable
+is involved. `GET /api/one/models/preference` serves the list, what the person chose, and
+what is actually running.
+
+Two failure rules keep a preference from ever costing a turn: a choice that outlived its
+catalog entry degrades to the lane default (and stays visible so a surface can explain
+it), and an unreachable preference store resolves to the lane default rather than raising.
+A change takes effect on the person's next message; nothing is redeployed and no other
+person is affected.
 
 ## Lifecycle
 
@@ -43,52 +104,41 @@ BYOK values default to `developer_api`, so no storage migration is required.
    encrypted runtime configuration references.
 5. Typed private-agent turns resolve the current unlocked-vault key only for
    that request through the existing provider factory.
-6. Live voice sends its mode and, only for BYOK, the current key in the first
-   authenticated WebSocket frame. The relay creates a connection-local runner
-   and immediately drops the raw reference.
-7. Key removal, mode change, vault lock, backgrounding, or reconnect closes a
-   BYOK voice session. The next session must resolve configuration again.
+6. Location command recording uses the managed provider for two bounded ordinary
+   model requests: audio transcription, then structured semantic planning. It
+   never creates a Live session or sends generated speech.
+7. Vault lock, owner changes or backgrounding cancel capture and pause the local
+   command controller. Persisted continuation requires owner authentication,
+   vault unlock, revalidation and explicit Resume within 24 hours.
 
-The value never appears in a URL, relay ticket, browser storage, native
-preferences, Postgres, logs, telemetry, action contracts, or model prompts.
+Credentials never appear in URLs, browser storage, native preferences, command
+capsules, action contracts, logs, telemetry or model prompts. Typed access keeps
+its existing request-scoped provider resolution; command models receive only
+sanitized current context and proposed inputs, without effect tools.
 
-The bounded credential/readiness probe uses the same manifest-owned
-`gemini-3.7-flash` model as normal typed private-agent reasoning. Successful
-setup therefore proves authentication, exact-model access, billing/quota
-availability, and one minimal generation before a key can be saved. Managed
-voice uses `gemini-3.1-flash-live-preview` over the Gemini Developer API with
-the Hussh-managed live key (`HUSHH_MANAGED_GEMINI_LIVE_API_KEY`); the model is
-not published on Vertex, and `gemini-live-2.5-flash-native-audio` (GA, Vertex)
-remains the declared rollback via `AGENT_ONE_ADK_MODEL`. No standalone TTS
-fallback is configured.
+The managed command path resolves the configured non-Live model through the
+provider factory. Verify exact-model audio and structured-output access in the
+release environment. Authentication or quota failure produces an error card;
+it cannot fall back to Live or report an operation completed.
 
-Gemini 3.7 text requests use the global Vertex endpoint and omit legacy
-sampling controls. The runtime retains `thinking_level` for bounded reasoning;
-it does not send `temperature`, `top_p`, `top_k`, `candidate_count`, or
-`thinking_budget` to 3.7.
+## Live compatibility
 
-## Live Compatibility Registry
+The previous Live registry, Developer API key and UAT rollback settings are
+historical configuration. The `/api/one/adk/*` Live websocket and relay-token
+endpoints return explicit retirement responses and transport compatibility
+constructors fail before networking. BYOK typed turns remain supported; there
+is no BYOK Live session.
 
-Hussh-managed credentials remain the default. BYOK Live is disabled unless an
-operator explicitly enables a registry-approved model after an ADK UAT
-rehearsal. `gemini-3.1-flash-live-preview` is the canonical registry entry: the
-2026-08-21 ADK rehearsal verified that the relay's later route-state and
-action-settlement updates reach it mid-session — google-adk transposes each
-single-text-part `send_content` into `send_realtime_input(text=...)` on Gemini
-3.x Live names, and the rehearsal additionally confirmed mid-session
-`send_client_content` is honored on the current preview build.
-`gemini-2.5-flash-live-preview` and `gemini-live-2.5-flash-native-audio` stay
-registry-approved as client-content-channel models.
-
-Google Cloud Vertex API-key BYOK is available for typed turns. It is not yet a
-voice-compatible transport, so the app keeps it out of the live relay and
-offers managed Gemini for voice until a separate Vertex Live rehearsal approves
-an exact model and endpoint contract.
-
-Invalid, quota-limited, or unsupported BYOK Live never falls back silently.
-The user receives a safe managed-Gemini alternative. The generated action
-authority, consent checks, directives, and browser settlement path remain the
-same in both modes.
+The maintained managed Live session is One Live Voice: `POST /api/one/voice/sessions`
+mints a single-use ticket, `WS /api/one/voice/live` relays audio to Gemini Live on
+Vertex ADC, and `GET /api/one/voice/readiness` is the single flag the app reads.
+Three environment names govern it: `ONE_VOICE_LIVE_ENABLED` (kill switch, default
+off), `VERTEX_LIVE_MODEL_ID` (exact pin; `hushh_mcp/runtime_providers/registry.py`
+must carry a native-realtime entry for it) and `VERTEX_LIVE_LOCATION` (one regional
+endpoint). A provider outage reports `provider_unavailable` and hides the control; it
+never falls back to another model or region. Pick the id per lane with
+`consent-protocol/scripts/discover_vertex_live_models.py`; see
+[one-voice-live-tool-contract.md](./one-voice-live-tool-contract.md).
 
 ## Non-goals
 
@@ -102,7 +152,6 @@ same in both modes.
 ## References
 
 - [Google Gemini API key guidance](https://ai.google.dev/gemini-api/docs/api-key)
-- [Google Live API capabilities](https://ai.google.dev/gemini-api/docs/live-api/capabilities)
 - [Google Cloud Vertex API-key guidance](https://cloud.google.com/vertex-ai/generative-ai/docs/start/api-keys)
 - [One Voice Runtime Architecture](./one-voice-runtime-architecture.md)
 - [Personal Knowledge Model](../../../consent-protocol/docs/reference/personal-knowledge-model.md)

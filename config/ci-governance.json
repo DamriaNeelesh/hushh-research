@@ -21,6 +21,7 @@
     "require_conversation_resolution": true,
     "review_bypass_users": [
       "kushaltrivedi5",
+      "msainani",
       "RGlodAkshat",
       "ankitkumarsingh1702",
       "azfx",
@@ -41,6 +42,7 @@
     "merge_queue_bypass_team_slug": "allowed-maintainers-to-approve",
     "merge_queue_bypass_users": [
       "kushaltrivedi5",
+      "msainani",
       "RGlodAkshat",
       "ankitkumarsingh1702",
       "azfx",
@@ -56,6 +58,7 @@
     ],
     "protected_pipeline_edit_users": [
       "kushaltrivedi5",
+      "msainani",
       "RGlodAkshat",
       "ankitkumarsingh1702",
       "azfx",
@@ -80,6 +83,7 @@
     "require_conversation_resolution": true,
     "review_bypass_users": [
       "kushaltrivedi5",
+      "msainani",
       "RGlodAkshat",
       "ankitkumarsingh1702",
       "azfx",
@@ -100,6 +104,7 @@
     "merge_queue_bypass_team_slug": "allowed-maintainers-to-approve",
     "merge_queue_bypass_users": [
       "kushaltrivedi5",
+      "msainani",
       "RGlodAkshat",
       "ankitkumarsingh1702",
       "azfx",
@@ -118,12 +123,19 @@
     "environment": "dev",
     "manual_dispatch_users": [
       "kushaltrivedi5",
+      "msainani",
       "RGlodAkshat",
       "ankitkumarsingh1702",
       "azfx",
       "Jhumma-hushh",
       "DamriaNeelesh",
-      "Roopmann30"
+      "parthmawai",
+      "abdulbeast4-creator",
+      "smirthi-dharma",
+      "anoushkauoc",
+      "Roopmann30",
+      "Divya-rajendran009",
+      "imsharukhan"
     ]
   },
   "uat": {
@@ -136,12 +148,18 @@
     ],
     "manual_dispatch_users": [
       "kushaltrivedi5",
+      "msainani",
       "RGlodAkshat",
       "ankitkumarsingh1702",
       "azfx",
       "Jhumma-hushh",
       "DamriaNeelesh",
       "parthmawai",
+      "abdulbeast4-creator",
+      "smirthi-dharma",
+      "anoushkauoc",
+      "Roopmann30",
+      "Divya-rajendran009",
       "imsharukhan"
     ]
   },
@@ -153,6 +171,7 @@
     ],
     "manual_dispatch_users": [
       "kushaltrivedi5",
+      "msainani",
       "ankitkumarsingh1702",
       "RGlodAkshat",
       "DamriaNeelesh",

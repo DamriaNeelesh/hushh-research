@@ -1,12 +1,16 @@
 "use client";
 
 import { useCallback } from "react";
-import { CheckCircle2, Mail, MessageCircle } from "lucide-react";
+import { CheckCircle2, Mail } from "lucide-react";
 import { useRouter } from "next/navigation";
 
-import { useOptionalAgentPopover } from "@/components/agent/agent-popover-provider";
+import { AskOneButton } from "@/components/agent/ask-one-button";
 import { useOneConversationSession } from "@/lib/agent/one-conversation-session";
-import { buildEmailAgentIntroPrompt } from "@/lib/agent/email-agent-intro";
+import {
+  buildEmailAgentIntroPrompt,
+  hasSeenEmailAgentIntro,
+  markEmailAgentIntroSeen,
+} from "@/lib/agent/email-agent-intro";
 import {
   AppPageContentRegion,
   AppPageHeaderRegion,
@@ -18,6 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/use-auth";
 import { useGmailConnectorStatus } from "@/lib/profile/gmail-connector-store";
 import { Button } from "@/lib/morphy-ux/button";
+import { navigateToAgentChat } from "@/lib/navigation/agent-navigation";
 import { ROUTES } from "@/lib/navigation/routes";
 
 /**
@@ -27,7 +32,6 @@ import { ROUTES } from "@/lib/navigation/routes";
 export function EmailAgentPageClient() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
-  const agentPopover = useOptionalAgentPopover();
   const createHandoff = useOneConversationSession((state) => state.createHandoff);
   const idTokenProvider = useCallback(
     () => (user?.getIdToken ? user.getIdToken() : Promise.resolve("")),
@@ -50,29 +54,44 @@ export function EmailAgentPageClient() {
       : "unavailable-valid";
 
   const openOneForDraft = useCallback(() => {
-    const createdAtMs = Date.now();
-    createHandoff({
-      id: `email-agent-prompt-${createdAtMs}`,
-      reason: "user_requested",
-      transcript: emailAgentIntroRecipient
-        ? buildEmailAgentIntroPrompt(emailAgentIntroRecipient)
-        : "Please help me draft an email. I will review it before anything is sent.",
-      createdAtMs,
-    });
-    if (agentPopover) {
-      agentPopover.openAgent();
-      return;
+    // The intro prompt asks One to compose a sample email about itself. That
+    // is a first-run demonstration, not what someone arriving to write a real
+    // email wants: queuing it on every open started a fresh sample draft each
+    // time, because every handoff carried a new id and so was never de-duped
+    // against the previous one. Queue it only until this user has seen it;
+    // afterwards the agent opens on an empty composer awaiting a real
+    // instruction.
+    const userId = user?.uid || null;
+    if (!hasSeenEmailAgentIntro(userId)) {
+      const createdAtMs = Date.now();
+      markEmailAgentIntroSeen(userId);
+      createHandoff({
+        id: `email-agent-prompt-${createdAtMs}`,
+        reason: "user_requested",
+        transcript: emailAgentIntroRecipient
+          ? buildEmailAgentIntroPrompt(emailAgentIntroRecipient)
+          : "Please help me draft an email. I will review it before anything is sent.",
+        createdAtMs,
+      });
     }
-    // The handoff remains in the shared in-memory session for the legacy
-    // dedicated chat route too.
-    router.push(ROUTES.AGENT);
-  }, [agentPopover, createHandoff, emailAgentIntroRecipient, router]);
+    navigateToAgentChat();
+  }, [
+    createHandoff,
+    emailAgentIntroRecipient,
+    user?.uid,
+  ]);
 
   return (
     <AppPageShell
       as="main"
       width="reading"
-      className="min-h-[calc(100dvh-var(--top-shell-reserved-height,4rem))] pb-[calc(var(--app-bottom-fixed-ui,96px)+1.25rem)] sm:pb-10"
+      // Subtract BOTH edges the scroll root spends, not just the top bar. The
+      // shell renders a top spacer of --app-top-content-offset AND pads the
+      // scroll root by --app-bottom-content-clearance; a floor that only
+      // subtracts the bar turns the rest into empty travel. No pb- either: the
+      // scroll root already owns the bottom bars.
+      // Canonical idiom: components/calendar/calendar-agent-page-layout.ts:48.
+      className="min-h-[calc(100dvh-var(--app-top-content-offset,6rem)-var(--app-bottom-content-clearance,7rem))]"
       nativeTest={{
         routeId: ROUTES.EMAIL_AGENT,
         marker: "native-route-email-agent",
@@ -106,10 +125,9 @@ export function EmailAgentPageClient() {
                   </p>
                 </div>
               </div>
-              <Button type="button" onClick={openOneForDraft} className="w-full sm:w-auto">
-                <MessageCircle className="mr-2 h-4 w-4" />
+              <AskOneButton onClick={openOneForDraft}>
                 Try Email Agent with One
-              </Button>
+              </AskOneButton>
             </SurfaceInset>
           ) : (
             <SurfaceInset className="space-y-4 px-4 py-5 sm:px-5">

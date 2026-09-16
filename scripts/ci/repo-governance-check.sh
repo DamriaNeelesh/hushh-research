@@ -16,6 +16,7 @@ python3 scripts/ci/verify-pr-base-policy.py --self-test
 python3 scripts/ci/verify-branch-governance-doc-consistency.py
 python3 scripts/ci/verify-branch-governance-doc-consistency.py --self-test
 python3 scripts/ci/test_verify_deployment_environment_governance.py
+python3 scripts/ci/test_apply_governance_teams.py
 python3 scripts/ci/test_resolve_deploy_scope.py
 python3 scripts/ci/test_resolve_uat_verification_plan.py
 python3 scripts/ci/test_change_aware_verification_wiring.py
@@ -44,3 +45,8 @@ python3 .claude/skills/codex-bridge/scripts/test_route_hook.py
 bash .claude/skills/client-env-parity/check.sh
 ./bin/hushh db verify-release-contract
 ./bin/hushh db report-prod-posture
+
+# Every secret bound by deploy/backend.cloudbuild.yaml must be passed by each
+# deploy lane, or recorded as a deliberate omission. An unrecorded gap ships a
+# service missing that environment variable with no error anywhere.
+python3 scripts/ci/check-deploy-secret-coverage.py

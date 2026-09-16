@@ -157,6 +157,14 @@ export type AppRuntimeState = {
     transition_target?: Persona | null;
     ria_switch_available: boolean;
     ria_setup_available: boolean;
+    /**
+     * Whether the RIA advisor's onboarding has actually settled to a
+     * verified status (active/verified/finra_verified) -- not merely
+     * whether a persona/onboarding record exists. Gates
+     * ria_onboarding_complete and consent_center_available in
+     * evaluateKaiActionAvailability; see #6437.
+     */
+    ria_onboarding_complete: boolean;
   };
   voice: {
     available: boolean;
@@ -334,42 +342,4 @@ export type VoiceActionResult = {
   error_code?: string | null;
   tool_name?: string | null;
   ticker?: string | null;
-};
-
-export type VoiceComposedSpeech = {
-  text: string;
-  segmentType: "ack" | "final";
-};
-
-export type VoiceComposeResponsePayload = {
-  text: string;
-  segment_type: "ack" | "final";
-  elapsed_ms?: number;
-  openai_http_ms?: number;
-  model?: string;
-  turn_id?: string | null;
-  response_id?: string | null;
-};
-
-export type VoiceCapabilityResponse = {
-  enabled: boolean;
-  reason: string | null;
-  voice_enabled?: boolean;
-  execution_allowed?: boolean;
-  tool_execution_disabled?: boolean;
-  rollout_reason?: string | null;
-  bucket?: number | null;
-  canary_percent?: number | null;
-  realtime_enabled?: boolean;
-  /**
-   * Resolved voice transport lane for this account.
-   * `"realtime"` when the brain has a native full-duplex API and realtime is
-   * enabled by rollout/killswitch; `"chained"` (STT -> brain -> TTS) otherwise.
-   */
-  voice_lane?: "realtime" | "chained";
-  tts_enabled?: boolean;
-  tts_timeout_ms?: number;
-  tts_model?: string;
-  tts_voice?: string;
-  tts_format?: string;
 };

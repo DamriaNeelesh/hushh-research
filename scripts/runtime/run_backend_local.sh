@@ -127,6 +127,10 @@ else:
 PY
 }
 
+# Resolved before any port check so a peer worktree on another port is never stopped.
+BACKEND_PORT="${BACKEND_PORT:-$(read_env_value "$BACKEND_ENV_FILE" 'BACKEND_PORT')}"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+
 wait_for_port() {
   local host="$1"
   local port="$2"
@@ -170,7 +174,7 @@ listener_pids() {
 
 stop_existing_repo_backend() {
   local pids
-  pids="$(listener_pids 8000 || true)"
+  pids="$(listener_pids "${BACKEND_PORT:-8000}" || true)"
   if [ -z "$pids" ]; then
     return 0
   fi
@@ -230,6 +234,8 @@ run_preflight() {
     PYTHONPATH=. "$BACKEND_VENV_PYTHON" -c \
       "from hushh_mcp.runtime_readiness import assert_pinned_google_adk; assert_pinned_google_adk()"
   )
+  echo "Verifying local managed Gemini authorization..."
+  bash "$REPO_ROOT/scripts/env/doctor.sh" "$profile"
   verify_iam_readiness "$profile"
 
   if port_is_listening 127.0.0.1 8000; then
@@ -250,7 +256,13 @@ cleanup() {
   fi
   cleanup_proxy_credentials
 }
-trap cleanup EXIT INT TERM
+if [ "${HUSHH_SUPERVISED_RUNTIME:-}" = "1" ]; then
+  # run_local_fast.sh owns signal ordering; preserve its ignored SIGINT
+  # disposition so the proxy remains available while backend requests drain.
+  trap cleanup EXIT TERM
+else
+  trap cleanup EXIT INT TERM
+fi
 
 DB_HOST="$(read_env_value "$BACKEND_ENV_FILE" 'DB_HOST')"
 DB_PORT="$(read_env_value "$BACKEND_ENV_FILE" 'DB_PORT')"
@@ -352,9 +364,9 @@ export DB_SQLALCHEMY_POOL_SIZE="${DB_SQLALCHEMY_POOL_SIZE:-2}"
 export DB_SQLALCHEMY_MAX_OVERFLOW="${DB_SQLALCHEMY_MAX_OVERFLOW:-0}"
 echo "Local Cloud SQL connection budget: async=${DB_POOL_MIN_SIZE}-${DB_POOL_MAX_SIZE}, sql=${DB_SQLALCHEMY_POOL_SIZE}+${DB_SQLALCHEMY_MAX_OVERFLOW}."
 
-echo "Starting backend on :8000 for runtime mode ${PROFILE}..."
+echo "Starting backend on :${BACKEND_PORT} for runtime mode ${PROFILE}..."
 cd "$REPO_ROOT/consent-protocol"
-uvicorn_args=(server:app --port 8000)
+uvicorn_args=(server:app --port "$BACKEND_PORT")
 reload_mode="$(printf '%s' "$BACKEND_RELOAD" | tr '[:upper:]' '[:lower:]')"
 case "$reload_mode" in
   1|true|yes|on)

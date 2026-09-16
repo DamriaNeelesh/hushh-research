@@ -29,7 +29,35 @@ const service = vi.hoisted(() => ({
   placesAutocomplete: vi.fn(),
   placesSearchErrorMessage: vi.fn(() => "Place search failed."),
   requestNearbyConnection: vi.fn(),
+  ratePlace: vi.fn(),
+  listPlaceRatingSummaries: vi.fn(),
 }));
+
+// `listPlaceRatingSummaries` resolves empty by default: the averages are an
+// ornament on the place list, and no test here is about them.
+const visitNotes = vi.hoisted(() => ({
+  recordVisitNote: vi.fn(),
+}));
+
+const locationAnalytics = vi.hoisted(() => ({
+  trackOneLocationJourneyAction: vi.fn(),
+}));
+
+vi.mock("@/lib/observability/location-events", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/observability/location-events")>();
+  return {
+    ...actual,
+    trackOneLocationJourneyAction:
+      locationAnalytics.trackOneLocationJourneyAction,
+  };
+});
+
+vi.mock("@/lib/one-location/visit-notes", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/one-location/visit-notes")>();
+  return { ...actual, recordVisitNote: visitNotes.recordVisitNote };
+});
 
 const navigation = vi.hoisted(() => ({
   push: vi.fn(),
@@ -93,10 +121,14 @@ const point = {
 describe("NearbyCheckInSheet", () => {
   beforeEach(() => {
     Object.values(service).forEach((mock) => mock.mockReset());
+    // Reset wipes the implementation too, and the place list awaits this on
+    // every render. An undefined return would reject inside the effect.
+    service.listPlaceRatingSummaries.mockResolvedValue([]);
     navigation.push.mockReset();
     locationMemory.readLastKnownFix.mockReset();
     locationMemory.rememberLastKnownFix.mockReset();
     locationMemory.rememberLocationGrant.mockReset();
+    locationAnalytics.trackOneLocationJourneyAction.mockReset();
     // Default: nothing carried over, which is what every pre-existing test in
     // this file assumed before durable memory existed.
     locationMemory.readLastKnownFix.mockResolvedValue(null);
@@ -238,21 +270,46 @@ describe("NearbyCheckInSheet", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("Stay visible for")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "See all places" }),
-    ).toBeInTheDocument();
-
-    expect(
-      screen.queryByRole("button", { name: "Food" }),
+      screen.queryByRole("button", { name: "See all places" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
+
+    expect(screen.getByRole("button", { name: "Food" })).toBeInTheDocument();
     expect(
       await screen.findByRole("radio", { name: /Place Four/ }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Food" })).toBeInTheDocument();
     // Attribution only. The place count that used to lead this line is
-    // already on the expansion control and in the list itself.
+    // already represented by the list itself.
     expect(screen.getByText("Google Maps")).toBeInTheDocument();
     expect(screen.queryByText(/places · Google Maps/)).not.toBeInTheDocument();
+  });
+
+  it("withdraws a stale average when the server no longer publishes it", async () => {
+    service.listPlaceRatingSummaries
+      .mockResolvedValueOnce([
+        { placeId: "stanford-main", average: 4.8, countBucket: "5+" },
+      ])
+      .mockResolvedValueOnce([]);
+    const props = {
+      open: true,
+      ownerId: "user-1",
+      vaultOwnerToken: "owner-token",
+      captureCurrentPosition: vi.fn().mockResolvedValue(point),
+      onOpenChange: vi.fn(),
+    };
+    const { rerender } = render(<NearbyCheckInSheet {...props} />);
+
+    expect(await screen.findByText(/4\.8 · 5\+/)).toBeInTheDocument();
+    rerender(
+      <NearbyCheckInSheet {...props} vaultOwnerToken="refreshed-owner-token" />,
+    );
+
+    await waitFor(() =>
+      expect(service.listPlaceRatingSummaries).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText(/4\.8 · 5\+/)).not.toBeInTheDocument(),
+    );
   });
 
   it("is a bottom sheet a phone can put away", async () => {
@@ -305,14 +362,11 @@ describe("NearbyCheckInSheet", () => {
         .map((heading) => heading.textContent?.trim()),
     ).toEqual(["Nearby places", "Visible for", "Visibility"]);
 
-    // Compact setup keeps categories out of the first decision. They appear
-    // only after the person asks for the full chooser.
+    // Category filters are available immediately with their concise labels.
+    expect(screen.getByRole("button", { name: "Food" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Food" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Shops" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "Shops" }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Food & drink" }),
     ).not.toBeInTheDocument();
@@ -484,6 +538,11 @@ describe("NearbyCheckInSheet", () => {
         allowConnectionRequests: false,
       });
     });
+    expect(locationAnalytics.trackOneLocationJourneyAction).toHaveBeenCalledWith({
+      action: "nearby_check_in_result",
+      result: "success",
+      routeId: "one_location_check_in",
+    });
     expect(capture).toHaveBeenCalledTimes(2);
   });
 
@@ -559,7 +618,7 @@ describe("NearbyCheckInSheet", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("tells the owner the fix is broad without blocking check-in", async () => {
+  it("allows coarse-position check-in without the accuracy notice", async () => {
     const coarsePoint = { ...point, accuracyM: 1_200 };
     const capture = vi.fn().mockResolvedValue(coarsePoint);
 
@@ -576,9 +635,7 @@ describe("NearbyCheckInSheet", () => {
     fireEvent.click(
       await screen.findByRole("radio", { name: /Stanford University/ }),
     );
-    expect(
-      await screen.findByText(/accurate to about 1\.2 km/i),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/accurate to about/i)).not.toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("checkbox", {
@@ -953,6 +1010,8 @@ describe("NearbyCheckInSheet", () => {
       "bg-[color:var(--app-destructive)]",
     );
     expect(checkout.className).toContain("bg-[color:var(--app-neutral-fill)]");
+    const addTime = screen.getByRole("button", { name: "Add time" });
+    expect(addTime.className).toContain("text-[color:var(--app-accent)]");
     expect(checkout.className).not.toContain("text-white");
 
     // Behaviour is untouched: the same one call, with no arguments of its own.
@@ -1228,7 +1287,6 @@ describe("NearbyCheckInSheet", () => {
     service.nearbyPlaces.mockClear();
 
     fireEvent.click(screen.getByPlaceholderText("Search places"));
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     const allPlaces = await screen.findByRole("button", { name: "All" });
     await act(async () => {
       // A failed refresh must degrade the drawer, not blank it.
@@ -1428,7 +1486,6 @@ describe("NearbyCheckInSheet", () => {
       category: "all",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     fireEvent.click(screen.getByRole("button", { name: "Health" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Health" })).toHaveAttribute(
@@ -1546,7 +1603,6 @@ describe("NearbyCheckInSheet", () => {
     fireEvent.click(
       await screen.findByRole("radio", { name: /Stanford University/ }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     fireEvent.click(screen.getByRole("button", { name: "Health" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Health" })).toHaveAttribute(
@@ -1673,7 +1729,6 @@ describe("NearbyCheckInSheet", () => {
     );
 
     await screen.findByRole("radio", { name: /Stanford University/ });
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     fireEvent.click(screen.getByRole("button", { name: "Health" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Health" })).toHaveAttribute(
@@ -1879,7 +1934,6 @@ describe("NearbyCheckInSheet", () => {
     );
 
     await screen.findByRole("radio", { name: /Stanford University/ });
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     fireEvent.click(screen.getByRole("button", { name: "Transit" }));
 
     const empty = await screen.findByTestId("nearby-category-empty");
@@ -2394,6 +2448,191 @@ describe("NearbyCheckInSheet", () => {
       // Red is reserved for dangerous and irreversible actions. Checking out is
       // neither — you can check back in.
       expect(checkOut.className).not.toContain("app-destructive");
+    });
+
+    /** Checkout, with the server offering a rateable visit for the place. */
+    const renderAndCheckOutRateable = async (
+      overrides: Record<string, unknown> = {},
+      onOpenChange = vi.fn(),
+    ) => {
+      service.getNearbyPresence.mockResolvedValue(anchoredPresence);
+      service.checkoutNearby.mockResolvedValue({
+        presence: null,
+        attendees: [],
+        checkedOut: true,
+        reviewPrompt: {
+          visitId: "visit-1",
+          placeId: "ChIJbagmaker",
+          placeLabel: "Bag Maker",
+          visitedAt: "2026-08-31T10:00:00.000Z",
+          expiresAt: "2026-09-07T10:00:00.000Z",
+          googleReviewUrl:
+            "https://search.google.com/local/writereview?placeid=ChIJbagmaker",
+          consentVersion: "one-location-place-rating-v1",
+          ...overrides,
+        },
+      });
+      savedPlaces.loadSavedLocations.mockResolvedValue([]);
+
+      render(
+        <NearbyCheckInSheet
+          open
+          ownerId="user-1"
+          vaultOwnerToken="owner-token"
+          vaultKey="vault-key"
+          captureCurrentPosition={vi.fn().mockResolvedValue(point)}
+          onOpenChange={onOpenChange}
+        />,
+      );
+
+      await screen.findByTestId("nearby-presence-active");
+      fireEvent.click(screen.getByRole("button", { name: "I'm leaving" }));
+      await screen.findByTestId("nearby-presence-completed");
+      return onOpenChange;
+    };
+
+    it("asks how the visit went, by name", async () => {
+      await renderAndCheckOutRateable();
+
+      expect(await screen.findByTestId("nearby-visit-rating")).toBeTruthy();
+      expect(screen.getByText("How was Bag Maker?")).toBeTruthy();
+      // The one sentence that stops a star row above a Google button reading
+      // as though it publishes somewhere.
+      expect(screen.getByText(/Only you see this\./)).toBeTruthy();
+    });
+
+    it("cannot be saved until a star is chosen", async () => {
+      await renderAndCheckOutRateable();
+
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+      fireEvent.click(await screen.findByRole("radio", { name: "4 stars" }));
+
+      expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
+    });
+
+    it("sends the star to the server and keeps the note in the vault", async () => {
+      // The split is the whole design: an average cannot be computed on a
+      // device, and free text about a named business must not sit in plaintext
+      // on ours.
+      service.ratePlace.mockResolvedValue({ id: "r1", rating: 4 });
+      visitNotes.recordVisitNote.mockResolvedValue([]);
+      await renderAndCheckOutRateable();
+
+      fireEvent.click(await screen.findByRole("radio", { name: "4 stars" }));
+      fireEvent.change(
+        screen.getByPlaceholderText("Anything worth remembering"),
+        { target: { value: "  Quick and friendly.  " } },
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() =>
+        expect(service.ratePlace).toHaveBeenCalledWith({
+          vaultOwnerToken: "owner-token",
+          placeId: "ChIJbagmaker",
+          rating: 4,
+          consentVersion: "one-location-place-rating-v1",
+        }),
+      );
+      // No note field reaches the request at all.
+      expect(Object.keys(service.ratePlace.mock.calls[0][0])).not.toContain(
+        "note",
+      );
+      await waitFor(() =>
+        expect(visitNotes.recordVisitNote).toHaveBeenCalledWith(
+          expect.objectContaining({
+            entry: expect.objectContaining({
+              placeId: "ChIJbagmaker",
+              rating: 4,
+              note: "Quick and friendly.",
+            }),
+          }),
+        ),
+      );
+    });
+
+    it("offers the Google hand-off only after the local save succeeds", async () => {
+      service.ratePlace.mockResolvedValue({ id: "r1", rating: 5 });
+      await renderAndCheckOutRateable();
+
+      // The order is the mitigation for "why did I write it twice": your
+      // rating is safe with us first, Google is extra.
+      expect(
+        screen.queryByRole("link", { name: "Also post on Google" }),
+      ).toBeNull();
+
+      fireEvent.click(await screen.findByRole("radio", { name: "5 stars" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      const handoff = await screen.findByRole("link", {
+        name: "Also post on Google",
+      });
+      expect(handoff).toHaveAttribute(
+        "href",
+        "https://search.google.com/local/writereview?placeid=ChIJbagmaker",
+      );
+      expect(handoff).toHaveAttribute("rel", "noopener noreferrer");
+      // Honest about what happens next: nothing can be prefilled on Google.
+      expect(
+        screen.getByText("Opens Google Maps — you'll type it there."),
+      ).toBeTruthy();
+    });
+
+    it("says nothing about Google when there is no place id to link to", async () => {
+      // No disabled button and no explanation. The rating succeeded; the
+      // hand-off was only ever a bonus.
+      service.ratePlace.mockResolvedValue({ id: "r1", rating: 3 });
+      await renderAndCheckOutRateable({ googleReviewUrl: null });
+
+      fireEvent.click(await screen.findByRole("radio", { name: "3 stars" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await screen.findByText("Saved to your places.");
+      expect(screen.queryByText(/Google/)).toBeNull();
+      expect(screen.getByRole("button", { name: "Done" })).toBeTruthy();
+    });
+
+    it("keeps the stars set when the save fails", async () => {
+      // Clearing somebody's input because the network failed turns a retry
+      // into a re-decision.
+      service.ratePlace.mockRejectedValue(new Error("offline"));
+      await renderAndCheckOutRateable();
+
+      fireEvent.click(await screen.findByRole("radio", { name: "2 stars" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(
+        await screen.findByText("Couldn't save your rating."),
+      ).toBeTruthy();
+      expect(screen.getByRole("radio", { name: "2 stars" })).toBeChecked();
+      expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
+    });
+
+    it("lets someone leave without rating, and writes nothing when they do", async () => {
+      const onOpenChange = await renderAndCheckOutRateable();
+
+      fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+
+      expect(service.ratePlace).not.toHaveBeenCalled();
+      expect(visitNotes.recordVisitNote).not.toHaveBeenCalled();
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+
+    it("does not ask at all when the server offers nothing rateable", async () => {
+      // An expired presence produces no visit, and a backend that predates
+      // ratings sends no reviewPrompt. Both land here, and both must leave the
+      // pane exactly as it was.
+      savedPlaces.loadSavedLocations.mockResolvedValue([]);
+      await renderAndCheckOut();
+
+      expect(screen.queryByTestId("nearby-visit-rating")).toBeNull();
+      expect(screen.getByRole("button", { name: "Done" })).toBeTruthy();
+    });
+
+    it("offers no bookmark control, because rating is the save", async () => {
+      await renderAndCheckOutRateable();
+
+      expect(screen.queryByRole("button", { name: /bookmark/i })).toBeNull();
     });
   });
 });

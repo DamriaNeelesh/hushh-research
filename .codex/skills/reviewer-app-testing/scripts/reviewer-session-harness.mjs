@@ -24,7 +24,27 @@ const READ_ONLY_SAFE_POST_PATHS = new Set([
   "/api/vault/bootstrap-state",
   "/api/vault/pre-vault-state",
   "/api/consent/vault-owner-token",
+  // Next.js dev-server source-map lookups for console traces; dev-only tooling.
+  "/__nextjs_original-stack-frames",
 ]);
+
+// Firebase authentication hosts. The reviewer login handshake exchanges the
+// review-mode session for a custom token and signs in through Identity
+// Toolkit (signInWithCustomToken, accounts:lookup, token refresh). These are
+// authentication, never a mutation of the shared fixture; blocking them made
+// every read-only localhost rehearsal fail at the first boundary (2026-09-02).
+const AUTH_ONLY_HOSTS = new Set([
+  "identitytoolkit.googleapis.com",
+  "securetoken.googleapis.com",
+]);
+
+function requestHostname(request) {
+  try {
+    return new URL(request.url()).hostname;
+  } catch {
+    return "";
+  }
+}
 
 function requestPathname(request) {
   return endpointPath(request.url());
@@ -45,7 +65,8 @@ function installReadOnlyMutationGuard(context) {
     const pathname = requestPathname(request);
     if (
       !["POST", "PUT", "PATCH", "DELETE"].includes(method) ||
-      READ_ONLY_SAFE_POST_PATHS.has(pathname)
+      READ_ONLY_SAFE_POST_PATHS.has(pathname) ||
+      AUTH_ONLY_HOSTS.has(requestHostname(request))
     ) {
       await route.continue();
       return;
@@ -87,6 +108,7 @@ export async function createReviewerSessionHarness({
   repoRoot,
   appOrigin = "https://uat.one.hushh.ai",
   timeoutMs = 360_000,
+  reviewerIdentity = /** @type {{ reviewerUid: string, reviewerVaultPassphrase: string } | null} */ (null),
 }) {
   const webDir = path.join(repoRoot, "hushh-webapp");
   const requireFromWeb = createRequire(path.join(webDir, "package.json"));
@@ -94,11 +116,14 @@ export async function createReviewerSessionHarness({
   const identityModule = await import(
     pathToFileURL(path.join(webDir, "scripts/testing/reviewer-test-identity.mjs")).href
   );
-  const identity = identityModule.resolveReviewerTestIdentity({
+  const identity = reviewerIdentity ?? identityModule.resolveReviewerTestIdentity({
     envFiles: identityModule.defaultReviewerIdentityEnvFiles({ repoRoot, webDir }),
   });
   const reviewerUid = identity.reviewerUid;
   const reviewerPassphrase = identity.reviewerVaultPassphrase;
+  if (!reviewerUid || !reviewerPassphrase) {
+    throw new Error("Reviewer identity requires both configured values.");
+  }
   const normalizedOrigin = String(appOrigin).replace(/\/$/, "");
 
   function vaultKeyCommitment(vaultState) {
@@ -250,7 +275,7 @@ export async function createReviewerSessionHarness({
     const state = await page.evaluate(
       () => window.__HUSHH_NATIVE_TEST__?.bootstrapState || ""
     );
-    if (state && state !== "vault_unlocked") {
+    if (state !== "vault_unlocked") {
       throw new Error(`${label} changed vault bootstrap state to ${state}.`);
     }
   }
@@ -277,7 +302,7 @@ export async function createReviewerSessionHarness({
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const context = await browser.newContext({ baseURL: normalizedOrigin, viewport: { width: 1440, height: 900 } });
       const page = await context.newPage();
       page.setDefaultTimeout(attemptTimeoutMs);
       page.setDefaultNavigationTimeout(attemptTimeoutMs);

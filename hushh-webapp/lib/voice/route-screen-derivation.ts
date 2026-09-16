@@ -6,6 +6,11 @@ export type VoiceRouteScreenInfo = {
   subview?: string | null;
 };
 
+export type VoiceRouteScreenOptions = {
+  /** The canonical root is Chat for authenticated sessions and Intro otherwise. */
+  authenticated?: boolean;
+};
+
 function toSearchParams(
   searchParams?: URLSearchParams | string,
 ): URLSearchParams {
@@ -24,6 +29,7 @@ function toSearchParams(
 export function deriveVoiceRouteScreen(
   pathname: string,
   searchParams?: URLSearchParams | string,
+  options?: VoiceRouteScreenOptions,
 ): VoiceRouteScreenInfo {
   const [normalizedPath, rawQuery = ""] = String(pathname || "").split("?");
   const query =
@@ -33,11 +39,22 @@ export function deriveVoiceRouteScreen(
   if (!normalizedPath) {
     return { screen: "unknown", subview: null };
   }
+  if (normalizedPath === ROUTES.LEGACY_AGENT) {
+    // The legacy route is redirect-only. Keep a typed transitional screen for
+    // generated route contracts; it is never rendered as an active workspace.
+    return { screen: "compatibility_redirect", subview: null };
+  }
   if (normalizedPath === ROUTES.HOME) {
-    return { screen: "one_intro", subview: null };
+    return {
+      screen: options?.authenticated ? "chat" : "one_intro",
+      subview: null,
+    };
   }
   if (normalizedPath === ROUTES.ONE_HOME) {
     return { screen: "one_agents", subview: null };
+  }
+  if (normalizedPath === ROUTES.ONE_WALLET) {
+    return { screen: "one_wallet", subview: null };
   }
   if (normalizedPath === "/people/[personRef]") {
     return { screen: "one_person_profile", subview: null };
@@ -291,6 +308,9 @@ export function deriveVoiceRouteScreen(
   if (normalizedPath === ROUTES.PKM || normalizedPath === ROUTES.LEGACY_PKM) {
     return { screen: "pkm", subview: query.get("tab") || null };
   }
+  if (normalizedPath === ROUTES.PKM_RECENT) {
+    return { screen: "pkm_recent", subview: null };
+  }
   if (
     normalizedPath === ROUTES.CONNECTED_SYSTEMS ||
     normalizedPath === ROUTES.LEGACY_CONNECTED_SYSTEMS
@@ -356,9 +376,10 @@ export function deriveVoiceRouteScreen(
       return { screen: "profile_preferences", subview: null };
     }
     if (tab === "privacy") {
+      // Legacy ?tab=privacy now resolves to the unified Memory panel.
       return {
         screen: "profile_privacy",
-        subview: panel === "access" ? null : panel || null,
+        subview: panel === "my-data" ? null : panel || null,
       };
     }
     return { screen: "profile_account", subview: panel || null };
@@ -389,10 +410,12 @@ export function deriveVoiceRouteScreen(
     if (panel === "preferences") {
       return { screen: "profile_preferences", subview: detail || null };
     }
-    if (panel === "access") {
-      return { screen: "profile_privacy", subview: detail || null };
-    }
     if (panel === "my-data") {
+      // Sharing (legacy /one/profile/access) is a sub-view of Memory now; keep
+      // reporting it under the privacy screen for analytics continuity.
+      if (detail === "sharing" || detail?.startsWith("connection:")) {
+        return { screen: "profile_privacy", subview: detail };
+      }
       return { screen: "profile_my_data", subview: detail || null };
     }
     return { screen: "profile_account", subview: detail || panel || null };

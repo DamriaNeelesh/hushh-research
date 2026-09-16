@@ -6,6 +6,10 @@ import {
   type PkmMemoryCard,
   type PkmPathSegment,
 } from "@/lib/pkm/pkm-memory-cards";
+import {
+  humanizeMemorySegment,
+  looksLikeOpaqueId,
+} from "@/lib/pkm/humanize-segment";
 
 /**
  * One immediate child of the current Memory level.
@@ -78,28 +82,14 @@ function clipText(value: string, maxChars: number): string {
   return `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}...`;
 }
 
-function humanize(segment: string): string {
-  return segment
-    .replace(/\[\d+\]/g, " ")
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (match) => match.toUpperCase())
-    .trim();
-}
+// The segment humanizer now lives in one module, shared with the consent
+// surfaces and the manifest walk that authors labels in the first place. Those
+// screens sit next to this one and used to disagree about the same key.
+const humanize = humanizeMemorySegment;
 
 function humanizeSingular(segment: PkmPathSegment | null): string {
   if (segment === null || typeof segment === "number") return "Item";
   return humanize(segment).replace(/s$/i, "") || "Item";
-}
-
-/** An object key that is an opaque identifier rather than a readable name. */
-function looksLikeOpaqueId(segment: string): boolean {
-  return (
-    /^(mem|ent|entity|item|entry|rec|record|obj|node|evt|event)[_-][a-z0-9][a-z0-9_-]{2,}$/i.test(
-      segment,
-    ) ||
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(segment) ||
-    /^[0-9a-f]{16,}$/i.test(segment)
-  );
 }
 
 function namedLabel(value: unknown): string | null {

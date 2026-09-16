@@ -39,6 +39,8 @@ import {
   LIVE_SHARE_HEADER_CLASSNAME,
   LIVE_SHARE_PROGRESS_FILL_CLASSNAME,
   LIVE_SHARE_PROGRESS_TRACK_CLASSNAME,
+  LIVE_SHARE_PRIMARY_ACTION_CLASSNAME,
+  LIVE_SHARE_SECONDARY_ACTION_CLASSNAME,
   LIVE_SHARE_TITLE_CLASSNAME,
 } from "./live-share-card-layout";
 import { CARD_SURFACE } from "./tokens";
@@ -221,7 +223,7 @@ export function LiveShareStatusCard({
    * then wanting 45 meant ending the share and starting it again, which is a
    * different share to the person watching.
    */
-  onChangeDuration?: () => void;
+  onChangeDuration?: (trigger: HTMLButtonElement) => void;
   /** Opens the existing share composer while a share is already live. */
   onShareMore?: () => void;
   /** Fired once when the countdown reaches zero, so the page can reconcile. */

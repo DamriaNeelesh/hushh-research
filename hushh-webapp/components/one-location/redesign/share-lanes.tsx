@@ -24,6 +24,12 @@ import {
 import { isSmsTriggeredGrant } from "@/lib/one-location/notifications";
 import type { OneLocationGrant } from "@/lib/one-location/types";
 import { cn } from "@/lib/utils";
+import {
+  ACTIVE_SHARE_CHANGE_TIME_CLASSNAME,
+  ACTIVE_SHARE_LANE_ACTIONS_CLASSNAME,
+  ACTIVE_SHARE_LANE_ROW_CLASSNAME,
+  ACTIVE_SHARE_STOP_CLASSNAME,
+} from "./active-share-row-layout";
 
 import { ShareCountdownText } from "./live-share-status-card";
 import { MUTED_TEXT } from "./tokens";
@@ -68,7 +74,7 @@ export function ShareLaneRow({
   const removing = action === "remove";
   return (
     <div
-      className="flex min-h-[54px] items-center gap-3 py-1.5"
+      className={ACTIVE_SHARE_LANE_ROW_CLASSNAME}
       data-testid="one-location-share-lane"
       data-share-lane={isSms ? "sos" : "ordinary"}
       data-grant-id={grant.id}

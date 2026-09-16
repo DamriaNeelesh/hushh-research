@@ -1,14 +1,23 @@
 import gatewayJson from "@/contracts/kai/kai-action-gateway.vnext.json";
+import { ApiService } from "@/lib/services/api-service";
 
 import type { KaiCommandAction } from "@/lib/kai/kai-command-types";
 import type { Persona } from "@/lib/services/ria-service";
 import type { AppRuntimeState, VoiceToolCall } from "@/lib/voice/voice-types";
 import type { VoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
+import { isLocalCrmBuildEnabled } from "@/lib/connected-systems/crm-product-availability";
+
+const logger =
+  typeof console !== "undefined" && typeof console.warn === "function"
+    ? console
+    : { warn: () => {}, log: () => {}, error: () => {} };
 
 export type KaiActionRiskLevel = "low" | "medium" | "high";
 export type KaiActionExecutionPolicy =
   "allow_direct" | "confirm_required" | "manual_only";
 export type KaiActionActivationPolicy = "none" | "trusted_activation_required";
+export type KaiActionSiriMode =
+  "direct" | "review_ui" | "conversation_only" | "unsupported";
 export type KaiActionSpeakerPersona = "one" | "kai" | "nav" | "kyc";
 export type KaiActionDelegateAgentId =
   | "one"
@@ -43,7 +52,7 @@ export type KaiActionExecutionTarget =
       status: "unwired";
       reason: string;
       intended_handler?: string;
-    }
+    };
 
 export type KaiActionWorkflowStep =
   | {
@@ -160,6 +169,16 @@ export type KaiActionExternalCallback = {
 };
 
 export type KaiActionDefinition = {
+  command?: {
+    domain: "location";
+    backend_binding?: "location.create_circle";
+    client_receipt?: "location.effect.v1" | "location.audience.v1";
+    result_resource?: "circle";
+    resource_inputs?: Record<string, "circle" | "person" | "place">;
+    review_route: string;
+    review_only?: boolean;
+    permission?: "location";
+  };
   action_id: string;
   surface_id: string;
   label: string;
@@ -180,6 +199,9 @@ export type KaiActionDefinition = {
   risk_level: KaiActionRiskLevel;
   execution_policy: KaiActionExecutionPolicy;
   activation_policy: KaiActionActivationPolicy;
+  siri_mode: KaiActionSiriMode;
+  siri_requires_vault: boolean;
+  siri_vault_locked_fallback_action_id: string | null;
   execution_target: KaiActionExecutionTarget;
   control_ids: string[];
   state_exposure: string[];
@@ -538,6 +560,10 @@ function validateAction(value: unknown): KaiActionDefinition | null {
   const riskLevel = cleanString(value.risk_level);
   const executionPolicy = cleanString(value.execution_policy);
   const activationPolicy = cleanString(value.activation_policy) || "none";
+  const siriMode = cleanString(value.siri_mode) || "unsupported";
+  const siriVaultLockedFallbackActionId = cleanString(
+    value.siri_vault_locked_fallback_action_id,
+  );
   if (
     !actionId ||
     !surfaceId ||
@@ -551,6 +577,27 @@ function validateAction(value: unknown): KaiActionDefinition | null {
   if (
     activationPolicy !== "none" &&
     activationPolicy !== "trusted_activation_required"
+  ) {
+    return null;
+  }
+  if (
+    siriMode !== "direct" &&
+    siriMode !== "review_ui" &&
+    siriMode !== "conversation_only" &&
+    siriMode !== "unsupported"
+  ) {
+    return null;
+  }
+  if (
+    value.siri_requires_vault !== undefined &&
+    typeof value.siri_requires_vault !== "boolean"
+  ) {
+    return null;
+  }
+  if (
+    value.siri_vault_locked_fallback_action_id !== undefined &&
+    value.siri_vault_locked_fallback_action_id !== null &&
+    !siriVaultLockedFallbackActionId
   ) {
     return null;
   }
@@ -591,6 +638,9 @@ function validateAction(value: unknown): KaiActionDefinition | null {
     risk_level: riskLevel as KaiActionRiskLevel,
     execution_policy: executionPolicy as KaiActionExecutionPolicy,
     activation_policy: activationPolicy as KaiActionActivationPolicy,
+    siri_mode: siriMode as KaiActionSiriMode,
+    siri_requires_vault: value.siri_requires_vault === true,
+    siri_vault_locked_fallback_action_id: siriVaultLockedFallbackActionId,
     execution_target: executionTarget,
     control_ids: isStringArray(value.control_ids) ? value.control_ids : [],
     state_exposure: isStringArray(value.state_exposure)
@@ -601,6 +651,27 @@ function validateAction(value: unknown): KaiActionDefinition | null {
       : [],
     workflow: validateWorkflow(value.workflow),
     external_callback: validateExternalCallback(value.external_callback),
+    command:
+      isPlainObject(value.command) &&
+      value.command.domain === "location" &&
+      typeof value.command.review_route === "string"
+        ? {
+            domain: "location",
+            review_route: value.command.review_route,
+            permission:
+              value.command.permission === "location" ? "location" : undefined,
+            review_only: value.command.review_only === true,
+            client_receipt: value.command.client_receipt === "location.effect.v1" || value.command.client_receipt === "location.audience.v1" ? value.command.client_receipt : undefined,
+            result_resource: value.command.result_resource === "circle" ? "circle" : undefined,
+            resource_inputs: isPlainObject(value.command.resource_inputs)
+              && Object.values(value.command.resource_inputs).every((kind) => kind === "circle" || kind === "person" || kind === "place")
+                ? value.command.resource_inputs as Record<string, "circle" | "person" | "place"> : undefined,
+            backend_binding:
+              value.command.backend_binding === "location.create_circle"
+                ? "location.create_circle"
+                : undefined,
+          }
+        : undefined,
     goal: validateGoal(value.goal, actionId),
     expected_effects: {
       state_changes:
@@ -692,7 +763,29 @@ function validateGateway(value: unknown): KaiActionGateway {
 }
 
 export const KAI_ACTION_GATEWAY = validateGateway(gatewayJson);
-export const KAI_ACTION_GATEWAY_ACTIONS = KAI_ACTION_GATEWAY.actions;
+export const KAI_ACTION_GATEWAY_SCHEMA_VERSION =
+  KAI_ACTION_GATEWAY.schema_version;
+function isCrmProductAction(action: KaiActionDefinition): boolean {
+  const searchable = [
+    action.action_id,
+    action.label,
+    action.meaning,
+    ...action.reachability.routes,
+    ...action.reachability.screens,
+    ...(action.delegate_agent_id ? [action.delegate_agent_id] : []),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return (
+    searchable.includes("crm") ||
+    searchable.includes("connected_system") ||
+    searchable.includes("connected-system")
+  );
+}
+
+export const KAI_ACTION_GATEWAY_ACTIONS = isLocalCrmBuildEnabled()
+  ? KAI_ACTION_GATEWAY.actions
+  : KAI_ACTION_GATEWAY.actions.filter((action) => !isCrmProductAction(action));
 
 const KAI_ACTION_BY_ID = new Map(
   KAI_ACTION_GATEWAY_ACTIONS.map(
@@ -1014,6 +1107,27 @@ export function evaluateKaiActionAvailability(input: {
             : null,
       };
     }
+    // #6437: registered in capability-guard-coverage.v1.json as
+    // "projection" (client-checkable) since these were authored, but never
+    // actually wired here -- both gated real, voice-executable RIA
+    // client-workspace actions with nothing enforcing them. An onboarding
+    // *record* existing (ria_persona_available, checked above) is not the
+    // same as onboarding being *complete*; see isRiaAdvisoryAccessReady.
+    if (
+      (guardId === "ria_onboarding_complete" ||
+        guardId === "consent_center_available") &&
+      appRuntimeState?.persona?.ria_onboarding_complete !== true
+    ) {
+      return {
+        status: "blocked",
+        reason: "Finish RIA verification before using this action.",
+        target_persona: "ria",
+        blocked_guidance:
+          appRuntimeState?.persona?.ria_setup_available === true
+            ? "Complete RIA setup to unlock this."
+            : null,
+      };
+    }
   }
 
   return {
@@ -1090,4 +1204,167 @@ export function searchKaiActions(input: {
       return a.action.label.localeCompare(b.action.label);
     })
     .slice(0, limit);
+}
+
+// ---------------------------------------------------------------------------
+// Backend semantic search (falls back to local scoring when unavailable)
+// ---------------------------------------------------------------------------
+
+type SemanticSearchCandidate = {
+  action_id: string;
+  label: string;
+  meaning: string;
+  policy: string;
+  availability: string;
+  ranking: string;
+  use_tool?: string;
+  semantic_boundaries?: string;
+};
+
+let _semanticSearchDebounce: ReturnType<typeof setTimeout> | null = null;
+let _pendingSemanticAbort: AbortController | null = null;
+
+async function searchKaiActionsSemantic(
+  input: {
+    query: string;
+    appRuntimeState?: AppRuntimeState;
+    surfaceMetadata?: VoiceSurfaceMetadata | null;
+    limit?: number;
+    vaultOwnerToken?: string | null;
+  },
+  signal?: AbortSignal,
+): Promise<
+  Array<{
+    action: KaiActionDefinition;
+    availability: KaiActionAvailability;
+    score: number;
+    semantic?: true;
+  }>
+> {
+  const limit = Math.max(1, Math.min(input.limit ?? 10, 20));
+  // The endpoint is authenticated with a VAULT_OWNER token, so without one
+  // every call is a 401 that the catch below turns into an empty result set.
+  // Returning early keeps "the vault is locked" distinguishable from "nothing
+  // matched", which is the distinction this whole path lost.
+  if (!input.vaultOwnerToken) return [];
+  const url = "/api/one/actions/search";
+
+  const controller = _pendingSemanticAbort;
+  if (controller) controller.abort();
+  const abort = new AbortController();
+  if (signal) {
+    signal.addEventListener("abort", () => abort.abort(), { once: true });
+  }
+  _pendingSemanticAbort = abort;
+
+  try {
+    // ApiService.apiFetch, not fetch: on iOS/Android there is no Next.js
+    // server to serve a relative /api path, so a direct fetch resolves to
+    // nothing on device -- which is exactly where the Siri handoff runs.
+    // apiFetch routes to the real backend base URL on native platforms.
+    const res = await ApiService.apiFetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hushh-Consent": `Bearer ${input.vaultOwnerToken}`,
+      },
+      body: JSON.stringify({
+        query: input.query.trim(),
+        limit,
+        context: {
+          screen: input.appRuntimeState?.route.screen || null,
+        },
+      }),
+      signal: signal ?? abort.signal,
+      credentials: "include",
+    });
+    if (!res.ok) {
+      if (res.status === 429 || res.status >= 500) {
+        logger.warn(`semantic_search_failed status=${res.status}`);
+        return [];
+      }
+      throw new Error(`semantic_search status ${res.status}`);
+    }
+    const payload = (await res.json()) as {
+      results?: SemanticSearchCandidate[];
+      ranking?: string;
+    };
+    const candidates = payload.results ?? [];
+    const results: Array<{
+      action: KaiActionDefinition;
+      availability: KaiActionAvailability;
+      score: number;
+      semantic?: true;
+    }> = [];
+    for (const c of candidates) {
+      const action = getKaiActionById(c.action_id);
+      if (!action) continue;
+      const availability = evaluateKaiActionAvailability({
+        action,
+        appRuntimeState: input.appRuntimeState,
+        surfaceMetadata: input.surfaceMetadata,
+      });
+      results.push({
+        action,
+        availability,
+        score: 0.01 + results.length * 0.001,
+        semantic: true,
+      });
+    }
+    return results;
+  } catch (error) {
+    if ((error as Error)?.name === "AbortError") return [];
+    logger.warn("semantic_search_error", { error });
+    return [];
+  } finally {
+    if (_pendingSemanticAbort === abort) {
+      _pendingSemanticAbort = null;
+    }
+  }
+}
+
+export async function searchKaiActionsAsync(input: {
+  query: string;
+  appRuntimeState?: AppRuntimeState;
+  surfaceMetadata?: VoiceSurfaceMetadata | null;
+  limit?: number;
+  debounceMs?: number;
+  signal?: AbortSignal;
+  /** Required for the semantic pass; without it only local search runs. */
+  vaultOwnerToken?: string | null;
+}): Promise<
+  Array<{
+    action: KaiActionDefinition;
+    availability: KaiActionAvailability;
+    score: number;
+    semantic?: true;
+  }>
+> {
+  const trimmed = input.query.trim();
+  const debounceMs = input.debounceMs ?? 180;
+  const { signal: outerSignal } = input;
+
+  if (!trimmed) {
+    return searchKaiActions(input);
+  }
+
+  await new Promise<void>((resolve) => {
+    if (_semanticSearchDebounce) clearTimeout(_semanticSearchDebounce);
+    _semanticSearchDebounce = setTimeout(resolve, debounceMs);
+  });
+
+  if (outerSignal?.aborted) return [];
+
+  const semantic = await searchKaiActionsSemantic(input, input.signal);
+  if (semantic.length > 0) {
+    const actionIds = new Set(semantic.map((r) => r.action.action_id));
+    // No `semantic: false` tag: the declared return type marks semantic hits
+    // with `semantic?: true`, so absence already means a local hit. Tagging it
+    // widens the union and breaks every consumer that reads `availability`.
+    const local = searchKaiActions(input).filter(
+      (r) => !actionIds.has(r.action.action_id),
+    );
+    return [...semantic, ...local];
+  }
+  return searchKaiActions(input);
 }

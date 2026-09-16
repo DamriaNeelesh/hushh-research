@@ -40,7 +40,6 @@ Profile bootstrap rule:
 | `HUSHH_GENAI_AUTH_MODE` | `consent-protocol/hushh_mcp/runtime_providers/factory.py` | N | N | Y | env | N | env | N | required (`vertex_adc`) |
 | `GOOGLE_API_KEY` | `consent-protocol/hushh_mcp/runtime_providers/factory.py` | N | N | N | none | N | none | Y | local-only developer compatibility |
 | `HUSHH_KAI_AGENT_CHAT_STREAM_TIMEOUT_MS` | `hushh-webapp/app/api/kai/[...path]/route.ts` | N | Y | N | N | env | N | env | optional |
-| `NEXT_PUBLIC_AGENT_GEMINI_VOICE_ENABLED` | `hushh-webapp/lib/agent/agent-voice-settings.ts` | N | Y | N | N | env | N | env | optional One Live kill switch |
 | `FIREBASE_ADMIN_CREDENTIALS_JSON` | `consent-protocol/api/utils/firebase_admin.py`, `consent-protocol/hushh_mcp/runtime_settings.py`, `hushh-webapp/lib/firebase/admin.ts` | Y | Y | Y | secret | secret | secret | secret | required |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | `consent-protocol/hushh_mcp/runtime_settings.py` | Y | N | Y | N | N | alias | N | optional alias |
 | `ONE_EMAIL_ADDRESS` | `consent-protocol/hushh_mcp/services/support_email_service.py`, `consent-protocol/hushh_mcp/services/one_email_kyc_service.py` | Y | N | N | env | N | env | N | optional |
@@ -50,7 +49,12 @@ Profile bootstrap rule:
 | `ONE_EMAIL_WEBHOOK_AUTH_ENABLED` | `consent-protocol/hushh_mcp/services/one_email_kyc_service.py` | Y | N | N | env | N | env | N | required true for hosted One email intake |
 | `ONE_EMAIL_WATCH_RENEW_TOKEN` | `consent-protocol/api/routes/one/email.py` | Y | N | Y | secret | N | secret | N | required for hosted One watch renewal |
 | `ONE_EMAIL_WATCH_RENEW_AUTH_ENABLED` | `consent-protocol/api/routes/one/email.py` | Y | N | N | env | N | env | N | required true for hosted One watch renewal |
+| `GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_AUTH_ENABLED` | `consent-protocol/api/routes/one/gmail_information_requests.py` | Y | N | N | env | N | env | N | required true for hosted personal-Gmail monitoring |
+| `GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_AUDIENCE` | `consent-protocol/api/routes/one/gmail_information_requests.py` | Y | N | N | env | N | env | N | required Cloud Scheduler OIDC audience |
+| `GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_SERVICE_ACCOUNT_EMAIL` | `consent-protocol/api/routes/one/gmail_information_requests.py` | Y | N | N | env | N | env | N | required Cloud Scheduler OIDC service account |
 | `ONE_LOCATION_RETENTION_TOKEN` | `consent-protocol/api/routes/one/location.py` | Y | N | Y | secret | N | secret | N | required dedicated token for hosted One Location retention purge |
+| `ACCOUNT_DELETION_CLEANUP_AUDIENCE` | `consent-protocol/api/routes/account.py` | Y | N | Y | env | N | env | N | exact backend-origin audience for the hosted durable Firebase cleanup drain |
+| `ACCOUNT_DELETION_CLEANUP_SERVICE_ACCOUNT_EMAIL` | `consent-protocol/api/routes/account.py` | Y | N | Y | env | N | env | N | exact dedicated Google OIDC scheduler identity for the hosted durable Firebase cleanup drain |
 | `ONE_LOCATION_RETENTION_AUTH_ENABLED` | `consent-protocol/api/routes/one/location.py` | Y | N | N | env | N | env | N | optional local/test override; hosted auth remains enabled |
 | `ONE_LOCATION_NEARBY_PRESENCE_MODE` | `consent-protocol/api/routes/one/location.py` | Y | N | N | env | N | N | N | optional non-production override: `disabled` or `uat_simulation`; production always fails closed |
 | `ONE_EMAIL_KYC_STRICT_CLIENT_ZK_ENABLED` | `consent-protocol/hushh_mcp/services/one_email_kyc_service.py` | Y | N | N | env | N | env | N | strict client-side ZK guard; defaults true |
@@ -61,6 +65,7 @@ Profile bootstrap rule:
 | `SUPPORT_EMAIL_TEST_TO` | `consent-protocol/hushh_mcp/services/support_email_service.py` | Y | N | N | env | N | env | N | optional |
 | `SUPPORT_EMAIL_MODE` | `consent-protocol/hushh_mcp/services/support_email_service.py` | Y | N | N | env | N | env | N | optional |
 | `APP_FRONTEND_ORIGIN` | `consent-protocol/server.py` | Y | N | Y | secret | N | secret | N | required |
+| `PASSKEY_ALLOWED_RP_IDS` | `consent-protocol/hushh_mcp/services/vault_keys_service.py` | Y | N | N | generated runtime config | N | generated runtime config | N | required; `localhost,127.0.0.1,<APP_FRONTEND_ORIGIN host>` only |
 | `BACKEND_RUNTIME_CONFIG_JSON` | `consent-protocol/hushh_mcp/runtime_settings.py`, `consent-protocol/server.py` | Y | N | Y | secret | N | secret | N | required |
 | `DB_USER` | `consent-protocol/db/connection.py` | Y | N | Y | secret | N | secret | N | required |
 | `DB_PASSWORD` | `consent-protocol/db/connection.py` | Y | N | Y | secret | N | secret | N | required |
@@ -68,8 +73,11 @@ Profile bootstrap rule:
 | `GMAIL_OAUTH_CLIENT_SECRET` | `consent-protocol/hushh_mcp/services/gmail_receipts_service.py` | Y | N | Y | secret | N | secret | N | required |
 | `GMAIL_OAUTH_REDIRECT_URI` | `consent-protocol/hushh_mcp/services/gmail_receipts_service.py` | Y | N | Y | secret | N | secret | N | required; exact `APP_FRONTEND_ORIGIN + /one/profile/gmail/oauth/return` |
 | `GMAIL_OAUTH_TOKEN_KEY` | `consent-protocol/hushh_mcp/services/gmail_receipts_service.py` | Y | N | Y | secret | N | secret | N | required |
+| `GOOGLE_OAUTH_CLIENT_ID` | `consent-protocol/hushh_mcp/services/google_connection_service.py` | Y | N | Y | secret | N | secret | N | required |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | `consent-protocol/hushh_mcp/services/google_connection_service.py` | Y | N | Y | secret | N | secret | N | required |
+| `GOOGLE_OAUTH_REDIRECT_URI` | `consent-protocol/hushh_mcp/services/google_connection_service.py` | Y | N | Y | secret | N | secret | N | required; exact `APP_FRONTEND_ORIGIN + /one/profile/google/oauth/return` |
+| `GOOGLE_OAUTH_TOKEN_KEY` | `consent-protocol/hushh_mcp/services/google_connection_service.py` | Y | N | Y | secret | N | secret | N | required |
 | `OPENAI_API_KEY` | Legacy compatibility configuration; no active One ADK relay reader | N | N | N | secret | N | secret | N | deprecated |
-| `VOICE_RUNTIME_CONFIG_JSON` | `consent-protocol/hushh_mcp/runtime_settings.py` | Y | N | Y | secret | N | secret | N | required |
 | `HUSHH_DEVELOPER_TOKEN` | `consent-protocol/api/routes/session.py` | Y | N | N | N | N | N | N | optional |
 | `ENVIRONMENT` | `consent-protocol/hushh_mcp/config.py` | Y | N | N | env | N | env | N | required |
 | `GOOGLE_GENAI_USE_VERTEXAI` | runtime SDK config | Y | N | N | env | N | env | N | required |

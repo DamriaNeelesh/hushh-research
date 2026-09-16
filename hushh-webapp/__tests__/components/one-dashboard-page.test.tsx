@@ -66,7 +66,6 @@ describe("OneDashboardPage", () => {
           email: { state: "completed" },
           location: { state: "completed" },
           ria: { state: "in-progress" },
-          "connected-systems": { state: "blocked", prerequisite: "oauth" },
         })}
       />,
     );

@@ -1,9 +1,14 @@
 "use client";
 
-import type { ComponentPropsWithoutRef, ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+} from "react";
 import type { LucideIcon } from "lucide-react";
 import { BriefcaseBusiness, ShieldAlert, ShieldCheck, TriangleAlert } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 import { usePersonaState } from "@/lib/persona/persona-context";
 import { ROUTES } from "@/lib/navigation/routes";
@@ -25,6 +30,7 @@ import {
   PageHeader,
   SectionHeader,
 } from "@/components/app-ui/page-sections";
+import { RiaRouteSelector } from "@/components/ria/layout/ria-route-selector";
 import {
   SurfaceCard,
   SurfaceInset,
@@ -34,6 +40,56 @@ import {
 } from "@/components/app-ui/surfaces";
 import { cn } from "@/lib/utils";
 
+const RIA_AGENT_HEADER_CLASSNAME =
+  "[&>div:first-child]:!gap-3.5 [&_[data-slot=page-header-actions]]:!self-center [&_[data-slot=page-header-row]]:!items-center";
+
+const RiaPrimaryWorkspaceContext = createContext(false);
+
+function isRiaPrimaryWorkspacePath(pathname: string | null): boolean {
+  const normalizedPathname = pathname?.replace(/\/+$/, "") || "/";
+  return (
+    normalizedPathname === ROUTES.RIA_PROFILE ||
+    normalizedPathname === ROUTES.RIA_CLIENTS ||
+    normalizedPathname === ROUTES.RIA_PICKS
+  );
+}
+
+/**
+ * Persistent shell for the three primary RIA workspace routes.
+ *
+ * `/ria/layout.tsx` survives pathname changes between Profile, Clients, and
+ * Picks. Keeping the identity header and route selector here means those
+ * elements stay mounted while each route page replaces only its content.
+ */
+export function RiaPrimaryWorkspaceShell({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const pathname = usePathname();
+
+  if (!isRiaPrimaryWorkspacePath(pathname)) return <>{children}</>;
+
+  return (
+    <RiaPrimaryWorkspaceContext.Provider value>
+      <AppPageShell as="main" fitContent width="agent">
+        <AppPageHeaderRegion className="pt-2 sm:pt-3">
+          <PageHeader
+            title="RIA"
+            icon={BriefcaseBusiness}
+            accent="ria"
+            titleRole="agent"
+            actionsInlineMobile
+            className={RIA_AGENT_HEADER_CLASSNAME}
+          />
+          <RiaRouteSelector className="mt-4 sm:mt-5" />
+        </AppPageHeaderRegion>
+        {children}
+      </AppPageShell>
+    </RiaPrimaryWorkspaceContext.Provider>
+  );
+}
+
 export function RiaPageShell({
   eyebrow,
   title,
@@ -41,8 +97,20 @@ export function RiaPageShell({
   actions,
   icon = BriefcaseBusiness,
   statusPanel,
+  showRouteSelector = false,
   children,
-  width = "standard",
+  // "standard" (90rem / 1440px) matched Connect and Marketplace, but those
+  // are directory-browsing surfaces; RIA's own screens are read-and-act
+  // workspaces, closer in shape to Location's primary surface, which uses
+  // "agent" (880px). At phone width the two are visually identical --
+  // both exceed the viewport, so `width: 100%` governs either way -- the
+  // difference shows up on an iPad or any Capacitor window wider than a
+  // phone, which is where "very wide, wrong container" was reported from.
+  width = "agent",
+  // "page" for a screen inside RIA (an account, a request, one client's
+  // workspace); "agent" for a screen a person lands on, which wears the same
+  // hero header as Location -- a filled accent tile and the larger title.
+  titleRole = "page",
   className,
   headerClassName,
   contentClassName,
@@ -53,10 +121,12 @@ export function RiaPageShell({
   title: string;
   description?: string;
   actions?: ReactNode;
-  icon?: LucideIcon;
+  icon?: LucideIcon | null;
   statusPanel?: ReactNode;
+  showRouteSelector?: boolean;
   children: ReactNode;
   width?: AppPageShellWidth;
+  titleRole?: "page" | "agent";
   className?: string;
   headerClassName?: string;
   contentClassName?: string;
@@ -77,6 +147,22 @@ export function RiaPageShell({
     errorMessage?: string | null;
   };
 }) {
+  const isInsidePrimaryWorkspace = useContext(RiaPrimaryWorkspaceContext);
+
+  if (isInsidePrimaryWorkspace) {
+    return (
+      <>
+        {nativeTest ? <NativeTestBeacon {...nativeTest} /> : null}
+        <AppPageContentRegion className={contentClassName}>
+          <SurfaceStack className={stackClassName}>
+            {statusPanel ? <div>{statusPanel}</div> : null}
+            {children}
+          </SurfaceStack>
+        </AppPageContentRegion>
+      </>
+    );
+  }
+
   return (
     <AppPageShell
       as="main"
@@ -91,9 +177,19 @@ export function RiaPageShell({
           title={title}
           description={description}
           actions={actions}
-          icon={icon}
+          actionsInlineMobile={titleRole === "agent"}
+          icon={icon ?? undefined}
           accent="ria"
+          titleRole={titleRole}
+          className={
+            titleRole === "agent"
+              ? RIA_AGENT_HEADER_CLASSNAME
+              : undefined
+          }
         />
+        {showRouteSelector ? (
+          <RiaRouteSelector className="mt-4 sm:mt-5" />
+        ) : null}
       </AppPageHeaderRegion>
 
       <AppPageContentRegion className={contentClassName}>
@@ -275,12 +371,12 @@ export function RiaVerificationGate({ children }: { children: ReactNode }) {
     return (
       <div className="mx-auto my-12 flex w-full max-w-xl flex-col items-center px-4 text-center sm:px-6">
         {/* Header Icon */}
-        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-500/30 bg-amber-500/15 text-amber-400">
+        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-[color:var(--app-accent-border)] bg-[color:var(--app-accent-tint)] text-[color:var(--ria-gold,var(--app-accent))]">
           <ShieldAlert className="h-7 w-7" />
         </div>
 
         {/* Eyebrow */}
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[color:var(--ria-gold,#d97706)]">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[color:var(--ria-gold,var(--app-accent))]">
           {RIA_COPY.clients.verifyGate.eyebrow}
         </p>
 
@@ -301,7 +397,7 @@ export function RiaVerificationGate({ children }: { children: ReactNode }) {
 
         {/* Action CTA Button */}
         <Button
-          className="mt-6 h-11 rounded-full bg-[color:var(--ria-gold,#d97706)] px-8 text-sm font-semibold text-slate-950 shadow-lg shadow-amber-500/25 hover:bg-amber-400 active:scale-[0.98] transition-all cursor-pointer"
+          className="mt-6 h-11 rounded-full bg-[color:var(--ria-gold,var(--app-accent))] px-8 text-sm font-semibold text-[color:var(--app-accent-fg)] shadow-lg hover:bg-[color:var(--app-accent-hover)] active:scale-[0.98] transition-all cursor-pointer"
           onClick={() => router.push(ROUTES.RIA_ONBOARDING)}
           data-testid="ria-clients-verify-gate-cta"
         >

@@ -4,8 +4,8 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { NativeTestBeacon } from "@/components/app-ui/native-test-beacon";
-import { NativeRouteMarker } from "@/components/app-ui/native-route-marker";
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
+import { SessionVerificationRecovery } from "@/components/auth/session-verification-recovery";
 import { JsonLd } from "@/components/seo/json-ld";
 import { buildFaqGraph } from "@/lib/seo/structured-data";
 import { HOME_FAQ } from "@/lib/seo/faq-data";
@@ -16,7 +16,9 @@ import { ROUTES } from "@/lib/navigation/routes";
 import { resolveAppEnvironment } from "@/lib/app-env";
 import { PostAuthRouteService } from "@/lib/services/post-auth-route-service";
 import { AuthService } from "@/lib/services/auth-service";
-import { Button } from "@/lib/morphy-ux/button";
+import { VaultLockGuard } from "@/components/vault/vault-lock-guard";
+import { PhoneMandateGuard } from "@/components/auth/phone-mandate-guard";
+import { AgentChatWorkspace } from "@/components/agent/agent-chat-workspace";
 
 type HomeStep = "intro";
 
@@ -28,10 +30,18 @@ function HomeContent() {
     ? `${ROUTES.LOGIN}?redirect=${encodeURIComponent(redirectPath)}`
     : ROUTES.LOGIN;
 
-  const { user, loading, phoneNumber } = useAuth();
+  const {
+    user,
+    loading,
+    phoneNumber,
+    sessionVerificationRequired,
+    retrySessionVerification,
+    signOut,
+  } = useAuth();
   const [step, setStep] = useState<HomeStep | null>(null);
-  const [routingError, setRoutingError] = useState<string | null>(null);
+  const [routingError, setRoutingError] = useState(false);
   const [routingAttempt, setRoutingAttempt] = useState(0);
+  const [authenticatedRootReady, setAuthenticatedRootReady] = useState(false);
   const activeResolutionRef = useRef<string | null>(null);
 
   const forceOnboardingInDev = resolveAppEnvironment() === "development";
@@ -64,7 +74,7 @@ function HomeContent() {
   }, [forceOnboardingInDev, loading, user, router]);
 
   useEffect(() => {
-    if (loading || !user?.uid) {
+    if (loading || sessionVerificationRequired || !user?.uid) {
       if (!user?.uid) activeResolutionRef.current = null;
       return;
     }
@@ -74,7 +84,8 @@ function HomeContent() {
     if (activeResolutionRef.current === resolutionKey) return;
     activeResolutionRef.current = resolutionKey;
     setStep(null);
-    setRoutingError(null);
+    setAuthenticatedRootReady(false);
+    setRoutingError(false);
     let cancelled = false;
 
     void (async () => {
@@ -94,40 +105,77 @@ function HomeContent() {
         enableFirstRunSetupGate: true,
       });
       if (cancelled || activeResolutionRef.current !== resolutionKey) return;
+      if (nextPath === ROUTES.HOME) {
+        setAuthenticatedRootReady(true);
+        return;
+      }
       router.replace(nextPath);
     })().catch((error) => {
       if (cancelled || activeResolutionRef.current !== resolutionKey) return;
       console.warn("[Home] Failed to resolve authenticated entry:", error);
-      setRoutingError("Unable to verify setup progress. Please retry.");
+      setRoutingError(true);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [loading, phoneNumber, redirectPath, router, routingAttempt, user?.uid]);
+  }, [
+    loading,
+    phoneNumber,
+    redirectPath,
+    router,
+    routingAttempt,
+    sessionVerificationRequired,
+    user?.uid,
+  ]);
 
-  if (loading || (!user && step === null)) {
+  if (loading || (!user && step === null && !sessionVerificationRequired)) {
     return <HushhLoader variant="fullscreen" label="Preparing welcome…" />;
+  }
+
+  if (sessionVerificationRequired) {
+    return (
+      <SessionVerificationRecovery
+        onRetry={() => void retrySessionVerification()}
+        onSignOut={() => void signOut({ skipFcmCleanup: true })}
+      />
+    );
   }
 
   if (user) {
     if (routingError) {
       return (
-        <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-4 px-6 text-center">
-          <p className="text-sm text-muted-foreground">{routingError}</p>
-          <Button
-            variant="muted"
-            onClick={() => {
-              activeResolutionRef.current = null;
-              setRoutingAttempt((attempt) => attempt + 1);
-            }}
-          >
-            Retry
-          </Button>
-        </div>
+        <SessionVerificationRecovery
+          onRetry={() => {
+            activeResolutionRef.current = null;
+            setRoutingAttempt((attempt) => attempt + 1);
+          }}
+          onSignOut={() => void signOut({ skipFcmCleanup: true })}
+        />
       );
     }
-    return <HushhLoader variant="fullscreen" label="Opening One…" />;
+    if (!authenticatedRootReady) {
+      return <HushhLoader variant="fullscreen" label="Opening chat…" />;
+    }
+    return (
+      <>
+        <NativeTestBeacon
+          routeId="/"
+          marker="native-route-home"
+          authState="authenticated"
+          dataState="loaded"
+        />
+        <VaultLockGuard>
+          <PhoneMandateGuard>
+            <Suspense
+              fallback={<HushhLoader variant="fullscreen" label="Loading chat…" />}
+            >
+              <AgentChatWorkspace />
+            </Suspense>
+          </PhoneMandateGuard>
+        </VaultLockGuard>
+      </>
+    );
   }
 
   if (step === "intro") {
@@ -151,12 +199,6 @@ export default function Home() {
   return (
     <>
       <JsonLd data={buildFaqGraph(HOME_FAQ)} />
-      <NativeRouteMarker
-        routeId="/"
-        marker="native-route-home"
-        authState="anonymous"
-        dataState="loaded"
-      />
       <Suspense fallback={null}>
         <HomeContent />
       </Suspense>

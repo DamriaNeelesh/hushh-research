@@ -29,6 +29,11 @@ Those stay in:
 - `motion.ts`
 - `tokens/*`
 
+Page-entry animation excludes switch controls and their descendants on both
+initial and deferred mounts. Switches own their thumb movement; applying a GSAP
+transform on top of CSS translation can double the thumb's travel. Animate the
+surrounding section instead.
+
 ## Accent system (single switchable identity)
 
 All accent color flows through the `--app-accent-*` CSS family declared in
@@ -60,10 +65,12 @@ Morphy adopts the Apple web design principles as enforceable grammar
    `.press-scale` utility (`transform: scale(var(--motion-press-scale))` on
    active, reduced-motion aware) layered WITH the md-ripple. Button and all
    segmented primitives ship it; never write per-component press styles.
-2. **Radius grammar.** `--app-radius-pill` = action signal; `--app-radius-lg`
-   = compact utility cards; `--app-radius-sm` = compact utility rects. The
-   shipped `--app-card-radius-*` contract stays canonical for app cards. No
-   in-between radii in new primitives.
+2. **Radius grammar.** `--app-radius-pill` = action signal and direct-entry
+   field geometry through `--app-input-radius`; `--app-radius-lg` = compact
+   utility cards; `--app-radius-sm` = compact utility rects. The shipped
+   `--app-card-radius-*` contract stays canonical for app cards. Compound
+   fields keep their inner controls square while the outer shell owns the
+   capsule. No in-between radii in new primitives.
 3. **Weight ladder.** 300 / 400 / 600 / 700 only; `font-medium` (500) is
    deliberately absent from this folder. Labels 400, emphasis 600, weight 300
    is the rare "airy" cue.

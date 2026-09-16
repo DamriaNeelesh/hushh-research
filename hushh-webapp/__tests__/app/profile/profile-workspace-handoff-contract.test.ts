@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const profilePageSource = readFileSync(
-  join(process.cwd(), "app/profile/profile-workspace-page.tsx"),
+  join(process.cwd(), "components/profile/profile-workspace-page.tsx"),
   "utf8",
 );
 
@@ -39,9 +39,7 @@ describe("profile workspace duplication contract", () => {
     expect(profilePageSource).toContain(
       "function profileRouteNeedsWorkspaceData",
     );
-    expect(profilePageSource).toContain(
-      'return panel === "my-data" || panel === "access";',
-    );
+    expect(profilePageSource).toContain('return panel === "my-data";');
     expect(profilePageSource).toContain(
       'enabled: Boolean(user?.uid) && !authLoading && activePanel === "gmail"',
     );

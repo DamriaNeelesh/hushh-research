@@ -18,6 +18,8 @@ import { PreVaultUserStateService } from "@/lib/services/pre-vault-user-state-se
 import { VaultService } from "@/lib/services/vault-service";
 import { useHostname } from "@/lib/hooks/use-hostname";
 import { useSessionChromeSuppression } from "@/lib/auth/use-session-chrome-suppression";
+import { SessionVerificationRecovery } from "@/components/auth/session-verification-recovery";
+import { shouldSkipAmbientIdentityHydrationForAutomation } from "@/lib/testing/native-test";
 
 function resolveInitialVaultPresence(params: {
   userId: string | null | undefined;
@@ -66,8 +68,15 @@ export function PhoneMandateGuard({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { user, loading, phoneNumber } = useAuth();
-  useSessionChromeSuppression(loading);
+  const {
+    user,
+    loading,
+    phoneNumber,
+    retrySessionVerification,
+    sessionVerificationRequired,
+    signOut,
+  } = useAuth();
+  useSessionChromeSuppression(loading || sessionVerificationRequired);
   const hostname = useHostname();
   const hostnameResolved = hostname !== null;
   const localPhoneMandateBypassed = shouldBypassPhoneMandateForLocalhost(hostname);
@@ -96,7 +105,12 @@ export function PhoneMandateGuard({
   const redirectTargetRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!user?.uid || !hostnameResolved || localPhoneMandateBypassed) {
+    if (
+      sessionVerificationRequired ||
+      !user?.uid ||
+      !hostnameResolved ||
+      localPhoneMandateBypassed
+    ) {
       return;
     }
 
@@ -135,10 +149,17 @@ export function PhoneMandateGuard({
         reconcileFromCache();
       }
     });
-  }, [firebasePhoneVerified, hostnameResolved, localPhoneMandateBypassed, user?.uid]);
+  }, [
+    firebasePhoneVerified,
+    hostnameResolved,
+    localPhoneMandateBypassed,
+    sessionVerificationRequired,
+    user?.uid,
+  ]);
 
   useEffect(() => {
     const userId = user?.uid;
+    if (sessionVerificationRequired) return;
     if (!userId) {
       setHasVault(null);
       setBackendPhoneVerified(null);
@@ -181,6 +202,13 @@ export function PhoneMandateGuard({
     const resolveIdentityFallback = async () => {
       if (firebasePhoneVerified) {
         setPhoneVerified(true);
+        return;
+      }
+      // The reviewer bridge already bypasses the phone mandate. Do not create
+      // an identity-shadow write merely to resolve an admission state that the
+      // read-only rehearsal will never enforce.
+      if (shouldSkipAmbientIdentityHydrationForAutomation()) {
+        setPhoneVerified(false);
         return;
       }
       try {
@@ -236,7 +264,13 @@ export function PhoneMandateGuard({
     // User identity is deliberately keyed by uid: Firebase may recreate its
     // object during token refreshes, but that must not restart admission.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firebasePhoneVerified, hostnameResolved, localPhoneMandateBypassed, user?.uid]);
+  }, [
+    firebasePhoneVerified,
+    hostnameResolved,
+    localPhoneMandateBypassed,
+    sessionVerificationRequired,
+    user?.uid,
+  ]);
 
   const currentRoute = useMemo(() => {
     const query = searchParams.toString();
@@ -244,6 +278,7 @@ export function PhoneMandateGuard({
   }, [pathname, searchParams]);
 
   const shouldRedirect =
+    !sessionVerificationRequired &&
     !!user &&
     hostnameResolved &&
     hasVault !== null &&
@@ -273,6 +308,15 @@ export function PhoneMandateGuard({
 
   if (loading) {
     return <HushhLoader label="Checking session..." />;
+  }
+
+  if (sessionVerificationRequired) {
+    return (
+      <SessionVerificationRecovery
+        onRetry={() => void retrySessionVerification()}
+        onSignOut={() => void signOut({ skipFcmCleanup: true })}
+      />
+    );
   }
 
   if (!user) {

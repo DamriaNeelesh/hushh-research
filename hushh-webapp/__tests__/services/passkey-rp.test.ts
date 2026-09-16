@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { normalizeRpHost, resolvePasskeyRpId } from "@/lib/vault/passkey-rp";
+import {
+  isPasskeyRpIdCompatibleWithHost,
+  normalizeRpHost,
+  resolvePasskeyRpId,
+} from "@/lib/vault/passkey-rp";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -50,7 +54,7 @@ describe("passkey RP resolution", () => {
     expect(rpId).toBe("localhost");
   });
 
-  it("uses the explicit shared RP on UAT web when configured", () => {
+  it("prefers the exact UAT host over a stale shared parent RP on web", () => {
     process.env.NEXT_PUBLIC_PASSKEY_RP_ID = "one.hushh.ai";
 
     const rpId = resolvePasskeyRpId({
@@ -58,6 +62,36 @@ describe("passkey RP resolution", () => {
       hostname: "uat.one.hushh.ai",
     });
 
-    expect(rpId).toBe("one.hushh.ai");
+    expect(rpId).toBe("uat.one.hushh.ai");
+  });
+
+  it("accepts the shared parent RP for a hosted UAT origin", () => {
+    expect(
+      isPasskeyRpIdCompatibleWithHost(
+        "uat.one.hushh.ai",
+        "one.hushh.ai",
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects IP-address RP IDs even when localhost normalization is available", () => {
+    expect(
+      isPasskeyRpIdCompatibleWithHost("127.0.0.1", "127.0.0.1"),
+    ).toBe(false);
+    expect(
+      isPasskeyRpIdCompatibleWithHost("[::1]", "[::1]"),
+    ).toBe(false);
+  });
+
+  it("does not accept a child RP from the canonical origin", () => {
+    expect(
+      isPasskeyRpIdCompatibleWithHost("one.hushh.ai", "uat.one.hushh.ai"),
+    ).toBe(false);
+  });
+
+  it("rejects unrelated RP IDs even when their text is a suffix", () => {
+    expect(
+      isPasskeyRpIdCompatibleWithHost("notone.hushh.ai", "one.hushh.ai"),
+    ).toBe(false);
   });
 });

@@ -49,10 +49,10 @@ import {
 
 import {
   requestRecipientStatus,
-  shortAgo,
   type RequestRecipientStatus,
 } from "@/lib/one-location/request-recipient-status";
 import { SmsTextIcon } from "@/components/one-location/redesign/sms-text-icon";
+import { isLocationRequestPending } from "@/lib/one-location/request-expiry";
 import { isSmsTriggeredGrant } from "@/lib/one-location/notifications";
 import {
   formatLocationDurationLabel,
@@ -84,7 +84,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { LocationPermissionRecoveryCard } from "@/components/one-location/location-permission-recovery-card";
-import { PageHeader } from "@/components/app-ui/page-sections";
+import { AgentHeaderIcon, PageHeader } from "@/components/app-ui/page-sections";
 import {
   ButtonLabel,
   CardTitle,
@@ -117,11 +117,9 @@ import type {
   PlainLocationPoint,
 } from "@/lib/one-location/types";
 import { locationStatusLabel } from "@/lib/one-location/location-readiness";
-import {
-  isCircleSelectionFullySelected,
-  type CircleRecipientSelection,
-} from "@/lib/one-location/circle-recipient-selection";
+import type { CircleRecipientSelection } from "@/lib/one-location/circle-recipient-selection";
 import type { AutoApproveScope } from "@/lib/one-location/location-control-state";
+import { resolveOwnSmsSystemCircleId } from "@/lib/one-location/system-circles";
 
 import {
   Avatar,
@@ -134,11 +132,7 @@ import {
 import { MUTED_TEXT, SUBCARD_SURFACE } from "./tokens";
 import { ContactSourceBadge } from "@/components/connections/contact-source-badge";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
-import {
-  RequestCard,
-  SharedWithMeCard,
-  type GrantViewStatus,
-} from "./cards";
+import { RequestCard, SharedWithMeCard, type GrantViewStatus } from "./cards";
 
 export type { GrantViewStatus } from "./cards";
 import {
@@ -146,6 +140,11 @@ import {
   ShareLanesDisclosure,
   useExpandedShareLanes,
 } from "./share-lanes";
+import {
+  ACTIVE_SHARE_ACTIONS_CLASSNAME,
+  ACTIVE_SHARE_CHANGE_TIME_CLASSNAME,
+  ACTIVE_SHARE_STOP_CLASSNAME,
+} from "./active-share-row-layout";
 import {
   ShareReplacementConfirmDialog,
   ShareReplacementNotice,
@@ -160,14 +159,23 @@ import {
   type ReasonValue,
 } from "./selectors";
 import {
+  PUBLIC_LINK_CONTROLS_CLASSNAME,
+  PUBLIC_LINK_PRIMARY_CTA_CLASSNAME,
+  SHARE_CONFIRM_ACTIONS_CLASSNAME,
+  SHARE_CONFIRM_PRIMARY_CTA_CLASSNAME,
+  SHARE_CONFIRM_SECONDARY_CTA_CLASSNAME,
+} from "./location-cta-layout";
+import {
+  LOCATION_HEADER_ACTIONS_CLASSNAME,
+  LOCATION_HUB_PAGE_HEADER_CLASSNAME,
+  LOCATION_HEADER_STATUS_CLASSNAME,
+} from "./location-header-layout";
+import {
   CHANGE_TIME_DURATION_LADDER,
   REQUEST_DURATION_LADDER,
 } from "./duration-presets";
 import { approveShorterDurationOptions } from "@/lib/one-location/approve-duration-options";
-import {
-  AskForMoreTime,
-  type RequestMoreTimeHours,
-} from "./request-more-time";
+import { AskForMoreTime, type RequestMoreTimeHours } from "./request-more-time";
 import {
   LiveShareStatusCard,
   ShareCountdownText,
@@ -177,7 +185,11 @@ import { SosPanel } from "@/components/one-location/redesign/sos-panel";
 import { SmsContactsFlow } from "@/components/one-location/redesign/sms-contacts-flow";
 import { CheckInFlow } from "@/components/one-location/redesign/check-in-flow";
 import { SavedLocationsSection } from "@/components/one-location/saved-locations-section";
-import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
+import {
+  SettingsGroup,
+  SettingsPresentationProvider,
+  SettingsRow,
+} from "@/components/app-ui/settings-ui";
 import { ShellActionSurface } from "@/components/app-ui/shell-action-surface";
 import { roleClasses } from "@/lib/morphy-ux/tokens/semantic-roles";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -188,14 +200,13 @@ import {
   lastInteractionByUserId,
   sectionRecipients,
 } from "@/lib/one-location/recipient-sections";
-import { ROUTES } from "@/lib/navigation/routes";
+import { ROUTES, buildPersonProfileRoute } from "@/lib/navigation/routes";
 import { circleMemberCountLabel } from "@/lib/one-location/circle-member-count";
 import { useScrollReset } from "@/lib/navigation/use-scroll-reset";
 import { usePageEnterAnimation } from "@/lib/morphy-ux/hooks/use-page-enter";
 import { resolveSmsContactsBackAction } from "@/lib/navigation/top-shell-breadcrumbs";
 import {
   CircleDetailFlow,
-  CirclesSection,
   CreateCircleFlow,
   JoinCircleFlow,
 } from "@/components/one-location/redesign/circles/named-circle-flows";
@@ -324,11 +335,17 @@ export type PrivateCheckInResult = {
 };
 
 export type PrivateCheckInRequest = {
+  commandDirectiveId?: string;
+  /** Consented owner snapshot from the draft, including Circle recipients. */
+  recipientSnapshots?: OneLocationRecipient[];
   recipientIds: string[];
   durationHours: string;
   message?: string;
   point: PlainLocationPoint;
   clientOperationId: string;
+  commandOperationId?: string;
+  commandSignal?: AbortSignal;
+  commandOwner?: string;
   confirmedAt: string;
   /** Named-Circle provenance when the check-in was targeted at a Circle. */
   sourceCircleId?: string | null;
@@ -353,23 +370,11 @@ function resolveLocationHubTab(value: string | null): LocationHubTab {
   ) as LocationHubTab;
 }
 
-/**
- * What a settled request says in the "Requests sent" list.
- *
- * Everything that was not live used to read "Pending", including requests that
- * had been declined or taken back -- so a request the person themselves had
- * already withdrawn still sat there claiming to be waiting on somebody.
- */
-function requestStatusWord(status: string): string {
-  if (status === "denied") return "Declined";
-  if (status === "cancelled") return "Taken back";
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
-
 export type LocationHubViewModel = {
   /* identity / gating */
   userId: string | null;
   canShare: boolean;
+  shareDeliveryPending: boolean;
   busy: string | null;
   /** Id of the grant currently being revoked (per-grant Stop sharing spinner). */
   revokingGrantId: string | null;
@@ -438,7 +443,8 @@ export type LocationHubViewModel = {
   /* data lists */
   recipients: OneLocationRecipient[];
   circles: OneLocationCircleSummary[];
-  selectedShareCircleSelection: CircleRecipientSelection | null;
+  selectedShareCircleSelections: CircleRecipientSelection[];
+  pendingShareCircleIds: string[];
   incomingCircleMemberInvites: OneLocationCircleMemberInvite[];
   incomingCircleMemberInvitesLoading: boolean;
   incomingCircleMemberInvitesError: string | null;
@@ -469,10 +475,13 @@ export type LocationHubViewModel = {
   /* composer state */
   recipientSearch: string;
   shareRecipientSearch: string;
+  selectedDirectRecipientIds: string[];
   selectedRecipientIds: string[];
   selectedRequestOwnerIds: string[];
   shareDurationHours: string;
   shareMessage: string;
+  /** Last failed share attempt, rendered in-flow instead of over the header. */
+  shareError: string | null;
   durationHours: string;
   requestMessage: string;
   shareReviewOpen: boolean;
@@ -932,9 +941,9 @@ export function resolveLocationDeepLinkFocus(input: {
 
 /**
  * The id the header switch points `aria-describedby` at. A constant, not
- * `useId`: the status text now renders under the title while the switch stays
- * in the actions column, and `aria-describedby` resolves by id anywhere in the
- * document. There is exactly one Location header on screen.
+ * `useId`: the status text now renders below the switch in the actions column,
+ * and `aria-describedby` resolves by id anywhere in the document. There is
+ * exactly one Location header on screen.
  */
 const LOCATION_HEADER_STATUS_ID = "one-location-header-status";
 
@@ -956,16 +965,23 @@ function locationHeaderStatusText(vm: LocationHubViewModel): string {
   return status;
 }
 
-/** The header switch status sits under the switch without becoming a page subtitle. */
-function LocationHeaderStatus({ vm }: { vm: LocationHubViewModel }) {
+/** The status stays with the switch and may wrap rather than clip on a narrow phone. */
+function LocationHeaderStatus({
+  vm,
+  onToggle,
+}: {
+  vm: LocationHubViewModel;
+  onToggle: () => void;
+}) {
   return (
-    <span
+    <button
+      type="button"
       id={LOCATION_HEADER_STATUS_ID}
       data-testid="one-location-header-status"
       className="mt-1 block w-full whitespace-nowrap text-center font-[family-name:var(--font-app-body)] text-[13px] font-medium leading-[18px] tracking-[-0.01em] text-[color:var(--app-secondary-label)]"
     >
       {locationHeaderStatusText(vm)}
-    </span>
+    </button>
   );
 }
 
@@ -981,6 +997,8 @@ function LocationHeaderActions({ vm }: { vm: LocationHubViewModel }) {
     }
     vm.onHideMyLocation();
   };
+
+  const handleLocationToggle = () => handleLocationChange(!locationOn);
 
   return (
     <div
@@ -1011,7 +1029,7 @@ function LocationHeaderActions({ vm }: { vm: LocationHubViewModel }) {
         // system green, so this toggle reads the same as every other one.
         className={cn("shrink-0", acquiring && "animate-pulse")}
       />
-      <LocationHeaderStatus vm={vm} />
+      <LocationHeaderStatus vm={vm} onToggle={handleLocationToggle} />
     </div>
   );
 }
@@ -1061,6 +1079,23 @@ function selectedCountCopy(count: number, emptyCopy: string) {
   return `${count} selected`;
 }
 
+function shareAudienceSelectionCopy(circleCount: number, contactCount: number) {
+  if (!circleCount && !contactCount) {
+    return "Choose one or more Circles or contacts.";
+  }
+
+  const parts: string[] = [];
+  if (circleCount) {
+    parts.push(`${circleCount} ${circleCount === 1 ? "Circle" : "Circles"}`);
+  }
+  if (contactCount) {
+    parts.push(
+      `${contactCount} ${contactCount === 1 ? "contact" : "contacts"}`,
+    );
+  }
+  return `${parts.join(" + ")} selected`;
+}
+
 export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -1069,17 +1104,6 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   const nearbyPrivateCheckIn =
     searchParams.get(FLOW_ACTION_PARAM) === PRIVATE_CHECK_IN_ACTION &&
     searchParams.get(FLOW_SOURCE_PARAM) === NEARBY_CHECK_IN_SOURCE;
-  // Editing emergency contacts from SOS is a detour, not a destination.
-  //
-  // "Edit contacts" opens ?action=sms-contacts&source=sos, which then
-  // redirects to the SMS Circle -- and openCircleDetail pins the hub tab
-  // to "people", because that is where circles live. Closing therefore
-  // returned to the People tab and dropped the person out of the SOS flow
-  // they were part-way through. The source param already rode along; only
-  // the way back never read it. Mirrors nearbyPrivateCheckIn above.
-  const editingSosContacts =
-    searchParams.get(FLOW_ACTION_PARAM) === FLOW_TO_ACTION["circle-detail"] &&
-    searchParams.get(FLOW_SOURCE_PARAM) === SOS_FLOW_SOURCE;
   const nearbyReturnToken = searchParams.get(NEARBY_PRIVATE_RETURN_TOKEN_PARAM);
   const nearbyCheckInReturnHref =
     nearbyPrivateCheckIn && isNearbyPrivateReturnToken(nearbyReturnToken)
@@ -1089,6 +1113,24 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
     resolveLocationHubTab(searchParams.get(LOCATION_HUB_TAB_PARAM)),
   );
   const [flow, setFlow] = useState<FlowKind>("none");
+  const [selectedCircleId, setSelectedCircleId] = useState<string | null>(() =>
+    searchParams.get("circleId"),
+  );
+  const [flowSource, setFlowSource] = useState<string | null>(() =>
+    searchParams.get(FLOW_SOURCE_PARAM),
+  );
+  // Editing emergency contacts from SOS is a detour, not a destination.
+  //
+  // "Edit contacts" opens ?action=circle-detail&source=sos directly, which
+  // used to pin the hub tab to "people", because that is where circles live.
+  // Closing therefore returned to the People tab and dropped the person out
+  // of the SOS flow they were part-way through. The source param already rode
+  // along; only the way back never read it. Mirrors nearbyPrivateCheckIn above.
+  const editingSosContacts =
+    (flow === "circle-detail" ||
+      searchParams.get(FLOW_ACTION_PARAM) === FLOW_TO_ACTION["circle-detail"]) &&
+    (flowSource === SOS_FLOW_SOURCE ||
+      searchParams.get(FLOW_SOURCE_PARAM) === SOS_FLOW_SOURCE);
   // Opening a flow (SOS, Share, Ask, ...) mounts a fresh subtree under
   // whatever scroll offset the Now/People/Links tab was left at -- the
   // app-shell scroll-reset instance only keys on tab identity, never on
@@ -1103,8 +1145,27 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   // re-triggers it (#5430).
   usePageEnterAnimation(flowContainerRef, {
     key: flow,
-    enabled: flow !== "none",
+    // The hub is also a destination: closing a focused flow should settle back
+    // into it with the same page-enter beat used when opening that flow. This
+    // removes the hard cut that made Location feel unlike the One home roster.
+    enabled: true,
   });
+  const liveShareDurationTriggerRef = useRef<HTMLElement | null>(null);
+  const openLiveShareDuration = (
+    grantId: string | undefined,
+    trigger: HTMLElement,
+  ) => {
+    liveShareDurationTriggerRef.current = trigger;
+    vm.onEditLiveShareDurationStart(grantId);
+  };
+  const renderLocationSurface = (children: ReactNode) => (
+    <LocationFeatureRoot
+      vm={vm}
+      liveShareDurationTriggerRef={liveShareDurationTriggerRef}
+    >
+      {children}
+    </LocationFeatureRoot>
+  );
   const focusedCircleMemberInviteId =
     String(searchParams.get("circleInviteId") || "").trim() || null;
   // Router state can settle one paint after a tap. Keep the local focused
@@ -1222,8 +1283,14 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   // been removed from the flows — each action screen shows exactly one back
   // affordance plus its own Cancel/Done control.
   const openFlow = useCallback(
-    (next: Exclude<FlowKind, "none">, source?: string) => {
+    (
+      next: Exclude<FlowKind, "none">,
+      source?: string,
+      navigation: "push" | "replace" = "push",
+    ) => {
       setFlow(next);
+      setSelectedCircleId(null);
+      setFlowSource(source ?? null);
       activeFlowRef.current = next;
       pendingFlowRef.current = next;
       const params = new URLSearchParams(searchParams.toString());
@@ -1235,19 +1302,35 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
         params.delete(FLOW_SOURCE_PARAM);
       }
       params.set(FLOW_ACTION_PARAM, FLOW_TO_ACTION[next]);
-      router.push(`${pathname}?${params.toString()}`, { scroll: false });
+      params.delete("circleId");
+      router[navigation](`${pathname}?${params.toString()}`, { scroll: false });
     },
     [pathname, router, searchParams],
   );
 
   const openCircleDetail = useCallback(
-    (circleId: string, navigation: "push" | "replace" = "push") => {
+    (
+      circleId: string,
+      navigation: "push" | "replace" = "push",
+      source?: string,
+    ) => {
       const next: FlowKind = "circle-detail";
+      setFlow(next);
+      setSelectedCircleId(circleId);
+      setFlowSource(source ?? null);
+      activeFlowRef.current = next;
       pendingFlowRef.current = next;
       const params = new URLSearchParams(searchParams.toString());
       params.set(FLOW_ACTION_PARAM, FLOW_TO_ACTION[next]);
       params.set("circleId", circleId);
-      params.set(LOCATION_HUB_TAB_PARAM, "people");
+      if (source) {
+        params.set(FLOW_SOURCE_PARAM, source);
+      } else {
+        params.delete(FLOW_SOURCE_PARAM);
+      }
+      if (source !== SOS_FLOW_SOURCE) {
+        params.set(LOCATION_HUB_TAB_PARAM, "people");
+      }
       const href = `${pathname}?${params.toString()}`;
       router[navigation](href, { scroll: false });
     },
@@ -1267,9 +1350,11 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
    * and redirecting again. And it waits for the Circle to exist -- provisioning
    * is a network call, and until it answers the old screen is still a working
    * answer to the same question rather than a dead end.
+   *
+   * Must be YOUR OWN system Circle -- see resolveOwnSmsSystemCircleId.
    */
   const smsSystemCircleId = useMemo(
-    () => vm.circles.find((circle) => circle.isSystem)?.id ?? null,
+    () => resolveOwnSmsSystemCircleId(vm.circles),
     [vm.circles],
   );
   // Trusted can grow to thousands of auto-synced connections. It is a useful
@@ -1281,8 +1366,10 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   );
   useEffect(() => {
     if (flow !== "sms-contacts" || !smsSystemCircleId) return;
-    openCircleDetail(smsSystemCircleId, "replace");
-  }, [flow, openCircleDetail, smsSystemCircleId]);
+    const currentSource =
+      flowSource ?? searchParams.get(FLOW_SOURCE_PARAM) ?? undefined;
+    openCircleDetail(smsSystemCircleId, "replace", currentSource);
+  }, [flow, flowSource, openCircleDetail, searchParams, smsSystemCircleId]);
 
   const openShareFlow = useCallback(
     (initialRecipientId?: string) => {
@@ -1310,6 +1397,8 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
         vm.clearNamedCircleShareContext();
       }
       setFlow("none");
+      setSelectedCircleId(null);
+      setFlowSource(null);
       activeFlowRef.current = "none";
       pendingFlowRef.current = "none";
       setShareStep("person");
@@ -1439,6 +1528,8 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
     }
     activeFlowRef.current = desired;
     setFlow((current) => (current === desired ? current : desired));
+    setSelectedCircleId(searchParams.get("circleId"));
+    setFlowSource(searchParams.get(FLOW_SOURCE_PARAM));
     if (desired === "none") {
       setShareStep("person");
       vm.setShareReviewOpen(false);
@@ -1500,7 +1591,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   /* Task flows (full-screen, no local tabs)                           */
   /* ----------------------------------------------------------------- */
   if (flow !== "none") {
-    return (
+    return renderLocationSurface(
       <div
         ref={flowContainerRef}
         className="space-y-6 pb-6"
@@ -1533,7 +1624,13 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           <SosFlow
             vm={vm}
             onClose={() => closeFlow("now")}
-            onEditContacts={() => openFlow("sms-contacts", SOS_FLOW_SOURCE)}
+            onEditContacts={() => {
+              if (smsSystemCircleId) {
+                openCircleDetail(smsSystemCircleId, "push", SOS_FLOW_SOURCE);
+              } else {
+                openFlow("sms-contacts", SOS_FLOW_SOURCE);
+              }
+            }}
           />
         ) : flow === "sms-contacts" ? (
           <SmsContactsFlow
@@ -1575,11 +1672,16 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           />
         ) : flow === "circle-detail" ? (
           <CircleDetailFlow
-            circleId={String(searchParams.get("circleId") || "")}
+            circleId={
+              selectedCircleId ||
+              String(searchParams.get("circleId") || "")
+            }
             currentUserId={vm.userId}
             busy={vm.busy === "namedCircle"}
             onBack={() =>
-              editingSosContacts ? openFlow("sos") : closeFlow("people")
+              editingSosContacts
+                ? openFlow("sos", undefined, "replace")
+                : closeFlow("people")
             }
             onLoad={vm.onLoadNamedCircle}
             onLoadOverview={vm.onLoadNamedCircleOverview}
@@ -1624,6 +1726,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
               vm.clearNamedCircleShareContext();
               openShareFlow();
             }}
+            onEditLiveShareDurationStart={openLiveShareDuration}
             onCollapseGrant={(grantId) =>
               setCollapsedGrantIds((current) => new Set(current).add(grantId))
             }
@@ -1642,14 +1745,20 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           <LocationSettingsFlow
             vm={vm}
             smsContactCount={vm.smsContactUserIds.length}
-            onManageSmsContacts={() => openFlow("sms-contacts")}
+            onManageSmsContacts={() => {
+              if (smsSystemCircleId) {
+                openCircleDetail(smsSystemCircleId, "push");
+              } else {
+                openFlow("sms-contacts");
+              }
+            }}
           />
         ) : // Every FlowKind above is matched, and `none` never reaches here.
         // This used to fall through to the temporary-link screen, so any
         // flow slug nobody had wired up quietly rendered "Share outside your
         // Circle" instead of failing visibly.
         null}
-      </div>
+      </div>,
     );
   }
 
@@ -1708,6 +1817,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           <LocationHubPanel>
             <NowHub
               vm={vm}
+              onEditLiveShareDurationStart={openLiveShareDuration}
               onStartShare={() => {
                 vm.clearNamedCircleShareContext();
                 openShareFlow();
@@ -1756,13 +1866,99 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           </LocationHubPanel>
         </SwipeViews>
       </div>
-    </div>
+    </div>,
   );
 }
 
-/** Quiet text actions used by the reference-style People section headers. */
-const PEOPLE_HEADER_ACTION =
-  "relative !h-auto !min-h-0 !rounded-none !px-0 !py-0 text-[16px] font-normal leading-5 tracking-[-0.24px] after:absolute after:-inset-x-2 after:-inset-y-3 after:content-[''] sm:text-[15px]";
+function LocationFeatureRoot({
+  vm,
+  liveShareDurationTriggerRef,
+  children,
+}: {
+  vm: LocationHubViewModel;
+  liveShareDurationTriggerRef: { current: HTMLElement | null };
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <SettingsPresentationProvider density="compact">
+        {children}
+        <LiveShareDurationDialog
+          vm={vm}
+          triggerRef={liveShareDurationTriggerRef}
+        />
+      </SettingsPresentationProvider>
+    </>
+  );
+}
+
+function LiveShareDurationDialog({
+  vm,
+  triggerRef,
+}: {
+  vm: LocationHubViewModel;
+  triggerRef: { current: HTMLElement | null };
+}) {
+  const grant = vm.liveShareDurationGrantId
+    ? vm.activeOwnerGrants.find(
+        (candidate) => candidate.id === vm.liveShareDurationGrantId,
+      )
+    : vm.liveShare?.stoppableGrantId
+      ? vm.activeOwnerGrants.find(
+          (candidate) => candidate.id === vm.liveShare?.stoppableGrantId,
+        )
+      : null;
+  const title =
+    grant?.durationMode === "until_stopped"
+      ? "Set an end time"
+      : "Change end time";
+
+  return (
+    <Dialog
+      modal
+      open={Boolean(grant && vm.liveShareDurationEditing)}
+      onOpenChange={(open) => {
+        if (!open && !vm.liveShareDurationSaving) {
+          vm.onEditLiveShareDurationCancel();
+        }
+      }}
+    >
+      <DialogContent
+        className="max-w-[min(420px,calc(100%-2rem))] gap-4 rounded-[24px] p-4 sm:max-w-[420px]"
+        showCloseButton={!vm.liveShareDurationSaving}
+        srDescription="Choose how long this live location share should continue."
+        aria-modal="true"
+        aria-busy={vm.liveShareDurationSaving}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const trigger = triggerRef.current;
+          triggerRef.current = null;
+          if (trigger?.isConnected) trigger.focus();
+        }}
+        onEscapeKeyDown={(event) => {
+          if (vm.liveShareDurationSaving) event.preventDefault();
+        }}
+        onPointerDownOutside={(event) => {
+          if (vm.liveShareDurationSaving) event.preventDefault();
+        }}
+      >
+        <DialogHeader className="gap-1 text-left">
+          <DialogTitle className="text-[20px] font-semibold leading-[25px] text-[color:var(--app-primary-label)]">
+            {title}
+          </DialogTitle>
+        </DialogHeader>
+        <LiveShareDurationEditor
+          value={vm.liveShareDurationHours}
+          onChange={vm.setLiveShareDurationHours}
+          onCancel={vm.onEditLiveShareDurationCancel}
+          onSave={vm.onSaveLiveShareDuration}
+          saving={vm.liveShareDurationSaving}
+          surface={false}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 const LOCATION_GROUP_SURFACE =
   "overflow-hidden rounded-[16px] bg-[color:var(--app-primary-surface)] ring-1 ring-inset ring-[color:var(--app-separator)]";
@@ -1787,6 +1983,7 @@ function LocationHubPanel({ children }: { children: ReactNode }) {
 
 function NowHub({
   vm,
+  onEditLiveShareDurationStart,
   onStartShare,
   onCheckIn,
   onSos,
@@ -1798,6 +1995,10 @@ function NowHub({
   onRequestLocation,
 }: {
   vm: LocationHubViewModel;
+  onEditLiveShareDurationStart: (
+    grantId: string | undefined,
+    trigger: HTMLElement,
+  ) => void;
   onStartShare: () => void;
   onCheckIn: () => void;
   onSos: () => void;
@@ -2107,6 +2308,8 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
 }
 
 function LocationHeaderIconTile() {
+  // The tile itself now lives with the header primitive, so RIA's agent
+  // screens draw the same one instead of a second copy of these classes.
   return (
     <span
       aria-hidden="true"
@@ -2168,7 +2371,7 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
                 className="block min-w-0 !text-[15px] !font-semibold !leading-5"
               >
                 {item.title}
-              </ButtonLabel>
+              </RowLabel>
             </span>
           </button>
         ))}
@@ -2352,6 +2555,7 @@ function LocationDetailFlow({
   collapsedGrantIds,
   onRequestLocation,
   onStartShare,
+  onEditLiveShareDurationStart,
   onCollapseGrant,
   onExpandGrant,
 }: {
@@ -2365,6 +2569,7 @@ function LocationDetailFlow({
   /** Opens the share composer AND its flow. Seeding the composer alone
    *  leaves the person on the same screen with nothing visibly changed. */
   onStartShare?: () => void;
+  onEditLiveShareDurationStart: (grantId: string, trigger: HTMLElement) => void;
   onCollapseGrant: (grantId: string) => void;
   onExpandGrant: (grant: OneLocationGrant) => void;
 }) {
@@ -2518,7 +2723,12 @@ function LocationDetailFlow({
     },
     "shared-with-me": {
       title: "Shared with me",
-      description: "People sharing location with you.",
+      description:
+        receivedGrantGroups.length === 1
+          ? "1 person is sharing their location with you."
+          : receivedGrantGroups.length > 1
+            ? `${receivedGrantGroups.length} people are sharing their locations with you.`
+            : "Locations shared with you appear here.",
     },
     "needs-review": {
       title: "Needs review",
@@ -2596,6 +2806,7 @@ function LocationDetailFlow({
                       />
                     ) : null
                   }
+                  stackTrailingOnMobile={Boolean(single)}
                 />
               );
             })}
@@ -2905,13 +3116,19 @@ function ownedUserCircleScopeOptions(
   circles: readonly OneLocationCircleSummary[],
 ): OneLocationCircleSummary[] {
   return circles.filter(
-    (circle) => circle.role === "owner" && circle.systemKind == null,
+    (circle) => circle.role === "owner" && circle.systemKind !== "trusted",
   );
 }
 
 function autoApproveScopeKey(scope: AutoApproveScope | null): string {
   if (!scope) return "";
-  return scope.kind === "circle" ? `circle:${scope.circleId}` : "all_contacts";
+  if (scope.kind === "circle") return `circle:${scope.circleId}`;
+  if (scope.kind === "circles") {
+    // Sorted: two picks of the same Circles in a different tap order are the
+    // same scope, not two different ones the equality check would miss.
+    return `circles:${[...scope.circleIds].sort().join(",")}`;
+  }
+  return "all_contacts";
 }
 
 function autoApproveScopeEqual(
@@ -2919,6 +3136,27 @@ function autoApproveScopeEqual(
   right: AutoApproveScope | null,
 ): boolean {
   return autoApproveScopeKey(left) === autoApproveScopeKey(right);
+}
+
+/** The Circle ids a scope covers, regardless of whether it is the original
+ * single-Circle shape or the multi-Circle one -- one read path for both. */
+function autoApproveScopeCircleIds(scope: AutoApproveScope | null): string[] {
+  if (scope?.kind === "circle") return [scope.circleId];
+  if (scope?.kind === "circles") return scope.circleIds;
+  return [];
+}
+
+/** Toggle one Circle in/out of a scope's selection, collapsing to `null`
+ * (no scope) rather than an empty "circles" scope when the last one clears. */
+function toggleAutoApproveCircle(
+  scope: AutoApproveScope | null,
+  circleId: string,
+): AutoApproveScope | null {
+  const current = autoApproveScopeCircleIds(scope);
+  const next = current.includes(circleId)
+    ? current.filter((id) => id !== circleId)
+    : [...current, circleId];
+  return next.length ? { kind: "circles", circleIds: next } : null;
 }
 
 function scopeMemberCountLabel(count: number): string {
@@ -2941,28 +3179,56 @@ function LocationSettingsFlow({
     [vm.circles],
   );
   const autoApproveScope = vm.autoApproveScope;
-  const selectedCircle =
-    autoApproveScope?.kind === "circle"
-      ? ownedCircles.find((circle) => circle.id === autoApproveScope.circleId)
-      : null;
+  // Only Circles the person still owns count -- one may have been deleted
+  // since the rule was saved, and a stale id must not draw a blank row.
+  const activeCircles = useMemo(() => {
+    const ids = new Set(autoApproveScopeCircleIds(autoApproveScope));
+    return ownedCircles.filter((circle) => ids.has(circle.id));
+  }, [autoApproveScope, ownedCircles]);
   const activeScope =
     autoApproveScope?.kind === "all_contacts"
       ? autoApproveScope
-      : selectedCircle && autoApproveScope?.kind === "circle"
+      : activeCircles.length
         ? autoApproveScope
         : null;
   const activeScopeLabel = !vm.autoApproveRequestsEnabled
     ? "Choose a Circle or all contacts."
     : activeScope?.kind === "all_contacts"
       ? "All contacts"
-      : selectedCircle
-        ? selectedCircle.name
-        : "Choose another scope.";
+      : activeCircles.length === 1
+        ? (activeCircles[0]?.name ?? "Choose another scope.")
+        : activeCircles.length > 1
+          ? `${activeCircles.length} Circles`
+          : "Choose another scope.";
   const primaryScopeAction = vm.autoApproveRequestsEnabled ? "Save" : "Turn on";
   const allContactsScope = useMemo<AutoApproveScope>(
     () => ({ kind: "all_contacts" }),
     [],
   );
+  const draftCircleIds = useMemo(
+    () => autoApproveScopeCircleIds(draftScope),
+    [draftScope],
+  );
+  const draftCircles = useMemo(
+    () => ownedCircles.filter((circle) => draftCircleIds.includes(circle.id)),
+    [ownedCircles, draftCircleIds],
+  );
+  const allDraftCirclesSelected =
+    ownedCircles.length > 0 &&
+    draftCircleIds.length === ownedCircles.length &&
+    ownedCircles.every((circle) => draftCircleIds.includes(circle.id));
+  const toggleAllDraftCircles = useCallback(() => {
+    setDraftScope(
+      allDraftCirclesSelected
+        ? null
+        : ownedCircles.length
+          ? {
+              kind: "circles",
+              circleIds: ownedCircles.map((circle) => circle.id),
+            }
+          : null,
+    );
+  }, [allDraftCirclesSelected, ownedCircles]);
 
   const openScopeSheet = useCallback(() => {
     setDraftScope(vm.autoApproveRequestsEnabled ? activeScope : null);
@@ -3031,9 +3297,7 @@ function LocationSettingsFlow({
           <SettingsRow
             title="Emergency contacts"
             trailing={
-              <TrailingValue as="span">
-                {smsContactCount}
-              </TrailingValue>
+              <TrailingValue as="span">{smsContactCount}</TrailingValue>
             }
             onClick={onManageSmsContacts}
             chevron
@@ -3058,7 +3322,7 @@ function LocationSettingsFlow({
               Auto-approve for
             </DialogTitle>
             <DialogDescription className="ui-text-page-subtitle">
-              Choose one.
+              All contacts, or any combination of your Circles.
             </DialogDescription>
           </DialogHeader>
 
@@ -3071,26 +3335,34 @@ function LocationSettingsFlow({
 
             {ownedCircles.length ? (
               <div className="space-y-2">
-                <SectionLabel as="p" className="px-1">
-                  Circles
-                </SectionLabel>
+                <div className="flex items-center justify-between gap-3 px-1">
+                  <SectionLabel as="p" compact>
+                    Circles
+                  </SectionLabel>
+                  <button
+                    type="button"
+                    onClick={toggleAllDraftCircles}
+                    className="press-scale text-[13px] font-semibold text-[color:var(--app-accent)]"
+                  >
+                    {allDraftCirclesSelected ? "Clear all" : "Select all"}
+                  </button>
+                </div>
                 <div className="overflow-hidden rounded-[18px] bg-[color:var(--app-card-surface-default-solid)] ring-1 ring-[color:var(--app-separator)]">
-                  {ownedCircles.map((circle) => {
-                    const scope: AutoApproveScope = {
-                      kind: "circle",
-                      circleId: circle.id,
-                    };
-                    return (
-                      <AutoApproveScopeOption
-                        key={circle.id}
-                        title={circle.name}
-                        description={scopeMemberCountLabel(circle.memberCount)}
-                        selected={autoApproveScopeEqual(draftScope, scope)}
-                        onSelect={() => setDraftScope(scope)}
-                        inset
-                      />
-                    );
-                  })}
+                  {ownedCircles.map((circle) => (
+                    <AutoApproveScopeOption
+                      key={circle.id}
+                      title={circle.name}
+                      description={scopeMemberCountLabel(circle.memberCount)}
+                      selected={draftCircleIds.includes(circle.id)}
+                      onSelect={() =>
+                        setDraftScope((current) =>
+                          toggleAutoApproveCircle(current, circle.id),
+                        )
+                      }
+                      multi
+                      inset
+                    />
+                  ))}
                 </div>
               </div>
             ) : null}
@@ -3100,11 +3372,9 @@ function LocationSettingsFlow({
             <p className="ui-text-helper-text">
               {draftScope.kind === "all_contacts"
                 ? "New requests from current and future contacts will be approved automatically."
-                : `New requests from current and future members of ${
-                    ownedCircles.find(
-                      (circle) => circle.id === draftScope.circleId,
-                    )?.name ?? "this Circle"
-                  } will be approved automatically.`}{" "}
+                : draftCircles.length === 1
+                  ? `New requests from current and future members of ${draftCircles[0]?.name ?? "this Circle"} will be approved automatically.`
+                  : `New requests from current and future members of these ${draftCircles.length} Circles will be approved automatically.`}{" "}
               Requests already waiting still need your answer.
             </p>
           ) : (
@@ -3146,7 +3416,7 @@ function LocationSettingSection({
 }) {
   return (
     <section className="w-full">
-      <SectionLabel as="p" className="mb-2 px-[6px]">
+      <SectionLabel as="p" compact className="mb-2 px-[6px]">
         {title}
       </SectionLabel>
       {children}
@@ -3160,17 +3430,21 @@ function AutoApproveScopeOption({
   selected,
   onSelect,
   inset = false,
+  multi = false,
 }: {
   title: string;
   description?: string;
   selected: boolean;
   onSelect: () => void;
   inset?: boolean;
+  /** Checkbox semantics (independently toggled, several may be selected)
+   * instead of the default radio semantics (picking one clears the rest). */
+  multi?: boolean;
 }) {
   return (
     <button
       type="button"
-      role="radio"
+      role={multi ? "checkbox" : "radio"}
       aria-checked={selected}
       onClick={onSelect}
       className={cn(
@@ -3193,7 +3467,8 @@ function AutoApproveScopeOption({
       </span>
       <span
         className={cn(
-          "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors",
+          "flex h-6 w-6 shrink-0 items-center justify-center border transition-colors",
+          multi ? "rounded-[7px]" : "rounded-full",
           selected
             ? "border-[color:var(--app-accent)] bg-[color:var(--app-accent)] text-white"
             : "border-[color:var(--app-separator)] bg-transparent text-transparent",
@@ -3278,7 +3553,7 @@ function StopGrantTextButton({
   return (
     <button
       type="button"
-      className="inline-flex min-h-11 items-center justify-center rounded-full px-2 text-[15px] font-medium leading-[20px] text-[#FF3B30] transition-colors hover:text-[#D70015] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
+      className={ACTIVE_SHARE_STOP_CLASSNAME}
       onClick={() => onStopGrant(grantId)}
       disabled={stopping}
     >
@@ -3430,6 +3705,7 @@ function countdownAsLeft(label: string | null | undefined): string | null {
 function isGenericConnectionCopy(value: string): boolean {
   return (
     value === "Ready for private location sharing" ||
+    /^in your contacts$/i.test(value) ||
     /existing trust or sharing history/i.test(value)
   );
 }
@@ -4118,11 +4394,12 @@ export function PeopleHub({
           // second tap is refused rather than queued -- single-flight, and
           // visibly so. Removing the row instead would make the control
           // disappear mid-action.
-          label: vm.busy === "contactSync"
-            ? "Finding contacts…"
-            : vm.contactSyncSummary
-              ? "Sync contacts again"
-              : "Find contacts",
+          label:
+            vm.busy === "contactSync"
+              ? "Finding contacts…"
+              : vm.contactSyncSummary
+                ? "Sync contacts again"
+                : "Find contacts",
           onSelect: () => vm.onSyncContacts(),
           disabled: vm.busy === "contactSync",
           busy: vm.busy === "contactSync",
@@ -4396,11 +4673,11 @@ function PublicLinkActionRows({
   };
 
   return (
-    <div className="space-y-3 px-4 pb-4 pt-2">
+    <div className="space-y-2.5 px-4 pb-4 pt-1.5">
       <div className="grid grid-cols-1 gap-2 min-[340px]:grid-cols-2">
         <Button
           onClick={onShare}
-          className="ui-text-button-label h-12 rounded-[15px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90"
+          className="ui-text-button-label h-11 rounded-[13px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90"
         >
           <Share2 className="mr-1.5 h-4 w-4" />
           Share
@@ -4410,7 +4687,7 @@ function PublicLinkActionRows({
           onClick={handleCopy}
           disabled={copyBusy}
           aria-busy={copyBusy || undefined}
-          className="ui-text-button-label h-12 rounded-[15px]"
+          className="ui-text-button-label h-11 rounded-[13px]"
         >
           <Copy className="mr-1.5 h-4 w-4" />
           {copyBusy ? "Copying…" : copyLabel}
@@ -4503,7 +4780,7 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
   const hasShareableLink = Boolean(vm.publicInviteUrl);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <SettingsGroup
         title="Temporary link"
         separatorInset
@@ -4754,6 +5031,17 @@ function ShareFlow({
   }, [onEnterShareConfirm, step]);
 
   const filtered = vm.visibleShareRecipients;
+  const selectedCircleByRecipientId = new globalThis.Map<
+    string,
+    CircleRecipientSelection
+  >();
+  for (const selection of vm.selectedShareCircleSelections) {
+    for (const target of selection.ready) {
+      if (!selectedCircleByRecipientId.has(target.recipient.userId)) {
+        selectedCircleByRecipientId.set(target.recipient.userId, selection);
+      }
+    }
+  }
   /**
    * Who can already see you, by recipient — the same `activeOwnerGrants` the
    * Active shares screen lists, read here for the first time.
@@ -4797,13 +5085,15 @@ function ShareFlow({
     r: OneLocationRecipient,
     activeGrant: OneLocationGrant | undefined,
   ) => {
-    const selected = vm.selectedRecipientIds.includes(r.userId);
+    const selected = vm.selectedDirectRecipientIds.includes(r.userId);
+    const includedThroughCircle = selectedCircleByRecipientId.get(r.userId);
     const ready = vm.isRecipientShareReady(r);
     const label = vm.recipientLabel(r);
     return (
       <SettingsRow
         key={r.userId}
         density="compact"
+        textOverflow="truncate"
         disabled={!ready}
         onClick={
           ready
@@ -4813,7 +5103,13 @@ function ShareFlow({
         ariaPressed={ready ? selected : undefined}
         ariaLabel={
           ready
-            ? `${selected ? "Deselect" : "Select"} ${label} for private sharing`
+            ? selected
+              ? includedThroughCircle
+                ? `Remove ${label} as an individual contact; they will still be included through ${includedThroughCircle.circle.name}`
+                : `Deselect ${label} for private sharing`
+              : includedThroughCircle
+                ? `Also select ${label} as an individual contact; already included through ${includedThroughCircle.circle.name}`
+                : `Select ${label} for private sharing`
             : undefined
         }
         leading={
@@ -4844,11 +5140,29 @@ function ShareFlow({
             ) : (
               <ShareCountdownText expiresAt={activeGrant.expiresAt} />
             )
+          ) : includedThroughCircle ? (
+            `Included through ${includedThroughCircle.circle.name}`
           ) : ready ? undefined : (
             "Invite them first"
           )
         }
-        trailing={ready ? <SelectionDot selected={selected} /> : undefined}
+        trailing={
+          ready ? (
+            selected ? (
+              <SelectionDot selected />
+            ) : includedThroughCircle ? (
+              <span
+                aria-label={`Included through ${includedThroughCircle.circle.name}`}
+                className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-full bg-[color:var(--app-accent-surface)] px-2 text-[11px] font-semibold text-[color:var(--app-accent)]"
+              >
+                <UsersRound className="h-3.5 w-3.5" aria-hidden="true" />
+                Circle
+              </span>
+            ) : (
+              <SelectionDot selected={false} />
+            )
+          ) : undefined
+        }
       />
     );
   };
@@ -4873,33 +5187,32 @@ function ShareFlow({
    * Reuses the `nowMs` this step already ticks every 30 seconds, so a screen
    * left open cannot quote a remaining time that has since run out.
    */
-  const shareReplacementRows: ShareReplacementRow[] = shareReplacementsLosingTime(
-    {
+  const shareReplacementRows: ShareReplacementRow[] =
+    shareReplacementsLosingTime({
       recipientUserIds: selectedReady.map((recipient) => recipient.userId),
       activeOwnerGrants: vm.activeOwnerGrants,
       durationValue: vm.shareDurationHours,
       nowMs,
-    },
-  ).map(({ recipientUserId, grant, untilStopped }) => {
-    const recipient = recipientById.get(recipientUserId);
-    return {
-      recipientUserId,
-      label: recipient ? vm.recipientLabel(recipient) : "This person",
-      untilStopped,
-      // The two vocabularies this app already owns for the two kinds of live
-      // share: "Until you stop" is what every surface that lists a share calls
-      // an open-ended one, and `formatLocationRemaining` is what the approvals
-      // card, the feed and the Consent Manager call the time left on a timed
-      // one. A warning about a share must not be the one place that words it
-      // differently.
-      remainingLabel: untilStopped
-        ? "Until you stop"
-        : (formatLocationRemaining(
-            parseTimestamp(grant.expiresAt) ?? nowMs,
-            nowMs,
-          ) ?? "less than a minute more"),
-    };
-  });
+    }).map(({ recipientUserId, grant, untilStopped }) => {
+      const recipient = recipientById.get(recipientUserId);
+      return {
+        recipientUserId,
+        label: recipient ? vm.recipientLabel(recipient) : "This person",
+        untilStopped,
+        // The two vocabularies this app already owns for the two kinds of live
+        // share: "Until you stop" is what every surface that lists a share calls
+        // an open-ended one, and `formatLocationRemaining` is what the approvals
+        // card, the feed and the Consent Manager call the time left on a timed
+        // one. A warning about a share must not be the one place that words it
+        // differently.
+        remainingLabel: untilStopped
+          ? "Until you stop"
+          : (formatLocationRemaining(
+              parseTimestamp(grant.expiresAt) ?? nowMs,
+              nowMs,
+            ) ?? "less than a minute more"),
+      };
+    });
   const shareReplacementDurationLabel = formatLocationDurationLabel(
     resolveShareDurationHours(vm.shareDurationHours),
   );
@@ -4923,18 +5236,36 @@ function ShareFlow({
     shareNoteLength > 0 ||
     shareNoteLength >= ONE_LOCATION_SHARE_NOTE_MAX_LENGTH - 20 ||
     shareNoteLimitExceeded;
-  // Picking a Circle selects its ready members in the list below, and those
-  // rows remain individually deselectable. Once one is turned off the recipients
-  // are no longer that Circle, so the Circle row stops reading as selected.
+  // Circles stay atomic in the picker. Their recipients are expanded only for
+  // review and encrypted delivery.
   const shareableCircles = useMemo(
     () => vm.circles.filter((circle) => circle.systemKind !== "trusted"),
     [vm.circles],
   );
-  const shareCircleFullySelected = isCircleSelectionFullySelected(
-    vm.selectedShareCircleSelection,
-    vm.selectedRecipientIds,
-  );
+  const shareCircleGroups = useMemo(() => {
+    const ownedSystem: OneLocationCircleSummary[] = [];
+    const ownedNamed: OneLocationCircleSummary[] = [];
+    const joined: OneLocationCircleSummary[] = [];
 
+    for (const circle of shareableCircles) {
+      if (circle.role !== "owner") {
+        joined.push(circle);
+      } else if (circle.systemKind === "sms" || circle.isSystem) {
+        ownedSystem.push(circle);
+      } else {
+        ownedNamed.push(circle);
+      }
+    }
+
+    return [
+      {
+        key: "owned",
+        title: "Your circles",
+        circles: [...ownedSystem, ...ownedNamed],
+      },
+      { key: "joined", title: "Joined circles", circles: joined },
+    ].filter((group) => group.circles.length > 0);
+  }, [shareableCircles]);
   // Step 2 of 2 — "Details" and the old separate "Consent check" merged.
   //
   // They were split as set-then-confirm, which put a screen transition between
@@ -4966,6 +5297,20 @@ function ShareFlow({
             is the design explaining itself. */}
         <TaskFlowHeader eyebrow="Step 2 of 2" title="Ready to share?" />
 
+        {vm.shareError ? (
+          <div
+            role="alert"
+            className="rounded-[var(--app-radius-control)] border border-destructive/20 bg-destructive/[0.06] px-4 py-3"
+          >
+            <p className="text-[14px] font-semibold leading-[19px] text-foreground">
+              Sharing didn’t start
+            </p>
+            <p className="mt-0.5 text-[13px] leading-[18px] text-muted-foreground">
+              {vm.shareError}
+            </p>
+          </div>
+        ) : null}
+
         <SectionCard className="p-5 sm:p-6">
           <div className="space-y-6">
             {/* The absolute end time is the part people actually reason
@@ -4982,16 +5327,14 @@ function ShareFlow({
               hint={shareEndsAtLabel(vm.shareDurationHours, nowMs)}
               presentation="ladder"
               untilStopValue="until_stopped"
+              compact
             />
             {/* space-y-2.5 matches DurationSelector's own label→control gap
                 above. The two label/field pairs sit in the same card, so an
                 8px gap under one and 10px under the other reads as a
                 mistake. */}
             <div className="space-y-2.5">
-              <FormLabel
-                as="label"
-                htmlFor="one-location-share-note"
-              >
+              <FormLabel as="label" htmlFor="one-location-share-note">
                 Optional note
               </FormLabel>
               <div className="relative">
@@ -5065,7 +5408,7 @@ function ShareFlow({
           newDurationLabel={shareReplacementDurationLabel}
         />
 
-        <div className="space-y-2.5">
+        <div className={SHARE_CONFIRM_ACTIONS_CLASSNAME}>
           <Button
             // Unchanged for every share that takes nothing away. When one
             // would, the tap opens the confirm dialog instead of posting, and
@@ -5080,7 +5423,7 @@ function ShareFlow({
             disabled={!vm.canShare || shareNoteLimitExceeded}
             isLoading={vm.busy === "share"}
             data-voice-control-id="one-location-confirm-share"
-            className="h-[52px] w-full rounded-2xl bg-[color:var(--app-accent)] text-[17px] font-semibold leading-[22px] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90 disabled:bg-black/10 disabled:text-black/35 disabled:opacity-100 dark:disabled:bg-white/10 dark:disabled:text-white/35"
+            className={SHARE_CONFIRM_PRIMARY_CTA_CLASSNAME}
           >
             Start sharing
           </Button>
@@ -5114,9 +5457,9 @@ function ShareFlow({
       <TaskFlowHeader
         eyebrow="Step 1 of 2"
         title="Who can see you?"
-        description={selectedCountCopy(
-          selectedReady.length,
-          "Choose a Circle or contact.",
+        description={shareAudienceSelectionCopy(
+          vm.selectedShareCircleSelections.length,
+          vm.selectedDirectRecipientIds.length,
         )}
       />
       {/* Trusted is not a group you share with.
@@ -5133,52 +5476,51 @@ function ShareFlow({
        * invite step already filters the same way. Only this picker is
        * narrowed: the People tab, SOS contacts and the SMS flow still list
        * every Circle. */}
-      {shareableCircles.length ? (
+      {shareCircleGroups.map((group) => (
         <SettingsGroup
-          title="Circles"
+          key={group.key}
+          title={group.title}
           separatorInset
           className="[&>div:first-child]:mt-0"
+          testId={`one-location-share-circles-${group.key}`}
         >
-          {[...shareableCircles]
-            .sort((a, b) => (a.name === "SMS Circle" ? 1 : b.name === "SMS Circle" ? -1 : 0))
-            .map((circle) => {
-            const selected =
-              vm.selectedShareCircleSelection?.circle.id === circle.id &&
-              shareCircleFullySelected;
-            const circleRole = roleClasses("people");
-            return (
-              <SettingsRow
-                key={circle.id}
-                density="compact"
-                disabled={vm.busy === "shareCircle"}
-                onClick={() => void vm.onSelectShareCircle(circle.id)}
-                ariaPressed={selected}
-                ariaLabel={`${selected ? "Deselect" : "Select"} the ${circle.name} Circle`}
-                leading={
-                  <span
-                    className={cn(
-                      "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-                      circleRole.tile,
-                      circleRole.glyph,
-                    )}
-                  >
-                    <UsersRound className="h-[18px] w-[18px]" />
-                  </span>
-                }
-                title={circle.name}
-                description={
-                  vm.busy === "shareCircle"
-                    ? "Loading…"
-                    : selected
-                      ? `${selectedReady.length} selected`
-                      : circleMemberCountLabel(circle.memberCount)
-                }
-                trailing={<SelectionDot selected={selected} />}
-              />
-            );
-          })}
+          {group.circles.map((circle) => {
+              const selected = vm.selectedShareCircleSelections.some(
+                (selection) => selection.circle.id === circle.id,
+              );
+              const pending = vm.pendingShareCircleIds.includes(circle.id);
+              const circleSelectionDescription = circleMemberCountLabel(
+                circle.memberCount,
+              );
+              const circleRole = roleClasses("people");
+              return (
+                <SettingsRow
+                  key={circle.id}
+                  density="compact"
+                  textOverflow="truncate"
+                  disabled={pending}
+                  onClick={() => void vm.onSelectShareCircle(circle.id)}
+                  ariaPressed={selected}
+                  ariaLabel={`${selected ? "Deselect" : "Select"} the ${circle.name} Circle, ${circleSelectionDescription}`}
+                  leading={
+                    <span
+                      className={cn(
+                        "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
+                        circleRole.tile,
+                        circleRole.glyph,
+                      )}
+                    >
+                      <UsersRound className="h-[18px] w-[18px]" />
+                    </span>
+                  }
+                  title={circle.name}
+                  description={pending ? "Adding…" : circleSelectionDescription}
+                  trailing={<SelectionDot selected={selected} />}
+                />
+              );
+            })}
         </SettingsGroup>
-      ) : null}
+      ))}
       <PersonSearchInput
         value={vm.shareRecipientSearch}
         onChange={vm.setShareRecipientSearch}
@@ -5220,6 +5562,14 @@ function ShareFlow({
           ) : null}
           {notSharing.length ? (
             <SettingsGroup
+              title={
+                <span className="flex w-full items-center justify-between gap-4">
+                  <span>Not sharing</span>
+                  <span className="font-normal text-muted-foreground">
+                    {notSharing.length}
+                  </span>
+                </span>
+              }
               testId="one-location-share-people"
               separatorInset
               className="[&>div:first-child]:mt-0"
@@ -5249,10 +5599,18 @@ function ShareFlow({
       <div className={STICKY_FLOW_ACTION_CLASSNAME}>
         <Button
           onClick={() => setStep("details")}
-          disabled={!selectedReady.length}
+          disabled={
+            !selectedReady.length ||
+            Boolean(vm.pendingShareCircleIds.length) ||
+            vm.shareDeliveryPending
+          }
           className="h-[52px] w-full rounded-2xl bg-[color:var(--app-accent)] text-[17px] font-semibold leading-[22px] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90 disabled:bg-black/10 disabled:text-black/35 disabled:opacity-100 dark:disabled:bg-white/10 dark:disabled:text-white/35"
         >
-          Continue
+          {vm.shareDeliveryPending
+            ? "Sharing…"
+            : vm.pendingShareCircleIds.length
+              ? "Adding Circle…"
+              : "Continue"}
         </Button>
       </div>
     </div>
@@ -5323,7 +5681,9 @@ function LiveShareDurationEditor({
       */}
       <DurationSelector
         value={value}
-        onChange={onChange}
+        onChange={(next) => {
+          if (!saving) onChange(next);
+        }}
         presentation="ladder"
         rungs={CHANGE_TIME_DURATION_LADDER}
         untilStopValue="until_stopped"
@@ -5341,6 +5701,7 @@ function LiveShareDurationEditor({
           variant="ghost"
           className="h-11 rounded-full"
           onClick={onCancel}
+          disabled={saving}
           data-testid="one-location-live-share-duration-cancel"
         >
           Cancel
@@ -5676,7 +6037,8 @@ function AskFlow({
   //
   // Coarse on purpose: these labels move in minutes, so a 30s tick keeps them
   // honest without re-rendering a list of people every second.
-  const [statusNowMs, setStatusNowMs] = useState(() => Date.now());
+  // Reuse the page clock, which refreshes on foreground as well as its timer.
+  const statusNowMs = vm.nowMs;
 
   /**
    * Every live grant with each owner, indexed once.
@@ -5801,20 +6163,22 @@ function AskFlow({
    */
   const hasTimeRelativeRow = useMemo(
     () =>
-      [...statusByRecipient.values()].some(
-        (status) =>
-          status.statusLabel !== undefined ||
-          status.pendingRequestId !== undefined ||
-          status.tone !== "ready",
+      rosterRecipientRows.filter(
+        (row) => statusByRecipient.get(row.recipient.userId)?.selectable,
       ),
-    [statusByRecipient],
+    [rosterRecipientRows, statusByRecipient],
   );
-
-  useEffect(() => {
-    if (!hasTimeRelativeRow) return;
-    const timer = window.setInterval(() => setStatusNowMs(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, [hasTimeRelativeRow]);
+  const askRecipientRows = searchActive
+    ? rosterRecipientRows
+    : eligibleRecipientRows;
+  const pendingNewRequestCount = useMemo(
+    () =>
+      vm.requestedByMe.filter(
+        (request) =>
+          isLocationRequestPending(request, statusNowMs) && !request.extendsGrantId,
+      ).length,
+    [statusNowMs, vm.requestedByMe],
+  );
 
   /**
    * The extension already waiting on each live grant, indexed once.
@@ -5826,13 +6190,13 @@ function AskFlow({
   const pendingExtensionByGrantId = useMemo(() => {
     const byGrantId = new globalThis.Map<string, OneLocationAccessRequest>();
     for (const request of vm.requestedByMe) {
-      if (request.status !== "pending" || !request.extendsGrantId) continue;
+      if (!isLocationRequestPending(request, statusNowMs) || !request.extendsGrantId) continue;
       if (!byGrantId.has(request.extendsGrantId)) {
         byGrantId.set(request.extendsGrantId, request);
       }
     }
     return byGrantId;
-  }, [vm.requestedByMe]);
+  }, [statusNowMs, vm.requestedByMe]);
 
   const isRequestFormValid = vm.selectedRequestOwnerIds.length > 0;
   const sendingRequest = vm.busy === "request";
@@ -5917,10 +6281,7 @@ function AskFlow({
             />
             {reason === "Other" ? (
               <div className="space-y-2.5">
-                <FormLabel
-                  as="label"
-                  htmlFor="one-location-ask-other-reason"
-                >
+                <FormLabel as="label" htmlFor="one-location-ask-other-reason">
                   Add reason
                 </FormLabel>
                 <textarea

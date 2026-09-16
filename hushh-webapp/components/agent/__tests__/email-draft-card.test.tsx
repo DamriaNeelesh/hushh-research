@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EmailDraftCard } from "@/components/agent/email-draft-card";
 import { EmailDeliveryService } from "@/lib/services/email-delivery-service";
+import { ConnectionsService } from "@/lib/services/connections-service";
 
 vi.mock("@/lib/services/email-delivery-service", async () => {
   const actual = await vi.importActual<
@@ -34,6 +35,42 @@ describe("EmailDraftCard", () => {
       firebaseIdToken: "firebase-token",
       vaultOwnerToken: "vault-owner-token",
     });
+    vi.spyOn(ConnectionsService, "listConnections").mockResolvedValue([]);
+  });
+
+  it("fills the recipient from a connected person without bypassing review", async () => {
+    vi.mocked(ConnectionsService.listConnections).mockResolvedValue([
+      {
+        connectionId: "connection-1",
+        userId: "user-1",
+        displayName: "Pat Example",
+        photoUrl: null,
+        email: "pat@example.com",
+        createdAt: null,
+      },
+    ]);
+
+    render(
+      <EmailDraftCard
+        initialInstruction="Draft this"
+        getAuth={getAuth}
+        onRequireVault={vi.fn()}
+        onDismiss={vi.fn()}
+        onSent={vi.fn()}
+      />,
+    );
+
+    const recipient = screen.getByTestId("one-email-draft-to");
+    fireEvent.focus(recipient);
+
+    const connection = await screen.findByRole("button", {
+      name: /Pat Example pat@example\.com/i,
+    });
+    fireEvent.click(connection);
+
+    expect(recipient).toHaveValue("pat@example.com");
+    expect(EmailDeliveryService.prepare).not.toHaveBeenCalled();
+    expect(EmailDeliveryService.send).not.toHaveBeenCalled();
   });
 
   it("sends the visible draft from one explicit Send click", async () => {
@@ -82,6 +119,52 @@ describe("EmailDraftCard", () => {
     );
     expect(EmailDeliveryService.prepare).toHaveBeenCalledTimes(1);
     expect(onSent).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the reviewed composer for a source-bound Gmail reply", async () => {
+    const send = vi.fn().mockResolvedValue({ outcomeUnknown: false });
+    render(
+      <EmailDraftCard
+        initialInstruction="Reply to this Gmail KYC request"
+        sourceBoundContext="This request asks for: full name and educational institution."
+        initialDraft={{
+          to: "",
+          cc: "",
+          bcc: "",
+          subject: "",
+          body: "Hello,\n\nMy name is **Akshat Kumar**.",
+        }}
+        getAuth={getAuth}
+        onRequireVault={vi.fn()}
+        onDismiss={vi.fn()}
+        onSent={vi.fn()}
+        sourceBoundReply={{ send }}
+      />,
+    );
+
+    expect(screen.getByTestId("one-email-draft-source-bound-notice")).toHaveTextContent(
+      "original Gmail thread",
+    );
+    expect(screen.getByTestId("one-email-draft-source-bound-notice")).toHaveTextContent(
+      "full name and educational institution",
+    );
+    expect(screen.queryByTestId("one-email-draft-to")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("one-email-draft-send"));
+
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        firebaseIdToken: "firebase-token",
+        vaultOwnerToken: "vault-owner-token",
+        draft: expect.objectContaining({
+          body: expect.stringContaining("Hello"),
+          htmlBody: expect.stringContaining("<strong>Akshat Kumar</strong>"),
+        }),
+      }),
+    );
+    expect(EmailDeliveryService.prepare).not.toHaveBeenCalled();
+    expect(EmailDeliveryService.send).not.toHaveBeenCalled();
   });
 
   it("shows clear draft progress instead of a disabled empty composer", async () => {

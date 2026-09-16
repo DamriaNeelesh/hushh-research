@@ -47,11 +47,17 @@ export function TopShellTabs({
   const router = useRouter();
   const interactionIntents = useInteractionIntents();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  // Query tabs swap content inside one route. Route-backed workspaces (RIA)
-  // own distinct durable screens and therefore use the single full route
-  // envelope for both taps and swipes.
+  // Query tabs swap content inside one route. RIA retains durable pathname
+  // routes, but its `/ria` layout owns a persistent identity shell, so its
+  // tab switch uses the same no-envelope contextual commit as Location. The
+  // route page below that shell may change; the shell itself must not fade or
+  // translate with it.
   const transitionMode =
-    tabSet.queryParam === null ? "full" : "contextual";
+    tabSet.id === "ria"
+      ? "contextual"
+      : tabSet.queryParam === null
+        ? "full"
+        : "contextual";
   const optimisticValue = useMemo(() => {
     const activeIntent = [...interactionIntents]
       .reverse()
@@ -228,6 +234,7 @@ export function TopShellTabs({
               tabIndex={isActive ? 0 : -1}
               className={cn(
                 "relative z-10 flex h-full flex-1 items-center justify-center px-3 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-inset",
+                usesCompactLabels && "min-w-0 px-0.5 sm:px-3",
               )}
               onClick={() => selectIndex(index, false)}
               onKeyDown={(event) => {

@@ -28,7 +28,10 @@ from hushh_mcp.services.connection_graph_service import (
     lock_connection_graph_users,
 )
 from hushh_mcp.services.contact_sync_contract import (
-    CONTACT_SYNC_CONSENT_CONTRACT_VERSION,
+    CONTACT_SYNC_MATCH_POLICY_VERSION,
+    CONTACT_SYNC_PREFERENCE_DEFAULT,
+    CONTACT_SYNC_PREFERENCE_ENABLED,
+    contact_sync_preference_state,
 )
 from hushh_mcp.services.people_search_sql import people_query_match_params
 from hushh_mcp.services.requester_identity import label_from_identity_row
@@ -196,6 +199,44 @@ def _default_notifier(
     )
 
 
+def _default_cancel_notifier(
+    *,
+    addressee_user_id: str,
+    requester_user_id: str,
+    connection_request_id: str | None = None,
+) -> None:
+    from hushh_mcp.services.push_notifications import send_connection_request_cancelled_push
+
+    send_connection_request_cancelled_push(
+        addressee_user_id,
+        requester_user_id,
+        connection_request_id=connection_request_id,
+    )
+
+
+def _default_resolution_notifier(
+    *,
+    requester_user_id: str,
+    resolver_user_id: str,
+    accepted: bool,
+    connection_request_id: str | None = None,
+) -> None:
+    """Best-effort push telling the requester their request was resolved.
+
+    `accept_request`/`reject_request` had no notifier call at all before this
+    -- the requester's only signal was an unpushed Feed row, so they learned
+    the outcome from the Feed's foreground poll (45s) or their next app open.
+    """
+    from hushh_mcp.services.push_notifications import send_connection_request_resolved_push
+
+    send_connection_request_resolved_push(
+        requester_user_id,
+        resolver_user_id,
+        accepted=accepted,
+        connection_request_id=connection_request_id,
+    )
+
+
 def _default_scope_entries_lookup(owner_user_id: str) -> list[dict[str, Any]]:
     """Read discoverable scope metadata only; never materialized information."""
     from hushh_mcp.consent.scope_generator import DynamicScopeGenerator
@@ -212,12 +253,20 @@ class ConnectionsService:
         directory_visible: Callable[[str, str], bool] | None = None,
         scope_entries_lookup: Callable[[str], list[dict[str, Any]]] | None = None,
         notifier: Callable[..., Any] | None = None,
+        cancel_notifier: Callable[..., Any] | None = None,
+        resolution_notifier: Callable[..., Any] | None = None,
     ) -> None:
         self._directory_lookup = directory_lookup or _default_directory_lookup
         self._directory_search = directory_search or _default_directory_search
         self._directory_visible = directory_visible or _default_directory_visible
         self._scope_entries_lookup = scope_entries_lookup or _default_scope_entries_lookup
         self._notifier = notifier if notifier is not None else _default_notifier
+        self._cancel_notifier = (
+            cancel_notifier if cancel_notifier is not None else _default_cancel_notifier
+        )
+        self._resolution_notifier = (
+            resolution_notifier if resolution_notifier is not None else _default_resolution_notifier
+        )
 
     # ---- DB seam ----
     def _execute_one(self, sql: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -533,6 +582,66 @@ class ConnectionsService:
             "counterpartUserId": counterpart,
             "items": self._scope_catalog_for_owner(counterpart),
             "offerableItems": self._scope_catalog_for_owner(viewer),
+        }
+
+    def get_person_context(self, viewer_user_id: str, counterpart_user_id: str) -> dict[str, Any]:
+        """Directory-bounded identity and participant-only connection state.
+
+        A resolved request is historical information, never present eligibility.
+        Location must independently re-read its own relationship/key rules.
+        """
+        viewer, counterpart = viewer_user_id.strip(), counterpart_user_id.strip()
+        if not viewer or not counterpart or viewer == counterpart:
+            raise ConnectionsError(
+                "CONNECTION_SCOPE_TARGET_INVALID", "Invalid connection target.", status_code=422
+            )
+        self._assert_directory_visible(viewer, counterpart)
+        params = {"viewer": viewer, "counterpart": counterpart}
+        row = self._execute_one(
+            """SELECT identity.display_name,
+            COALESCE(identity.custom_photo_url,identity.photo_url) AS photo_url,
+            EXISTS(SELECT 1 FROM connections c WHERE c.status='active'
+                AND ((c.user_a_id=:viewer AND c.user_b_id=:counterpart)
+                  OR (c.user_b_id=:viewer AND c.user_a_id=:counterpart))) AS connected
+            FROM actor_identity_cache identity WHERE identity.user_id=:counterpart""",
+            params,
+        )
+        if not row:
+            raise ConnectionsError(
+                "CONNECTION_SCOPE_TARGET_FORBIDDEN",
+                "That connection target is not available.",
+                status_code=404,
+            )
+        request = self._execute_one(
+            """SELECT id,requester_user_id,addressee_user_id,status FROM connection_requests
+            WHERE (requester_user_id=:viewer AND addressee_user_id=:counterpart)
+               OR (requester_user_id=:counterpart AND addressee_user_id=:viewer)
+            ORDER BY (status='pending') DESC,created_at DESC,id DESC LIMIT 1""",
+            params,
+        )
+        direction = "outgoing" if request and request["requester_user_id"] == viewer else "incoming"
+        relationship = (
+            "connected"
+            if row["connected"]
+            else f"pending_{direction}"
+            if request and request["status"] == "pending"
+            else "none"
+        )
+        return {
+            "person": {
+                "userId": counterpart,
+                "displayName": row.get("display_name"),
+                "photoUrl": row.get("photo_url"),
+                "email": None,
+                "relationship": relationship,
+            },
+            "request": {
+                "id": str(request["id"]),
+                "direction": direction,
+                "status": request["status"],
+            }
+            if request
+            else None,
         }
 
     def get_information_scope_catalog(
@@ -1459,6 +1568,58 @@ class ConnectionsService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("connections.notify_failed error=%s", exc)
 
+    def _notify_request_cancelled(
+        self,
+        addressee_user_id: str,
+        requester_user_id: str,
+        connection_request_id: str | None = None,
+    ) -> None:
+        """Fire the (best-effort) addressee nudge when a request is withdrawn.
+
+        Never raises, and always called after the transaction commits -- a
+        broken notifier must never unwind the cancellation itself.
+        """
+        notifier = getattr(self, "_cancel_notifier", None)
+        if notifier is None:
+            return
+        try:
+            notifier(
+                addressee_user_id=addressee_user_id,
+                requester_user_id=requester_user_id,
+                connection_request_id=str(connection_request_id or "").strip() or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("connections.notify_cancelled_failed error=%s", exc)
+
+    def _notify_request_resolved(
+        self,
+        requester_user_id: str,
+        resolver_user_id: str,
+        *,
+        accepted: bool,
+        connection_request_id: str | None = None,
+    ) -> None:
+        """Fire the (best-effort) requester nudge once accept/reject commits.
+
+        Same shape as `_notify_new_request`: called AFTER the transaction
+        commits (never inside it -- push is best-effort and must not become a
+        reason the mutation itself can fail or roll back), never raises, and
+        resolves the resolver's display name lazily inside the notifier so
+        this stays a cheap call on the response path.
+        """
+        notifier = getattr(self, "_resolution_notifier", None)
+        if notifier is None:
+            return
+        try:
+            notifier(
+                requester_user_id=requester_user_id,
+                resolver_user_id=resolver_user_id,
+                accepted=accepted,
+                connection_request_id=str(connection_request_id or "").strip() or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("connections.notify_resolved_failed error=%s", exc)
+
     def _load_request(self, request_id: str, *, for_update: bool = False) -> dict[str, Any]:
         lock_clause = " FOR UPDATE" if for_update else ""
         row = self._execute_one(
@@ -2310,6 +2471,17 @@ class ConnectionsService:
                     source_row_id=source_request_id,
                 )
 
+        # After commit, not inside the transaction: push is best-effort and
+        # must never be why an accept can fail or roll back. The requester
+        # (not `user_id`, who is the addressee doing the accepting) is who
+        # gets nudged -- this was missing entirely; see _notify_request_resolved.
+        self._notify_request_resolved(
+            requester,
+            user_id,
+            accepted=True,
+            connection_request_id=source_request_id,
+        )
+
         # Accepting a connection grants nothing on its own. Location sharing is
         # opt-in and one-directional: it starts only when a person explicitly
         # requests the other's location and that request is approved (see
@@ -2424,6 +2596,14 @@ class ConnectionsService:
                     event_type="connection_rejected",
                     source_row_id=source_request_id,
                 )
+        # After commit, not inside the transaction -- see accept_request's
+        # identical placement and rationale.
+        self._notify_request_resolved(
+            requester,
+            user_id,
+            accepted=False,
+            connection_request_id=source_request_id,
+        )
         return {"status": "rejected", "requestId": req.get("id")}
 
     def cancel_request(self, user_id: str, request_id: str) -> dict[str, Any]:
@@ -2478,7 +2658,7 @@ class ConnectionsService:
                 raise ConnectionsError(
                     "CONNECTION_NOT_REQUESTER", "Only the requester can cancel.", status_code=403
                 )
-            self._execute_one(
+            cancelled_row = self._execute_one(
                 """
                 UPDATE connection_requests
                 SET status = 'cancelled', responded_at = NOW(), updated_at = NOW()
@@ -2492,6 +2672,12 @@ class ConnectionsService:
                 status="declined",
                 actor_user_id=user_id,
                 reason="connection_cancelled",
+            )
+        if cancelled_row:
+            self._notify_request_cancelled(
+                str(req.get("addressee_user_id") or ""),
+                user_id,
+                connection_request_id=str(req.get("id") or ""),
             )
         return {"status": "cancelled", "requestId": req.get("id")}
 
@@ -2525,7 +2711,8 @@ class ConnectionsService:
             SELECT cr.id, cr.requester_user_id, cr.addressee_user_id, cr.status,
                    cr.message, cr.created_at, cr.metadata,
                    {counterpart_col} AS counterpart_user_id,
-                   a.display_name AS counterpart_display_name
+                   a.display_name AS counterpart_display_name,
+                   COALESCE(NULLIF(BTRIM(a.custom_photo_url), ''), NULLIF(BTRIM(a.photo_url), '')) AS counterpart_photo_url
             FROM connection_requests cr
             LEFT JOIN actor_identity_cache a ON a.user_id = {counterpart_col}
             WHERE {where} {status_clause}
@@ -2543,6 +2730,7 @@ class ConnectionsService:
                 "createdAt": _iso(r.get("created_at")),
                 "counterpartUserId": str(r.get("counterpart_user_id") or ""),
                 "counterpartDisplayName": r.get("counterpart_display_name"),
+                "counterpartPhotoUrl": r.get("counterpart_photo_url"),
                 "scopes": self._proposal_items(str(r.get("id") or "")),
             }
             for r in rows
@@ -2951,7 +3139,7 @@ class ConnectionsService:
             """
             SELECT c.id AS connection_id,
                    CASE WHEN c.user_a_id = :user_id THEN c.user_b_id ELSE c.user_a_id END AS user_id,
-                   a.display_name, a.photo_url, c.created_at,
+                   a.display_name, COALESCE(NULLIF(BTRIM(a.custom_photo_url), ''), NULLIF(BTRIM(a.photo_url), '')) AS photo_url, a.email, c.created_at,
                    EXISTS (
                      SELECT 1
                      FROM connection_origins contact_origin
@@ -2985,6 +3173,7 @@ class ConnectionsService:
                 "publicPersonRef": public_person_refs.get(str(r.get("user_id") or "")),
                 "displayName": r.get("display_name"),
                 "photoUrl": r.get("photo_url"),
+                "email": r.get("email"),
                 "createdAt": _iso(r.get("created_at")),
                 "isRia": str(r.get("user_id") or "") in ria_user_ids,
                 "connectedFromContacts": bool(r.get("connected_from_contacts")),
@@ -3021,7 +3210,7 @@ class ConnectionsService:
                   WHEN connection.user_a_id = :user_id THEN connection.user_b_id
                   ELSE connection.user_a_id
                 END AS user_id,
-                identity.display_name, identity.photo_url, connection.created_at,
+                identity.display_name, COALESCE(NULLIF(BTRIM(identity.custom_photo_url), ''), NULLIF(BTRIM(identity.photo_url), '')) AS photo_url, identity.email, connection.created_at,
                 LOWER(BTRIM(COALESCE(
                   NULLIF(identity.display_name, ''),
                   CASE
@@ -3098,7 +3287,7 @@ class ConnectionsService:
             )
             SELECT
               page_rows.connection_id, page_rows.user_id,
-              page_rows.display_name, page_rows.photo_url,
+              page_rows.display_name, page_rows.photo_url, page_rows.email,
               page_rows.created_at, page_rows.normalized_name,
               total.total_count,
               CASE WHEN page_rows.connection_id IS NULL THEN FALSE ELSE EXISTS (
@@ -3141,6 +3330,7 @@ class ConnectionsService:
                 "publicPersonRef": public_person_refs.get(str(row.get("user_id") or "")),
                 "displayName": row.get("display_name"),
                 "photoUrl": row.get("photo_url"),
+                "email": row.get("email"),
                 "createdAt": row.get("created_at"),
                 "isRia": bool(row.get("is_ria")),
                 "connectedFromContacts": bool(row.get("connected_from_contacts")),
@@ -3155,12 +3345,25 @@ class ConnectionsService:
             "audience": normalized_audience,
         }
 
+    def begin_contact_sync(self) -> datetime:
+        """Use the database clock before asynchronous matching or graph waits."""
+        row = self._execute_one("SELECT clock_timestamp() AS started_at")
+        started_at = (row or {}).get("started_at")
+        if not isinstance(started_at, datetime) or started_at.tzinfo is None:
+            raise ConnectionsError(
+                "CONTACT_SYNC_TRANSACTION_UNAVAILABLE",
+                "Contact sync is temporarily unavailable.",
+                status_code=503,
+            )
+        return started_at
+
     def sync_contact_matches(
         self,
         user_id: str,
         *,
         phone_lookups: list[dict[str, Any]],
         matches: list[dict[str, Any]],
+        sync_started_at: datetime | None = None,
     ) -> dict[str, Any]:
         """Materialize eligible contact matches without broadening consent.
 
@@ -3265,7 +3468,11 @@ class ConnectionsService:
                 """
                 SELECT
                   connection.id, connection.user_a_id, connection.user_b_id,
-                  connection.status,
+                  connection.status, connection.revoked_at,
+                  CASE connection.revoked_by_side
+                    WHEN 'a' THEN connection.user_a_id
+                    WHEN 'b' THEN connection.user_b_id
+                  END AS revoked_by_user_id, connection.revoked_by_at,
                   CASE
                     WHEN connection.user_a_id = :requester_id THEN connection.user_b_id
                     ELSE connection.user_a_id
@@ -3298,8 +3505,9 @@ class ConnectionsService:
             # blocks every INSERT/UPDATE/DELETE writer's ROW EXCLUSIVE lock.
             # The recount below and all graph writes therefore observe one
             # stable set of verified phone bindings. This avoids selecting an
-            # arbitrary account if a stale duplicate arrives between match and
-            # mutation without forcing a risky data-cleanup migration.
+            # arbitrary account if a stale duplicate arrives between the
+            # initial match and this mutation; migration 198 also prevents new
+            # duplicate verified owners at the database boundary.
             self._execute_many("LOCK TABLE actor_identity_cache IN SHARE MODE")
             # Read requester and candidate identities in canonical order. The
             # table SHARE lock already keeps those rows stable through commit,
@@ -3400,58 +3608,52 @@ class ConnectionsService:
             revalidated_user_ids = sorted({str(row.get("user_id") or "") for row in identity_rows})
             profile_rows = self._execute_many(
                 """
-                SELECT user_id, contact_discoverable,
-                       contact_sync_consent_enabled_at,
-                       contact_sync_consent_rule_version,
-                       contact_sync_consent_contract_version
-                FROM actor_profiles
-                WHERE user_id = ANY(CAST(:candidate_user_ids AS TEXT[]))
-                ORDER BY user_id
-                -- Circle membership flows deliberately lock profiles before
-                -- connections. Contact sync already holds existing connection
-                -- rows, so waiting here would invert that order and deadlock.
-                -- A busy profile is omitted and fails closed for this run.
-                FOR UPDATE SKIP LOCKED
+                SELECT actor.user_id, actor.contact_discoverable,
+                       actor.contact_sync_consent_enabled_at,
+                       actor.contact_sync_consent_rule_version,
+                       actor.contact_sync_consent_contract_version,
+                       marketplace.is_discoverable AS marketplace_is_discoverable,
+                       marketplace.display_name AS marketplace_display_name
+                FROM actor_profiles actor
+                LEFT JOIN marketplace_public_profiles marketplace
+                  ON marketplace.user_id = actor.user_id
+                WHERE actor.user_id = ANY(CAST(:candidate_user_ids AS TEXT[]))
+                ORDER BY actor.user_id
                 """,
                 {"candidate_user_ids": revalidated_user_ids},
             )
             profiles = {str(row.get("user_id") or ""): row for row in profile_rows}
-            eligible_rows_by_lookup: dict[str, list[dict[str, Any]]] = {}
+            revalidated_rows_by_lookup: dict[str, list[dict[str, Any]]] = {}
             for row in identity_rows:
                 target_user_id = str(row.get("user_id") or "")
                 profile = profiles.get(target_user_id) or {}
+                preference_state = contact_sync_preference_state(
+                    discoverable=profile.get("contact_discoverable"),
+                    enabled_at=profile.get("contact_sync_consent_enabled_at"),
+                    rule_version=profile.get("contact_sync_consent_rule_version"),
+                    contract_version=profile.get("contact_sync_consent_contract_version"),
+                )
                 enriched = {
                     **row,
-                    "contact_discoverable": profile.get("contact_discoverable", False),
-                    "contact_sync_consent_enabled_at": profile.get(
-                        "contact_sync_consent_enabled_at"
+                    "contact_sync_preference_state": preference_state,
+                    "contact_sync_directory_visible": (
+                        profile.get("marketplace_is_discoverable") is not False
                     ),
-                    "contact_sync_consent_rule_version": int(
-                        profile.get("contact_sync_consent_rule_version") or 0
-                    ),
-                    "contact_sync_consent_contract_version": profile.get(
-                        "contact_sync_consent_contract_version"
-                    ),
+                    "marketplace_display_name": profile.get("marketplace_display_name"),
                 }
-                if (
-                    enriched["contact_discoverable"]
-                    and enriched["contact_sync_consent_enabled_at"] is not None
-                    and enriched["contact_sync_consent_rule_version"] > 0
-                    and enriched["contact_sync_consent_contract_version"]
-                    == CONTACT_SYNC_CONSENT_CONTRACT_VERSION
-                ):
-                    eligible_rows_by_lookup.setdefault(str(row.get("lookup_id") or ""), []).append(
-                        enriched
-                    )
+                revalidated_rows_by_lookup.setdefault(str(row.get("lookup_id") or ""), []).append(
+                    enriched
+                )
             activations: list[dict[str, Any]] = []
+            activation_required_target_ids: set[str] = set()
             for match in sorted(
                 normalized_matches,
                 key=lambda item: (str(item["user_id"]), str(item["lookup_id"])),
             ):
                 lookup_id = str(match["lookup_id"])
                 target_user_id = str(match["user_id"])
-                eligible_rows = eligible_rows_by_lookup.get(lookup_id) or []
-                identity = eligible_rows[0] if len(eligible_rows) == 1 else {}
+                revalidated_rows = revalidated_rows_by_lookup.get(lookup_id) or []
+                identity = revalidated_rows[0] if len(revalidated_rows) == 1 else {}
                 proof_valid = bool(
                     identity and str(identity.get("user_id") or "") == target_user_id
                 )
@@ -3462,54 +3664,69 @@ class ConnectionsService:
                     continue
                 existing = existing_by_target.get(target_user_id)
                 existing_status = str((existing or {}).get("status") or "")
+                has_directory_match_authority = bool(
+                    identity["contact_sync_directory_visible"]
+                    and identity["contact_sync_preference_state"]
+                    in {CONTACT_SYNC_PREFERENCE_DEFAULT, CONTACT_SYNC_PREFERENCE_ENABLED}
+                )
+
+                directory_activation = {
+                    "target_user_id": target_user_id,
+                    "origin_metadata": {
+                        "authorization": "verified_phone_directory_match",
+                        "matchPolicyVersion": CONTACT_SYNC_MATCH_POLICY_VERSION,
+                        "targetPreferenceState": identity["contact_sync_preference_state"],
+                    },
+                }
 
                 outcome = "auto_connected"
-                if existing_status == "revoked":
-                    # A disconnect is an explicit suppression tombstone even
-                    # for a pair that predated contact-sync provenance.
-                    outcome = "suppressed"
-                elif existing_status == "active":
-                    activations.append(
-                        {
-                            "target_user_id": target_user_id,
-                            "origin_metadata": {"authorization": "existing_connection_match"},
-                        }
-                    )
+                if existing_status == "active":
+                    # The canonical graph already discloses this person to the
+                    # requester. Recognizing their exact verified-phone proof
+                    # does not create a relationship or widen target consent.
+                    # Add durable contact provenance only when the target is
+                    # currently eligible under the directory match policy.
+                    if has_directory_match_authority:
+                        activations.append(directory_activation)
+                        activation_required_target_ids.add(target_user_id)
                     outcome = "already_connected"
+                elif not has_directory_match_authority:
+                    # A directory-hidden, explicitly disabled, or malformed
+                    # target may be recognized only through an already-active
+                    # edge. New and revoked pairs remain undisclosed.
+                    continue
+                elif existing_status == "revoked" and existing is not None:
+                    # A fresh explicit sync can undo only this requester's own
+                    # earlier disconnect. Episode equality also fails closed
+                    # after an older binary writes a newer revocation.
+                    revoked_at = existing.get("revoked_at")
+                    if (
+                        existing.get("revoked_by_user_id") == requester_id
+                        and isinstance(revoked_at, datetime)
+                        and revoked_at.tzinfo is not None
+                        and existing.get("revoked_by_at") == revoked_at
+                        and sync_started_at is not None
+                        and revoked_at < sync_started_at
+                    ):
+                        activations.append(
+                            {**directory_activation, "reconnect_revoked_at": revoked_at}
+                        )
+                        activation_required_target_ids.add(target_user_id)
+                    else:
+                        outcome = "suppressed"
                 else:
-                    # A match is emitted only after the target's current verified
-                    # phone and contact-discoverability setting are revalidated
-                    # under this transaction. Matching therefore materializes
-                    # the contact-sourced connection immediately. This remains
-                    # relationship metadata only: no location or information
-                    # capability is granted here.
-                    consent_enabled_at = identity["contact_sync_consent_enabled_at"]
-                    serialized_consent_enabled_at = (
-                        consent_enabled_at.isoformat()
-                        if hasattr(consent_enabled_at, "isoformat")
-                        else str(consent_enabled_at)
-                    )
-                    activations.append(
-                        {
-                            "target_user_id": target_user_id,
-                            "origin_metadata": {
-                                "authorization": "verified_phone_contact_match",
-                                "targetConsentEnabledAt": serialized_consent_enabled_at,
-                                "targetConsentRuleVersion": identity[
-                                    "contact_sync_consent_rule_version"
-                                ],
-                                "targetConsentContractVersion": identity[
-                                    "contact_sync_consent_contract_version"
-                                ],
-                            },
-                        }
-                    )
+                    # Matching materializes the social relationship only. It
+                    # does not activate a pending scope proposal or create a
+                    # location/information grant.
+                    activations.append(directory_activation)
+                    activation_required_target_ids.add(target_user_id)
 
                 outcomes.append(
                     {
                         "lookupId": lookup_id,
                         "userId": target_user_id,
-                        "displayName": identity.get("display_name"),
+                        "displayName": identity.get("display_name")
+                        or identity.get("marketplace_display_name"),
                         "photoUrl": identity.get("custom_photo_url") or identity.get("photo_url"),
                         "outcome": outcome,
                     }
@@ -3521,6 +3738,7 @@ class ConnectionsService:
                         transaction_connection,
                         requester_user_id=requester_id,
                         activations=activations,
+                        sync_started_at=sync_started_at,
                     )
                 )
                 if activated_target_ids:
@@ -3535,7 +3753,7 @@ class ConnectionsService:
                 # suppressed and never create its origin/trusted/Circle rows.
                 for item in outcomes:
                     if (
-                        item["outcome"] in {"auto_connected", "already_connected"}
+                        str(item["userId"]) in activation_required_target_ids
                         and str(item["userId"]) not in activated_target_ids
                     ):
                         item["outcome"] = "suppressed"
@@ -3646,9 +3864,8 @@ class ConnectionsService:
                 """,
                 {"a": user_a, "b": user_b},
             )
-            # Persist the disconnect in the provenance ledger. In particular,
-            # a revoked canonical row is the contact-sync suppression tombstone
-            # even when this pair predates the contact_sync origin kind.
+            # Revoke provenance independently of the new explicit-sync choice.
+            # Reconnecting never restores revoked scope grants or named Circles.
             self._execute_many(
                 """
                 UPDATE connection_origins
@@ -3665,17 +3882,39 @@ class ConnectionsService:
             )
             conn = self._execute_one(
                 """
+                WITH episode AS MATERIALIZED (SELECT clock_timestamp() AS revoked_at)
                 UPDATE connections
-                SET status = 'revoked', revoked_at = NOW(), updated_at = NOW()
+                SET status = 'revoked', revoked_at = episode.revoked_at, updated_at = NOW(),
+                    revoked_by_side = CASE WHEN user_a_id = :actor_user_id THEN 'a'
+                      WHEN user_b_id = :actor_user_id THEN 'b' END,
+                    revoked_by_at = episode.revoked_at
+                FROM episode
                 WHERE id = :id AND status = 'active'
-                RETURNING id, revoked_at
+                RETURNING id, connections.revoked_at
                 """,
-                {"id": (connection_id or "").strip()},
+                {"id": (connection_id or "").strip(), "actor_user_id": user_id},
             )
             if conn:
                 self._end_one_location_circle_memberships(
                     user_a_id=str(user_a or ""),
                     user_b_id=str(user_b or ""),
+                )
+                # Each named-Circle origin removal recomputes the aggregate.
+                # Multiple origins can temporarily reactivate it and replace
+                # revoked_at. The explicit disconnect owns the final state and
+                # its original actor episode, within this same graph gate.
+                self._execute_one(
+                    """
+                    UPDATE connections
+                    SET status = 'revoked', revoked_at = :episode,
+                        revoked_by_at = :episode,
+                        revoked_by_side = CASE WHEN user_a_id = :actor THEN 'a'
+                          WHEN user_b_id = :actor THEN 'b' END,
+                        updated_at = NOW()
+                    WHERE id = :id
+                    RETURNING id
+                    """,
+                    {"id": conn["id"], "episode": conn["revoked_at"], "actor": user_id},
                 )
                 user_a_id = str(user_a or "")
                 user_b_id = str(user_b or "")

@@ -39,6 +39,16 @@ Define canonical scope families and template policy for Investor + RIA consent r
 8. `source_library` is a reserved owner-managed capability boundary, not a
    shareable PKM scope. Every `attr.source_library.*` form is non-discoverable,
    non-requestable, non-issuable, and non-authorizing.
+9. `wallet` is a reserved owner-managed PKM domain that is deliberately
+   shareable, unlike `source_library`: exactly two branch wildcards,
+   `attr.wallet.summary.*` (nickname, brand, last4, expiry, issuing
+   region) and `attr.wallet.secrets.*` (PAN, CVV, PIN, cardholder
+   name), are externally requestable, and every grant is an explicit owner
+   approval delivered through the encrypted-export path. The domain wildcard,
+   exact-path scopes, and public projection stay closed. Natural-language
+   structuring can never invent or repurpose the domain, and scope display
+   metadata carries a `reserved` indicator so chat and consent surfaces render
+   reserved-domain grants distinctly from ordinary dynamic ones.
 
 ### Source Library object-share boundary
 
@@ -157,6 +167,38 @@ provider place ids, place labels, roster contents, email, phone, and stable
 public user ids are forbidden in nearby-presence persistence, logs, analytics,
 and audit metadata. Peer responses expose none of the encrypted anchor fields.
 
+### One Place Rating Capability Scopes
+
+| Scope | Intended Use |
+| --- | --- |
+| `cap.location.place_rating.publish` | Save the caller's own 1–5 star rating for a place they were recorded at |
+| `cap.location.place_rating.discover` | Read an anonymous per-place average that meets the publication threshold |
+| `cap.location.place_rating.revoke` | Delete the caller's rating and remove it from the average |
+
+**A narrow, named exception to the paragraph above.** A rating cannot exist
+without a durable link between a person and a venue, which nearby presence
+exists to prevent. Rather than leave the contract and the schema disagreeing,
+the exception is stated here and bounded to two tables:
+
+- `one_location_nearby_visits` may hold the provider place id and place label
+  **only inside AES-256-GCM ciphertext**, owner-bound by AAD exactly as the
+  presence anchor is, alongside a server-keyed equality token. Rows expire and
+  are purged. This table also carries the check-in continuity anchor, which the
+  presence row deliberately destroys on checkout.
+- `one_location_place_ratings` may hold a **plaintext** provider place id and
+  place label, permanently. A row is created only when its author accepts
+  `one-location-place-rating-v1`, a named consent that says in words that being
+  at the place is what makes them eligible to rate it.
+
+Everything else in the paragraph above is unchanged, and this exception grants
+nothing further: a rating is private to its author, no read projection may
+return an author identifier of any kind next to a place id, review text is
+never stored server-side, and the only cross-user projection is an anonymous
+count and average, withheld below the publication threshold and reported in
+buckets so that polling cannot recover an individual rating by subtraction.
+Places in health, worship, legal, funeral and shelter categories never carry a
+public average at all.
+
 ### Capability token enforcement
 
 Each live-location grant mints a signed HCT consent token scoped
@@ -216,6 +258,7 @@ replace specialist scopes or PKM/data scopes.
 | --- | --- |
 | `cap.one.invoke` | Create or resume an Agent One task; grants no private-data read or mutation authority |
 | `agent.kai.analyze` | Invoke Kai for finance, portfolio, market, and RIA/investor analysis |
+| `agent.wallet.manage` | Invoke the Cards specialist for storing, listing, and revealing wallet cards; control-plane only, never a `wallet` data read |
 | `agent.nav.review` | Invoke Nav for privacy, consent, vault, deletion, and scope-review guidance |
 | `agent.kyc.process` | Invoke KYC for identity workflow state and approval-gated KYC processing |
 
@@ -226,6 +269,52 @@ work. First-party in-app compatibility paths may still carry `vault.owner`
 through the token hierarchy; do not use that pattern for external, vendor,
 network, or cross-process specialist boundaries. See
 [Agent Delegation Boundary](./agent-delegation-boundary.md).
+
+## Consent Lifecycle From Agent Chat
+
+One can run the person-to-person lifecycle from chat on the same service
+layer the REST routes use (`hushh_mcp/services/consent_lifecycle_service.py`,
+`information_request_service.py`), never on a second copy of a ledger write.
+
+| Step | Chat surface | Guard |
+|---|---|---|
+| Discover | `discover_person_information` (connections, then the directory) | VAULT_OWNER re-validated; labels and opaque `psr_` refs only |
+| Propose | `propose_information_request(person, fields, purpose, duration_hours)` parks a proposal under an opaque id | fields matched by label or domain; 8 to 500 character purpose; 1 to 720 hours |
+| Request | `consent.request` with the proposal id | the app's confirmation card authorizes it; the proposal is re-resolved server-side, and the idempotency key is minted from the proposal id so a redelivered directive resolves to the same bundle |
+| Pending | `list_pending_information_requests` | the browser renders each request as the existing pending-consent card |
+| Approve | the owner's tap on that card | never a tool: the export is encrypted under the vault key in the owner's browser |
+| Deny | `consent.deny` with the `requestId` that listing returned | same ledger write as `/api/consent/pending/deny` |
+| What I am sharing | `list_active_grants` parks each live grant under an opaque `g<n>` handle | the raw scope and request id stay server-side; labels only |
+| Revoke | `consent.revoke` with that `g<n>` handle | `_resolved_directive_slots` expands the handle; same ledger write as `/api/consent/revoke` |
+| What I asked for | `list_my_outgoing_information_requests` parks each open sent request under an opaque `r<n>` handle, newest first | bundle ids never reach the model |
+| Cancel | `consent.cancel_request` with that `r<n>` handle, or none at all for the most recent | same write as `/api/one/information-requests/{bundle}/cancel` |
+
+**The app's confirmation card is the authorization, and nothing else is.** All
+four `consent.*` actions are members of `_GOVERNED_LEDGER_CONFIRMATION_ACTION_IDS`,
+so each one parks a browser directive through the directive ledger and runs only
+after the person taps the confirmation the app renders. `run_app_action` deletes a
+model-supplied `confirmed` slot before dispatch: a model reporting that it heard a
+yes is not authority. Because of that, One is instructed to read back what it is
+about to do and then run the action, never to collect a spoken yes and then hand
+over to a card that asks the same question again.
+
+`BACKEND_DIRECT_VERBAL_CONFIRMATION_IDS` still exists but is a compatibility seam
+over the service layer, not a pattern to copy, and is no longer executable for
+these ids: `_run_backend_direct_action` returns `blocked` for a ledger-governed id
+and `_execute_backend_direct_mutation` raises rather than run one.
+
+Execution lives in `hushh-webapp/components/agent/global-consent-action-handlers.tsx`,
+mounted app-wide from `hushh-webapp/app/providers.tsx` inside `VaultProvider`
+(the vault key is needed to mint the connector a request is encrypted to). That
+global mount is why the lifecycle completes in the conversation from any screen
+rather than linking out to one. A ledger-governed consent action with no mounted
+handler is not a safe no-op but a dead end, so a test reads the frontend tree and
+fails if any of the four lacks one.
+
+The model never sees a raw `attr.*` scope, a token, or a bundle id: the ids these
+listings return are handles to repeat back to a tool, not identifiers for a person
+or the model to hold. One is told to say nothing was sent, denied, withdrawn, or
+revoked until the action result says so.
 
 ## Duration Policy
 

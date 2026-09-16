@@ -39,7 +39,6 @@ import {
   type KaiStreamEnvelope,
 } from "@/lib/streaming/kai-stream-types";
 import { AuthService } from "@/lib/services/auth-service";
-import type { AppRuntimeState } from "@/lib/voice/voice-types";
 import {
   toDurationBucket,
   trackApiRequestCompleted,
@@ -60,16 +59,109 @@ import {
   resolveRuntimeBackendUrl,
   resolveRuntimeFrontendUrl,
 } from "@/lib/runtime/settings";
+import { shouldSkipAuthMailForAutomation } from "@/lib/testing/native-test";
 import { sanitizeErrorMessage } from "@/lib/services/error-sanitizer";
+import {
+  AUTH_ACCOUNT_NOT_FOUND_BACKEND_CODE,
+  authSessionInvalidationCodeFromBackendPayload,
+  authSessionInvalidationCodeFromFirebaseError,
+  dispatchAuthSessionInvalidated,
+  isAccountDeletionInProgressBackendPayload,
+} from "@/lib/auth/session-invalidation";
+import {
+  type AuthSessionOwnerSnapshot,
+  isValidatedAuthSessionOwnerCurrent,
+  snapshotValidatedAuthSessionOwner,
+  dispatchAuthSessionVerificationRequired,
+} from "@/lib/auth/session-owner";
+import { ACCOUNT_SESSION_STATUS_REQUEST_TIMEOUT_MS } from "@/lib/auth/account-session-policy";
+import { isVaultSessionEpochCurrent, snapshotVaultSessionEpoch } from "@/lib/vault/session-epoch";
 
 const AUTH_REFRESH_RETRY_HEADER = "X-Hushh-Auth-Refresh-Retry";
-const AUTH_SESSION_INVALIDATED_EVENT = "auth-session-invalidated";
 const VAULT_LOCK_REQUESTED_EVENT = "vault-lock-requested";
 
 type VaultOwnerAuthFailure = {
   shouldLockVault: boolean;
+  verificationRequired?: boolean;
   reason: string | null;
 };
+
+const NATIVE_STREAM_VAULT_LOCK_CODES = new Set([
+  "AUTH_VAULT_OWNER_INVALID",
+]);
+
+function nativeStreamBridgeErrorCode(error: unknown): string | null {
+  if (typeof error === "string") return error;
+  if (!error || typeof error !== "object") return null;
+  try {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" && code.length <= 128 ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+function dispatchVaultLockRequestedForPath(path: string, reason: string): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(VAULT_LOCK_REQUESTED_EVENT, {
+      detail: { reason, path },
+    }),
+  );
+}
+
+function snapshotVaultOwnerStreamSession() {
+  const owner = snapshotValidatedAuthSessionOwner();
+  return owner ? { ...owner, vaultEpoch: snapshotVaultSessionEpoch() } : null;
+}
+
+/**
+ * Settle auth failures raised by a native SSE bridge. The owner snapshot binds
+ * every side effect to the identity that started the stream, so a delayed
+ * Account A failure cannot sign out or lock Account B after an auth switch.
+ */
+function handleNativeVaultOwnerStreamError(
+  error: unknown,
+  path: string,
+  requestOwner: (AuthSessionOwnerSnapshot & { vaultEpoch: number }) | null,
+): void {
+  if (!requestOwner || !isValidatedAuthSessionOwnerCurrent(requestOwner)) {
+    return;
+  }
+
+  const bridgeCode = nativeStreamBridgeErrorCode(error);
+  const terminalCode =
+    bridgeCode === AUTH_ACCOUNT_NOT_FOUND_BACKEND_CODE
+      ? "account_not_found"
+      : authSessionInvalidationCodeFromBackendPayload(error);
+  if (terminalCode) {
+    dispatchAuthSessionInvalidated({
+      code: terminalCode,
+      path,
+      userId: requestOwner.userId,
+    });
+    return;
+  }
+
+  if (
+    bridgeCode === "AUTH_ACCOUNT_STATUS_UNAVAILABLE" ||
+    bridgeCode === "AUTH_ACCOUNT_DELETION_IN_PROGRESS" ||
+    isAccountDeletionInProgressBackendPayload(error)
+  ) {
+    dispatchAuthSessionVerificationRequired(
+      requestOwner,
+      bridgeCode || "AUTH_ACCOUNT_DELETION_IN_PROGRESS",
+    );
+    return;
+  }
+  if (bridgeCode && NATIVE_STREAM_VAULT_LOCK_CODES.has(bridgeCode) &&
+      isVaultSessionEpochCurrent(requestOwner.vaultEpoch)) {
+    dispatchVaultLockRequestedForPath(
+      path,
+      bridgeCode || "AUTH_ACCOUNT_DELETION_IN_PROGRESS",
+    );
+  }
+}
 
 const getEnvBackendUrl = (): string => {
   return resolveRuntimeBackendUrl();
@@ -148,7 +240,7 @@ function isLocalNativeHost(host: string | null): boolean {
   return Boolean(host && LOCAL_NATIVE_HOSTS.has(host));
 }
 
-function normalizeNativeBackendUrl(raw: string): string {
+export function normalizeNativeBackendUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/$/, "");
   const platform = Capacitor.getPlatform();
   const backendHost = hostFromUrl(trimmed);
@@ -224,29 +316,6 @@ export const getDirectBackendUrl = (): string => {
 
   return getEnvBackendUrl();
 };
-
-// No production feature calls this legacy transport. The active One Live
-// session owns its authenticated WebSocket transport independently.
-type VoiceTransportMode = {
-  mode: "nextjs_proxy" | "direct_backend";
-  reason: "legacy_unreachable" | "missing_backend_url";
-  backendUrl?: string;
-};
-
-function getVoiceTransportMode(): VoiceTransportMode {
-  const backendUrl = getEnvBackendUrl();
-  return backendUrl
-    ? { mode: "direct_backend", reason: "legacy_unreachable", backendUrl }
-    : { mode: "nextjs_proxy", reason: "missing_backend_url" };
-}
-
-function isVoiceFailFastEnabled(): boolean {
-  return false;
-}
-
-function isVoiceDirectBackendRequired(): boolean {
-  return false;
-}
 
 function toResultFromStatus(
   status: number,
@@ -361,10 +430,20 @@ async function classifyVaultOwnerAuthFailure(
     const contentType = response.headers.get("content-type") || "";
     if (contentType.includes("application/json")) {
       const payload = (await response.json().catch(() => null)) as {
+        code?: unknown;
         error?: unknown;
         detail?: unknown;
         details?: unknown;
       } | null;
+      const detail = payload?.detail;
+      const code = typeof payload?.code === "string" ? payload.code :
+        detail && typeof detail === "object" && "code" in detail ? String(detail.code) : null;
+      if (code === "AUTH_ACCOUNT_STATUS_UNAVAILABLE" || code === "AUTH_ACCOUNT_DELETION_IN_PROGRESS") {
+        return { shouldLockVault: false, verificationRequired: true, reason: code };
+      }
+      if (code === "AUTH_VAULT_OWNER_INVALID") {
+        return { shouldLockVault: true, reason: code };
+      }
       const reasonCandidates = [
         typeof payload?.error === "string" ? payload.error : null,
         typeof payload?.detail === "string" ? payload.detail : null,
@@ -423,6 +502,7 @@ const WEB_FETCH_TIMEOUT_MS = 60_000;
 export async function fetchWithWebTimeout(
   url: string,
   init: RequestInit,
+  timeoutMs: number = WEB_FETCH_TIMEOUT_MS,
 ): Promise<Response> {
   const controller = new AbortController();
   const callerSignal = init.signal ?? null;
@@ -430,17 +510,18 @@ export async function fetchWithWebTimeout(
   const abortFromCaller = () => controller.abort(callerSignal?.reason);
   if (callerSignal) {
     if (callerSignal.aborted) controller.abort(callerSignal.reason);
-    else callerSignal.addEventListener("abort", abortFromCaller, { once: true });
+    else
+      callerSignal.addEventListener("abort", abortFromCaller, { once: true });
   }
 
   const timer = setTimeout(() => {
     controller.abort(
       new DOMException(
-        `Request timed out after ${WEB_FETCH_TIMEOUT_MS}ms`,
+        `Request timed out after ${timeoutMs}ms`,
         "TimeoutError",
       ),
     );
-  }, WEB_FETCH_TIMEOUT_MS);
+  }, timeoutMs);
 
   try {
     return await fetch(url, { ...init, signal: controller.signal });
@@ -454,6 +535,13 @@ async function apiFetch(
   path: string,
   options: RequestInit = {},
 ): Promise<Response> {
+  const initiatingAuthUser = AuthService.getCurrentUser();
+  // Native auth may intentionally live only in the Capacitor SDK. Bind its
+  // refresh to the central validated owner generation, not an absent JS user.
+  const initiatingNativeOwner =
+    !initiatingAuthUser && Capacitor.isNativePlatform()
+      ? snapshotValidatedAuthSessionOwner()
+      : null;
   const apiBase = getApiBaseUrl();
   // An absolute path is already fully resolved. Native builds use this to reach
   // a Next.js-only route on the web origin, which `apiBase` (the Python
@@ -500,40 +588,74 @@ async function apiFetch(
       : "";
   };
 
+  // Bind every auth side effect to the principal that actually authorized
+  // this request. A delayed response from account A must never invalidate or
+  // replay its request under a newly authenticated account B.
+  const requestAuthorizationBearer = getAuthorizationBearer();
+  const requestVaultEpoch = snapshotVaultSessionEpoch();
+  const isVaultOwnerRequest = requestAuthorizationBearer.startsWith("HCT:");
+  const requestSessionOwner = isVaultOwnerRequest
+    ? snapshotValidatedAuthSessionOwner()
+    : null;
+  const requestAuthUserId =
+    decodeFirebaseTokenSubject(requestAuthorizationBearer) ??
+    requestSessionOwner?.userId ??
+    null;
+
+  const vaultOwnerRequestStillBelongsToSession = () =>
+    !requestSessionOwner ||
+    isValidatedAuthSessionOwnerCurrent(requestSessionOwner);
+
   const shouldAttemptFirebaseAuthRecovery = () => {
     const bearer = getAuthorizationBearer();
     if (!bearer) return false;
     if (bearer.startsWith("HCT:")) return false;
+    if (!requestAuthUserId) return false;
     return mergedHeaders[AUTH_REFRESH_RETRY_HEADER] !== "1";
   };
 
-  const dispatchAuthSessionInvalidated = (reason: string) => {
-    if (typeof window === "undefined") return;
-    window.dispatchEvent(
-      new CustomEvent(AUTH_SESSION_INVALIDATED_EVENT, {
-        detail: { reason, path },
-      }),
-    );
+  const terminalAuthCodeFromResponse = async (response: Response) => {
+    if (response.status !== 401) return null;
+    const body = await response
+      .clone()
+      .text()
+      .catch(() => "");
+    return authSessionInvalidationCodeFromBackendPayload(body);
+  };
+
+  const dispatchTerminalAuthCodeFromResponse = async (response: Response) => {
+    const code = await terminalAuthCodeFromResponse(response);
+    if (!code || !requestAuthUserId) return false;
+    if (
+      isVaultOwnerRequest &&
+      (!requestSessionOwner || !vaultOwnerRequestStillBelongsToSession())
+    ) {
+      return false;
+    }
+    dispatchAuthSessionInvalidated({ code, path, userId: requestAuthUserId });
+    return true;
   };
 
   const dispatchVaultLockRequested = (reason: string) => {
-    if (typeof window === "undefined") return;
-    window.dispatchEvent(
-      new CustomEvent(VAULT_LOCK_REQUESTED_EVENT, {
-        detail: { reason, path },
-      }),
-    );
+    if (!isVaultSessionEpochCurrent(requestVaultEpoch)) return;
+    dispatchVaultLockRequestedForPath(path, reason);
   };
 
   const handleVaultOwnerAuthFailure = async (response: Response) => {
     if (
-      (response.status !== 401 && response.status !== 403) ||
-      !getAuthorizationBearer().startsWith("HCT:")
+      ![401, 403, 423, 503].includes(response.status) ||
+      !isVaultOwnerRequest ||
+      !vaultOwnerRequestStillBelongsToSession()
     ) {
       return;
     }
 
     const failure = await classifyVaultOwnerAuthFailure(response.clone());
+    if (!vaultOwnerRequestStillBelongsToSession()) return;
+    if (failure.verificationRequired && requestSessionOwner) {
+      dispatchAuthSessionVerificationRequired(requestSessionOwner, failure.reason!);
+      return;
+    }
     if (failure.shouldLockVault) {
       dispatchVaultLockRequested(
         failure.reason || "Vault access token is no longer valid",
@@ -546,13 +668,65 @@ async function apiFetch(
       return null;
     }
 
+    const initiatingBearer = getAuthorizationBearer();
+    const initiatingSubject = decodeFirebaseTokenSubject(initiatingBearer);
+    const initiatingSessionIsCurrent = () => {
+      if (initiatingAuthUser?.uid) {
+        return (
+          initiatingSubject === initiatingAuthUser.uid &&
+          AuthService.getCurrentUser() === initiatingAuthUser
+        );
+      }
+      return Boolean(
+        initiatingNativeOwner &&
+        initiatingSubject === initiatingNativeOwner.userId &&
+        !AuthService.getCurrentUser() &&
+        isValidatedAuthSessionOwnerCurrent(initiatingNativeOwner),
+      );
+    };
+    const tokenBelongsToInitiatingSession = (token: string) =>
+      isTokenForCurrentAuthUser(token) ||
+      Boolean(
+        initiatingNativeOwner &&
+        initiatingSessionIsCurrent() &&
+        decodeFirebaseTokenSubject(token) === initiatingNativeOwner.userId,
+      );
+    // A previous account's request can receive its 401 after a replacement
+    // session signs in. Do not refresh or invalidate that replacement session.
+    if (!initiatingSessionIsCurrent()) return null;
+
     try {
       const freshToken = await AuthService.getIdToken(true);
-      const currentBearer = getAuthorizationBearer();
-      if (!freshToken || freshToken === currentBearer) {
-        if (!currentBearer || !isTokenForCurrentAuthUser(currentBearer)) {
-          dispatchAuthSessionInvalidated("Firebase session is no longer valid");
+      if (!freshToken || freshToken === initiatingBearer) {
+        if (
+          initiatingSessionIsCurrent() &&
+          (!initiatingBearer ||
+            !tokenBelongsToInitiatingSession(initiatingBearer))
+        ) {
+          if (requestAuthUserId) {
+            dispatchAuthSessionInvalidated({
+              code: "session_invalid",
+              path,
+              userId: requestAuthUserId,
+            });
+          }
         }
+        return null;
+      }
+
+      const refreshedSubject = decodeFirebaseTokenSubject(freshToken);
+      if (
+        !initiatingSessionIsCurrent() ||
+        !initiatingSubject ||
+        !refreshedSubject ||
+        initiatingSubject !== refreshedSubject ||
+        !tokenBelongsToInitiatingSession(freshToken)
+      ) {
+        // A 401 refresh may finish after an account switch. Replaying the
+        // original body with the replacement account's token would turn an
+        // A-owned mutation (including contact proofs) into a B-owned write.
+        // Return the original 401; the new session remains valid and must not
+        // be invalidated because an old request completed late.
         return null;
       }
 
@@ -567,7 +741,14 @@ async function apiFetch(
       });
     } catch (error) {
       console.warn("[ApiService] Firebase auth refresh failed:", error);
-      dispatchAuthSessionInvalidated("Firebase session refresh failed");
+      const code = authSessionInvalidationCodeFromFirebaseError(error);
+      if (code && requestAuthUserId && initiatingSessionIsCurrent()) {
+        dispatchAuthSessionInvalidated({
+          code,
+          path,
+          userId: requestAuthUserId,
+        });
+      }
       return null;
     }
   };
@@ -608,6 +789,25 @@ async function apiFetch(
       durationMs: Math.max(0, Date.now() - requestStartedAt),
       routeId,
     });
+  };
+
+  const settleAuthenticatedResponse = async (
+    response: Response,
+  ): Promise<Response> => {
+    await handleVaultOwnerAuthFailure(response);
+    if (await dispatchTerminalAuthCodeFromResponse(response)) {
+      recordApiRequestMetric(response.status);
+      return response;
+    }
+    if (
+      response.status === 401 &&
+      !(await responseLooksLikeAuthServiceUnavailable(response))
+    ) {
+      const retryResponse = await retryWithFreshFirebaseToken();
+      if (retryResponse) return retryResponse;
+    }
+    recordApiRequestMetric(response.status);
+    return response;
   };
 
   // Dynamically import tracker to avoid creating a hard dependency for environments
@@ -672,13 +872,12 @@ async function apiFetch(
       ) {
         if (options.body instanceof FormData) {
           // Multipart uploads route through native plugins; keep fetch fallback for safety.
-          const formResponse = await fetch(url, {
+          const formResponse = await fetchWithWebTimeout(url, {
             ...options,
             credentials: "include",
             headers: mergedHeaders,
           });
-          recordApiRequestMetric(formResponse.status);
-          return formResponse;
+          return await settleAuthenticatedResponse(formResponse);
         }
         if (typeof options.body === "string") {
           const contentType =
@@ -756,9 +955,7 @@ async function apiFetch(
         nativeResponse = await CapacitorHttp.request(request);
       }
       const response = toResponse(nativeResponse);
-      await handleVaultOwnerAuthFailure(response);
-      recordApiRequestMetric(response.status);
-      return response;
+      return await settleAuthenticatedResponse(response);
     }
 
     const response = await fetchWithWebTimeout(url, {
@@ -766,233 +963,12 @@ async function apiFetch(
       credentials: "include",
       headers: mergedHeaders,
     });
-    await handleVaultOwnerAuthFailure(response);
-    if (
-      response.status === 401 &&
-      !(await responseLooksLikeAuthServiceUnavailable(response))
-    ) {
-      const retryResponse = await retryWithFreshFirebaseToken();
-      if (retryResponse) {
-        return retryResponse;
-      }
-    }
-    recordApiRequestMetric(response.status);
-    return response;
+    return await settleAuthenticatedResponse(response);
   } catch (error) {
     recordApiRequestMetric(null);
     throw error;
   } finally {
     trackEnd?.();
-  }
-}
-
-type VoiceTransportTimingState = {
-  turnStartMs: number;
-  lastStageMs: number;
-};
-
-const voiceTransportTimingByTurn = new Map<string, VoiceTransportTimingState>();
-
-function emitVoiceTransportStage(
-  turnId: string | undefined,
-  stage: string,
-  metadata: Record<string, unknown> = {},
-  options?: { finalize?: boolean },
-): void {
-  if (!turnId) return;
-  const nowMs = performance.now();
-  const existing = voiceTransportTimingByTurn.get(turnId);
-  if (!existing) {
-    voiceTransportTimingByTurn.set(turnId, {
-      turnStartMs: nowMs,
-      lastStageMs: nowMs,
-    });
-  }
-  const current = voiceTransportTimingByTurn.get(turnId)!;
-  const sincePrevMs = existing
-    ? Math.max(0, Math.round(nowMs - existing.lastStageMs))
-    : 0;
-  const sinceTurnStartMs = Math.max(0, Math.round(nowMs - current.turnStartMs));
-  voiceTransportTimingByTurn.set(turnId, {
-    turnStartMs: current.turnStartMs,
-    lastStageMs: nowMs,
-  });
-
-  console.info("[KAI_VOICE_TRACE_TRANSPORT]", {
-    turn_id: turnId,
-    timestamp: new Date().toISOString(),
-    stage,
-    since_prev_ms: sincePrevMs,
-    since_turn_start_ms: sinceTurnStartMs,
-    ...metadata,
-  });
-
-  if (options?.finalize) {
-    voiceTransportTimingByTurn.delete(turnId);
-  }
-}
-
-async function voiceFetch(
-  path: string,
-  options: RequestInit = {},
-): Promise<Response> {
-  const transport = getVoiceTransportMode();
-  const directRequired = isVoiceDirectBackendRequired();
-  const requestStartedAt = Date.now();
-  const httpMethod = (options.method || "GET").toUpperCase();
-  const routeId =
-    typeof window !== "undefined"
-      ? resolveRouteId(window.location.pathname)
-      : undefined;
-  const turnIdHeaderRaw =
-    options.headers instanceof Headers
-      ? options.headers.get("X-Voice-Turn-Id") ||
-        options.headers.get("x-voice-turn-id")
-      : Array.isArray(options.headers)
-        ? options.headers.find(
-            ([key]) => String(key).toLowerCase() === "x-voice-turn-id",
-          )?.[1]
-        : options.headers && typeof options.headers === "object"
-          ? (options.headers as Record<string, string>)["X-Voice-Turn-Id"] ||
-            (options.headers as Record<string, string>)["x-voice-turn-id"]
-          : undefined;
-  const turnIdHeader = turnIdHeaderRaw || undefined;
-  if (directRequired && transport.mode !== "direct_backend") {
-    const reason = `VOICE_DIRECT_BACKEND_REQUIRED:${transport.reason}`;
-    emitVoiceTransportStage(
-      turnIdHeader,
-      "transport_config_invalid",
-      {
-        route: path,
-        mode: transport.mode,
-        reason: transport.reason,
-        direct_required: true,
-        error: reason,
-      },
-      { finalize: true },
-    );
-    throw new Error(reason);
-  }
-  if (transport.mode !== "direct_backend") {
-    emitVoiceTransportStage(turnIdHeader, "transport_request_started", {
-      route: path,
-      mode: "nextjs_proxy",
-      reason: transport.reason,
-      direct_required: directRequired,
-    });
-    console.info(
-      `[VOICE_NET] transport=nextjs_proxy route=${path} reason=${transport.reason} turn_id=${turnIdHeader || "unknown"}`,
-    );
-    try {
-      const response = await apiFetch(path, options);
-      emitVoiceTransportStage(
-        turnIdHeader,
-        "transport_response_received",
-        {
-          route: path,
-          mode: "nextjs_proxy",
-          status: response.status,
-        },
-        { finalize: true },
-      );
-      return response;
-    } catch (error) {
-      emitVoiceTransportStage(
-        turnIdHeader,
-        "transport_response_received",
-        {
-          route: path,
-          mode: "nextjs_proxy",
-          status: 0,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        { finalize: true },
-      );
-      throw error;
-    }
-  }
-
-  const backend = transport.backendUrl || getEnvBackendUrl();
-  const url = `${backend}${path}`;
-  const requestId = getOrCreateRequestId(options.headers);
-  const requestTimestampMs = getOrCreateRequestTimestampMs(options.headers);
-  const mergedHeaders: Record<string, string> = {};
-  if (!(options.body instanceof FormData)) {
-    mergedHeaders["Content-Type"] = "application/json";
-  }
-
-  if (options.headers) {
-    if (options.headers instanceof Headers) {
-      options.headers.forEach((value, key) => {
-        mergedHeaders[key] = value;
-      });
-    } else if (Array.isArray(options.headers)) {
-      for (const [key, value] of options.headers) {
-        mergedHeaders[String(key)] = String(value);
-      }
-    } else {
-      for (const [key, value] of Object.entries(options.headers)) {
-        if (value === undefined || value === null) continue;
-        mergedHeaders[key] = String(value);
-      }
-    }
-  }
-  mergedHeaders[REQUEST_ID_HEADER] = requestId;
-  mergedHeaders[REQUEST_TIMESTAMP_HEADER] = String(requestTimestampMs);
-
-  const recordVoiceRequestMetric = (statusCode: number | null) => {
-    trackApiRequestCompleted({
-      path,
-      httpMethod,
-      statusCode,
-      durationMs: Math.max(0, Date.now() - requestStartedAt),
-      routeId,
-    });
-  };
-
-  console.info(
-    `[VOICE_NET] transport=direct_backend route=${path} reason=${transport.reason} url=${url} turn_id=${turnIdHeader || "unknown"}`,
-  );
-  emitVoiceTransportStage(turnIdHeader, "transport_request_started", {
-    route: path,
-    mode: "direct_backend",
-    reason: transport.reason,
-    target_url: url,
-  });
-  try {
-    const response = await fetch(url, {
-      ...options,
-      headers: mergedHeaders,
-    });
-    recordVoiceRequestMetric(response.status);
-    emitVoiceTransportStage(
-      turnIdHeader,
-      "transport_response_received",
-      {
-        route: path,
-        mode: "direct_backend",
-        status: response.status,
-      },
-      { finalize: true },
-    );
-    return response;
-  } catch (error) {
-    recordVoiceRequestMetric(null);
-    emitVoiceTransportStage(
-      turnIdHeader,
-      "transport_response_received",
-      {
-        route: path,
-        mode: "direct_backend",
-        status: 0,
-        reason: "direct_fetch_failed",
-        direct_required: directRequired,
-        fail_fast_voice: isVoiceFailFastEnabled(),
-        error: error instanceof Error ? error.message : String(error),
-      },
-      { finalize: true },
-    );
-    throw error;
   }
 }
 
@@ -1442,201 +1418,6 @@ export class ApiService {
     return getDirectBackendUrl();
   }
 
-  static async composeKaiVoiceReply(data: {
-    userId: string;
-    vaultOwnerToken: string;
-    transcript: string;
-    response: Record<string, unknown>;
-    appState?: AppRuntimeState;
-    context?: Record<string, unknown>;
-    structuredContext?: unknown;
-    turnId?: string;
-    responseId?: string;
-    mode?: string;
-    actionId?: string | null;
-    slots?: Record<string, unknown>;
-    guards?: string[];
-    replyStrategy?: string;
-    clarification?: Record<string, unknown> | null;
-    actionCompletion?: string | null;
-    actionResult?: Record<string, unknown> | null;
-    memoryShort?: unknown[];
-    memoryRetrieved?: unknown[];
-    voiceTurnId?: string;
-    signal?: AbortSignal;
-  }): Promise<Response> {
-    return voiceFetch("/api/kai/voice/compose", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${data.vaultOwnerToken}`,
-        ...(data.voiceTurnId ? { "X-Voice-Turn-Id": data.voiceTurnId } : {}),
-      },
-      body: JSON.stringify({
-        user_id: data.userId,
-        transcript: data.transcript,
-        response: data.response,
-        app_state: data.appState,
-        context: data.context || {},
-        context_structured: data.structuredContext || {},
-        turn_id: data.turnId,
-        response_id: data.responseId,
-        mode: data.mode,
-        action_id: data.actionId,
-        slots: data.slots || {},
-        guards: data.guards || [],
-        reply_strategy: data.replyStrategy,
-        clarification: data.clarification ?? null,
-        action_completion: data.actionCompletion ?? null,
-        action_result: data.actionResult ?? null,
-        memory_short: data.memoryShort || [],
-        memory_retrieved: data.memoryRetrieved || [],
-      }),
-      signal: data.signal,
-    });
-  }
-
-  static async planOneVoiceIntent(data: {
-    userId: string;
-    vaultOwnerToken: string;
-    transcript: string;
-    context?: Record<string, unknown>;
-    appState?: AppRuntimeState;
-    plannerV2?: {
-      turnId: string;
-      transcriptFinal: string;
-      structuredContext?: unknown;
-      memoryShort?: unknown[];
-      memoryRetrieved?: unknown[];
-    };
-    voiceTurnId?: string;
-    signal?: AbortSignal;
-  }): Promise<Response> {
-    return voiceFetch("/api/one/voice/plan", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${data.vaultOwnerToken}`,
-        ...(data.voiceTurnId ? { "X-Voice-Turn-Id": data.voiceTurnId } : {}),
-      },
-      body: JSON.stringify({
-        user_id: data.userId,
-        transcript: data.transcript,
-        context: data.context || {},
-        app_state: data.appState,
-        turn_id: data.plannerV2?.turnId,
-        transcript_final: data.plannerV2?.transcriptFinal,
-        context_structured: data.plannerV2?.structuredContext,
-        memory_short: data.plannerV2?.memoryShort || [],
-        memory_retrieved: data.plannerV2?.memoryRetrieved || [],
-      }),
-      signal: data.signal,
-    });
-  }
-
-  static async composeOneVoiceReply(data: {
-    userId: string;
-    vaultOwnerToken: string;
-    transcript: string;
-    response: Record<string, unknown>;
-    appState?: AppRuntimeState;
-    context?: Record<string, unknown>;
-    structuredContext?: unknown;
-    turnId?: string;
-    responseId?: string;
-    mode?: string;
-    actionId?: string | null;
-    slots?: Record<string, unknown>;
-    guards?: string[];
-    replyStrategy?: string;
-    clarification?: Record<string, unknown> | null;
-    actionCompletion?: string | null;
-    actionResult?: Record<string, unknown> | null;
-    memoryShort?: unknown[];
-    memoryRetrieved?: unknown[];
-    voiceTurnId?: string;
-    signal?: AbortSignal;
-  }): Promise<Response> {
-    return voiceFetch("/api/one/voice/compose", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${data.vaultOwnerToken}`,
-        ...(data.voiceTurnId ? { "X-Voice-Turn-Id": data.voiceTurnId } : {}),
-      },
-      body: JSON.stringify({
-        user_id: data.userId,
-        transcript: data.transcript,
-        response: data.response,
-        app_state: data.appState,
-        context: data.context || {},
-        context_structured: data.structuredContext || {},
-        turn_id: data.turnId,
-        response_id: data.responseId,
-        mode: data.mode,
-        action_id: data.actionId,
-        slots: data.slots || {},
-        guards: data.guards || [],
-        reply_strategy: data.replyStrategy,
-        clarification: data.clarification ?? null,
-        action_completion: data.actionCompletion ?? null,
-        action_result: data.actionResult ?? null,
-        memory_short: data.memoryShort || [],
-        memory_retrieved: data.memoryRetrieved || [],
-      }),
-      signal: data.signal,
-    });
-  }
-
-  static async planOneGoal(data: {
-    vaultOwnerToken: string;
-    transcript?: string | null;
-    actionId?: string | null;
-    candidateActionId?: string | null;
-    slots?: Record<string, unknown>;
-    appState?: AppRuntimeState;
-    entrypoint: "voice" | "chat" | "typed_search" | "command_bar" | "ui";
-    signal?: AbortSignal;
-  }): Promise<Response> {
-    return voiceFetch("/api/one/goal/plan", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${data.vaultOwnerToken}`,
-      },
-      body: JSON.stringify({
-        transcript: data.transcript ?? null,
-        action_id: data.actionId ?? null,
-        candidate_action_id: data.candidateActionId ?? null,
-        slots: data.slots || {},
-        app_state: data.appState || {},
-        entrypoint: data.entrypoint,
-      }),
-      signal: data.signal,
-    });
-  }
-
-  static async composeOneGoal(data: {
-    vaultOwnerToken: string;
-    goalId: string;
-    actionId: string;
-    state: string;
-    events?: Array<Record<string, unknown>>;
-    result?: Record<string, unknown> | null;
-    signal?: AbortSignal;
-  }): Promise<Response> {
-    return voiceFetch("/api/one/goal/compose", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${data.vaultOwnerToken}`,
-      },
-      body: JSON.stringify({
-        goal_id: data.goalId,
-        action_id: data.actionId,
-        state: data.state,
-        events: data.events || [],
-        result: data.result ?? null,
-      }),
-      signal: data.signal,
-    });
-  }
-
   // ==================== App Config ====================
 
   /**
@@ -1662,6 +1443,63 @@ export class ApiService {
     } catch (error) {
       console.warn("[ApiService] getAppReviewModeConfig failed:", error);
       return { enabled: false };
+    }
+  }
+
+  /**
+   * One Live Voice readiness: the single server-owned flag the app reads to
+   * decide which voice owner mounts. Never a build-time flag. Fails closed.
+   *
+   * Web: `/api/one/voice/readiness` through the Next.js proxy (forwards the
+   * Firebase bearer). Native: backend directly.
+   */
+  static async getOneVoiceReadiness(): Promise<{
+    enabled: boolean;
+    status: "ready" | "disabled" | "not_configured" | "provider_unavailable";
+    model: string | null;
+    location: string | null;
+    wsPath: string;
+  }> {
+    const closed = {
+      enabled: false,
+      status: "disabled" as const,
+      model: null,
+      location: null,
+      wsPath: "/api/one/voice/live",
+    };
+    try {
+      const authToken = await this.getFirebaseToken();
+      if (!authToken) return closed;
+      const response = await apiFetch("/api/one/voice/readiness", {
+        method: "GET",
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) return closed;
+      const data = (await response.json().catch(() => ({}))) as {
+        enabled?: unknown;
+        status?: unknown;
+        model?: unknown;
+        location?: unknown;
+        ws_path?: unknown;
+      };
+      const status = data.status;
+      return {
+        enabled: data.enabled === true,
+        status:
+          status === "ready" ||
+          status === "disabled" ||
+          status === "not_configured" ||
+          status === "provider_unavailable"
+            ? status
+            : "disabled",
+        model: typeof data.model === "string" ? data.model : null,
+        location: typeof data.location === "string" ? data.location : null,
+        wsPath: typeof data.ws_path === "string" ? data.ws_path : "/api/one/voice/live",
+      };
+    } catch (error) {
+      console.warn("[ApiService] getOneVoiceReadiness failed:", error);
+      return closed;
     }
   }
 
@@ -1853,7 +1691,8 @@ export class ApiService {
    * resolves against the Python backend — targets the web origin explicitly.
    */
   static async notifyAuthMail(
-    event: "signed_in" | "signed_out" | "phone_conflict" | "capabilities_linked",
+    event:
+      "signed_in" | "signed_out" | "phone_conflict" | "capabilities_linked",
     options?: {
       phoneNumber?: string;
       /** Currently connected capability ids; the server diffs these. */
@@ -1863,18 +1702,24 @@ export class ApiService {
       idToken?: string;
     },
   ): Promise<boolean> {
+    if (shouldSkipAuthMailForAutomation()) return false;
+
     try {
       const idToken = options?.idToken || (await this.getFirebaseToken());
       if (!idToken) return false;
 
-      const origin = Capacitor.isNativePlatform() ? resolveRuntimeFrontendUrl() : "";
+      const origin = Capacitor.isNativePlatform()
+        ? resolveRuntimeFrontendUrl()
+        : "";
       const response = await apiFetch(`${origin}/api/auth/mail`, {
         method: "POST",
         headers: { Authorization: `Bearer ${idToken}` },
         body: JSON.stringify({
           event,
           ...(options?.phoneNumber ? { phoneNumber: options.phoneNumber } : {}),
-          ...(options?.capabilities ? { capabilities: options.capabilities } : {}),
+          ...(options?.capabilities
+            ? { capabilities: options.capabilities }
+            : {}),
           ...(options?.observed ? { observed: options.observed } : {}),
         }),
       });
@@ -2122,6 +1967,41 @@ export class ApiService {
     return apiFetch("/api/auth/session", {
       method: "DELETE",
     });
+  }
+
+  /**
+   * Confirm that a cached Firebase identity still represents a live account.
+   * Run this before a forced refresh because Firebase collapses remote account
+   * deletion into a generic `user-token-expired` client error, while the
+   * backend can return the explicit `AUTH_ACCOUNT_NOT_FOUND` lifecycle code.
+   */
+  static async getAccountSessionStatus(idToken: string): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = globalThis.setTimeout(() => {
+      controller.abort(
+        new DOMException(
+          "Account session validation timed out.",
+          "TimeoutError",
+        ),
+      );
+    }, ACCOUNT_SESSION_STATUS_REQUEST_TIMEOUT_MS);
+
+    try {
+      return await apiFetch("/api/account/session-status", {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          "Cache-Control": "no-store",
+          // Session validation owns its refresh/re-probe sequence so a generic
+          // cached-token 401 cannot be collapsed into a terminal result here.
+          [AUTH_REFRESH_RETRY_HEADER]: "1",
+        },
+      });
+    } finally {
+      globalThis.clearTimeout(timeout);
+    }
   }
 
   // ==================== Consent ====================
@@ -2372,6 +2252,7 @@ export class ApiService {
     token: string;
     userId: string;
     scope?: string;
+    requestId?: string;
   }): Promise<Response> {
     const vaultOwnerToken = data.token;
     trackEvent("consent_action_submitted", {
@@ -2418,6 +2299,7 @@ export class ApiService {
         const result = await HushhConsent.revokeConsent({
           userId: data.userId,
           scope: normalizedScope,
+          requestId: data.requestId,
           vaultOwnerToken,
         });
 
@@ -2515,7 +2397,9 @@ export class ApiService {
           // must not share a bucket, or the two platforms are not comparable.
           ...(Array.isArray(consents)
             ? {
-                pending_count_bucket: consentPendingCountBucket(consents.length),
+                pending_count_bucket: consentPendingCountBucket(
+                  consents.length,
+                ),
               }
             : {}),
           load_surface: loadSurface,
@@ -2943,6 +2827,11 @@ export class ApiService {
   }
 
   // Helper to get Firebase ID Token for Native calls
+  /** Public accessor for callers outside this class (voice session tickets). */
+  static async getFirebaseIdToken(): Promise<string | undefined> {
+    return this.getFirebaseToken();
+  }
+
   private static async getFirebaseToken(): Promise<string | undefined> {
     if (Capacitor.isNativePlatform()) {
       try {
@@ -3133,27 +3022,11 @@ export class ApiService {
     expires_at: number;
     model: string;
     tier: string;
+    /** Server-minted opaque greeting scope; never a Firebase UID. */
+    voice_session_scope: string | null;
   }> {
-    const firebaseIdToken = await this.getFirebaseToken();
-    const response = await ApiService.apiFetch("/api/one/adk/relay-session", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(firebaseIdToken
-          ? { Authorization: `Bearer ${firebaseIdToken}` }
-          : {}),
-      },
-      body: JSON.stringify({}),
-      signal: data?.signal,
-    });
-    if (!response.ok) {
-      const error = new Error(
-        `One voice relay session failed: ${response.status}`,
-      ) as Error & { status: number };
-      error.status = response.status;
-      throw error;
-    }
-    return response.json();
+    void data;
+    throw new Error("ONE_LIVE_RETIRED: use Talk to One commands.");
   }
 
   /**
@@ -3209,10 +3082,14 @@ export class ApiService {
         );
       }
       if (status === "permission_denied") {
-        throw new Error("This Google account needs Vertex AI User access for that project.");
+        throw new Error(
+          "This Google account needs Vertex AI User access for that project.",
+        );
       }
       if (status === "api_not_enabled") {
-        throw new Error("Enable the Vertex AI API in this Google Cloud project, then try again.");
+        throw new Error(
+          "Enable the Vertex AI API in this Google Cloud project, then try again.",
+        );
       }
       if (status === "unsupported_model") {
         throw new Error("This Gemini key cannot access the model One uses.");
@@ -3222,34 +3099,22 @@ export class ApiService {
     return response.json() as Promise<{ status: "ready" }>;
   }
 
-  /**
-   * Build the WebSocket URL for the server-side One ADK live relay.
-   *
-   * The relay runs One's agent tree through ADK's Runner over Vertex AI via
-   * ADC on the backend; the browser only streams audio frames.
-   *
-   * WebSockets cannot carry an Authorization header from the browser and do
-   * not pass through the Next.js middleware proxy, so the browser first mints
-   * a short-lived opaque relay ticket over HTTPS. The WebSocket URL carries
-   * only that ticket, never the Firebase bearer. App context (screen, consent
-   * token) rides in post-connect app_context frames.
-   */
+  /** Historical Live compatibility surface. It never opens a network session. */
+  static async getOneAdkLiveRelaySession(data?: {
+    signal?: AbortSignal;
+  }): Promise<{
+    relayUrl: string;
+    voiceSessionScope: null;
+  }> {
+    void data;
+    throw new Error("ONE_LIVE_RETIRED: use Talk to One commands.");
+  }
+
   static async getOneAdkLiveRelayUrl(data?: {
     signal?: AbortSignal;
   }): Promise<string> {
-    const backend = resolveRuntimeBackendUrl();
-    // Apply the same Android-emulator localhost rewrite the HTTP layer uses.
-    // Without it, the ticket mint succeeds (CapacitorHttp normalizes) while
-    // the WS connect to ws://localhost fails inside the emulator.
-    const normalizedBackend = backend ? normalizeNativeBackendUrl(backend) : "";
-    const base =
-      normalizedBackend ||
-      (typeof window !== "undefined" ? window.location.origin : "");
-    const wsBase = base.replace(/^http/i, "ws");
-    const url = new URL(`${wsBase}/api/one/adk/live`);
-    const relaySession = await this.createOneAdkRelaySession(data);
-    url.searchParams.set("relay_ticket", relaySession.relay_ticket);
-    return url.toString();
+    void data;
+    throw new Error("ONE_LIVE_RETIRED: use Talk to One commands.");
   }
 
   static async listAgentChatConversations(data: {
@@ -3346,6 +3211,8 @@ export class ApiService {
 
     // Native: use Kai plugin for real-time SSE (WKWebView buffers fetch() response body)
     if (Capacitor.isNativePlatform()) {
+      const nativeStreamPath = "/api/kai/portfolio/import/stream";
+      const requestOwner = snapshotVaultOwnerStreamSession();
       try {
         const file = params.formData.get("file") as File;
         const userId = params.formData.get("user_id") as string;
@@ -3479,6 +3346,11 @@ export class ApiService {
               }
               close();
             } catch (error) {
+              handleNativeVaultOwnerStreamError(
+                error,
+                nativeStreamPath,
+                requestOwner,
+              );
               const nativeBridge =
                 typeof window !== "undefined"
                   ? window.__HUSHH_NATIVE_TEST__
@@ -3610,6 +3482,8 @@ export class ApiService {
       portfolioStreamLastError: "",
     });
     if (Capacitor.isNativePlatform()) {
+      const nativeStreamPath = `/api/kai/portfolio/import/run/${encodeURIComponent(params.runId)}/stream`;
+      const requestOwner = snapshotVaultOwnerStreamSession();
       try {
         const vaultOwnerToken = params.vaultOwnerToken;
         if (!vaultOwnerToken) {
@@ -3741,6 +3615,11 @@ export class ApiService {
               });
               close();
             } catch (error) {
+              handleNativeVaultOwnerStreamError(
+                error,
+                nativeStreamPath,
+                requestOwner,
+              );
               updateNativePortfolioImportDebug({
                 portfolioStreamState: "error",
                 portfolioStreamLastError:
@@ -4341,6 +4220,8 @@ export class ApiService {
 
     // Native: use Kai plugin for real-time SSE (WKWebView buffers fetch() response body)
     if (Capacitor.isNativePlatform()) {
+      const nativeStreamPath = "/api/kai/portfolio/analyze-losers/stream";
+      const requestOwner = snapshotVaultOwnerStreamSession();
       try {
         const vaultOwnerToken = data.vaultOwnerToken;
         if (!vaultOwnerToken) {
@@ -4430,6 +4311,11 @@ export class ApiService {
               }
               close();
             } catch (error) {
+              handleNativeVaultOwnerStreamError(
+                error,
+                nativeStreamPath,
+                requestOwner,
+              );
               fail(error);
             } finally {
               data.signal?.removeEventListener("abort", handleAbort);
@@ -4565,6 +4451,8 @@ export class ApiService {
 
     // Native: use Kai plugin and expose a ReadableStream of SSE text
     if (Capacitor.isNativePlatform()) {
+      const nativeStreamPath = "/api/kai/analyze/stream";
+      const requestOwner = snapshotVaultOwnerStreamSession();
       try {
         const vaultOwnerToken = data.vaultOwnerToken;
         if (!vaultOwnerToken) {
@@ -4657,6 +4545,11 @@ export class ApiService {
               }
               close();
             } catch (error) {
+              handleNativeVaultOwnerStreamError(
+                error,
+                nativeStreamPath,
+                requestOwner,
+              );
               fail(error);
             } finally {
               data.signal?.removeEventListener("abort", handleAbort);
@@ -4794,6 +4687,8 @@ export class ApiService {
     };
 
     if (Capacitor.isNativePlatform()) {
+      const nativeStreamPath = `/api/kai/analyze/run/${encodeURIComponent(data.runId)}/stream`;
+      const requestOwner = snapshotVaultOwnerStreamSession();
       try {
         const vaultOwnerToken = data.vaultOwnerToken;
         if (!vaultOwnerToken) {
@@ -4886,6 +4781,11 @@ export class ApiService {
               }
               close();
             } catch (error) {
+              handleNativeVaultOwnerStreamError(
+                error,
+                nativeStreamPath,
+                requestOwner,
+              );
               fail(error);
             } finally {
               data.signal?.removeEventListener("abort", handleAbort);

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
 
 from ag_ui.core import RunAgentInput
@@ -14,7 +15,8 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from api.middleware import require_vault_owner_token
-from api.routes.one.live_context import sanitize_live_context
+from api.routes.one.agent_context import sanitize_agent_context
+from api.routes.one.command_proposals import router as command_proposals_router
 from api.utils.firebase_auth import verify_firebase_bearer
 from hushh_mcp.one_adk.agent_tree import (
     ONE_APP_NAME,
@@ -29,10 +31,12 @@ from hushh_mcp.one_adk.agent_tree import (
     build_one_text_agent,
 )
 from hushh_mcp.one_adk.agui_action_tools import action_id_from_tool_name
+from hushh_mcp.one_adk.agui_turn_timing import HEAD_INTRO, HEAD_ONE, TimedADKAgent
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.request_secrets import store_request_secret
-from hushh_mcp.services.action_gateway import get_action_gateway_action
+from hushh_mcp.services.action_gateway import get_action_gateway_action, list_action_gateway_actions
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Agent One"])
 
 
@@ -64,7 +68,7 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
             firebase_uid = ""
     forwarded = input_data.forwarded_props if isinstance(input_data.forwarded_props, dict) else {}
     screen_payload = forwarded.get("screenContext")
-    screen_context = sanitize_live_context(
+    screen_context = sanitize_agent_context(
         screen_payload if isinstance(screen_payload, dict) else {}
     )
 
@@ -139,18 +143,33 @@ _intro_capabilities = {
     "multiAgent": {"supported": False, "delegation": False, "handoffs": False},
     "humanInTheLoop": {"supported": False, "interrupts": False},
 }
-_agent = ADKAgent.from_app(
+# The bridge defaults to 10 concurrent executions per process, across every
+# person, and keeps a slot for 600 s when a run leaves a pending tool call. Ten
+# people mid-confirmation would lock the route for everyone. These bounds are
+# per process, not per person; TimedADKAgent releases slots for runs that end
+# in error or disconnect. Measured 2026-09-14 on localhost with the latency
+# driver (agent-chat-migration-baseline).
+_MAX_CONCURRENT_EXECUTIONS = 64
+_EXECUTION_TIMEOUT_SECONDS = 120
+
+_agent = TimedADKAgent.from_app(
     _app,
+    head=HEAD_ONE,
     user_id_extractor=_user_id,
+    max_concurrent_executions=_MAX_CONCURRENT_EXECUTIONS,
+    execution_timeout_seconds=_EXECUTION_TIMEOUT_SECONDS,
     session_service=_session_service,
     use_in_memory_services=True,
     use_thread_id_as_session_id=True,
     emit_messages_snapshot=True,
     capabilities=_authenticated_capabilities,
 )
-_intro_agent = ADKAgent.from_app(
+_intro_agent = TimedADKAgent.from_app(
     _intro_app,
+    head=HEAD_INTRO,
     user_id_extractor=_user_id,
+    max_concurrent_executions=_MAX_CONCURRENT_EXECUTIONS,
+    execution_timeout_seconds=_EXECUTION_TIMEOUT_SECONDS,
     # Anonymous and Firebase-only pre-vault turns intentionally remain
     # ephemeral. Durable history begins only after VAULT_OWNER authority is
     # present, where the encrypted owner-bound store can enforce teardown.
@@ -299,4 +318,66 @@ async def delete_conversation(
     return {"conversation_id": conversation_id, "deleted": True}
 
 
-__all__ = ["router"]
+# ── Proposal mode: action search and structured proposals ────────────────────
+
+
+class ActionSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2048)
+    context: dict[str, Any] | None = None
+    limit: int = Field(default=10, ge=1, le=20)
+
+
+@router.post("/api/one/actions/search")
+async def search_actions_endpoint(
+    payload: ActionSearchRequest,
+    request: Request,
+    token: dict = Depends(require_vault_owner_token),
+):
+    """Return related generated capabilities for a natural-language query.
+
+    This is a read-only search. No action is executed.
+    """
+    from hushh_mcp.one_adk.action_retrieval import search_actions_for_command_palette
+
+    query = payload.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query must not be empty.")
+
+    app_runtime_state: dict[str, Any] = {}
+    if isinstance(payload.context, dict):
+        # Only redacted routing fields cross this search boundary. The action
+        # gateway remains the execution authority and revalidates everything.
+        for key in ("screen", "available_action_ids", "executable_action_ids"):
+            value = payload.context.get(key)
+            if key == "screen" and isinstance(value, str):
+                app_runtime_state[key] = value
+            elif (
+                key != "screen"
+                and isinstance(value, list)
+                and all(isinstance(item, str) for item in value)
+            ):
+                app_runtime_state[key] = value[:100]
+    screen = request.headers.get("x-hushh-screen")
+    if screen:
+        app_runtime_state["screen"] = screen
+
+    try:
+        results = search_actions_for_command_palette(
+            query,
+            {"actions": list_action_gateway_actions()},
+            app_runtime_state=app_runtime_state,
+            limit=payload.limit,
+        )
+    except Exception:
+        logger.exception("action_search_failed")
+        raise HTTPException(status_code=500, detail="Search temporarily unavailable.")
+
+    return {
+        "status": "ok",
+        "query": query,
+        "total": len(results),
+        "results": results,
+    }
+
+
+router.include_router(command_proposals_router)

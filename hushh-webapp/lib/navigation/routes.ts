@@ -82,7 +82,7 @@ export function resolvePersonRefFromProfilePathname(
 export const ROUTES = {
   HOME: "/",
   PERSON_PROFILE: "/people/[personRef]",
-  /** Canonical public knowledge workspace; root remains anonymous onboarding. */
+  /** Canonical public knowledge workspace; root is dual-mode Chat/onboarding. */
   WELCOME: "/welcome",
   ONE_HOME: "/one",
   DEVELOPERS: "/developers",
@@ -146,9 +146,13 @@ export const ROUTES = {
   EMAIL_AGENT: "/one/email",
   CALENDAR: "/one/calendar",
   PKM: "/one/pkm",
+  PKM_RECENT: "/one/pkm/recent",
   ONE_MARKETPLACE: "/one/marketplace",
   /** Owner setup and management for the Apple Wallet profile pass. */
   ONE_WALLET_CARD: "/one/wallet-card",
+  ONE_WALLET: "/one/wallet",
+  /** Puppy One: the agent running on the owner's own machine. */
+  ONE_PUPPY: "/one/puppy",
   CONNECTED_SYSTEMS: "/one/connected-systems",
   /** Canonical One workspace for consent review and access management. */
   CONSENTS: "/one/consent",
@@ -156,7 +160,8 @@ export const ROUTES = {
   ONE_FEED: "/one/feed",
   /** Compatibility-only access manager route. Preserve inbound partner links. */
   LEGACY_CONSENTS: "/consents",
-  AGENT: "/agent",
+  /** Compatibility-only inbound path; the active chat surface is `/`. */
+  LEGACY_AGENT: "/agent",
   CONNECT: "/one/connect",
   CONNECT_SETTINGS: "/one/connect/settings",
   MARKETPLACE: "/marketplace",

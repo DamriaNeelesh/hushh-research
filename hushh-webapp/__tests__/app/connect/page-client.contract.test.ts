@@ -40,7 +40,10 @@ describe("Connect canonical surface contract", () => {
     expect(source).toContain("verified={Boolean(person.isRia)}");
 
     const avatarSource = readFileSync(
-      join(process.cwd(), "components/connections/connection-person-avatar.tsx"),
+      join(
+        process.cwd(),
+        "components/connections/connection-person-avatar.tsx",
+      ),
       "utf8",
     );
     expect(avatarSource).toContain("BadgeCheck");
@@ -173,15 +176,19 @@ describe("voice actions land on a surface that is actually showing", () => {
       "connect.open_nearby",
       "connect.search_people",
     ]) {
-      const start = source.indexOf(`useLocalOnboardingActionHandler("${action}"`);
+      const start = source.indexOf(
+        `useLocalOnboardingActionHandler("${action}"`,
+      );
       expect(start, action).toBeGreaterThan(-1);
-      const body = source.slice(start, source.indexOf("useLocalOnboardingActionHandler", start + 10));
+      const body = source.slice(
+        start,
+        source.indexOf("useLocalOnboardingActionHandler", start + 10),
+      );
       expect(body, action).toContain('selectSurface("all")');
       // And it does so before the hub tab changes, so the directory is active.
-      expect(
-        body.indexOf('selectSurface("all")'),
-        action,
-      ).toBeLessThan(body.indexOf("setTab("));
+      expect(body.indexOf('selectSurface("all")'), action).toBeLessThan(
+        body.indexOf("setTab("),
+      );
     }
   });
 });
@@ -194,11 +201,16 @@ describe("leaving a surface does not keep you inside a Circle", () => {
     const source = readFileSync(
       join(process.cwd(), "app/connect/page-client.tsx"),
       "utf8",
-    ).split("\r\n").join("\n");
+    )
+      .split("\r\n")
+      .join("\n");
 
     const start = source.indexOf("const selectSurface = useCallback(");
     expect(start).toBeGreaterThan(-1);
-    const body = source.slice(start, source.indexOf("const closeFlow", start) + 1 || start + 2000);
+    const body = source.slice(
+      start,
+      source.indexOf("const closeFlow", start) + 1 || start + 2000,
+    );
 
     expect(body).toContain('params.delete("action")');
     expect(body).toContain('params.delete("circleId")');
@@ -212,9 +224,14 @@ describe("leaving a surface does not keep you inside a Circle", () => {
 describe("the Location hub closes its flow when the tab changes", () => {
   it("clears the flow params rather than letting the effect reopen them", () => {
     const source = readFileSync(
-      join(process.cwd(), "components/one-location/redesign/location-redesign-hub.tsx"),
+      join(
+        process.cwd(),
+        "components/one-location/redesign/location-redesign-hub.tsx",
+      ),
       "utf8",
-    ).split("\r\n").join("\n");
+    )
+      .split("\r\n")
+      .join("\n");
 
     const start = source.indexOf("const setTab = useCallback(");
     expect(start).toBeGreaterThan(-1);
@@ -236,7 +253,9 @@ describe("the Circle flows do not spend the shared join rate limit", () => {
     const source = readFileSync(
       join(process.cwd(), "components/connect/circles/connect-circles-tab.tsx"),
       "utf8",
-    ).split("\r\n").join("\n");
+    )
+      .split("\r\n")
+      .join("\n");
 
     expect(source).toContain("withBusy(() => actions.resolveCode(code))");
     expect(source).not.toContain("onResolve={actions.resolveCode}");
@@ -253,7 +272,9 @@ describe("a deep link into Location is not treated as a first run", () => {
     const source = readFileSync(
       join(process.cwd(), "app/one/location/page.tsx"),
       "utf8",
-    ).split("\r\n").join("\n");
+    )
+      .split("\r\n")
+      .join("\n");
 
     const start = source.indexOf("const [locationOnboardingGate");
     const effect = source.slice(source.indexOf("if (loadError) {", start));
@@ -277,10 +298,15 @@ describe("the Location roster hands a connection request to Connect", () => {
     const source = readFileSync(
       join(process.cwd(), "app/one/location/page.tsx"),
       "utf8",
-    ).split("\r\n").join("\n");
+    )
+      .split("\r\n")
+      .join("\n");
 
     const start = source.indexOf("const handleConnectCircleMember");
-    const body = source.slice(start, source.indexOf("useCallback", start + 2000));
+    const body = source.slice(
+      start,
+      source.indexOf("useCallback", start + 2000),
+    );
 
     expect(body).toContain("ROUTES.CONNECT");
     expect(body).toContain("action=circle-detail");

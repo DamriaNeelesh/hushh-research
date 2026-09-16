@@ -148,4 +148,200 @@ final class NativeSupportTests: XCTestCase {
         XCTAssertEqual(nested["email"] as? String, "<redacted>")
         XCTAssertEqual(nested["errorClass"] as? String, "timeout")
     }
+
+    func testSessionPrivacyStateKeepsOneGenerationPerInactiveCycle() {
+        var state = HushhSessionPrivacyState()
+
+        state.protectForAppInactive()
+        let firstGeneration = state.generation
+        state.protectForAppInactive()
+
+        XCTAssertTrue(state.shielded)
+        XCTAssertEqual(firstGeneration, 1)
+        XCTAssertEqual(state.generation, firstGeneration)
+
+        state.markAppActive()
+        state.protectForAppInactive()
+
+        XCTAssertEqual(state.generation, firstGeneration + 1)
+    }
+
+    func testSessionPrivacyStateRejectsInactiveStaleAndRepeatedCompletion() {
+        var state = HushhSessionPrivacyState()
+
+        state.protectForAppInactive()
+        let staleGeneration = state.generation
+        XCTAssertFalse(
+            state.completeSessionValidation(
+                generation: staleGeneration,
+                appIsActive: false
+            )
+        )
+        XCTAssertTrue(state.shielded)
+
+        state.markAppActive()
+        state.protectForAppInactive()
+        let currentGeneration = state.generation
+        state.markAppActive()
+
+        XCTAssertFalse(
+            state.completeSessionValidation(
+                generation: staleGeneration,
+                appIsActive: true
+            )
+        )
+        XCTAssertTrue(
+            state.completeSessionValidation(
+                generation: currentGeneration,
+                appIsActive: true
+            )
+        )
+        XCTAssertFalse(state.shielded)
+        XCTAssertFalse(
+            state.completeSessionValidation(
+                generation: currentGeneration,
+                appIsActive: true
+            )
+        )
+    }
+
+    func testSessionPrivacyStatePreservesBackgroundDebtThroughTransientInactivity() {
+        var state = HushhSessionPrivacyState()
+        state.protectForAppInactive()
+        XCTAssertEqual(state.cause, "inactive")
+        state.markAppBackgrounded()
+        state.markAppActive()
+        let backgroundGeneration = state.generation
+        state.protectForAppInactive()
+        state.markAppActive()
+        XCTAssertEqual(state.cause, "background")
+        XCTAssertGreaterThan(state.generation, backgroundGeneration)
+        XCTAssertFalse(state.completeSessionValidation(generation: backgroundGeneration, appIsActive: true))
+        XCTAssertTrue(state.completeSessionValidation(generation: state.generation, appIsActive: true))
+        state.protectForAppInactive()
+        XCTAssertEqual(state.cause, "inactive")
+    }
+
+    func testSessionPrivacyRestartRejectsThePreviousDocumentGeneration() {
+        var state = HushhSessionPrivacyState()
+        state.protectForAppInactive()
+        state.markAppActive()
+        let oldGeneration = state.generation
+        state.restartSession()
+        XCTAssertEqual(state.cause, "restart")
+        XCTAssertTrue(state.shielded)
+        XCTAssertFalse(state.completeSessionValidation(generation: oldGeneration, appIsActive: true))
+        XCTAssertTrue(state.completeSessionValidation(generation: state.generation, appIsActive: true))
+    }
+
+    func testIMessagePublicationRejectsSupersededAndUninitializedGenerations() {
+        var state = HusshIMessagePublicationGeneration()
+        XCTAssertFalse(state.accepts(0))
+        XCTAssertFalse(state.accepts(-1))
+        let first = state.invalidate()
+        XCTAssertTrue(state.accepts(first))
+        let second = state.invalidate()
+        XCTAssertFalse(state.accepts(first))
+        XCTAssertTrue(state.accepts(second))
+    }
+
+    func testPrivacyRestartRejectsOldDocumentEvenAfterItReadsTheNewGeneration() {
+        var documents = HushhSessionPrivacyDocumentState()
+        XCTAssertFalse(documents.accepts("old-document"))
+        documents.observe("old-document")
+        XCTAssertTrue(documents.accepts("old-document"))
+        documents.restart()
+        documents.observe("old-document")
+        XCTAssertFalse(documents.accepts("old-document"))
+        documents.observe("new-document")
+        XCTAssertTrue(documents.accepts("new-document"))
+        documents.restart()
+        documents.observe("new-document")
+        XCTAssertFalse(documents.accepts("new-document"))
+    }
+
+    func testKaiStreamLifecycleClassifierAcceptsOnlyMatchingTypedStatuses() {
+        XCTAssertEqual(
+            KaiStreamLifecycleErrorClassifier.bridgeCode(
+                statusCode: 401,
+                body: #"{"detail":{"code":"AUTH_ACCOUNT_NOT_FOUND"}}"#
+            ),
+            "AUTH_ACCOUNT_NOT_FOUND"
+        )
+        XCTAssertEqual(
+            KaiStreamLifecycleErrorClassifier.bridgeCode(
+                statusCode: 423,
+                body: #"{"error":{"code":"AUTH_ACCOUNT_DELETION_IN_PROGRESS"}}"#
+            ),
+            "AUTH_ACCOUNT_DELETION_IN_PROGRESS"
+        )
+        XCTAssertEqual(
+            KaiStreamLifecycleErrorClassifier.bridgeCode(
+                statusCode: 503,
+                body: #"{"code":"AUTH_ACCOUNT_STATUS_UNAVAILABLE"}"#
+            ),
+            "AUTH_ACCOUNT_STATUS_UNAVAILABLE"
+        )
+    }
+
+    func testKaiStreamLifecycleClassifierFailsClosedForMismatchAndMalformedBodies() {
+        XCTAssertEqual(
+            KaiStreamLifecycleErrorClassifier.bridgeCode(
+                statusCode: 401,
+                body: #"{"code":"AUTH_ACCOUNT_DELETION_IN_PROGRESS"}"#
+            ),
+            "AUTH_VAULT_OWNER_INVALID"
+        )
+        XCTAssertEqual(
+            KaiStreamLifecycleErrorClassifier.bridgeCode(
+                statusCode: 423,
+                body: #"{"code":"AUTH_ACCOUNT_NOT_FOUND"}"#
+            ),
+            "HUSHH_HTTP_423"
+        )
+        XCTAssertEqual(
+            KaiStreamLifecycleErrorClassifier.bridgeCode(
+                statusCode: 403,
+                body: "not-json"
+            ),
+            "AUTH_VAULT_OWNER_INVALID"
+        )
+        XCTAssertEqual(
+            KaiStreamLifecycleErrorClassifier.bridgeCode(
+                statusCode: 500,
+                body: ""
+            ),
+            "HUSHH_HTTP_500"
+        )
+    }
+
+    func testKaiStreamLifecycleClassifierBoundsUntrustedErrorBodies() throws {
+        let oversizedBody = #"{"code":"AUTH_ACCOUNT_STATUS_UNAVAILABLE","padding":""#
+            + String(
+                repeating: "x",
+                count: KaiStreamLifecycleErrorClassifier.maxStreamErrorBodyBytes
+            )
+            + #""}"#
+        XCTAssertEqual(
+            KaiStreamLifecycleErrorClassifier.bridgeCode(
+                statusCode: 503,
+                body: oversizedBody
+            ),
+            "HUSHH_HTTP_503"
+        )
+
+        var deeplyNested: Any = "AUTH_ACCOUNT_STATUS_UNAVAILABLE"
+        for _ in 0..<8 {
+            deeplyNested = ["nested": deeplyNested]
+        }
+        let nestedData = try JSONSerialization.data(withJSONObject: deeplyNested)
+        let nestedBody = try XCTUnwrap(String(data: nestedData, encoding: .utf8))
+        XCTAssertEqual(
+            KaiStreamLifecycleErrorClassifier.bridgeCode(
+                statusCode: 503,
+                body: nestedBody
+            ),
+            "HUSHH_HTTP_503"
+        )
+    }
 }

@@ -144,6 +144,42 @@ Rules:
 9. Preserve required compliance, consent, security, and destructive-action warnings, but write them as short user-facing decisions.
 10. Every shared component should render concise copy by default so route screens do not solve clarity with local typography overrides.
 
+## Shell and navigation ownership
+
+The standard navigation is four layers, not one component. Every signed-in
+surface uses all four, and a surface that skips one is the reason a back button
+goes missing.
+
+| Layer | What owns it | Where |
+| --- | --- | --- |
+| Persistent chrome | `AppTopShell` / `AppBottomShell`, mounted once above the route Suspense boundary | `hushh-webapp/app/providers.tsx` |
+| Route mode (`standard`, `flow`, `redirect`, `hidden`, plus `persistentChrome`) | The route layout contract | `hushh-webapp/lib/navigation/app-route-layout.contract.json` |
+| Container and width | `AppPageShell` with its header and content regions, or `FullscreenFlowShell` for a `flow` | `hushh-webapp/components/app-ui/` |
+| Trail, back target, title | `resolveTopShellBreadcrumb`, then `resolveTopShellBackAction`, then `PageHeader` | `hushh-webapp/lib/navigation/top-shell-breadcrumbs.ts` |
+
+The law, which holds for every signed-in route:
+
+1. A screen has exactly **one** back control, **one** breadcrumb and **one**
+   title, and the breadcrumb's last crumb **is** that title.
+2. **The back control is derived from the breadcrumb, not from the page.** A
+   `standard` route with no breadcrumb entry gets no back button and no native
+   left-edge back gesture, on web and on device. Declaring the breadcrumb is
+   therefore not decoration; it is how the route becomes navigable.
+3. A `standard` route declares a breadcrumb, or carries an explicit
+   `exemptionReason` in the route layout contract saying why it does not.
+4. The top bar owns back. A route-local back button is reserved for a surface
+   that genuinely sits outside the shared shell, and never appears alongside the
+   shell's own.
+5. A `flow` renders through `FullscreenFlowShell` and draws no back control of
+   its own. Never hand-roll a full-height wrapper to clear the header; the top
+   shell is the single authority for header clearance.
+6. `shellVerification` in the route layout contract must name the file that
+   really renders the primitives. When a shell moves into a client component,
+   the declaration moves with it.
+
+`PkmSettingsShell` is not a second shell. It is a composition of exactly these
+primitives, and surfaces that use it are conformant.
+
 ## Shell Contract
 
 1. The top shell is the single authority for header clearance.
@@ -248,9 +284,9 @@ scrolled fully above fixed chrome on compact viewports. 9. Decorative glass fade
     drag progress writes only to the owning tab strip—not an inherited root
     variable that invalidates the whole document. Vertical pane-content
     changes must not reinitialize the horizontal pager; only viewport-width
-    changes may do so. The shared tab strip uses one moving low-emphasis
-    selection wash plus the accent underline, both attached to the same live
-    swipe position.
+    changes may do so. Every shared tab strip uses the Location-proven Morphy
+    rail and one moving solid selection surface attached to the same live swipe
+    position; route-specific underline variants are not allowed.
 
 ## Pixel Grid And Symmetry Contract
 
@@ -291,7 +327,9 @@ Rules:
 
 1. Active assistant stream panels use the full available chat-column width (`w-full max-w-none`). Do not cap active stream panels with the normal assistant bubble width. Completed historical assistant messages may keep a readable max width.
 2. The stream surface has three distinct regions:
-   - `Progress` for app-owned tool, route, stage, cancellation, and settlement events.
+   - `Activity` for app-owned tool, route, stage, cancellation, settlement, and
+     bounded specialist events. AG-UI `ACTIVITY_SNAPSHOT`/`ACTIVITY_DELTA`
+     content enters this surface only through the versioned app registry.
    - `Thinking` only for optional provider telemetry when available.
    - `Response` only for real assistant/model text from SSE `token` frames or explicit final assistant text.
 3. Do not show placeholder text such as `Preparing response` inside the `Response` region. Waiting states belong to `Progress` or a small status line outside the response body.
@@ -300,6 +338,18 @@ Rules:
 6. Marketplace opportunity accordions in Agent Chat receive workspace-preloaded data. The accordion may show a lightweight loading row only while the workspace fetch is genuinely pending.
 7. Mobile chat history uses the shared shell glass family (`chrome-glass-surface` / `.bar-glass` semantics) and flat bottom-nav/top-bar control recipes. Do not ship a flat white drawer or show desktop collapse controls in mobile mode.
 8. Agent Chat session continuity is a surface contract: consecutive user commands reuse the active `conversationId`; reset only on explicit New chat, selecting history, user change, or vault session reset.
+9. Structured model responses use a versioned, app-owned component registry.
+   AG-UI transports typed tool results and activity snapshots/deltas; Morphy
+   owns the visual component. Unknown activity types fail closed. Never mount
+   model-authored React, HTML, classes, routes, or arbitrary action identifiers.
+10. Tool-based generative UI must preserve the readable assistant response and
+    add inspectable evidence rather than replacing the answer with a dashboard.
+    Consumer surfaces show labels, descriptions, grouping, sensitivity, and one
+    governed next action; raw tool names, arguments, opaque references, and
+    backend payloads remain hidden.
+11. An AG-UI interrupt is an awaiting-review lifecycle, not completion. Keep
+    the turn and its Activity visible until the person resolves or cancels the
+    authored HITL surface and the resumed run reaches a terminal event.
 
 ## Page Header Contract
 
@@ -360,7 +410,7 @@ The signed-in bottom navigation is a shared shell surface, not a route-local tab
 
 Rules:
 
-1. The primary bottom utility bar is fixed and constant on all signed-in standard routes: `One`, `Connect`, and `Search`. Search is part of the same segmented control and opens `KaiCommandBarGlobal`; it does not route to `/agent` or open agent chat.
+1. The primary bottom navigation is fixed and constant on all signed-in standard routes: `Chat`, `One`, `Connect`, `Feed`, and `Search`, in that order. `Chat` is the canonical `/` route. Search is part of the same segmented control and opens `KaiCommandBarGlobal`; it does not route to `/agent` or open an agent overlay.
 2. Profile remains the rightmost signed-in top-bar action, using the signed-in image or shared generic fallback.
 3. Finance owns `Market`, `Portfolio`, and `Analysis`; RIA owns `Home`, `Clients`, and `Picks`. Contextual workspace tabs are rendered by the shared top shell from the central route registry; they never become route-local or bottom-navigation chrome.
 4. Consent Center owns `Requests`, `Active`, `History`, and `Connections` in
@@ -433,7 +483,7 @@ Rules:
 1. `ShellActionSurface` (`components/app-ui/shell-action-surface.tsx`) is the canonical control primitive. It exports `SHELL_ICON_BUTTON_CLASSNAME` and `SHELL_PILL_TRIGGER_CLASSNAME` and embeds `MaterialRipple variant="blue" effect="glass"`. Reuse these instead of re-deriving the recipe per surface.
 2. The flat-control recipe is: `rounded-full` shape, base fill `bg-black/[0.05] dark:bg-white/[0.07]`, hover fill `hover:bg-black/[0.08] dark:hover:bg-white/[0.1]`, press feedback `active:scale-90` for icon controls and `active:scale-[0.97]` for pill controls, and `transition-[color,background-color,transform] duration-200`. Do not add visible borders, drop shadows, or per-control backdrop blur to flat controls.
 3. Icon controls use `h-9 w-9` and color contrast (`text-muted-foreground hover:text-foreground`). Pill controls use `h-9 px-3.5 text-[14px]` with platform text color (`text-[#1d1d1f] dark:text-[#f5f5f7]`).
-4. When using `morphy-ux` `Button`, a flat control maps to `variant="none" effect="fade"`. Do not mix `effect="glass"` and `effect="fade"` between sibling controls in the same group. The vault unlock methods (Vault Key, Passkey, Recovery Key) must all share one effect so the buttons read as a uniform set.
+4. When using `morphy-ux` `Button`, a flat control maps to `variant="none" effect="fade"`. Do not mix `effect="glass"` and `effect="fade"` between sibling controls in the same group. Vault's primary and fallback method buttons share one effect; a low-emphasis recovery escape may use the canonical link treatment and must not be styled as a second primary CTA. When Sign out is offered by the hard gate, Recovery key belongs beside it in the same quiet escape group rather than under the preceding primary button.
 5. Persistent bars use `AmbientChromeMask` through `AppTopShell` or `AppBottomShell`; the controller is mounted once in `AppShellFrame`, and both edges consume the neutral theme feather and foreground contract. Foundation/onboarding presentation may add toggles, but may not fork a local bar, blur, tint, or width recipe. Cards use the `--app-card-*` tokens. Controls live on top of those surfaces and stay flat.
 6. Focus state is the shared Foundation ring `focus-visible:ring-2 focus-visible:ring-accent/70` (gold, theme-aware via the accent token). Do not invent per-control focus styling and do not reintroduce off-palette `ring-sky-*`/`ring-blue-*`.
 
@@ -776,7 +826,7 @@ Rules:
 ## RIA Information Architecture
 
 1. `RIA` is a lightweight workspace shell, not a second dense operations dashboard.
-2. RIA workspace navigation lives in the top shell: `Home / Clients / Picks`. The fixed bottom utilities remain `One / Connect / Search`; Profile remains the rightmost top-bar action.
+2. RIA workspace navigation lives in the top shell: `Home / Clients / Picks`. The fixed bottom navigation remains `Chat / One / Connect / Feed / Search`; Profile remains the rightmost top-bar action.
 3. `/one/consent` is the single consent/request workspace for both investor and RIA personas.
 4. `/ria/requests` remains only as a compatibility alias into `/one/consent`, not as a second consent system.
 5. The shell contextualizes `/one/consent` as `One > Consent Center`; legacy `/consents` preserves inbound links by redirecting to that canonical URL.

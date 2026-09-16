@@ -209,6 +209,27 @@ describe("PKM memory cards", () => {
       expect(shouldSkipPkmMemoryKey("access_token")).toBe(true);
       expect(shouldSkipPkmMemoryKey("artifact_id")).toBe(true);
     });
+
+    it("keeps the wallet domain memory-visible while pruning its secrets subtree", () => {
+      // Card summaries (nickname, network, last4) are Memory items like any
+      // other domain; PAN, CVV, and PIN live under `secrets`, which
+      // SECRET_KEY_PATTERN prunes before anything reaches a card or a model.
+      expect(shouldSkipPkmMemoryKey("wallet")).toBe(false);
+      expect(shouldSkipPkmMemoryKey("secrets")).toBe(true);
+      const snapshot = buildPkmMemorySnapshot({
+        metadata: null,
+        fullBlob: {
+          wallet: {
+            summary: { card_1: { nickname: "Everyday Visa", brand: "visa", last4: "1111" } },
+            secrets: { card_1: { pan: "4111111111111111", cvv: "123", pin: "1234" } },
+          },
+        },
+      });
+      const rendered = JSON.stringify(snapshot);
+      expect(rendered).toContain("Everyday Visa");
+      expect(rendered).not.toContain("4111111111111111");
+      expect(rendered).not.toContain("1234");
+    });
   });
 
   describe("pkmMemoryRowLabels", () => {
@@ -248,5 +269,28 @@ describe("PKM memory cards", () => {
       expect(labels.primary).toBe("Risk Profile");
       expect(labels.secondary).toBe("balanced");
     });
+  });
+});
+
+describe("global card budget fairness", () => {
+  it("keeps every domain represented instead of spending the budget on the first ones", () => {
+    // Before round-robin, cards were flattened in domain order and sliced, so a
+    // domain late in the iteration order (wallet, alphabetically last) could
+    // contribute nothing and vanish from Memory entirely.
+    const fullBlob: Record<string, unknown> = {};
+    for (const domain of ["aaa", "bbb", "ccc", "wallet"]) {
+      const fields: Record<string, string> = {};
+      for (let i = 0; i < 30; i += 1) fields[`field_${i}`] = `${domain} value ${i}`;
+      fullBlob[domain] = fields;
+    }
+    const snapshot = buildPkmMemorySnapshot({
+      metadata: null,
+      fullBlob,
+      maxCards: 8,
+    } as never);
+    const domains = new Set(snapshot.cards.map((card) => card.domain));
+    expect(snapshot.cards.length).toBeLessThanOrEqual(8);
+    expect(domains.has("wallet")).toBe(true);
+    expect(domains.size).toBe(4);
   });
 });

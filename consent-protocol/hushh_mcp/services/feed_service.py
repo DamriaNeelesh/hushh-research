@@ -21,6 +21,7 @@ threadpool dispatch offloads the blocking call without a manual
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import math
@@ -121,6 +122,11 @@ def _safe_feed_metadata(value: object) -> dict[str, str | int | float | bool]:
     safe: dict[str, str | int | float | bool] = {}
     for key in _SAFE_METADATA_KEYS:
         raw = value.get(key)
+        if key == _COUNTERPART_PHOTO_KEY:
+            photo = _safe_photo_url(raw)
+            if photo is not None:
+                safe[key] = photo
+            continue
         if isinstance(raw, str):
             cleaned = _bounded_text(
                 raw,
@@ -139,6 +145,40 @@ def _safe_feed_metadata(value: object) -> dict[str, str | int | float | bool]:
         elif isinstance(raw, float) and math.isfinite(raw) and abs(raw) <= _MAX_METADATA_NUMBER:
             safe[key] = raw
     return safe
+
+
+def _safe_photo_url(value: object) -> str | None:
+    """Preserve complete public photos, never a truncated/unloadable image.
+
+    Uploaded avatars follow account.AvatarUploadRequest's 600k character / 300KiB
+    decoded raster contract. Other metadata retains its much smaller limits.
+    """
+    if not isinstance(value, str):
+        return None
+    photo = value.strip()
+    if photo.startswith("data:"):
+        if len(photo) > 600_000:
+            return None
+        header, separator, encoded = photo.partition(",")
+        if not separator or header not in {
+            "data:image/png;base64",
+            "data:image/jpeg;base64",
+            "data:image/jpg;base64",
+            "data:image/webp;base64",
+        }:
+            return None
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            return None
+        return photo if 0 < len(decoded) <= 300 * 1024 else None
+    if len(photo) > _MAX_METADATA_URL_LENGTH:
+        return None
+    try:
+        url = urlsplit(photo)
+        return photo if url.scheme in {"https", "http"} and url.netloc else None
+    except ValueError:
+        return None
 
 
 class FeedService:

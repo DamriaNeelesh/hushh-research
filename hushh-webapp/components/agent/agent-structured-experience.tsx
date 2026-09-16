@@ -1,0 +1,252 @@
+"use client";
+
+import type { ReactNode } from "react";
+import { ConsentScopeList } from "@/components/consent/consent-scope-list";
+import { domainLabelFor, scopePathSegments } from "@/lib/consent/consent-scope-items";
+import Link from "next/link";
+import {
+  ArrowUpRight,
+  Check,
+  CircleAlert,
+  FileCheck2,
+  FolderLock,
+  Link2,
+  ShieldCheck,
+  UserRound,
+} from "lucide-react";
+
+import { Button as MorphyButton } from "@/lib/morphy-ux/button";
+import type {
+  AgentStructuredExperience,
+  EvidenceBriefExperience,
+  InformationRequestReviewExperience,
+  KycReadinessExperience,
+  MemoryImportReviewExperience,
+  ScopeDiscoveryExperience,
+} from "@/lib/agent/agui-structured-experiences";
+
+export function AgentStructuredExperienceView({
+  experience,
+}: {
+  experience: AgentStructuredExperience;
+}) {
+  switch (experience.type) {
+    case "one.scope_discovery.v1":
+      return <ScopeDiscoveryView experience={experience} />;
+    case "one.information_request_review.v1":
+      return <InformationRequestReviewView experience={experience} />;
+    case "one.kyc_readiness.v1":
+      return <KycReadinessView experience={experience} />;
+    case "one.memory_import_review.v1":
+      return <MemoryImportReviewView experience={experience} />;
+    case "one.evidence_brief.v1":
+      return <EvidenceBriefView experience={experience} />;
+  }
+}
+
+function ExperienceShell({
+  label,
+  title,
+  summary,
+  icon,
+  children,
+}: {
+  label: string;
+  title: string;
+  summary: string;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-[24px] bg-[linear-gradient(145deg,var(--app-accent-surface),color-mix(in_srgb,var(--background)_94%,var(--app-accent-soft)))] shadow-[0_18px_55px_-38px_var(--app-accent-deep)]">
+      <header className="flex items-start gap-3 px-4 pb-4 pt-4 sm:px-5 sm:pt-5">
+        <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] bg-accent-strong text-white shadow-sm">
+          {icon}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="ui-text-section-label text-accent-strong">{label}</p>
+          <h3 className="mt-1 text-base font-semibold tracking-[-0.015em] text-foreground">{title}</h3>
+          <p className="mt-1 text-sm leading-5 text-muted-foreground">{summary}</p>
+        </div>
+      </header>
+      <div className="bg-background/72 px-4 py-4 backdrop-blur-xl sm:px-5">{children}</div>
+    </section>
+  );
+}
+
+function sensitivityLabel(
+  sensitivity: ScopeDiscoveryExperience["scopes"][number]["sensitivity"],
+): string | null {
+  if (sensitivity === "restricted") return "Highly sensitive";
+  if (sensitivity === "sensitive") return "Sensitive";
+  return null;
+}
+
+/**
+ * The person's name as they would write it.
+ *
+ * Directory records arrive however they were typed, often shouted
+ * ("JHUMMA KUMARI"). Shouting someone's name back at the owner reads as a
+ * database row, not a person.
+ */
+function personName(value: string): string {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "this person";
+  if (trimmed !== trimmed.toUpperCase()) return trimmed;
+  return trimmed
+    .toLowerCase()
+    .replace(/(^|[\s'-])([a-z])/g, (_match, boundary, letter) => `${boundary}${letter.toUpperCase()}`);
+}
+
+function ScopeDiscoveryView({
+  experience,
+}: {
+  experience: ScopeDiscoveryExperience;
+}) {
+  // The same list every other scope surface renders. Was a hand-rolled
+  // reduce-based group-by-domain, one of two independent implementations of the
+  // same thing over the same field shape.
+  const items = experience.scopes.map((scope, index) => ({
+    id: `${scope.domain || "other"}:${scope.label}:${index}`,
+    label: scope.label,
+    description: scope.description || null,
+    domainKey: scope.domain || "other",
+    // The catalogue carries the full scope reference, so chat can nest exactly
+    // as deeply as the profile does.
+    pathSegments: scopePathSegments(scope.scopeRef),
+    domainLabel: domainLabelFor(scope.domain),
+    badge: sensitivityLabel(scope.sensitivity),
+    searchText: `${scope.label} ${scope.description || ""} ${scope.domain || ""}`.toLowerCase(),
+  }));
+
+  return (
+    <section
+      aria-label={`Information available from ${experience.person.displayName}`}
+      className="space-y-4"
+    >
+      <header className="flex items-start gap-3 px-1">
+        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-accent-surface text-accent-strong">
+          <UserRound className="h-4 w-4" aria-hidden="true" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold text-foreground">
+            What {personName(experience.person.displayName)} can share with you
+          </h3>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            {experience.scopes.length === 0
+              ? `${personName(experience.person.displayName)} has not made anything available to ask for yet.`
+              : `${experience.scopes.length} ${experience.scopes.length === 1 ? "thing" : "things"} you can ask for. They decide what to share, and for how long.`}
+          </p>
+        </div>
+      </header>
+
+      {items.length > 0 ? (
+        <div className="px-1">
+          <ConsentScopeList
+            items={items}
+            collapsible={false}
+            testIdPrefix="scope-discovery-scopes"
+          />
+        </div>
+      ) : null}
+
+      <div className="flex justify-start px-1">
+        <MorphyButton asChild size="sm">
+          <Link href={experience.person.profilePath}>
+            Choose what to ask for
+            <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+          </Link>
+        </MorphyButton>
+      </div>
+    </section>
+  );
+}
+
+function InformationRequestReviewView({ experience }: { experience: InformationRequestReviewExperience }) {
+  // Every field becomes a row in the one list every scope surface uses, so this
+  // reads the same as Memory and the same as the pending-request card.
+  const items = experience.fields.map((field, index) => ({
+    id: `${field.domain}:${field.label}:${index}`,
+    label: field.label,
+    description: null,
+    domainKey: field.domain || "other",
+    // Flat on purpose, and not a shortcut: `ReviewField` carries only label,
+    // domain and sensitivity (lib/agent/agui-structured-experiences.ts:34-38).
+    // There is no scope reference in this payload, so there is no path to nest
+    // by, and inventing one from the label would name a scope that does not
+    // exist. This stays one level until the experience carries `scopeRef`.
+    pathSegments: [],
+    domainLabel: domainLabelFor(field.domain),
+    badge: sensitivityLabel(field.sensitivity),
+    searchText: `${field.label} ${field.domain || ""}`.toLowerCase(),
+  }));
+
+  return (
+    <ExperienceShell
+      // Not "Consent review", not "N fields", and the raw domain key no longer
+      // sits beside every row. agent.yaml:62-70 bans this vocabulary in
+      // owner-facing speech; the chrome used to reintroduce all of it.
+      label="Waiting on you"
+      title={`${experience.personName} asked to see some of your information`}
+      summary={`${items.length} ${items.length === 1 ? "thing" : "things"} · ${experience.durationLabel}`}
+      icon={<ShieldCheck className="h-5 w-5" aria-hidden="true" />}
+    >
+      <p className="text-sm leading-6 text-foreground">{experience.purpose}</p>
+      <div className="mt-3">
+        <ConsentScopeList
+          items={items}
+          groupByDomain={items.length > 1}
+          collapsible={false}
+          testIdPrefix="information-request-review-scopes"
+        />
+      </div>
+    </ExperienceShell>
+  );
+}
+
+const KYC_STATUS_LABEL: Record<KycReadinessExperience["items"][number]["status"], string> = {
+  available: "Available",
+  ask_first: "Ask first",
+  verify: "Verify",
+  not_available: "Not available",
+};
+
+function KycReadinessView({ experience }: { experience: KycReadinessExperience }) {
+  return (
+    <ExperienceShell label="Readiness" title={experience.workflowName} summary={experience.summary} icon={<FileCheck2 className="h-5 w-5" aria-hidden="true" />}>
+      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">For {experience.subjectName}</p>
+      <ul className="divide-y divide-border/35">
+        {experience.items.map((item) => (
+          <li key={`${item.domain}:${item.label}`} className="flex items-center justify-between gap-3 py-2.5">
+            <div><p className="text-sm font-medium text-foreground">{item.label}</p><p className="text-xs text-muted-foreground">{item.domain}</p></div>
+            <span className={item.status === "available" ? "text-xs font-semibold text-emerald-600" : "text-xs font-semibold text-accent-strong"}>{KYC_STATUS_LABEL[item.status]}</span>
+          </li>
+        ))}
+      </ul>
+      {experience.legalReviewRequired ? <p className="mt-3 flex gap-2 text-xs leading-5 text-muted-foreground"><CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />Employment authorization and visa eligibility require qualified human review.</p> : null}
+    </ExperienceShell>
+  );
+}
+
+function MemoryImportReviewView({ experience }: { experience: MemoryImportReviewExperience }) {
+  const complete = experience.sourceBlockCount === experience.accountedBlockCount;
+  const total = experience.groups.reduce((count, group) => count + group.candidates.length, 0);
+  return (
+    <ExperienceShell label="Memory review" title={`${total} memories ready to review`} summary={`${experience.accountedBlockCount} of ${experience.sourceBlockCount} source sections accounted for`} icon={<FolderLock className="h-5 w-5" aria-hidden="true" />}>
+      <p className={complete ? "mb-3 flex items-center gap-2 text-xs font-semibold text-emerald-600" : "mb-3 flex items-center gap-2 text-xs font-semibold text-destructive"}>{complete ? <Check className="h-4 w-4" /> : <CircleAlert className="h-4 w-4" />}{complete ? "Complete coverage" : "Review required before saving"}</p>
+      <div className="space-y-4">
+        {experience.groups.map((group) => <section key={group.domain}><h4 className="ui-text-section-label text-muted-foreground">{group.domain}</h4><ul className="mt-1 divide-y divide-border/35">{group.candidates.map((candidate) => <li key={candidate.candidateRef} className="py-2.5"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-foreground">{candidate.label}</p><p className="mt-0.5 text-xs leading-5 text-muted-foreground">{candidate.preview}</p></div><span className="shrink-0 text-[11px] font-semibold text-accent-strong">{candidate.sharingPosture.replace("_", " ")}</span></div></li>)}</ul></section>)}
+      </div>
+    </ExperienceShell>
+  );
+}
+
+function EvidenceBriefView({ experience }: { experience: EvidenceBriefExperience }) {
+  return (
+    <ExperienceShell label={`${experience.confidence} confidence`} title={experience.title} summary={experience.summary} icon={<Link2 className="h-5 w-5" aria-hidden="true" />}>
+      <ul className="space-y-3">{experience.findings.map((finding) => <li key={finding.label}><p className="text-sm font-semibold text-foreground">{finding.label}</p><p className="mt-0.5 text-sm leading-5 text-muted-foreground">{finding.detail}</p></li>)}</ul>
+      {experience.sources.length ? <div className="mt-4 flex flex-wrap gap-2">{experience.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full bg-accent-surface px-3 py-1.5 text-xs font-semibold text-accent-strong hover:bg-accent-soft">{source.label}<ArrowUpRight className="h-3 w-3" /></a>)}</div> : null}
+      {experience.unresolved.length ? <div className="mt-4"><p className="ui-text-section-label text-muted-foreground">Still unresolved</p><ul className="mt-1 space-y-1 text-xs leading-5 text-muted-foreground">{experience.unresolved.map((item) => <li key={item}>• {item}</li>)}</ul></div> : null}
+    </ExperienceShell>
+  );
+}
