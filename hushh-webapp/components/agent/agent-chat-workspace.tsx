@@ -2256,11 +2256,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   useEffect(() => {
     if (!user) {
       setModelPreference(null);
-      setModelPreferenceLoading(false);
       return;
     }
     let cancelled = false;
-    setModelPreferenceLoading(true);
     void (async () => {
       try {
         const preference = await ModelPreferenceService.get(await user.getIdToken());
@@ -2268,8 +2266,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       } catch {
         // A picker that cannot load is non-blocking: the turn still runs on
         // whatever the backend resolves.
-      } finally {
-        if (!cancelled) setModelPreferenceLoading(false);
       }
     })();
     return () => {
