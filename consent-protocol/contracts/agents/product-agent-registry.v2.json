@@ -603,7 +603,13 @@
       "legacy_ids": [],
       "manifest_path": "consent-protocol/hushh_mcp/agents/financial_guard/agent.yaml",
       "manifest_version": 2,
-      "model": "gemini-default",
+      "model": {
+        "credential_ref": null,
+        "mode": "hushh_managed_vertex",
+        "name": "gemini-default",
+        "provider": "gemini",
+        "thinking_level": "low"
+      },
       "name": "Financial Guard Agent",
       "native_requirements": [],
       "one_exposure": null,
@@ -2176,7 +2182,13 @@
       "legacy_ids": [],
       "manifest_path": "consent-protocol/hushh_mcp/agents/memory_intent/agent.yaml",
       "manifest_version": 2,
-      "model": "gemini-default",
+      "model": {
+        "credential_ref": null,
+        "mode": "hushh_managed_vertex",
+        "name": "gemini-default",
+        "provider": "gemini",
+        "thinking_level": "low"
+      },
       "name": "Memory Intent Agent",
       "native_requirements": [],
       "one_exposure": null,
@@ -2334,7 +2346,13 @@
       "legacy_ids": [],
       "manifest_path": "consent-protocol/hushh_mcp/agents/memory_merge/agent.yaml",
       "manifest_version": 2,
-      "model": "gemini-default",
+      "model": {
+        "credential_ref": null,
+        "mode": "hushh_managed_vertex",
+        "name": "gemini-default",
+        "provider": "gemini",
+        "thinking_level": "low"
+      },
       "name": "Memory Merge Agent",
       "native_requirements": [],
       "one_exposure": null,
@@ -2472,7 +2490,13 @@
       "legacy_ids": [],
       "manifest_path": "consent-protocol/hushh_mcp/agents/memory_segmentation/agent.yaml",
       "manifest_version": 2,
-      "model": "gemini-default",
+      "model": {
+        "credential_ref": null,
+        "mode": "hushh_managed_vertex",
+        "name": "gemini-default",
+        "provider": "gemini",
+        "thinking_level": "low"
+      },
       "name": "Memory Segmentation Agent",
       "native_requirements": [],
       "one_exposure": null,
@@ -3336,7 +3360,13 @@
       "legacy_ids": [],
       "manifest_path": "consent-protocol/hushh_mcp/agents/pkm_structure/agent.yaml",
       "manifest_version": 2,
-      "model": "gemini-default",
+      "model": {
+        "credential_ref": null,
+        "mode": "hushh_managed_vertex",
+        "name": "gemini-default",
+        "provider": "gemini",
+        "thinking_level": "low"
+      },
       "name": "PKM Structure Agent",
       "native_requirements": [],
       "one_exposure": null,

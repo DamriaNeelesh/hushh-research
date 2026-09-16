@@ -45,6 +45,9 @@ tests/services/test_push_notifications.py
 tests/test_fcm_messages.py
 tests/routes/test_connections_route.py
 tests/test_adk_a2a_compliance_script.py
+tests/test_agent_manifests.py
+tests/test_hushh_adk_single_turn.py
+tests/services/test_pkm_agent_lab_service.py
 tests/test_ria_claim_flow.py
 tests/test_ria_iam_service_architecture.py
 tests/test_kai_optimize_realtime_contract.py

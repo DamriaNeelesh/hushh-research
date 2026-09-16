@@ -298,3 +298,28 @@ Verification of the evaluator changes: full backend runner **3,918 passed,
 191 skipped**, followed by the all-test-file import check; focused evaluator
 suites **48 passed**. Synthetic-only runs now omit unused shadow-user identifiers
 from newly generated reports. No runtime quality threshold was relaxed.
+
+### September 16 PKM low-thinking follow-up
+
+The five sequential PKM manifests now explicitly author `thinking_level: low`.
+The shared single-turn builder test proves that this becomes the provider's
+`LOW` thinking configuration for every stage; a missing level would leave the
+Gemini provider default (`MEDIUM`) in effect. The strict prompt allowlist also
+retains every selectable canonical and owner-defined domain, while excluding
+reserved, internal, malformed, and overlong keys. The model remains the semantic
+owner; this change does not add deterministic routing.
+
+The fresh release-chain runs below use the same synthetic fixtures and bounded
+45-second preview budget. They are retained as infrastructure evidence, not
+completion claims:
+
+| Run | Evaluated | Contract result | Failure evidence |
+| --- | ---: | --- | --- |
+| Gemini 3.8 Flash, personal54/global | 1/24 | schema, intent, mutation, and domain each 100% for the completed case | global Vertex 429; inner timeout; 23 cases unattempted |
+| Gemini 3.7 Flash, personal54/global | 2/24 | schema, intent, mutation, and domain each 100% for completed cases | global Vertex 429; fallback 50%; inner timeout 1; inner budget exhausted 2; 22 cases unattempted |
+
+Reports: `artifacts/regression/after-20260916/pkm-38-low-thinking.json` and
+`artifacts/regression/after-20260916/pkm-37-low-thinking.json`. Both runs show
+the bridge is reachable and the 429 is quota/rate limiting in the selected
+personal project. They do not prove quality-gate completion; a comparable run
+after quota recovery is still required.

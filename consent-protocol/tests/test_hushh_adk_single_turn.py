@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_response import LlmResponse
@@ -10,6 +12,14 @@ from pydantic import BaseModel, PrivateAttr, ValidationError
 
 from hushh_mcp.hushh_adk.manifest import ManifestLoader
 from hushh_mcp.hushh_adk.single_turn import build_single_turn_agent, run_single_turn
+
+PKM_CHAIN_MANIFESTS = (
+    "financial_guard",
+    "memory_segmentation",
+    "memory_intent",
+    "memory_merge",
+    "pkm_structure",
+)
 
 
 class Decision(BaseModel):
@@ -113,3 +123,20 @@ def test_single_turn_requires_nonempty_prompt():
                 consent_token="token",  # noqa: S106
             )
         )
+
+
+@pytest.mark.parametrize("manifest_name", PKM_CHAIN_MANIFESTS)
+def test_pkm_chain_manifests_build_low_thinking_adk_agents(manifest_name: str) -> None:
+    manifest_path = (
+        Path(__file__).resolve().parents[1] / "hushh_mcp" / "agents" / manifest_name / "agent.yaml"
+    )
+    manifest = ManifestLoader.load(str(manifest_path))
+
+    assert manifest.model_config_for_runtime().thinking_level == "low"
+    agent = build_single_turn_agent(
+        manifest,
+        output_schema=dict,
+        model="gemini-3.7-flash",
+    )
+    thinking_config = agent.generate_content_config.thinking_config
+    assert getattr(getattr(thinking_config, "thinking_level", None), "value", None) == "LOW"
