@@ -89,6 +89,23 @@ no active `summary_reducer` reference. The focused manifest and authority suites
 (`120 passed`), and the full protocol gate passes (`4,025 passed, 191 skipped`), with
 the unrelated live-provider failures below still retained as acceptance evidence.
 
+### September 16 deterministic ADK/conformance gate
+
+The current branch reran the offline acceptance surfaces without contacting Gemini:
+
+```sh
+cd consent-protocol
+UV_CACHE_DIR=/tmp/hushh-uv-cache uv run pytest -q \
+  tests/test_nav_conformance.py tests/test_conformance_harness.py \
+  tests/test_one_adk_agent_tree.py tests/test_adk_dispatch.py \
+  tests/test_hushh_adk_single_turn.py tests/test_hushh_adk_manifest_and_factory.py
+```
+
+The result was **288 passed, 74 skipped** in 15.47 seconds. This covers the recorded
+Nav/Consent replay, conformance harness invariants, agent-tree authority checks, dispatch,
+single-turn runtime, and manifest/factory contracts. It is deterministic source evidence;
+it does not replace the outstanding live Gemini parity, latency, or final chat acceptance.
+
 ### Phase G routing decisions
 
 Calendar remains on One's existing deterministic toolset. The measured Gemini 3.7
