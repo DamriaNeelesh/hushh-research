@@ -70,6 +70,7 @@ export function buildOrganizationGraph(): Record<string, unknown> {
         sameAs: [
           "https://www.linkedin.com/in/manishsainani",
           "https://x.com/manish_sainani",
+          "https://www.wikidata.org/wiki/Q141478333",
         ],
       },
       {

@@ -1153,7 +1153,7 @@
       "route_pattern": "/manishhussh",
       "page_file": "app/manishhussh/page.tsx",
       "route_mode": "standard",
-      "orchestration_class": "interactive",
+      "orchestration_class": "context_only",
       "instruction_id": "route.manishhussh",
       "context_policy": "minimal",
       "voice_playbook": {
@@ -1183,11 +1183,7 @@
       },
       "canonical_screen": "app",
       "voice_contract_file": null,
-      "action_ids": [
-        "wallet.add",
-        "wallet.list",
-        "wallet.reveal"
-      ],
+      "action_ids": [],
       "action_coverage": "none",
       "delegation_policy": {
         "mode": "no_delegation",
