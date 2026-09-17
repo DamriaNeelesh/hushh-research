@@ -387,7 +387,7 @@ export function ReasonChips({
                 "h-10 rounded-[13px] px-3 transition-colors touch-manipulation",
                 active
                   ? "bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]"
-                  : "bg-[color:var(--app-secondary-system-fill)] text-foreground hover:bg-[color:var(--app-secondary-system-fill)]/80",
+                  : "bg-[color:var(--app-neutral-fill)] text-foreground hover:bg-[color:var(--app-neutral-fill-strong)]",
                 )}
               >
               {reason}
