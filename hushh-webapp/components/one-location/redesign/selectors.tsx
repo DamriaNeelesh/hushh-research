@@ -66,6 +66,7 @@ export function DurationSelector({
   compact = false,
   equalWidthButtons = false,
   maxWidthClassName = "max-w-[420px]",
+  activeClassName,
   rungs,
 }: {
   value: string;
@@ -114,6 +115,12 @@ export function DurationSelector({
    * of sitting short inside its own card.
    */
   maxWidthClassName?: string | null;
+  /**
+   * `buttons` only. Overrides the selected-option border/background/text
+   * classes for this one call site, leaving every other caller's default
+   * `--app-accent` look untouched.
+   */
+  activeClassName?: string;
   /** Presets used by the visible ladder presentation. */
   rungs?: DurationRung[];
 }) {
@@ -215,7 +222,8 @@ export function DurationSelector({
                   "h-9 rounded-full border px-4 transition-colors touch-manipulation",
                   equalWidthButtons && DURATION_EQUAL_BUTTON_CLASSNAME,
                   active
-                    ? "border-[color:var(--app-accent)] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]"
+                    ? (activeClassName ??
+                      "border-[color:var(--app-accent)] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]")
                     : "border-[color:var(--app-separator)] bg-[color:var(--app-neutral-fill)] text-[color:var(--app-label)] hover:border-[color:var(--app-accent-ring)] hover:bg-[color:var(--app-neutral-fill-strong)]",
                 )}
               >

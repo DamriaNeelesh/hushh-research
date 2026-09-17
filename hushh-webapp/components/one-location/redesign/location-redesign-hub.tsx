@@ -4847,6 +4847,7 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
                 label="Duration"
                 presentation="buttons"
                 maxWidthClassName={null}
+                activeClassName="border-[color:color-mix(in_srgb,var(--app-accent)_60%,white)] bg-[color:color-mix(in_srgb,var(--app-accent)_60%,white)] text-[color:var(--app-accent-fg)]"
               />
               <Button
                 onClick={vm.onCreatePublicInvite}
