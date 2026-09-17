@@ -1,6 +1,7 @@
 import { ApiService } from "@/lib/services/api-service";
 import { HttpAgent, type AgentSubscriber, type Tool } from "@ag-ui/client";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
+import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary";
 import {
   parseAgentActivityExperience,
   parseAgentToolResultExperience,
@@ -66,6 +67,8 @@ export type AgentChatStreamHandlers = {
   onToolStart?: (payload: AgentChatToolEvent) => void;
   onToolWaiting?: (payload: AgentChatToolEvent) => void;
   onToolResult?: (payload: AgentChatToolEvent) => void;
+  /** Request ids a server tool reported as waiting on the owner; the workspace renders each as a pending-consent card. */
+  onPendingConsentRequests?: (requestIds: string[]) => void;
   onToken?: (token: string) => void;
   onComplete?: (payload: { conversationId: string; model?: string }) => void;
   onInterrupt?: (payload: { conversationId: string }) => void;
@@ -73,6 +76,7 @@ export type AgentChatStreamHandlers = {
   onThought?: (text: string) => void;
   onSources?: (sources: AgentSource[]) => void;
   onStructuredExperience?: (experience: AgentStructuredExperience) => void;
+  onSpecialistDirective?: (directive: SpecialistDirectiveEvent) => void;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -87,6 +91,65 @@ function readString(record: Record<string, unknown>, key: string): string {
 const GENERIC_AGENT_CHAT_ERROR =
   "One couldn't complete that response. Please try again.";
 
+type ParkedAppActionDirective = {
+  actionId: string;
+  slots: Record<string, unknown>;
+  needsConfirmation: boolean;
+  trustedActivationRequired: boolean;
+  message: string;
+};
+
+/** Reads the directive a run_app_action result carries when it parked an action for the browser. */
+export function parseParkedAppActionDirective(content: unknown): ParkedAppActionDirective | null {
+  let result: unknown = content;
+  if (typeof result === "string") {
+    try {
+      result = JSON.parse(result);
+    } catch {
+      return null;
+    }
+  }
+  const record = asRecord(result);
+  if (!record) return null;
+  const status = String(record.status || "");
+  if (status !== "ready_to_run" && status !== "confirm_pending") return null;
+  const directive = asRecord(record.directive);
+  const actionId = String(directive?.actionId || record.action_id || "").trim();
+  if (!actionId) return null;
+  const slots = asRecord(directive?.slots) || {};
+  return {
+    actionId,
+    slots,
+    needsConfirmation: directive?.needsConfirmation === true || status === "confirm_pending",
+    trustedActivationRequired: directive?.trustedActivationRequired === true,
+    message: String(record.message || ""),
+  };
+}
+
+/**
+ * list_pending_information_requests answers with request ids only (labels
+ * come from the owner's own pending lookup); the workspace turns each id into
+ * the same card an FCM push would, so approving stays a tap on this device.
+ */
+export function parsePendingConsentRequestIds(toolName: string, content: unknown): string[] {
+  if (toolName !== "list_pending_information_requests") return [];
+  let result: unknown = content;
+  if (typeof result === "string") {
+    try {
+      result = JSON.parse(result);
+    } catch {
+      return [];
+    }
+  }
+  const record = asRecord(result);
+  if (!record || record.status !== "ok") return [];
+  const ids = Array.isArray(record.pendingRequestIds) ? record.pendingRequestIds : [];
+  return ids
+    .map((value) => String(value ?? "").trim())
+    .filter((value, index, all) => value.length > 0 && all.indexOf(value) === index)
+    .slice(0, 20);
+}
+
 const SERVER_TOOL_PRESENTATION: Record<
   string,
   { label: string; message: string }
@@ -94,6 +157,14 @@ const SERVER_TOOL_PRESENTATION: Record<
   discover_person_information: {
     label: "Available information",
     message: "Checking what this person makes available to request.",
+  },
+  list_pending_information_requests: {
+    label: "Pending requests",
+    message: "Checking what is waiting on you.",
+  },
+  propose_information_request: {
+    label: "Information request",
+    message: "Preparing an information request for your confirmation.",
   },
   list_my_connections: {
     label: "Connections",
@@ -173,8 +244,18 @@ export async function streamAgentChat(input: {
   const availableActionIds = (() => {
     const screen = input.screenContext || {};
     const nested = asRecord(screen.one_voice_context);
-    const raw = nested?.available_action_ids ?? screen.available_action_ids;
-    return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string") : [];
+    const rawAvailable = nested?.available_action_ids ?? screen.available_action_ids;
+    const rawExecutable = nested?.executable_action_ids ?? screen.executable_action_ids;
+    return Array.from(
+      new Set([
+        ...(Array.isArray(rawAvailable)
+          ? rawAvailable.filter((value): value is string => typeof value === "string")
+          : []),
+        ...(Array.isArray(rawExecutable)
+          ? rawExecutable.filter((value): value is string => typeof value === "string")
+          : []),
+      ]),
+    );
   })();
   const tools: Tool[] = availableActionIds.flatMap((actionId) => {
     const action = getKaiActionById(actionId);
@@ -214,22 +295,32 @@ export async function streamAgentChat(input: {
     const actionId = tools.find((tool) => tool.name === name)?.metadata?.actionId;
     const action = getKaiActionById(typeof actionId === "string" ? actionId : null);
     const serverPresentation = SERVER_TOOL_PRESENTATION[name];
+    const resolvedActionId = typeof actionId === "string" ? actionId : null;
+    const label = action?.label || serverPresentation?.label || "One task";
+    const requiresConfirmation = action?.execution_policy === "confirm_required";
+    const trustedActivationRequired =
+      action?.activation_policy === "trusted_activation_required";
     return {
       callId,
       directiveId: null,
       conversationId: threadId,
       contextRevision: null,
       expiresAt: null,
-      actionId: typeof actionId === "string" ? actionId : null,
-      label: action?.label || serverPresentation?.label || "One task",
+      actionId: resolvedActionId,
+      label,
       execution: "frontend",
       slots: args,
-      message:
-        action?.meaning ||
-        serverPresentation?.message ||
-        "One is working on your request.",
-      requiresConfirmation: action?.execution_policy === "confirm_required",
-      trustedActivationRequired: action?.activation_policy === "trusted_activation_required",
+      // The gateway's `meaning` is written for the model and names a category
+      // of action, never this one. The owner confirms a sentence built from the
+      // resolved slots instead. Only a directive that waits on the owner may
+      // say so; most actions run directly and this sentence shows while they do.
+      message: action
+        ? describeDirectiveForOwner(resolvedActionId, label, args, {
+            requiresConfirmation: requiresConfirmation || trustedActivationRequired,
+          })
+        : serverPresentation?.message || "One is working on your request.",
+      requiresConfirmation,
+      trustedActivationRequired,
       raw: {
         protocol: "ag-ui",
         toolName: name,
@@ -277,6 +368,54 @@ export async function streamAgentChat(input: {
       );
       payload.raw.result = event.content;
       handlers.onToolResult?.(payload);
+      const pendingIds = parsePendingConsentRequestIds(toolName, event.content);
+      if (pendingIds.length > 0) {
+        handlers.onPendingConsentRequests?.(pendingIds);
+      }
+      // A server-side run_app_action parks a directive for the browser. The
+      // text transport surfaces the directive as a frontend tool event, where
+      // the workspace stages it or routes it through the governed executor.
+      const parked = parseParkedAppActionDirective(event.content);
+      if (parked) {
+        const action = getKaiActionById(parked.actionId);
+        const parkedLabel = action?.label || parked.actionId;
+        const parkedRequiresConfirmation =
+          parked.needsConfirmation || action?.execution_policy === "confirm_required";
+        const parkedTrustedActivationRequired =
+          parked.trustedActivationRequired ||
+          action?.activation_policy === "trusted_activation_required";
+        handlers.onToolWaiting?.({
+          callId: `${event.toolCallId}:directive`,
+          directiveId: event.toolCallId,
+          conversationId: threadId,
+          contextRevision: null,
+          expiresAt: null,
+          actionId: parked.actionId,
+          label: parkedLabel,
+          execution: "frontend",
+          slots: parked.slots,
+          // A parked directive that owes no confirmation runs at once in the
+          // workspace, so the sentence may only promise a pause when one is owed.
+          message: action
+            ? describeDirectiveForOwner(parked.actionId, parkedLabel, parked.slots, {
+                requiresConfirmation:
+                  parkedRequiresConfirmation || parkedTrustedActivationRequired,
+              })
+            : parked.message || "One is ready to continue.",
+          requiresConfirmation: parkedRequiresConfirmation,
+          trustedActivationRequired: parkedTrustedActivationRequired,
+          raw: {
+            protocol: "ag-ui",
+            toolName,
+            args: {},
+            parked: true,
+            // The run does not pause for a parked directive; there is no
+            // interrupt to resume. The workspace still needs a resume hook to
+            // treat this like any other staged frontend action.
+            resume: async () => undefined,
+          },
+        });
+      }
       const experience = parseAgentToolResultExperience(toolName, event.content);
       if (experience) handlers.onStructuredExperience?.(experience);
     },
@@ -293,6 +432,37 @@ export async function streamAgentChat(input: {
         activityMessage?.content,
       );
       if (experience) handlers.onStructuredExperience?.(experience);
+    },
+    onStateDeltaEvent: ({ event }) => {
+      const patches = Array.isArray(event.delta) ? event.delta : [];
+      for (const patch of patches) {
+        if (!patch || typeof patch !== "object") continue;
+        const op = patch as { op?: string; path?: string; value?: unknown };
+        if (
+          op.op === "add" &&
+          typeof op.path === "string" &&
+          op.path.startsWith("/hussh:pending_directive:")
+        ) {
+          const val = op.value as Record<string, unknown> | null;
+          if (
+            val &&
+            typeof val === "object" &&
+            typeof val.delegateAgentId === "string"
+          ) {
+            const directivePayload = (val.payload || {}) as Record<string, unknown>;
+            const directiveEvent: SpecialistDirectiveEvent = {
+              delegateAgentId: val.delegateAgentId,
+              directive: {
+                kind: val.kind === "prompt" ? "prompt" : "action",
+                payload: directivePayload,
+              },
+              message: String(directivePayload.summary || val.message || ""),
+              stateChanged: true,
+            };
+            handlers.onSpecialistDirective?.(directiveEvent);
+          }
+        }
+      }
     },
     onRunFinishedEvent: (params) => {
       if (params.outcome === "interrupt") {
@@ -418,6 +588,55 @@ export async function getAgentChatHistory(input: {
   }
   const payload = (await response.json()) as { messages?: AgentChatMessage[] };
   return Array.isArray(payload.messages) ? payload.messages : [];
+}
+
+/**
+ * Ratings this person has given in one conversation, keyed by message id.
+ * Never throws: an opinion about a turn must not stop the turn from loading.
+ */
+export async function getAgentChatFeedback(input: {
+  conversationId: string;
+  vaultOwnerToken: string;
+}): Promise<Record<string, "up" | "down">> {
+  try {
+    const response = await fetch(
+      `/api/one/agent-chat/feedback?conversation_id=${encodeURIComponent(input.conversationId)}`,
+      {
+        headers: { Authorization: `Bearer ${input.vaultOwnerToken}` },
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) return {};
+    const payload = (await response.json()) as {
+      ratings?: Record<string, "up" | "down">;
+    };
+    return payload.ratings ?? {};
+  } catch {
+    return {};
+  }
+}
+
+export async function setAgentChatFeedback(input: {
+  conversationId: string;
+  messageId: string;
+  rating: "up" | "down" | null;
+  vaultOwnerToken: string;
+}): Promise<void> {
+  const response = await fetch("/api/one/agent-chat/feedback", {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${input.vaultOwnerToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      conversation_id: input.conversationId,
+      message_id: input.messageId,
+      rating: input.rating,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
 }
 
 export async function renameAgentChatConversation(input: {

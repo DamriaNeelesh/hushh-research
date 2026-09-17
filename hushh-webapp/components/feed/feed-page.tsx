@@ -21,12 +21,18 @@ import { NativeTestBeacon } from "@/components/app-ui/native-test-beacon";
 import { SectionLabel as AppSectionLabel } from "@/components/app-ui/typography";
 import { Button } from "@/lib/morphy-ux/button";
 import { useAuth } from "@/hooks/use-auth";
+import { useLocalOnboardingActionHandler, type LocalOnboardingActionHandler, type LocalActionPreparer } from "@/lib/agent/local-onboarding-actions";
+import { ConnectionsService } from "@/lib/services/connections-service";
 import { useStaleResource } from "@/lib/cache/use-stale-resource";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
 import { CACHE_KEYS } from "@/lib/services/cache-service";
 import { dispatchFeedStateChanged } from "@/lib/feed/feed-events";
 import { FeedRow } from "@/components/feed/feed-row";
 import { FeedActionableRow } from "@/components/feed/feed-actionable-row";
+import {
+  SettingsGroup,
+  SettingsPresentationProvider,
+} from "@/components/app-ui/settings-ui";
 import { useFeedActionables } from "@/lib/feed/use-feed-actionables";
 import { useFeedLiveRefresh } from "@/lib/feed/use-feed-live-refresh";
 import { listKaiActionsForSurface } from "@/lib/voice/kai-action-gateway";
@@ -107,6 +113,64 @@ const FEED_VOICE_ACTIONS = listKaiActionsForSurface({ screen: "one_feed" })
 
 export function FeedPage() {
   const { user, loading: authLoading } = useAuth();
+
+  const prepareConnectionRequest = (accept: boolean): LocalActionPreparer => async (slots, chosenResourceId) => {
+    if (!user || authLoading) return { status: "blocked", gate: "permission", summary: "Sign in to review requests." };
+    const person = typeof slots.person === "string" ? slots.person.trim() : "";
+    const selected = Object.prototype.hasOwnProperty.call(slots, "requestId") ? slots.requestId : chosenResourceId;
+    if (!person || (selected !== undefined && (typeof selected !== "string" || !selected.trim() || selected.length > 256))) {
+      return { status: "blocked", gate: "input", summary: "Choose one request again." };
+    }
+    try {
+      const idToken = await user.getIdToken();
+      const incoming = await ConnectionsService.listRequests({ idToken, direction: "incoming" });
+      const matches = incoming.filter((request) =>
+        (selected === undefined || request.id === selected) &&
+        request.counterpartDisplayName?.trim().toLocaleLowerCase() === person.toLocaleLowerCase());
+      if (matches.length !== 1) return { status: "blocked", gate: "input", summary: "Choose one current request in your Feed." };
+      const request = matches[0]!;
+      if (accept && request.scopes?.length) return { status: "blocked", gate: "navigation", route: "/one/feed", waitForUser: true, summary: "Review the requested information in your Feed before accepting." };
+      return { status: "ready", binding: { owner: user.uid, requestId: request.id, person: request.counterpartDisplayName, decision: accept ? "accept" : "reject", scopes: request.scopes ?? [] }, summary: `${accept ? "Accept" : "Decline"} ${request.counterpartDisplayName}'s connection request?` };
+    } catch {
+      return { status: "blocked", gate: "permission", summary: "Requests could not be checked. Try again." };
+    }
+  };
+
+  const decideConnectionRequest = (accept: boolean): LocalOnboardingActionHandler => async (slots, context) => {
+    if (context?.preparedBinding) slots = { ...slots, ...context.preparedBinding };
+    if (!user || authLoading) return { status: "blocked", summary: "Sign in to review requests." };
+    if (!context?.directiveId && !context?.humanConfirmationToken) {
+      return { status: "blocked", summary: "Confirm this action in the app first." };
+    }
+    const person = typeof slots.person === "string" ? slots.person.trim() : "";
+    const hasRequestId = Object.prototype.hasOwnProperty.call(slots, "requestId");
+    const requestId = typeof slots.requestId === "string" ? slots.requestId.trim() : "";
+    if (!person || (hasRequestId && (!requestId || requestId.length > 256))) {
+      return { status: "blocked", summary: "Choose the request again." };
+    }
+    try {
+      const idToken = await user.getIdToken();
+      const incoming = await ConnectionsService.listRequests({ idToken, direction: "incoming" });
+      // IDs select only from this owner's current incoming requests. A stale ID
+      // or mismatched label never falls back to a same-name request.
+      const matches = incoming.filter((request) =>
+        (!hasRequestId || request.id === requestId) &&
+        request.counterpartDisplayName?.trim().toLocaleLowerCase() === person.toLocaleLowerCase());
+      if (matches.length !== 1) return { status: "blocked", summary: "Choose one current request in your Feed." };
+      if (context.signal?.aborted) return { status: "blocked", summary: "The action was cancelled." };
+      const request = matches[0]!;
+      // Scope-bearing accepts still require the existing scope-review UI; the
+      // API rejects an accept without those selections rather than guessing.
+      if (accept) await ConnectionsService.accept({ idToken, requestId: request.id });
+      else await ConnectionsService.reject({ idToken, requestId: request.id });
+      CacheSyncService.onConnectionCapabilityMutated(user.uid);
+      return { status: "succeeded", summary: `${accept ? "Accepted" : "Declined"} ${request.counterpartDisplayName}'s connection request.` };
+    } catch {
+      return { status: "failed", summary: "The request could not be updated. Review it in your Feed." };
+    }
+  };
+  useLocalOnboardingActionHandler("connect.accept_request", decideConnectionRequest(true), { prepare: prepareConnectionRequest(true) });
+  useLocalOnboardingActionHandler("connect.reject_request", decideConnectionRequest(false), { prepare: prepareConnectionRequest(false) });
 
   // Every account owns an independent Feed session. Remounting on uid changes
   // scopes pagination, clear/read watermarks, actionables, and pending requests
@@ -349,14 +413,14 @@ function FeedPageSession({
       ...(data?.items ?? []),
       ...pagination.additionalItems,
     ]) {
-      if (item.source_domain === "connected_systems" && !isLocalCrmBuildEnabled()) {
+      if (
+        item.source_domain === "connected_systems" &&
+        !isLocalCrmBuildEnabled()
+      ) {
         continue;
       }
       if (seen.has(item.id)) continue;
-      if (
-        clearedThroughId &&
-        isFeedIdAtOrBefore(item.id, clearedThroughId)
-      ) {
+      if (clearedThroughId && isFeedIdAtOrBefore(item.id, clearedThroughId)) {
         continue;
       }
       seen.add(item.id);
@@ -470,11 +534,8 @@ function FeedPageSession({
     return groupItemsByDay(sorted);
   }, [items]);
   // A live SOS share gets its own "Live" section, pinned above "Needs you",
-  // so a safety alert is never mistaken for a routine pending item, and two
-  // live SOS cards never read as one merged block (each keeps its own
-  // gapped, individually framed card). A revoked/expired SOS no longer
-  // carries `emphasis: "emergency"` (see useFeedActionables) and falls
-  // straight into the regular divide-y "Needs you" list like any other row.
+  // so a safety alert is never mistaken for a routine pending item. Revoked or
+  // expired SOS rows fall straight into the regular "Needs you" list.
   const liveActionables = actionables.filter(
     (item) => item.emphasis === "emergency",
   );
@@ -513,7 +574,7 @@ function FeedPageSession({
     <AppPageShell
       as="main"
       width="reading"
-      className="!px-0 pb-[calc(var(--app-screen-footer-pad)+16px)]"
+      className="pb-[calc(var(--app-screen-footer-pad)+16px)]"
     >
       <NativeTestBeacon
         routeId="/one/feed"
@@ -525,22 +586,27 @@ function FeedPageSession({
         errorCode={showColdError ? "FEED_LOAD_FAILED" : null}
         errorMessage={showColdError ? "Feed activity could not load." : null}
       />
-      <div className="mx-auto w-full max-w-[40rem]">
+      <div className="w-full">
         {/* No in-body header: the shared top bar owns the single Feed title. */}
-        <AppPageContentRegion>
-          {hasLiveActionables ? (
-            <section aria-label="Live" className="bg-accent/[0.03]">
-              <SectionLabel>Live</SectionLabel>
-              <div className="flex flex-col gap-2 px-[6px] pb-2">
-                {liveActionables.map((item) => (
-                  <FeedActionableRow key={item.id} item={item} />
-                ))}
-              </div>
-            </section>
-          ) : null}
+        <SettingsPresentationProvider density="compact">
+          <AppPageContentRegion>
+            {hasLiveActionables ? (
+              <section aria-label="Live">
+                <SectionLabel>Live</SectionLabel>
+                <SettingsGroup
+                  separatorInset
+                  testId="feed-live-group"
+                  shellClassName="!bg-accent/[0.04] shadow-none ring-1 ring-inset ring-accent/10"
+                >
+                  {liveActionables.map((item) => (
+                    <FeedActionableRow key={item.id} item={item} />
+                  ))}
+                </SettingsGroup>
+              </section>
+            ) : null}
 
           {hasRegularActionables ? (
-            <section aria-label="Needs you" className="bg-accent/[0.03]">
+            <section aria-label="Needs you">
               <SectionLabel>Needs you</SectionLabel>
               <div className="divide-y divide-[color:var(--foundation-hairline)]">
                 {regularActionables.map((item) => (
@@ -550,139 +616,137 @@ function FeedPageSession({
             </section>
           ) : null}
 
-          {contentLoading && !hasHistory && !hasActionables ? (
-            <FeedRowsSkeleton />
-          ) : null}
+            {contentLoading && !hasHistory && !hasActionables ? (
+              <FeedRowsSkeleton />
+            ) : null}
 
-          {showColdError ? (
-            <div
-              role="alert"
-              className="mx-[6px] flex min-h-[116px] flex-col items-center justify-center gap-3 rounded-[20px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] px-5 py-8 text-center"
-            >
-              <p className="text-[17px] font-semibold leading-[22px] text-[color:var(--app-label)]">
-                Activity unavailable
-              </p>
-              <Button
-                type="button"
-                variant="none"
-                effect="fade"
-                size="sm"
-                onClick={() => void retryFeed()}
+            {showColdError ? (
+              <div
+                role="alert"
+                className="flex min-h-[100px] flex-col items-center justify-center gap-2.5 rounded-[16px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] px-4 py-6 text-center"
               >
-                Retry
-              </Button>
-            </div>
-          ) : null}
-
-          {showStaleWarning ? (
-            <div
-              role="status"
-              className="mx-[6px] mt-2 flex items-center justify-between gap-3 rounded-xl bg-foreground/[0.04] px-3 py-2 text-xs text-muted-foreground"
-            >
-              <span>
-                Showing saved activity. Some updates couldn't refresh.
-              </span>
-              <Button
-                type="button"
-                variant="none"
-                effect="fade"
-                size="sm"
-                onClick={() => void retryFeed()}
-              >
-                Retry
-              </Button>
-            </div>
-          ) : null}
-
-          {showEmpty ? (
-            <div
-              role="status"
-              className="mx-[6px] flex min-h-[116px] flex-col items-center justify-center gap-1 rounded-[20px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] px-5 py-8 text-center"
-            >
-              <p className="text-[17px] font-semibold leading-[22px] text-[color:var(--app-label)]">
-                No activity yet
-              </p>
-              <p className="text-[13px] leading-[18px] text-[color:var(--app-secondary-label)]">
-                Your recent activity will appear here.
-              </p>
-            </div>
-          ) : null}
-
-          {canClear ? (
-            <div
-              className="flex justify-end px-[6px] pt-2"
-              aria-live="polite"
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  if (!clearArmed) {
-                    setClearArmed(true);
-                    return;
-                  }
-                  void handleClearAll();
-                }}
-                disabled={clearing}
-                aria-label={
-                  clearArmed
-                    ? "Confirm clear feed notifications on this device"
-                    : "Clear feed notifications on this device"
-                }
-                className="rounded-full bg-destructive/10 px-3 py-1.5 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 disabled:opacity-60"
-              >
-                {clearing
-                  ? "Clearing…"
-                  : clearArmed
-                    ? "Confirm clear"
-                    : "Clear on this device"}
-              </button>
-            </div>
-          ) : null}
-
-          {hasHistory
-            ? dayGroups.map((group) => (
-                <section key={group.label} aria-label={group.label}>
-                  <SectionLabel>{group.label}</SectionLabel>
-                  <div className="mx-[6px] divide-y divide-[color:var(--app-separator)] overflow-hidden rounded-[20px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] shadow-none">
-                    {group.items.map((item) => (
-                      <FeedRow
-                        key={item.id}
-                        item={item}
-                        unread={
-                          !item.read || visitUnreadIdsRef.current.has(item.id)
-                        }
-                        onOpen={openItem}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ))
-            : null}
-
-          {hasHistory && pagination.nextCursor ? (
-            <div className="flex flex-col items-center gap-1 py-3">
-              {loadMoreError ? (
-                <p role="alert" className="text-xs text-muted-foreground">
-                  {loadMoreError} Try again.
+                <p className="text-[17px] font-semibold leading-[22px] text-[color:var(--app-label)]">
+                  Activity unavailable
                 </p>
-              ) : null}
-              <Button
-                type="button"
-                variant="none"
-                effect="fade"
-                size="sm"
-                onClick={() => void loadMore()}
-                disabled={loadingMore}
+                <Button
+                  type="button"
+                  variant="none"
+                  effect="fade"
+                  size="sm"
+                  onClick={() => void retryFeed()}
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : null}
+
+            {showStaleWarning ? (
+              <div
+                role="status"
+                className="mt-2 flex items-center justify-between gap-3 rounded-xl bg-foreground/[0.04] px-3 py-2 text-xs text-muted-foreground"
               >
-                {loadingMore
-                  ? "Loading…"
-                  : loadMoreError
-                    ? "Retry"
-                    : "Load more"}
-              </Button>
-            </div>
-          ) : null}
-        </AppPageContentRegion>
+                <span>
+                  Showing saved activity. Some updates couldn't refresh.
+                </span>
+                <Button
+                  type="button"
+                  variant="none"
+                  effect="fade"
+                  size="sm"
+                  onClick={() => void retryFeed()}
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : null}
+
+            {showEmpty ? (
+              <div
+                role="status"
+                className="flex min-h-[100px] flex-col items-center justify-center gap-1 rounded-[16px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] px-4 py-6 text-center"
+              >
+                <p className="text-[17px] font-semibold leading-[22px] text-[color:var(--app-label)]">
+                  No activity yet
+                </p>
+                <p className="text-[13px] leading-[18px] text-[color:var(--app-secondary-label)]">
+                  Your recent activity will appear here.
+                </p>
+              </div>
+            ) : null}
+
+            {canClear ? (
+              <div className="flex justify-end pt-2" aria-live="polite">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!clearArmed) {
+                      setClearArmed(true);
+                      return;
+                    }
+                    void handleClearAll();
+                  }}
+                  disabled={clearing}
+                  aria-label={
+                    clearArmed
+                      ? "Confirm clear feed notifications on this device"
+                      : "Clear feed notifications on this device"
+                  }
+                  className="rounded-full bg-destructive/10 px-3 py-1.5 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 disabled:opacity-60"
+                >
+                  {clearing
+                    ? "Clearing…"
+                    : clearArmed
+                      ? "Confirm clear"
+                      : "Clear on this device"}
+                </button>
+              </div>
+            ) : null}
+
+            {hasHistory
+              ? dayGroups.map((group) => (
+                  <section key={group.label} aria-label={group.label}>
+                    <SectionLabel>{group.label}</SectionLabel>
+                    <SettingsGroup separatorInset>
+                      {group.items.map((item) => (
+                        <FeedRow
+                          key={item.id}
+                          item={item}
+                          unread={
+                            !item.read || visitUnreadIdsRef.current.has(item.id)
+                          }
+                          onOpen={openItem}
+                        />
+                      ))}
+                    </SettingsGroup>
+                  </section>
+                ))
+              : null}
+
+            {hasHistory && pagination.nextCursor ? (
+              <div className="flex flex-col items-center gap-1 py-3">
+                {loadMoreError ? (
+                  <p role="alert" className="text-xs text-muted-foreground">
+                    {loadMoreError} Try again.
+                  </p>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="none"
+                  effect="fade"
+                  size="sm"
+                  onClick={() => void loadMore()}
+                  disabled={loadingMore}
+                >
+                  {loadingMore
+                    ? "Loading…"
+                    : loadMoreError
+                      ? "Retry"
+                      : "Load more"}
+                </Button>
+              </div>
+            ) : null}
+          </AppPageContentRegion>
+        </SettingsPresentationProvider>
       </div>
     </AppPageShell>
   );
@@ -693,7 +757,8 @@ function SectionLabel({ children }: { children: ReactNode }) {
   return (
     <AppSectionLabel
       as="h2"
-      className="px-[6px] pb-2 pt-7 text-[13px] font-normal leading-[18px] text-[color:var(--app-section-label)]"
+      compact
+      className="px-1 pb-1.5 pt-5 text-[color:var(--app-section-label)]"
     >
       {children}
     </AppSectionLabel>
@@ -705,14 +770,14 @@ function FeedRowsSkeleton() {
     <div
       role="status"
       aria-label="Loading feed"
-      className="mx-[6px] overflow-hidden rounded-[20px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] shadow-none"
+      className="overflow-hidden rounded-[16px] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] shadow-none"
     >
       {Array.from({ length: 4 }).map((_, index) => (
         <div
           key={index}
-          className="grid min-h-[68px] grid-cols-[40px_minmax(0,1fr)_52px] items-center gap-x-3 border-b border-[color:var(--app-separator)] px-4 py-3 last:border-b-0"
+          className="grid min-h-[60px] grid-cols-[36px_minmax(0,1fr)_48px] items-center gap-x-3 border-b border-[color:var(--app-separator)] px-4 py-2.5 last:border-b-0"
         >
-          <span className="h-10 w-10 rounded-full bg-foreground/[0.07]" />
+          <span className="h-9 w-9 rounded-full bg-foreground/[0.07]" />
           <span className="space-y-2">
             <span className="block h-3.5 w-2/3 rounded-full bg-foreground/[0.07]" />
             <span className="block h-3 w-5/6 rounded-full bg-foreground/[0.055]" />

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  GOOGLE_PEOPLE_REQUEST_TIMEOUT_MS,
   googleContactsAvailability,
   googlePeopleContactSource,
 } from "../google-people-source";
@@ -43,6 +44,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   globalThis.fetch = ORIGINAL_FETCH;
   if (ORIGINAL_CLIENT_ID === undefined) {
     delete process.env.NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID;
@@ -59,7 +61,8 @@ describe("googleContactsAvailability", () => {
   });
 
   it("is connectable on the web once a client id exists", () => {
-    process.env.NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID = "test-client.apps.googleusercontent.com";
+    process.env.NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID =
+      "test-client.apps.googleusercontent.com";
     expect(googleContactsAvailability()).toBe("connectable");
   });
 
@@ -69,19 +72,58 @@ describe("googleContactsAvailability", () => {
     // scheme as an Authorized JavaScript Origin and GIS will not initialise —
     // and native already has the real address book through the plugin, so there
     // is nothing to fall back to.
-    process.env.NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID = "test-client.apps.googleusercontent.com";
+    process.env.NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID =
+      "test-client.apps.googleusercontent.com";
     mockIsNative = () => true;
     expect(googleContactsAvailability()).toBe("unconfigured");
   });
 });
 
 describe("googlePeopleContactSource", () => {
-  it("asks Google for the two fields the pipeline actually reads, and no more", async () => {
+  it("does not read contacts after the session was cancelled", async () => {
+    const { fetchMock } = respondWith({ connections: [] });
+    const abort = new AbortController();
+    abort.abort();
+    await expect(
+      googlePeopleContactSource("tok", abort.signal)({ limit: 500 }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("aborts an active Google read when its owning session ends", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | undefined;
+    globalThis.fetch = vi.fn(
+      (_url, options) =>
+        new Promise((_resolve, reject) => {
+          requestSignal = options?.signal as AbortSignal;
+          requestSignal.addEventListener("abort", () =>
+            reject(new DOMException("ended", "AbortError")),
+          );
+        }),
+    ) as typeof fetch;
+    const abort = new AbortController();
+    const pending = googlePeopleContactSource(
+      "tok",
+      abort.signal,
+    )({ limit: 500 });
+    const rejection = expect(pending).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    abort.abort();
+    await rejection;
+    expect(requestSignal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("asks Google for matching and invitation fields, and no more", async () => {
     const { calls } = respondWith({ connections: [], totalPeople: 0 });
     await googlePeopleContactSource("tok")({ limit: 500 });
 
     const url = new URL(calls[0]);
-    expect(url.searchParams.get("personFields")).toBe("names,phoneNumbers");
+    expect(url.searchParams.get("personFields")).toBe(
+      "names,phoneNumbers,emailAddresses",
+    );
     // Photos, addresses and organisations belong to people who are not our
     // users. There is no reason to receive them.
     expect(url.searchParams.get("personFields")).not.toContain("photos");
@@ -111,29 +153,27 @@ describe("googlePeopleContactSource", () => {
     expect(init?.cache).toBe("no-store");
   });
 
-  it("passes the typed number through, not Google's canonical form", async () => {
-    // `phone-normalization.ts` exists so both sides of the hash reach
-    // byte-identical E.164 through ONE implementation. Google's parser and
-    // libphonenumber-js need not agree at the edges, and the moment they
-    // disagree the digest misses silently and the person is told nobody
-    // matched. The normalizer sees what the user typed.
+  it("prefers Google's canonical E.164 over an ambiguous typed value", async () => {
+    // A globally mixed Google address book can contain a US national display
+    // value while the signed-in account is Indian. canonicalForm preserves the
+    // contact's own country evidence; it still goes through our normalizer.
     respondWith({
       connections: [
         {
-          resourceName: "people/1",
-          names: [{ displayName: "Asha" }],
+          resourceName: "people/us-1",
+          names: [{ displayName: "US teammate" }],
           phoneNumbers: [
-            { value: "98765 43210", canonicalForm: "+919876543210" },
+            { value: "(415) 555-0101", canonicalForm: "+14155550101" },
           ],
         },
       ],
     });
 
     const result = await googlePeopleContactSource("tok")({ limit: 500 });
-    expect(result.contacts[0].phoneNumbers).toEqual(["98765 43210"]);
+    expect(result.contacts[0].phoneNumbers).toEqual(["+14155550101"]);
   });
 
-  it("falls back to the canonical form only when there is no typed value", async () => {
+  it("uses a canonical form when there is no typed value", async () => {
     respondWith({
       connections: [
         {
@@ -147,6 +187,21 @@ describe("googlePeopleContactSource", () => {
     const result = await googlePeopleContactSource("tok")({ limit: 500 });
     // Still goes THROUGH the normalizer downstream, never around it.
     expect(result.contacts[0].phoneNumbers).toEqual(["+919876500000"]);
+  });
+
+  it("falls back to the typed value when canonicalForm is malformed", async () => {
+    respondWith({
+      connections: [
+        {
+          resourceName: "people/typed-fallback",
+          names: [{ displayName: "Typed fallback" }],
+          phoneNumbers: [{ value: "98765 43210", canonicalForm: "not-e164" }],
+        },
+      ],
+    });
+
+    const result = await googlePeopleContactSource("tok")({ limit: 500 });
+    expect(result.contacts[0].phoneNumbers).toEqual(["98765 43210"]);
   });
 
   it("reports google, unlimited, and no region", async () => {
@@ -177,9 +232,21 @@ describe("googlePeopleContactSource", () => {
   it("retains returned people with no usable phone as uncheckable rows", async () => {
     respondWith({
       connections: [
-        { resourceName: "a", names: [{ displayName: "Has" }], phoneNumbers: [{ value: "+911" }] },
-        { resourceName: "b", names: [{ displayName: "None" }], phoneNumbers: [] },
-        { resourceName: "c", names: [{ displayName: "Blank" }], phoneNumbers: [{ value: "  " }] },
+        {
+          resourceName: "a",
+          names: [{ displayName: "Has" }],
+          phoneNumbers: [{ value: "+911" }],
+        },
+        {
+          resourceName: "b",
+          names: [{ displayName: "None" }],
+          phoneNumbers: [],
+        },
+        {
+          resourceName: "c",
+          names: [{ displayName: "Blank" }],
+          phoneNumbers: [{ value: "  " }],
+        },
       ],
     });
 
@@ -195,9 +262,21 @@ describe("googlePeopleContactSource", () => {
   it("applies the read limit to person rows, including people with no phone", async () => {
     respondWith({
       connections: [
-        { resourceName: "a", names: [{ displayName: "None 1" }], phoneNumbers: [] },
-        { resourceName: "b", names: [{ displayName: "None 2" }], phoneNumbers: [] },
-        { resourceName: "c", names: [{ displayName: "Has" }], phoneNumbers: [{ value: "+911" }] },
+        {
+          resourceName: "a",
+          names: [{ displayName: "None 1" }],
+          phoneNumbers: [],
+        },
+        {
+          resourceName: "b",
+          names: [{ displayName: "None 2" }],
+          phoneNumbers: [],
+        },
+        {
+          resourceName: "c",
+          names: [{ displayName: "Has" }],
+          phoneNumbers: [{ value: "+911" }],
+        },
       ],
       totalPeople: 3,
     });
@@ -205,7 +284,9 @@ describe("googlePeopleContactSource", () => {
     const result = await googlePeopleContactSource("tok")({ limit: 2 });
 
     expect(result.contacts).toHaveLength(2);
-    expect(result.contacts.every((contact) => contact.phoneNumbers.length === 0)).toBe(true);
+    expect(
+      result.contacts.every((contact) => contact.phoneNumbers.length === 0),
+    ).toBe(true);
     expect(result.totalAvailable).toBe(3);
     expect(result.truncated).toBe(true);
   });
@@ -214,14 +295,22 @@ describe("googlePeopleContactSource", () => {
     respondWith(
       {
         connections: [
-          { resourceName: "a", names: [{ displayName: "One" }], phoneNumbers: [{ value: "+911" }] },
+          {
+            resourceName: "a",
+            names: [{ displayName: "One" }],
+            phoneNumbers: [{ value: "+911" }],
+          },
         ],
         nextPageToken: "page-2",
         totalPeople: 2,
       },
       {
         connections: [
-          { resourceName: "b", names: [{ displayName: "Two" }], phoneNumbers: [{ value: "+912" }] },
+          {
+            resourceName: "b",
+            names: [{ displayName: "Two" }],
+            phoneNumbers: [{ value: "+912" }],
+          },
         ],
         totalPeople: 2,
       },
@@ -230,6 +319,129 @@ describe("googlePeopleContactSource", () => {
     const result = await googlePeopleContactSource("tok")({ limit: 500 });
     expect(result.contacts).toHaveLength(2);
     expect(result.truncated).toBe(false);
+  });
+
+  it("stops after ten pages even when sparse pages keep returning a cursor", async () => {
+    const { calls } = respondWith(
+      ...Array.from({ length: 11 }, (_, page) => ({
+        connections: [{ resourceName: `people/${page + 1}` }],
+        nextPageToken: `page-${page + 2}`,
+        totalPeople: 11,
+      })),
+    );
+
+    const result = await googlePeopleContactSource("tok")({ limit: 10_000 });
+
+    expect(calls).toHaveLength(10);
+    expect(new URL(calls[9]).searchParams.get("pageToken")).toBe("page-10");
+    expect(result.contacts).toHaveLength(10);
+    expect(result.contacts.at(-1)?.id).toBe("people/10");
+    expect(result).toMatchObject({ totalAvailable: 11, truncated: true });
+  });
+
+  it.each([false, true])(
+    "reads 10,000 people and reports whether another page exists (%s)",
+    async (hasMore) => {
+      const { calls } = respondWith(
+        ...Array.from({ length: 10 }, (_, page) => ({
+          connections: Array.from({ length: 1000 }, (_, index) => ({
+            resourceName: `people/${page * 1000 + index + 1}`,
+            phoneNumbers: [{ value: "+14155550101" }],
+          })),
+          nextPageToken: page < 9 || hasMore ? `page-${page + 2}` : null,
+          totalPeople: hasMore ? 10_001 : 10_000,
+        })),
+      );
+
+      const result = await googlePeopleContactSource("tok")({ limit: 10_000 });
+
+      expect(calls).toHaveLength(10);
+      expect(
+        calls.every(
+          (url) => new URL(url).searchParams.get("pageSize") === "1000",
+        ),
+      ).toBe(true);
+      expect(result.contacts).toHaveLength(10_000);
+      expect(result.contacts.at(-1)?.id).toBe("people/10000");
+      expect(result.truncated).toBe(hasMore);
+      expect(result.totalAvailable).toBe(hasMore ? 10_001 : 10_000);
+    },
+  );
+
+  it("aborts and rejects a stalled fetch at the request deadline", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | null | undefined;
+    globalThis.fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal;
+      return new Promise<Response>(() => {});
+    });
+    const reading = googlePeopleContactSource("tok")({ limit: 500 });
+    const rejected = expect(reading).rejects.toThrow(
+      /took too long.*try again/i,
+    );
+
+    await vi.advanceTimersByTimeAsync(GOOGLE_PEOPLE_REQUEST_TIMEOUT_MS - 1);
+    expect(requestSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps the deadline active while a successful response body is stalled", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | null | undefined;
+    const json = vi.fn(() => new Promise<unknown>(() => {}));
+    globalThis.fetch = vi.fn(
+      async (_url: RequestInfo | URL, init?: RequestInit) => {
+        requestSignal = init?.signal;
+        return { ok: true, status: 200, json } as unknown as Response;
+      },
+    );
+    const reading = googlePeopleContactSource("tok")({ limit: 500 });
+    const rejected = expect(reading).rejects.toThrow(
+      /took too long.*try again/i,
+    );
+
+    await vi.advanceTimersByTimeAsync(GOOGLE_PEOPLE_REQUEST_TIMEOUT_MS - 1);
+    expect(json).toHaveBeenCalledTimes(1);
+    expect(requestSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears a completed page's deadline before advancing to the next page", async () => {
+    vi.useFakeTimers();
+    const signals: Array<AbortSignal | null | undefined> = [];
+    globalThis.fetch = vi.fn(
+      async (_url: RequestInfo | URL, init?: RequestInit) => {
+        signals.push(init?.signal);
+        await new Promise((resolve) => setTimeout(resolve, 20_000));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            connections: [{ resourceName: `people/${signals.length}` }],
+            nextPageToken: signals.length === 1 ? "page-2" : null,
+            totalPeople: 2,
+          }),
+        } as Response;
+      },
+    );
+    const reading = googlePeopleContactSource("tok")({ limit: 500 });
+
+    await vi.advanceTimersByTimeAsync(40_000);
+    const result = await reading;
+
+    expect(result.contacts).toHaveLength(2);
+    expect(signals).toHaveLength(2);
+    expect(signals.every((signal) => signal?.aborted === false)).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("says so when the token has expired rather than reporting an empty book", async () => {
@@ -264,14 +476,18 @@ describe("googlePeopleContactSource", () => {
         {
           resourceName: "people/9",
           names: [{ displayName: "Asha" }],
-          phoneNumbers: [{ value: "+919876543210", canonicalForm: "+919876543210" }],
+          phoneNumbers: [
+            { value: "+919876543210", canonicalForm: "+919876543210" },
+          ],
         },
       ],
       nextPageToken: null,
       totalPeople: 1,
     });
 
-    const result = await googlePeopleContactSource("super-secret")({ limit: 500 });
+    const result = await googlePeopleContactSource("super-secret")({
+      limit: 500,
+    });
     const serialized = JSON.stringify(result);
 
     expect(serialized).not.toContain("super-secret");

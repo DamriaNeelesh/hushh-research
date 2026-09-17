@@ -121,7 +121,6 @@ async function renderProvider() {
     </ConsentNotificationProvider>,
   );
   await waitFor(() => expect(mocks.initializeFCM).toHaveBeenCalledOnce());
-  await waitFor(() => expect(mocks.getState).toHaveBeenCalled());
   mocks.toast.mockClear();
   mocks.onConsentMutated.mockClear();
   mocks.dispatchConsentStateChanged.mockClear();
@@ -137,6 +136,36 @@ function dispatchConnectionRequest(data: Record<string, string>) {
     data: Record<string, string>;
     accepted?: boolean;
   } = { data: { type: "connection_request", ...data } };
+  act(() => {
+    window.dispatchEvent(
+      new CustomEvent("fcm-message", {
+        detail,
+      }),
+    );
+  });
+  return detail;
+}
+
+function dispatchConnectionRequestCancelled(data: Record<string, string>) {
+  const detail: {
+    data: Record<string, string>;
+    accepted?: boolean;
+  } = { data: { type: "connection_request_cancelled", ...data } };
+  act(() => {
+    window.dispatchEvent(
+      new CustomEvent("fcm-message", {
+        detail,
+      }),
+    );
+  });
+  return detail;
+}
+
+function dispatchConnectionRequestResolved(data: Record<string, string>) {
+  const detail: {
+    data: Record<string, string>;
+    accepted?: boolean;
+  } = { data: { type: "connection_request_resolved", ...data } };
   act(() => {
     window.dispatchEvent(
       new CustomEvent("fcm-message", {
@@ -198,6 +227,39 @@ describe("connection-request Feed-first foreground policy", () => {
   it("drops a payload addressed to a different signed-in user", async () => {
     await renderProvider();
     const detail = dispatchConnectionRequest({
+      user_id: "someone-else",
+      request_id: "conn-req-1",
+    });
+
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(mocks.dispatchFeedStateChanged).not.toHaveBeenCalled();
+    expect(mocks.onConsentMutated).not.toHaveBeenCalled();
+    expect(detail.accepted).not.toBe(true);
+  });
+
+  it("refreshes on a cancelled request without a popup", async () => {
+    await renderProvider();
+
+    const detail = dispatchConnectionRequestCancelled({
+      user_id: "recipient-user",
+      requester_user_id: "requester-user",
+      requester_label: "Rohan",
+      request_id: "conn-req-1",
+    });
+
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(mocks.dispatchFeedStateChanged).toHaveBeenCalledOnce();
+    expect(mocks.onConsentMutated).toHaveBeenCalledWith("recipient-user");
+    expect(mocks.dispatchConsentStateChanged).toHaveBeenCalledWith({
+      source: "fcm_connection_request_cancelled",
+      reconcile: true,
+    });
+    expect(detail.accepted).toBe(true);
+  });
+
+  it("drops a cancelled-request payload addressed to a different signed-in user", async () => {
+    await renderProvider();
+    const detail = dispatchConnectionRequestCancelled({
       user_id: "someone-else",
       request_id: "conn-req-1",
     });
@@ -396,5 +458,51 @@ describe("connection-request Feed-first foreground policy", () => {
     expect(mocks.toast).not.toHaveBeenCalled();
     expect(mocks.dispatchFeedStateChanged).toHaveBeenCalledOnce();
     expect(mocks.onConsentMutated).not.toHaveBeenCalled();
+  });
+
+  describe("connection-request-resolved (#6507)", () => {
+    // The requester learning their OWN request was accepted/declined --
+    // previously not pushed at all, so this branch did not exist. Same
+    // Feed-first shape as the sibling connection_request tests above.
+    it.each([
+      { accepted: "true", label: "accepted" },
+      { accepted: "false", label: "declined" },
+    ])(
+      "refreshes Feed and invalidates consent cache when $label",
+      async ({ accepted }) => {
+        await renderProvider();
+
+        const detail = dispatchConnectionRequestResolved({
+          user_id: "recipient-user",
+          resolver_user_id: "resolver-user",
+          resolver_label: "Rohan",
+          request_id: "conn-req-1",
+          accepted,
+        });
+
+        expect(mocks.toast).not.toHaveBeenCalled();
+        expect(mocks.dispatchFeedStateChanged).toHaveBeenCalledOnce();
+        expect(mocks.onConsentMutated).toHaveBeenCalledWith("recipient-user");
+        expect(mocks.dispatchConsentStateChanged).toHaveBeenCalledWith({
+          source: "fcm_connection_request_resolved",
+          reconcile: true,
+        });
+        expect(detail.accepted).toBe(true);
+      },
+    );
+
+    it("drops a payload addressed to a different signed-in user", async () => {
+      await renderProvider();
+      const detail = dispatchConnectionRequestResolved({
+        user_id: "someone-else",
+        request_id: "conn-req-1",
+        accepted: "true",
+      });
+
+      expect(mocks.toast).not.toHaveBeenCalled();
+      expect(mocks.dispatchFeedStateChanged).not.toHaveBeenCalled();
+      expect(mocks.onConsentMutated).not.toHaveBeenCalled();
+      expect(detail.accepted).not.toBe(true);
+    });
   });
 });

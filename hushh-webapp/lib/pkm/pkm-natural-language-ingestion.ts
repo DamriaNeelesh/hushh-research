@@ -2,6 +2,7 @@
 
 import {
   addToPKM,
+  getPkmAutoSaveCards,
   previewAgentPkmMemory,
   type AgentPkmPreviewCard,
   type AgentPkmPreviewResponse,
@@ -19,7 +20,11 @@ export type PkmNaturalLanguageIngestionResult = {
   previews: AgentPkmPreviewResponse[];
   chunkCount: number;
   save: AgentPkmSaveResult;
+  sourceCoverage: PkmNaturalLanguageSourceCoverage[];
 };
+
+export type PkmNaturalLanguageWritePolicy = "reviewable" | "auto_save_only";
+export type PkmNaturalLanguageMemoryProfile = "general" | "kyc_identity_v1";
 
 export type PkmNaturalLanguagePreparationResult = {
   preview: AgentPkmPreviewResponse;
@@ -32,10 +37,18 @@ export type PkmNaturalLanguagePreparationResult = {
 
 export type PkmNaturalLanguageSourceCoverage = {
   sourceBlockId: string;
-  disposition: "proposed" | "intentionally_ignored" | "review_required";
+  disposition: "proposed" | "intentionally_ignored" | "review_required" | "failed";
   detectedFactCount: number;
   accountedFactCount: number;
+  /** Cards dropped because the same value is already in Memory. */
+  duplicateCount?: number;
+  /** Cards the structurer refused because they carry a secret. */
+  excludedSecretCount?: number;
 };
+
+export type PkmNaturalLanguageDuplicateMatch =
+  | { kind: "exact" | "possible"; domain: string; path: string[] }
+  | null;
 
 export type PkmNaturalLanguagePreparationProgress = {
   phase: "preparing" | "splitting" | "prepared";
@@ -54,6 +67,7 @@ type PkmIngestionLogFields = {
   saved?: number;
   failed?: number;
   duration_ms?: number;
+  error_code?: string;
 };
 
 function createIngestionId(): string {
@@ -91,9 +105,16 @@ function splitStructuredText(text: string): string[] {
   const lines = text.trim().split(/\r?\n/);
   const sections: string[] = [];
   let current: string[] = [];
+  let hasExplicitFieldSections = false;
+  const isExplicitFieldSection = (line: string) =>
+    /^\s*(?:[-+]\s+)?(?:\*\*[^*]{1,160}:?\*\*|__[^_]{1,160}:?__|[A-Za-z][A-Za-z /&()-]{1,80}:)\s*\S/.test(
+      line,
+    );
   const beginsSection = (line: string) =>
-    /^\s*(?:#{1,6}\s+|\d{1,3}[.)]\s+\S)/.test(line);
+    /^\s*(?:#{1,6}\s+|\d{1,3}[.)]\s+\S)/.test(line) ||
+    isExplicitFieldSection(line);
   for (const line of lines) {
+    hasExplicitFieldSections ||= isExplicitFieldSection(line);
     if (beginsSection(line) && current.some((item) => item.trim())) {
       sections.push(current.join("\n").trim());
       current = [];
@@ -102,6 +123,15 @@ function splitStructuredText(text: string): string[] {
   }
   if (current.some((item) => item.trim())) sections.push(current.join("\n").trim());
   if (sections.length <= 1) return splitText(text, MAX_PROPOSAL_MESSAGE_CHARS);
+
+  // A pasted KYC summary commonly uses bold or label-style fields. Give the
+  // segmentation model one declared field at a time rather than asking it to
+  // compress an entire profile into its bounded preview-card response.
+  if (hasExplicitFieldSections) {
+    return sections.flatMap((section) =>
+      splitText(section, MAX_PROPOSAL_MESSAGE_CHARS),
+    );
+  }
 
   const chunks: string[] = [];
   let pending: string[] = [];
@@ -142,6 +172,15 @@ function readNonNegativeInteger(value: unknown): number | null {
     : null;
 }
 
+function hasUnaccountedFacts(
+  preview: AgentPkmPreviewResponse & { cards: AgentPkmPreviewCard[] },
+): boolean {
+  const detectedFactCount =
+    readNonNegativeInteger(preview.preview_summary?.total_segments_detected) ??
+    preview.cards.length;
+  return detectedFactCount !== preview.cards.length || preview.cards.length === 0;
+}
+
 function classifySourceBlock(
   preview: AgentPkmPreviewResponse & { cards: AgentPkmPreviewCard[] },
   blockIndex: number,
@@ -150,15 +189,33 @@ function classifySourceBlock(
     readNonNegativeInteger(preview.preview_summary?.total_segments_detected) ??
     preview.cards.length;
   const accountedFactCount = preview.cards.length;
-  if (detectedFactCount !== accountedFactCount || accountedFactCount === 0) {
-    throw new Error(
-      `Memory import block ${blockIndex + 1} was not fully accounted for. Split or clarify that section before saving.`,
-    );
+  if (accountedFactCount === 0) {
+    // A pasted KYC profile can include a truthful negative statement (for
+    // example that a government identifier was not supplied). One such block
+    // must not discard separately prepared, saveable profile details. Record
+    // the omission for the caller; the import still fails if *every* block is
+    // unsaveable.
+    return {
+      sourceBlockId: `source_block_${String(blockIndex + 1).padStart(3, "0")}`,
+      disposition:
+        preview.error || preview.used_fallback === true || detectedFactCount > 0
+          ? "review_required"
+          : "intentionally_ignored",
+      detectedFactCount,
+      accountedFactCount: 0,
+    };
   }
+  // `total_segments_detected` is the structurer's advisory estimate, not a
+  // second durable data contract. We already retry larger mismatched blocks
+  // above; a short labelled field can still yield a valid card while the model
+  // reports a higher estimate. Keep that card review-required instead of
+  // making an otherwise valid owner-approved import impossible to save.
+  const segmentCountMismatch = detectedFactCount !== accountedFactCount;
   const everyCardIgnored = preview.cards.every(
     (card) => card.write_mode === "do_not_save",
   );
   const needsReview =
+    segmentCountMismatch ||
     Boolean(preview.error) ||
     preview.used_fallback === true ||
     preview.cards.some(
@@ -176,6 +233,46 @@ function classifySourceBlock(
   };
 }
 
+function isSecretRejectedCard(card: AgentPkmPreviewCard): boolean {
+  const hints = Array.isArray(card.validation_hints) ? card.validation_hints : [];
+  return hints.some((hint) => String(hint).startsWith("sensitive_"));
+}
+
+/**
+ * Drop cards whose value is already in Memory and force confirmation on
+ * near matches. The check runs against the decrypted working set already in
+ * this session's memory; values never leave the device for it.
+ */
+function applyLocalDuplicates(
+  cards: AgentPkmPreviewCard[],
+  findDuplicate: ((candidate: string) => PkmNaturalLanguageDuplicateMatch) | undefined,
+): { cards: AgentPkmPreviewCard[]; dropped: number } {
+  if (!findDuplicate) return { cards, dropped: 0 };
+  let dropped = 0;
+  const kept: AgentPkmPreviewCard[] = [];
+  for (const card of cards) {
+    if (card.write_mode === "do_not_save") {
+      kept.push(card);
+      continue;
+    }
+    const match = findDuplicate(String(card.source_text || ""));
+    if (match?.kind === "exact") {
+      dropped += 1;
+      continue;
+    }
+    if (match?.kind === "possible") {
+      kept.push({
+        ...card,
+        write_mode: "confirm_first",
+        validation_hints: [...(card.validation_hints || []), "possible_duplicate"],
+      });
+      continue;
+    }
+    kept.push(card);
+  }
+  return { cards: kept, dropped };
+}
+
 /**
  * The one client-side ingestion path for user-authored free text before it is
  * encrypted into PKM. It keeps each proposal below the backend contract limit
@@ -191,8 +288,17 @@ export async function prepareNaturalLanguagePkm(params: {
   userId: string;
   message: string;
   currentDomains: string[];
+  currentManifests?: unknown[];
   vaultOwnerToken: string;
   source: string;
+  memoryProfile?: PkmNaturalLanguageMemoryProfile;
+  /**
+   * Local, in-memory duplicate check against the already-decrypted working
+   * set (never a network call). An exact match drops the card; a possible
+   * match keeps it but forces owner confirmation.
+   */
+  findDuplicate?: (candidate: string) => PkmNaturalLanguageDuplicateMatch;
+  allowEmpty?: boolean;
   onProgress?: (progress: PkmNaturalLanguagePreparationProgress) => void;
 }): Promise<PkmNaturalLanguagePreparationResult> {
   const message = params.message.trim();
@@ -205,10 +311,15 @@ export async function prepareNaturalLanguagePkm(params: {
   // Markdown sections. Preserve every line while packing a bounded number of
   // sections into each semantic-agent call, so the agent's eight-card limit
   // cannot silently swallow the tail of a large profile import.
-  const queue = splitStructuredText(message);
+  // KYC imports are intentionally one constrained extraction call. Splitting
+  // an export first loses cross-field context and reintroduces model fan-out.
+  const queue = params.memoryProfile === "kyc_identity_v1"
+    ? [message]
+    : splitStructuredText(message);
   const previews: AgentPkmPreviewResponse[] = [];
   const cards: AgentPkmPreviewCard[] = [];
   const sourceCoverage: PkmNaturalLanguageSourceCoverage[] = [];
+  let failedBlocks = 0;
   logIngestion("started", {
     ingestion_id: ingestionId,
     source: params.source,
@@ -227,15 +338,39 @@ export async function prepareNaturalLanguagePkm(params: {
       throw new Error("This import is too large to prepare safely. Please split it into smaller sections.");
     }
     const chunk = queue[index]!;
-    const preview = await previewAgentPkmMemory({
-      userId: params.userId,
-      message: chunk,
-      currentDomains: params.currentDomains,
-      vaultOwnerToken: params.vaultOwnerToken,
-      ingestionId,
-      chunkIndex: index + 1,
-    });
-    if (splitRecommendedPreview(preview)) {
+    let preview: Awaited<ReturnType<typeof previewAgentPkmMemory>>;
+    try {
+      preview = await previewAgentPkmMemory({
+        userId: params.userId,
+        message: chunk,
+        currentDomains: params.currentDomains,
+        currentManifests: params.currentManifests,
+        vaultOwnerToken: params.vaultOwnerToken,
+        ingestionId,
+        chunkIndex: index + 1,
+        memoryProfile: params.memoryProfile,
+      });
+    } catch (error) {
+      // One block failing must not discard every block already prepared. The
+      // block is reported as failed so nothing is silently lost; the person
+      // can re-paste just that section.
+      failedBlocks += 1;
+      sourceCoverage.push({
+        sourceBlockId: `source_block_${String(sourceCoverage.length + 1).padStart(3, "0")}`,
+        disposition: "failed",
+        detectedFactCount: 0,
+        accountedFactCount: 0,
+      });
+      logIngestion("chunk_failed", {
+        ingestion_id: ingestionId,
+        source: params.source,
+        chunk_index: index + 1,
+        message_chars: chunk.length,
+        error_code: error instanceof Error ? error.message.slice(0, 80) : "unknown",
+      });
+      continue;
+    }
+    if (params.memoryProfile !== "kyc_identity_v1" && splitRecommendedPreview(preview)) {
       if (chunk.length <= MIN_RETRY_CHUNK_CHARS) {
         throw new Error("This import contains too many details in one short passage. Add line breaks or split it into smaller sections.");
       }
@@ -260,10 +395,57 @@ export async function prepareNaturalLanguagePkm(params: {
       });
       continue;
     }
+    if (
+      params.memoryProfile !== "kyc_identity_v1" &&
+      hasUnaccountedFacts(preview) &&
+      !(params.allowEmpty && preview.cards.length === 0) &&
+      chunk.length > MIN_RETRY_CHUNK_CHARS
+    ) {
+      const retryChunks = splitText(chunk, Math.ceil(chunk.length / 2));
+      if (retryChunks.length < 2) {
+        throw new Error("This import could not be separated safely. Please split it into smaller sections.");
+      }
+      queue.splice(index, 1, ...retryChunks);
+      index -= 1;
+      logIngestion("chunk_split", {
+        ingestion_id: ingestionId,
+        source: params.source,
+        chunk_count: queue.length,
+        chunk_index: index + 2,
+        message_chars: chunk.length,
+        error_code: "unaccounted_facts",
+      });
+      params.onProgress?.({
+        phase: "splitting",
+        chunkIndex: Math.max(0, index),
+        chunkCount: queue.length,
+        cardCount: cards.length,
+      });
+      continue;
+    }
     previews.push(preview);
-    sourceCoverage.push(classifySourceBlock(preview, previews.length - 1));
+    if (params.allowEmpty && preview.cards.length === 0) {
+      // An auto-save-only caller (KYC) accepts a block with nothing durable
+      // in it; that is a valid outcome, not an unaccounted block.
+      sourceCoverage.push({
+        sourceBlockId: `source_block_${String(sourceCoverage.length + 1).padStart(3, "0")}`,
+        disposition: "intentionally_ignored",
+        detectedFactCount: 0,
+        accountedFactCount: 0,
+      });
+      continue;
+    }
+    const coverage = classifySourceBlock(preview, sourceCoverage.length);
+    const deduped = applyLocalDuplicates(preview.cards, params.findDuplicate);
+    if (deduped.dropped > 0) coverage.duplicateCount = deduped.dropped;
+    const excludedSecretCount = preview.cards.filter(isSecretRejectedCard).length;
+    if (excludedSecretCount > 0) coverage.excludedSecretCount = excludedSecretCount;
+    if (deduped.cards.length === 0 && preview.cards.length > 0) {
+      coverage.disposition = "intentionally_ignored";
+    }
+    sourceCoverage.push(coverage);
     cards.push(
-      ...preview.cards.map((card, cardIndex) => ({
+      ...deduped.cards.map((card, cardIndex) => ({
         ...card,
         card_id: `${ingestionId}_${index + 1}_${card.card_id || cardIndex + 1}`,
       }))
@@ -283,7 +465,10 @@ export async function prepareNaturalLanguagePkm(params: {
     });
   }
 
-  if (cards.length === 0 || previews.length === 0) {
+  if (previews.length === 0 && failedBlocks > 0) {
+    throw new Error("Memory preparation failed for every section. Please try again.");
+  }
+  if ((cards.length === 0 || previews.length === 0) && !params.allowEmpty) {
     throw new Error("We couldn't find saveable personal details in this import.");
   }
 
@@ -294,7 +479,14 @@ export async function prepareNaturalLanguagePkm(params: {
     cardCount: cards.length,
   });
   return {
-    preview: previews[0]!,
+    preview: previews[0] ?? {
+      agent_id: "agent_memory_segmentation",
+      agent_name: "Memory Segmentation Agent",
+      model: "unknown",
+      used_fallback: false,
+      write_mode: "do_not_save",
+      preview_cards: [],
+    },
     previews,
     cards,
     chunkCount: previews.length,
@@ -311,20 +503,31 @@ export async function ingestNaturalLanguagePkm(params: {
   vaultOwnerToken: string;
   source: string;
   confirmation: PkmWriteAuthorization;
+  writePolicy?: PkmNaturalLanguageWritePolicy;
+  memoryProfile?: PkmNaturalLanguageMemoryProfile;
+  /** See addToPKM: only constrained profile imports opt into this write path. */
+  batchSimpleDomainExtensions?: boolean;
   onProgress?: (progress: PkmNaturalLanguagePreparationProgress) => void;
 }): Promise<PkmNaturalLanguageIngestionResult> {
   const startedAt = performance.now();
-  const prepared = await prepareNaturalLanguagePkm(params);
+  const prepared = await prepareNaturalLanguagePkm({
+    ...params,
+    allowEmpty: params.writePolicy === "auto_save_only",
+  });
   const message = params.message.trim();
+  const cards = params.writePolicy === "auto_save_only"
+    ? getPkmAutoSaveCards(prepared.cards)
+    : prepared.cards;
 
   const save = await addToPKM({
     userId: params.userId,
-    cards: prepared.cards,
+    cards,
     sourceMessage: message,
     vaultKey: params.vaultKey,
     vaultOwnerToken: params.vaultOwnerToken,
     source: params.source,
     confirmation: params.confirmation,
+    batchSimpleDomainExtensions: params.batchSimpleDomainExtensions,
   });
   logIngestion("completed", {
     ingestion_id: prepared.ingestionId,
@@ -341,5 +544,6 @@ export async function ingestNaturalLanguagePkm(params: {
     previews: prepared.previews,
     chunkCount: prepared.chunkCount,
     save,
+    sourceCoverage: prepared.sourceCoverage,
   };
 }

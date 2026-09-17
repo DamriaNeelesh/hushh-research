@@ -52,7 +52,13 @@ export type PersonInformationRequestHistory = {
   durationSeconds: number;
   createdAt: string | null;
   expiresAt: number | null;
-  status: "pending" | "granted" | "denied" | "expired" | "revoked";
+  status:
+    | "pending"
+    | "granted"
+    | "denied"
+    | "expired"
+    | "revoked"
+    | "cancelled";
 };
 
 export type InformationRequestBundle = {
@@ -66,7 +72,13 @@ export type InformationRequestBundle = {
     scopeRef: string;
     label: string;
     sensitivity: string | null;
-    status: "pending" | "granted" | "denied" | "revoked";
+    status:
+      | "pending"
+      | "granted"
+      | "denied"
+      | "expired"
+      | "revoked"
+      | "cancelled";
   }>;
 };
 
@@ -95,6 +107,18 @@ export class PersonProfileService {
       ),
     );
     return payload.exports || [];
+  }
+
+  static async getInformationRequest(input: {
+    bundleId: string;
+    vaultOwnerToken: string;
+  }): Promise<InformationRequestBundle> {
+    return jsonOrThrow<InformationRequestBundle>(
+      await ApiService.apiFetch(
+        `/api/one/information-requests/${encodeURIComponent(input.bundleId)}`,
+        { headers: { Authorization: `Bearer ${input.vaultOwnerToken}` } },
+      ),
+    );
   }
 
   static async cancelInformationRequest(input: {

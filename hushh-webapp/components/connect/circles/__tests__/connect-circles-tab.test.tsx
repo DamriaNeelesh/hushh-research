@@ -125,7 +125,10 @@ beforeEach(() => {
   mocks.listCircles.mockResolvedValue([]);
   mocks.ensureTrusted.mockResolvedValue({});
   mocks.searchParams = new URLSearchParams("tab=circles");
-  mocks.createNamedCircle.mockResolvedValue({ id: "new-circle", name: "Roommates" });
+  mocks.createNamedCircle.mockResolvedValue({
+    id: "new-circle",
+    name: "Roommates",
+  });
   mocks.getCircle.mockResolvedValue({
     id: "mine",
     name: "Roommates",
@@ -161,12 +164,11 @@ beforeEach(() => {
 });
 
 describe("circleRowDescription", () => {
-  it("counts everyone except the viewer", () => {
-    // "3 people" reading as two others and yourself is the answer to a question
-    // nobody asked. The Location list already excludes the viewer; these two
-    // now agree.
-    expect(circleRowDescription(circle("c", "K Family", 4))).toBe("3 people");
-    expect(circleRowDescription(circle("c", "K Family", 2))).toBe("1 person");
+  it("counts everyone in the Circle, owner included", () => {
+    // The Circle's own detail screen counts everyone including the owner;
+    // this row now agrees with it instead of disagreeing by exactly one.
+    expect(circleRowDescription(circle("c", "K Family", 4))).toBe("4 people");
+    expect(circleRowDescription(circle("c", "K Family", 2))).toBe("2 people");
     expect(circleRowDescription(circle("c", "K Family", 1))).toBe(
       "No members yet",
     );
@@ -178,10 +180,10 @@ describe("circleRowDescription", () => {
     // never asked. These lines answer the question a Circle you did not create
     // actually raises.
     expect(circleRowDescription(circle("t", "Trusted", 8, "trusted"))).toBe(
-      "Everyone you're connected to · 7 people",
+      "Everyone you're connected to · 8 people",
     );
     expect(circleRowDescription(circle("s", "SMS Circle", 4, "sms"))).toBe(
-      "Gets your SMS · 3 people",
+      "Gets your SMS · 4 people",
     );
   });
 
@@ -213,41 +215,54 @@ describe("circleRowDescription", () => {
 
   it("still recognises an SMS Circle from a server that predates systemKind", () => {
     const legacy = { ...circle("s", "SMS Circle", 3, "sms"), systemKind: null };
-    expect(circleRowDescription(legacy)).toBe("Gets your SMS · 2 people");
+    expect(circleRowDescription(legacy)).toBe("Gets your SMS · 3 people");
   });
 });
 
 describe("orderCircles", () => {
-  it("puts Trusted first, then SMS, then the ones you made", () => {
-    // What is yours and what is the app's, answerable at a glance rather than
-    // per row -- and Trusted first because it is what a person opens this tab
-    // to see.
-    const { system, owned } = orderCircles([
+  it("separates circles you own from circles you joined", () => {
+    // What is yours and what you joined, answerable at a glance rather than per
+    // row -- with your product-managed circles still pinned first.
+    const { owned, joined } = orderCircles([
       circle("mine", "Roommates", 3),
-      circle("sms", "SMS Circle", 4, "sms"),
+      circle("family", "Family", 2, null, "member"),
+      circle("their-sms", "Alice's SMS Circle", 4, "sms", "member"),
+      circle("sms", "SMS Circle", 4, "sms", "owner"),
       circle("trusted", "Trusted", 20, "trusted"),
     ]);
 
-    expect(system.map((c) => c.id)).toEqual(["trusted", "sms"]);
-    expect(owned.map((c) => c.id)).toEqual(["mine"]);
+    expect(owned.map((c) => c.id)).toEqual(["trusted", "sms", "mine"]);
+    expect(joined.map((c) => c.id)).toEqual(["family", "their-sms"]);
   });
 });
 
 describe("ConnectCirclesTab", () => {
-  it("shows the system Circles above the ones you made", async () => {
+  it("shows your Circles separately from joined Circles", async () => {
     mocks.listCircles.mockResolvedValue([
       circle("mine", "Roommates", 3),
+      circle("joined", "Family", 2, null, "member"),
       circle("trusted", "Trusted", 20, "trusted"),
       circle("sms", "SMS Circle", 4, "sms"),
+      circle("their-sms", "Alice's SMS Circle", 4, "sms", "member"),
     ]);
 
     render(<ConnectCirclesTab />);
 
-    expect(await screen.findByText("Trusted")).toBeTruthy();
-    expect(screen.getByText("SMS Circle")).toBeTruthy();
-    expect(screen.getByText("Roommates")).toBeTruthy();
+    const owned = await screen.findByTestId("connect-circle-group-owned");
+    const joined = screen.getByTestId("connect-circle-group-joined");
+
+    expect(within(owned).getByText("Your circles")).toBeTruthy();
+    expect(within(owned).getByText("Trusted")).toBeTruthy();
+    expect(within(owned).getByText("SMS Circle")).toBeTruthy();
+    expect(within(owned).getByText("Roommates")).toBeTruthy();
+    expect(within(owned).queryByText("Family")).toBeNull();
+
+    expect(within(joined).getByText("Joined circles")).toBeTruthy();
+    expect(within(joined).getByText("Family")).toBeTruthy();
+    expect(within(joined).getByText("Alice's SMS Circle")).toBeTruthy();
+    expect(within(joined).queryByText("Roommates")).toBeNull();
     expect(screen.getByTestId("connect-circle-trusted")).toBeTruthy();
-    const smsCircle = screen.getByTestId("connect-circle-sms");
+    const smsCircle = within(owned).getByTestId("connect-circle-sms");
     expect(smsCircle).toBeTruthy();
     expect(smsCircle.querySelector("[data-one-sms-text-icon]")).toBeTruthy();
   });
@@ -483,6 +498,21 @@ describe("ConnectCirclesTab", () => {
     expect(joinHref).not.toContain("/one/location");
   });
 
+  it("keeps circle navigation copy compact on narrow screens", async () => {
+    render(<ConnectCirclesTab />);
+
+    const createDescription = await screen.findByText(
+      "Create a group for your connections.",
+    );
+    const joinDescription = screen.getByText(
+      "Enter a shared 12-character code.",
+    );
+    for (const description of [createDescription, joinDescription]) {
+      expect(description.className).toContain("truncate");
+      expect(description.className).toContain("whitespace-nowrap");
+    }
+  });
+
   it("names the tab explicitly on every navigation", async () => {
     // The App Router refuses a navigation whose only change is the whole query
     // string disappearing, so `tab=circles` is written out even when closing a
@@ -502,7 +532,9 @@ describe("the flows are hosted on Connect, not linked away to Location", () => {
     // The whole point. Before this, the same tap was a router.push into
     // /one/location, where a first-run onboarding takeover -- decided without
     // reading any query parameter -- rendered instead.
-    mocks.searchParams = new URLSearchParams("tab=circles&action=create-circle");
+    mocks.searchParams = new URLSearchParams(
+      "tab=circles&action=create-circle",
+    );
 
     render(<ConnectCirclesTab />);
 
@@ -549,7 +581,9 @@ describe("the flows are hosted on Connect, not linked away to Location", () => {
   });
 
   it("shows the list, not a flow, when circle-detail carries no id", async () => {
-    mocks.searchParams = new URLSearchParams("tab=circles&action=circle-detail");
+    mocks.searchParams = new URLSearchParams(
+      "tab=circles&action=circle-detail",
+    );
 
     render(<ConnectCirclesTab />);
 

@@ -9,6 +9,7 @@ import {
   normalizeContactPhone,
   resolveContactPhoneRegion,
 } from "@/lib/contacts/phone-normalization";
+import { contactInvitationsEnabled, normalizeInviteEmail, type LocalInviteContact } from "@/lib/contacts/invitation-candidates";
 
 /**
  * The backend accepts at most 1000 entries per contact-sync request. The local
@@ -16,8 +17,8 @@ import {
  * this boundary so later contacts are never mislabeled as unmatched.
  */
 export const CONTACT_SYNC_BATCH_SIZE = 1000;
-/** Hard privacy/performance ceiling: at most five mutation requests per sync. */
-export const CONTACT_SYNC_MAX_LOOKUPS = 5000;
+/** Hard privacy/performance ceiling: at most ten bounded mutation requests. */
+export const CONTACT_SYNC_MAX_LOOKUPS = 10_000;
 const CONTACT_HASH_CHUNK_SIZE = 250;
 
 export type MarketplaceContactLookup = {
@@ -98,9 +99,22 @@ export async function buildMarketplaceContactLookups(options?: {
    * region bare national contact numbers belong to; never hashed or sent.
    */
   accountPhoneNumber?: string | null;
+  accountEmail?: string | null;
+  /**
+   * Reads the latest verified account phone after the contact source returns.
+   * AuthContext can finish hydrating while an OS/Google picker is open; callers
+   * that provide this resolver avoid freezing the earlier null value.
+   */
+  resolveAccountPhoneNumber?: () =>
+    | string
+    | null
+    | undefined
+    | Promise<string | null | undefined>;
   signal?: AbortSignal;
   /** Defaults to the device address book through the Capacitor plugin. */
   source?: MarketplaceContactSource;
+  /** Private side channel; raw destinations never enter the returned lookup result. */
+  onLocalInviteContacts?: (contacts: LocalInviteContact[]) => void;
 }): Promise<MarketplaceContactLookupResult> {
   // The default forwards exactly `{ limit }` and nothing else — the existing
   // test asserts that call shape as an exact object match, and it is the right
@@ -113,13 +127,17 @@ export async function buildMarketplaceContactLookups(options?: {
   });
   options?.signal?.throwIfAborted();
 
+  const accountPhoneNumber = options?.resolveAccountPhoneNumber
+    ? await options.resolveAccountPhoneNumber()
+    : options?.accountPhoneNumber;
+
   const region = resolveContactPhoneRegion({
     deviceRegion: result.defaultRegion,
     // Android is the only source whose region comes from the number plan; see
     // `resolveContactPhoneRegion` for why iOS cannot supply one and why
     // ranking a locale above the account's own number silently loses matches.
     deviceRegionFromNumberPlan: result.sourcePlatform === "android",
-    accountPhoneNumber: options?.accountPhoneNumber,
+    accountPhoneNumber,
   });
 
   // Normalize once per unique number, while retaining which local contact rows
@@ -135,8 +153,8 @@ export async function buildMarketplaceContactLookups(options?: {
   >();
   const contactNumbers = new Map<string, Set<string>>();
   const selfOnlyContactKeys = new Set<string>();
-  const accountPhoneE164 = options?.accountPhoneNumber
-    ? (normalizeContactPhone(options.accountPhoneNumber, region)?.e164 ?? null)
+  const accountPhoneE164 = accountPhoneNumber
+    ? (normalizeContactPhone(accountPhoneNumber, region)?.e164 ?? null)
     : null;
   const localContacts = result.contacts.map((contact, index) => ({
     contactKey: `${String(contact.id || "contact")}:${index + 1}`,
@@ -189,7 +207,7 @@ export async function buildMarketplaceContactLookups(options?: {
     selectedCandidates.map((candidate) => candidate.e164),
   );
   const hashes: string[] = [];
-  // WebCrypto work is bounded so a 5k address book does not enqueue thousands
+  // WebCrypto work is bounded so a large address book does not enqueue thousands
   // of native bridge operations at once.
   for (
     let index = 0;
@@ -235,6 +253,32 @@ export async function buildMarketplaceContactLookups(options?: {
     result.contacts.length,
     Number(result.totalAvailable) || 0,
   );
+
+  if (contactInvitationsEnabled() && options?.onLocalInviteContacts) {
+    const ownEmail = options.accountEmail ? normalizeInviteEmail(options.accountEmail)?.toLowerCase() : null;
+    options.onLocalInviteContacts(result.contacts.flatMap((contact, index) => {
+      const local = localContacts[index]!;
+      // Do not offer the account's own card through an alternate email address.
+      if (accountPhoneE164 && (contact.phoneNumbers || []).some(
+        (phone) => normalizeContactPhone(phone, region)?.e164 === accountPhoneE164,
+      )) return [];
+      const numbers = Array.from(contactNumbers.get(local.contactKey) ?? []);
+      const emails = (result.sourcePlatform === "web" || result.sourcePlatform === "google")
+        ? Array.from(new Set((contact.emailAddresses ?? []).flatMap((email) => {
+          const normalized = normalizeInviteEmail(email);
+          return normalized && normalized.toLowerCase() !== ownEmail ? [normalized] : [];
+        }))) : [];
+      return [{
+        id: local.contactKey,
+        displayName: local.displayName || "Contact",
+        emailOnly: !(contact.hasPhoneEntries ?? (contact.phoneNumbers ?? []).length > 0),
+        destinations: [
+          ...numbers.filter((number) => selectedNumbers.has(number)).map((value) => ({ kind: "phone" as const, value })),
+          ...emails.map((value) => ({ kind: "email" as const, value })),
+        ],
+      }];
+    }));
+  }
 
   return {
     lookups,

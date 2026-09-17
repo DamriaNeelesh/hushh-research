@@ -6,6 +6,7 @@ import {
 } from "@/lib/navigation/routes";
 
 export const ROUTE_ID_VALUES = [
+  "chat",
   "one_dashboard",
   "getting_started",
   "one_setup",
@@ -27,12 +28,9 @@ export const ROUTE_ID_VALUES = [
   "profile_preferences_gemini",
   "profile_preferences_device",
   "profile_preferences_voice",
-  "profile_preferences_voice_changelog",
-  "profile_preferences_voice_examples",
   "profile_security",
   "profile_security_vault",
   "profile_security_session",
-  "profile_security_devices",
   "profile_security_device_authorize",
   "profile_my_data",
   "profile_my_data_domain",
@@ -53,6 +51,7 @@ export const ROUTE_ID_VALUES = [
   "gmail",
   "email_agent",
   "pkm",
+  "pkm_recent",
   "connected_systems",
   "profile_pkm",
   "profile_pkm_agent_lab",
@@ -61,7 +60,6 @@ export const ROUTE_ID_VALUES = [
   "oauth_authorize",
   "consents",
   "feed",
-  "agent",
   "puppy_one",
   "person_profile",
   "connect",
@@ -79,6 +77,7 @@ export const ROUTE_ID_VALUES = [
   "one_location_circle_invite",
   "one_location_circle_join",
   "one_wallet_card",
+  "one_wallet",
   "wallet_card_public",
   "portfolio_shared",
   "ria_home",
@@ -140,11 +139,8 @@ function normalizeRoutePathname(pathname: string): string {
 
 export function resolveRouteId(rawPathname: string): RouteId {
   const pathname = normalizeRoutePathname(rawPathname);
-  if (
-    pathname === ROUTES.HOME ||
-    pathname === ROUTES.ONE_HOME ||
-    pathname === ROUTES.WELCOME
-  ) {
+  if (pathname === ROUTES.HOME) return "chat";
+  if (pathname === ROUTES.ONE_HOME || pathname === ROUTES.WELCOME) {
     return "one_dashboard";
   }
   if (pathname === ROUTES.GETTING_STARTED) return "getting_started";
@@ -176,17 +172,16 @@ export function resolveRouteId(rawPathname: string): RouteId {
     return "profile_preferences_device";
   if (pathname === ROUTES.PROFILE_PREFERENCES_VOICE)
     return "profile_preferences_voice";
-  if (pathname === ROUTES.PROFILE_PREFERENCES_VOICE_CHANGELOG)
-    return "profile_preferences_voice_changelog";
-  if (pathname === ROUTES.PROFILE_PREFERENCES_VOICE_EXAMPLES)
-    return "profile_preferences_voice_examples";
+  if (
+    pathname === ROUTES.PROFILE_PREFERENCES_VOICE_CHANGELOG ||
+    pathname === ROUTES.PROFILE_PREFERENCES_VOICE_EXAMPLES
+  )
+    return "profile_preferences_voice";
   if (pathname === ROUTES.PROFILE_SECURITY) return "profile_security";
   if (pathname === ROUTES.PROFILE_SECURITY_VAULT)
     return "profile_security_vault";
   if (pathname === ROUTES.PROFILE_SECURITY_SESSION)
     return "profile_security_session";
-  if (pathname === ROUTES.PROFILE_SECURITY_DEVICES)
-    return "profile_security_devices";
   if (pathname === ROUTES.PROFILE_SECURITY_DEVICE_AUTHORIZE)
     return "profile_security_device_authorize";
   if (pathname === ROUTES.PROFILE_MY_DATA) return "profile_my_data";
@@ -223,6 +218,7 @@ export function resolveRouteId(rawPathname: string): RouteId {
     return "gmail";
   if (pathname === ROUTES.EMAIL_AGENT) return "email_agent";
   if (pathname === ROUTES.PKM || pathname === ROUTES.LEGACY_PKM) return "pkm";
+  if (pathname === ROUTES.PKM_RECENT) return "pkm_recent";
   if (pathname === ROUTES.ONE_MARKETPLACE) return "one_marketplace";
   if (
     pathname === ROUTES.CONNECTED_SYSTEMS ||
@@ -247,7 +243,7 @@ export function resolveRouteId(rawPathname: string): RouteId {
     return "consents";
   }
   if (pathname === ROUTES.ONE_FEED) return "feed";
-  if (pathname === ROUTES.AGENT) return "agent";
+  if (pathname === ROUTES.LEGACY_AGENT) return "chat";
   if (pathname === ROUTES.ONE_PUPPY) return "puppy_one";
   // `public_person_ref` is intentionally opaque.  Never let the dynamic
   // segment fall through to `unknown`, where callers may retain raw paths.
@@ -270,7 +266,12 @@ export function resolveRouteId(rawPathname: string): RouteId {
   if (pathname === ROUTES.ONE_LOCATION_MAP) return "one_location_map";
   // Its own id rather than the map's: these are separate screens now, and
   // folding them together would hide the split from every page-view metric.
-  if (pathname === ROUTES.ONE_LOCATION_CHECK_IN) return "one_location_check_in";
+  if (
+    pathname === ROUTES.ONE_LOCATION_CHECK_IN ||
+    pathname === ROUTES.ONE_LOCATION_HOTEL_CHECK_IN
+  ) {
+    return "one_location_check_in";
+  }
   if (pathname === ROUTES.ONE_LOCATION) return "one_location";
   // Both paths and both forms.
   //
@@ -304,6 +305,7 @@ export function resolveRouteId(rawPathname: string): RouteId {
   // a join code. Same reasoning as the public request and invite links above.
   if (pathname === "/circle/join") return "one_location_circle_join";
   if (pathname === ROUTES.ONE_WALLET_CARD) return "one_wallet_card";
+  if (pathname === ROUTES.ONE_WALLET) return "one_wallet";
   // The scanned page emits no analytics of its own (isAnalyticsExemptRoute),
   // so this ID is never attached to a page view. It exists because "unknown"
   // is not inert: callers that fall through to it log the raw pathname, and on

@@ -55,14 +55,63 @@ describe("native cold-audit and continuity contract", () => {
     const auth = source("lib/firebase/auth-context.tsx");
     const notification = source("components/consent/notification-provider.tsx");
 
-    expect(runtime).toContain('App.addListener("appStateChange"');
+    expect(runtime).toContain('App.addListener("pause"');
+    expect(runtime).toContain('App.addListener("resume"');
+    expect(runtime).not.toContain('App.addListener("appStateChange"');
     expect(runtime).toContain('document.visibilityState === "hidden" ? "background" : "active"');
-    expect(vault).toContain("appInteractionCoordinator.subscribeLifecycle");
-    expect(auth).toContain("appInteractionCoordinator.subscribeLifecycle");
+    // Auth and vault state stay stable across ordinary resume/focus events.
+    // Their explicit recovery and expiry paths remain independent of this
+    // shared lifecycle signal.
+    expect(vault).not.toContain("appInteractionCoordinator.subscribeLifecycle");
+    expect(auth).not.toContain("appInteractionCoordinator.subscribeLifecycle");
     expect(notification).toContain("appInteractionCoordinator.subscribeLifecycle");
-    expect(vault).not.toContain('App.addListener("appStateChange"');
-    expect(auth).not.toContain('App.addListener("appStateChange"');
-    expect(notification).not.toContain('App.addListener("appStateChange"');
+    expect(vault).not.toContain('App.addListener("pause"');
+    expect(vault).not.toContain('App.addListener("resume"');
+    expect(auth).not.toContain('App.addListener("pause"');
+    expect(auth).not.toContain('App.addListener("resume"');
+    expect(notification).not.toContain('App.addListener("pause"');
+    expect(notification).not.toContain('App.addListener("resume"');
+  });
+
+  it("keeps forced Firebase token refresh strict across the shared auth bridge", () => {
+    const contract = source("lib/capacitor/index.ts");
+    const web = source("lib/capacitor/plugins/auth-web.ts");
+    const service = source("lib/services/auth-service.ts");
+    const ios = source("ios/App/App/Plugins/HushhAuthPlugin.swift");
+    const android = source(
+      "android/app/src/main/java/com/hussh/app/plugins/HushhAuth/HushhAuthPlugin.kt",
+    );
+
+    expect(contract).toContain("HushhAuthGetIdTokenOptions");
+    expect(contract).toContain("forceRefresh?: boolean");
+    expect(web).toContain("firebaseUser.getIdToken(forceRefresh)");
+    expect(web).toContain("if (forceRefresh)");
+    expect(service).toContain("FirebaseAuthentication.getIdToken(nativeTokenOptions)");
+    expect(service).toContain("HushhAuth.getIdToken(nativeTokenOptions)");
+    expect(service).toContain("authSessionInvalidationCodeFromFirebaseError(error)");
+    expect(ios).toContain('call.getBool("forceRefresh") ?? false');
+    expect(ios).toContain("getIDTokenResult(forcingRefresh: forceRefresh)");
+    expect(android).toContain(
+      'call.getBoolean("forceRefresh", false) ?: false',
+    );
+    expect(android).toContain("user.getIdToken(forceRefresh)");
+    for (const stableCode of [
+      "auth/user-not-found",
+      "auth/user-disabled",
+      "auth/invalid-user-token",
+      "auth/user-token-expired",
+      "auth/network-request-failed",
+      "auth/internal-error",
+    ]) {
+      expect(contract).toContain(stableCode);
+      expect(ios).toContain(stableCode);
+      expect(android).toContain(stableCode);
+    }
+    expect(web).toContain("HUSHH_AUTH_TOKEN_ERROR_CODE.invalidUserToken");
+    expect(ios).toContain("rejectForcedTokenRefresh(call, error: nil)");
+    expect(android).toContain("rejectForcedTokenRefresh(call, null)");
+    expect(ios).not.toContain("Failed to refresh ID token: \\(error.localizedDescription)");
+    expect(android).not.toContain("Failed to refresh ID token: ${exception.message}");
   });
 
   it("exposes explicit cold-audit scripts rather than silently resetting a normal continuity run", () => {
@@ -218,14 +267,16 @@ describe("native cold-audit and continuity contract", () => {
     expect(nativeSupport).toContain("bridge._uiFlowsRoutingOwned === true");
   });
 
-  it("drives Profile through the canonical signed-in route", () => {
+  it("opens Profile as a recursive pane while retaining canonical routes", () => {
     const runner = source("scripts/native/native-ui-test-runner-source.js");
     const flows = source("scripts/testing/signed-in-ui-flows.mjs");
 
     expect(runner).toContain("clickShellAction");
     expect(runner).not.toContain("NAV_ROUTE_BY_PERSONA_AND_LABEL");
-    expect(flows).toContain('route: "/one/profile"');
-    expect(flows).toContain('routeIds: ["/one/profile"]');
+    expect(flows).toContain('route: "/one"');
+    expect(flows).toContain('testId: "profile-pane"');
+    expect(flows).toContain('value: "profile_pane=1"');
+    expect(flows).toContain('value: "profile_panel=account"');
   });
 
   it("keeps Location onboarding UI-flow checkpoints within the authored screen contract", () => {
@@ -242,6 +293,12 @@ describe("native cold-audit and continuity contract", () => {
       locationFlow.matchAll(/LOCATION_ONBOARDING_CHECKPOINTS\[(\d+)\]/g),
       (match) => Number(match[1]),
     );
+    const actionSteps = Array.from(
+      locationFlow.matchAll(
+        /\{ type: "(click_button|wait_button)", name: "([^"]+)" \}/g,
+      ),
+      (match) => ({ type: match[1], name: match[2] }),
+    );
 
     expect(flowStart).toBeGreaterThan(-1);
     expect(checkpointIndexes).toEqual(
@@ -250,6 +307,12 @@ describe("native cold-audit and continuity contract", () => {
     expect(
       checkpointIndexes.every((index) => index < contract.screens.length),
     ).toBe(true);
+    expect(actionSteps).toEqual([
+      { type: "click_button", name: "Get started" },
+      { type: "click_button", name: "Set up my location" },
+      { type: "click_button", name: "Skip saving this place" },
+      { type: "wait_button", name: "Finish" },
+    ]);
   });
 
   it("binds each cold UI report to the exact generated manifest and real controls", () => {

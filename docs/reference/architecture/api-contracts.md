@@ -141,6 +141,32 @@ flowchart TB
 
 ### Firebase Auth (Bootstrap)
 
+`POST /api/consent/vault-owner-token` accepts `{userId, renewalOfToken?}`.
+Omitting `renewalOfToken` retains the existing explicit local-unlock issuance
+contract; the server verifies Firebase identity, not a new vault-key proof.
+While the same verified user remains locally unlocked in one app document,
+clients renew with the prior owner token. Renewal requires a signed, same-user,
+non-device `self` / `vault.owner` grant and its intact canonical
+`internal_access_events` lineage. Expired evidence may renew, but never authorizes
+a data request. Any later owner revocation permanently rejects that lineage,
+including after a different explicit unlock. Renewal and owner revocation use
+one Postgres transaction lock; no new session store or key persistence is added.
+Invalid/revoked renewal returns `403 AUTH_VAULT_OWNER_INVALID`; ledger uncertainty
+returns no-store `503 AUTH_ACCOUNT_STATUS_UNAVAILABLE` without bootstrap fallback.
+Web proxy and iOS/Android plugins preserve these typed errors. A reload/new app
+document starts locked; short interruptions and route changes retain the local
+key, with unavailable authority gated for retry.
+
+For self-owner grants only, multiple signed grants in the intact lineage remain
+usable up to each token's **original** expiry; renewing does not extend old
+credentials. This tolerates a lost response or another tab renewing. Delegated
+and device capabilities keep their latest-token validation rules. A successful
+renewal adds `renewalValidated: true`; clients reject missing/false acknowledgment.
+Deploy the backend before the matching web/native clients and coordinate rollback:
+an older backend ignores the new input and must not be used for renewal traffic.
+The acknowledgment fails closed on receipt but cannot prevent an older server
+from attempting its legacy issuance before returning the incompatible response.
+
 | Method | Path                                                  | Description                                                                                                                                                     |
 | ------ | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | POST   | `/api/consent/vault-owner-token`                      | Issue VAULT_OWNER token                                                                                                                                         |
@@ -166,6 +192,19 @@ managed Gemini or `byok_pending_vault`; a Gemini key is never accepted by this
 pre-vault contract. A selected setup credential is process-memory-only: it may
 be request-validated before the vault but is encrypted through the existing
 vault-owner PKM mutation path only at Finish setup.
+
+### One Model Preference
+
+The Chat header reads the served model catalog independently of identity
+warm-up. The read path validates the Firebase bearer token without scheduling
+an unrelated identity synchronization task, so a busy preference pool cannot
+hide the model controls or delay the rest of Chat. Saving a personal choice is
+still an authenticated write and follows the normal Firebase auth dependency.
+
+| Method | Path | Auth | Description |
+| ------ | ---- | ---- | ----------- |
+| GET | `/api/one/models/preference` | Firebase Bearer | Return the authenticated person's selected/effective model and the currently selectable catalog; a missing or busy preference read falls back to the deployment model. |
+| PUT | `/api/one/models/preference` | Firebase Bearer | Set or clear the authenticated person's model choice after catalog validation. |
 
 ### One Email KYC
 
@@ -250,6 +289,29 @@ fields, call prepare, then make a separate final Send email click.
 
 The current product and security flow is [Owner-Approved Gmail Email](../one/gmail-owner-approved-email.md).
 
+### Email Agent Personal Gmail Information Requests
+
+This opt-in monitor is separate from receipt synchronization and the `one@hushh.ai`
+platform mailbox. It retains workflow metadata only. Email content is transient
+during classification; PKM values are read only by the unlocked client after the
+owner selects a candidate scope. The prepare and send endpoints derive the
+recipient, subject, reply headers, and Gmail thread from the original message
+server-side, then bind both actions to that source.
+
+| Method | Path | Auth | Description |
+| ------ | ---- | ---- | ----------- |
+| GET | `/api/one/email/information-requests/preference?user_id={user_id}` | Firebase Bearer | Read the authenticated mailbox owner's monitoring preference. |
+| PATCH | `/api/one/email/information-requests/preference` | Firebase Bearer | Explicitly enable or disable transient server-side classification for that mailbox. Enabling captures a Gmail History baseline; existing inbox mail is not scanned. |
+| GET | `/api/one/email/information-requests?limit={limit}&offset={offset}&view={active\|activity}` | Firebase + `VAULT_OWNER` | List the active detected queue (`active`, default) or terminal metadata-only activity (`activity`); no original email content is returned. |
+| POST | `/api/one/email/information-requests/scan` | Firebase + `VAULT_OWNER` | Run a bounded owner-requested scan of only unread Inbox messages added after the opt-in baseline. |
+| POST | `/api/one/email/information-requests/{workflow_id}/refresh-candidates` | Firebase + `VAULT_OWNER` | Re-resolve the active request's model-classified field labels against the owner's current visible PKM manifest leaves. Returns metadata-only exact scopes; it never returns PKM values or email content. |
+| POST | `/api/one/email/information-requests/{workflow_id}/prepare-reply` | Firebase + `VAULT_OWNER` | Bind an owner-edited private draft to the original Gmail source and create a ten-minute send action. Caller cannot supply recipient, subject, or thread. |
+| POST | `/api/one/email/information-requests/{workflow_id}/send-reply` | Firebase + `VAULT_OWNER` | Send only the unchanged prepared reply in the server-derived Gmail thread. |
+| POST | `/api/one/email/information-requests/{workflow_id}/ignore` | Firebase + `VAULT_OWNER` | Remove a detected request from the owner queue without sending. |
+| POST | `/api/one/email/information-requests/scan-enabled` | Cloud Scheduler OIDC | Scheduled bounded rotating scan of explicit opt-ins; verifies configured audience and service-account email. |
+
+The maintained architecture reference is [Personal Gmail Information Requests](./personal-gmail-information-requests.md).
+
 ### One Google Calendar
 
 Calendar is a live Google provider integration. Connection lifecycle uses
@@ -273,10 +335,23 @@ this first release.
 
 ### Contact Discovery
 
-Matching an address book against the Hussh user directory. The device normalizes each
-number to E.164 and hashes it; **raw phone numbers and contact names never leave the
-device**, and the server **persists nothing** — the request body is consumed in memory and
-discarded, so a contact who is not a Hussh user leaves no trace.
+Matching an address book against the Hussh user directory. The shared iOS, Android,
+browser-picker, and Google Contacts pipeline resolves national-format numbers from
+number-plan, verified-account, then locale evidence; an explicit `+` country code is
+authoritative. A country code retained without `+` is accepted only when it is a valid
+international mobile and the regional interpretation is not a valid number; ambiguous valid
+regional numbers keep the stronger region evidence. Google People's output-only E.164
+`canonicalForm` takes precedence over its locale-shaped display value. The client normalizes
+each usable number to E.164 and hashes it locally. **Raw phone
+numbers and unmatched contact names never leave the client**, and the server never persists
+submitted proofs. A successful consented match may persist only its authorized canonical
+relationship/provenance, and the lookup-weighted abuse budget persists only aggregate counts.
+
+The client reads up to 5,000 unique usable numbers per sync, dispatches them in batches of at
+most 1,000, and reports any source/cap overflow as unchecked rather than as zero/unmatched.
+`actor_identity_cache` stores only canonical E.164 verified phones. Migration 198 clears every
+member of a malformed or duplicate verified binding, marks the shadow stale for an immediate
+Firebase refresh, and enforces a partial unique index; it never guesses an owner.
 
 `last4` is an index bucket, not an answer: it narrows the candidate rows so the query can
 use `idx_actor_identity_cache_phone_last4`, and the full digest is what decides a match.
@@ -305,11 +380,11 @@ budget to Redis/Memorystore later without changing the API contract.
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
-| POST | `/api/marketplace/contacts/match` | Firebase Bearer | Match up to 1000 `{hash, last4}` lookups against the directory. `scope: "one_network"` matches phone-verified accounts that explicitly enabled the versioned combined find-and-auto-connect setting; legacy/default discoverability is not consent. `scope: "marketplace"` (the default) keeps the Connect deck's publicly-discoverable-profiles policy. Returns `user_id`, `kind`, `display_name`, `headline`, `profile` — and **no phone digits** |
-| POST | `/api/one/connections/contact-sync` | Firebase Bearer + verified requester phone | Exact-match up to 1000 opaque `{lookup_id, hash, last4}` proofs from `lookups` (`last4` is exactly four digits), revalidate the target's current verified phone plus explicit combined contact-sync consent, and transactionally materialize every eligible, non-suppressed match as a canonical connection. Returns batch counts, matched `items` only as `{lookupId, userId, displayName, photoUrl, outcome}`, and opaque `indeterminateLookupIds` for initially matched proofs that could not be safely revalidated; clients must neither display those as matches nor treat them as invitation candidates. New behavior emits `auto_connected`, `already_connected`, or `suppressed` (`request_required` remains client-readable only for rolling compatibility). Viewer-relative provenance records the exact target consent contract, timestamp, and rule version that authorized a new automatic relationship, never proof material. Hashes and digits are never returned or stored. Contact sync itself grants no location or information access; a later eligible location request from any active connection, including a contact-sync connection, follows the owner's pre-existing `all_contacts` standing rule. |
+| POST | `/api/marketplace/contacts/match` | Firebase Bearer; verified requester phone for `one_network` | Match up to 1000 `{hash, last4}` lookups against the directory. `scope: "one_network"` uses exact current verified-phone matches to visible ONE Connect-directory accounts under `contact_directory_auto_connect_v2` and consumes the same Postgres-backed lookup allowance as canonical contact sync, so switching endpoints cannot bypass the enumeration budget. An untouched preference is eligible by default; explicit contact opt-out, marketplace hide, and invalid preference evidence block new-person discovery. `scope: "marketplace"` (the default) keeps the Connect deck's publicly-discoverable-profiles policy and existing requester contract. Returns `user_id`, `kind`, `display_name`, `headline`, `profile` — and **no phone digits** |
+| POST | `/api/one/connections/contact-sync` | Firebase Bearer + verified requester phone | Exact-match up to 1000 opaque `{lookup_id, hash, last4}` proofs from `lookups` (`last4` is exactly four digits). A current, unique verified-phone proof may map to an already-active canonical ONE connection even when that target has contact discovery disabled; this recognition creates no new contact provenance or Trusted/Circle projection. New relationships use the visible Connect-directory default, honor explicit contact opt-out and marketplace hide, and reject malformed preference evidence. The mutation revalidates proof, relationship, and policy under transaction locks shared with preference/profile writers. Hidden nonconnections and hidden revoked pairs are omitted; a fresh explicit sync may reconnect an eligible pair only when the requester made the earlier disconnect. The database-clock attempt cutoff and exact revocation episode prevent an in-flight sync from undoing a newer removal. Peer-made, unknown-actor and mismatched-episode disconnects stay suppressed. Migration 205 stores actor/episode annotations; the bounded historical backfill only promotes two agreeing exact-episode events. Returns batch counts, matched `items` only as `{lookupId, userId, displayName, photoUrl, outcome}`, and opaque `indeterminateLookupIds` for initially matched proofs that could not be safely revalidated; clients must neither display those as matches nor treat them as invitation candidates. Emits `auto_connected`, `already_connected`, or `suppressed` (`request_required` remains client-readable only for rolling compatibility). Viewer-relative provenance records `verified_phone_directory_match`, `contact_directory_auto_connect_v2`, and the actual target preference state; it never fabricates historical v1 consent or persists proof material. Hashes and digits are never returned or stored. Contact sync grants no location or private-information access; a later eligible location request from any active connection follows the owner's pre-existing `all_contacts` standing rule. |
 | GET | `/api/one/connections` | Firebase Bearer | With no query parameters, preserves the legacy complete `{items}` array. Supplying any of `page`, `limit` (maximum 100), `query`, or `audience=all\|ria` selects the bounded contract `{items,page,hasMore,totalCount,audience}`. Filtering, including verified-RIA audience filtering, happens before stable normalized-name/user/connection ordering and paging; contact provenance and RIA annotations are computed only for page rows. |
-| GET | `/api/iam/contact-discoverability` | Firebase Bearer | Read the single combined contact-sync preference: whether verified people holding this account's number may find and automatically connect with it. Defaults off and includes the server enablement timestamp, monotonic consent rule version, and exact authored consent-contract version |
-| POST | `/api/iam/contact-discoverability` | Firebase Bearer | Atomically set the combined preference. Enabling requires `{enabled:true, consent_version:"contact_find_auto_connect_v1"}`; a missing/stale marker returns `409`, so an older findability-only client cannot broaden authority. Disabling accepts `{enabled:false}` and blocks future matches without erasing existing connections. The relationship grants no location or information access |
+| GET | `/api/iam/contact-discoverability` | Firebase Bearer | Read effective contact-directory eligibility plus `stored_contact_discoverable`, `directory_visible`, `contact_sync_preference_state` (`default`, `enabled`, `disabled`, or `invalid`), and `contact_sync_match_policy_version`. Untouched accounts follow the visible Connect-directory default; explicit opt-outs and marketplace hides remain disabled. Historical explicit enablement timestamp, rule version, and consent-contract version are reported as stored, never fabricated for default eligibility |
+| POST | `/api/iam/contact-discoverability` | Firebase Bearer | Atomically set the combined preference. Enabling requires `{enabled:true, consent_version:"contact_find_auto_connect_v1"}`; a missing/stale marker returns `409`, so an older findability-only client cannot broaden authority. Disabling accepts `{enabled:false}` and blocks future new-person discovery and automatic edge creation without erasing or hiding existing active connections. The relationship grants no location or information access |
 
 ### One Location Agent
 
@@ -349,13 +424,14 @@ not the product owner for live location.
 | POST | `/api/one/location/maps/nearby-places` | VAULT_OWNER Bearer | Return at most 20 operational, de-duplicated Google places inside the fixed 500 m check-in area, with structured name/address/category metadata and server-verified distance ordering. Provider coordinates are used only for server-side radius validation and are not returned. Optional category filters query the same boundary without fan-out; the one-shot point and results are not persisted |
 | POST | `/api/one/location/maps/place-details` | VAULT_OWNER Bearer | Resolve one selected provider place in request memory; place details are not persisted by the Maps route |
 | POST | `/api/one/location/maps/reverse-geocode` | VAULT_OWNER Bearer | Transiently resolve captured coordinates to display copy and an ISO alpha-2 `countryCode`; the service does not persist coordinates or reverse-geocoded output |
+| POST | `/api/one/location/place-ratings/summaries` | VAULT_OWNER Bearer | Non-production/cohort-gated batch projection for at most 25 place ids. Returns only places with at least five current-consent, non-sensitive ratings as `{placeId, average, countBucket}`; never returns authors or exact counts, and responses are `private, no-store` |
 | POST | `/api/one/location/nearby-presence/check-in` | VAULT_OWNER Bearer | Non-production simulation only: capture one fresh foreground point, verify the owner is plausibly at the selected public place (within 500 m, widened by reported accuracy up to a 2 km cap), then persist only that **place's** coordinates as short-lived authenticated ciphertext plus an opaque candidate token, and publish presence for 30, 60, or 120 minutes; the captured point and its accuracy are never persisted; fixed radius 500 m, Connect requests default off |
 | GET | `/api/one/location/nearby-presence` | VAULT_OWNER Bearer | Non-production simulation only: return the caller's active posture and one stable maximum-20 projection of mutually active check-ins whose independently selected places are at most 500 m apart; never returns peer coordinates, place, distance, contact details, or stable user ids; response is `private, no-store` |
 | DELETE | `/api/one/location/nearby-presence` | VAULT_OWNER Bearer | Idempotently check the caller out, clear encrypted anchor/index material immediately, and remove them from discovery; available even when discovery is disabled |
 | POST | `/api/one/location/nearby-presence/connection-request` | VAULT_OWNER Bearer | Non-production simulation only: resolve a rotating alias supplied in the JSON body, revalidate both active presence versions and exact radius, then create only the canonical pending Connect request if the target still opts in |
-| POST | `/api/one/location/public-invites` | VAULT_OWNER Bearer | Create a duration-bounded public live-location link at `/one/location/view/<token>`; the raw token is returned once and only its hash is stored. One live link per owner: calling this while one is live returns that same link with `reused: true`, its window restarted for the duration just asked for and its snapshot refreshed |
+| POST | `/api/one/location/public-invites` | VAULT_OWNER Bearer | Create a duration-bounded public live-location link at `/one/location/view/<first-name>.<token>` (bare token if no safe name exists). Only the token hash is stored; the owner can recover the signed token and URL on subsequent reads. Calling this while a link is live reuses it with `reused: true`, its window restarted for the requested duration and its snapshot refreshed |
 | POST | `/api/one/location/public-invites/{invite_id}/location` | VAULT_OWNER Bearer | Owner heartbeat that moves the pin on their own live public link. Writes `publicLocation` only - never the window, the label or the status, so a heartbeat can never extend a link past what the owner agreed to |
-| GET | `/api/one/location/public-invites/{public_token}` | Public | Resolve the sharer's display-name label (resolved with `allow_email_handle=False`, so never a phone number or an email handle), status, duration, expiry, and the attached `publicLocation` snapshot when the owner created a public location link |
+| GET | `/api/one/location/public-invites/{public_token}` | Public | Accept named or legacy bare tokens. The first-name prefix is decorative; only the bearer token authorizes access and the stored invite supplies the owner's identity. Resolve the sharer's display-name label (`allow_email_handle=False`, never a phone number or email handle), status, duration, expiry, and attached `publicLocation`. Missing links return 404; expired or revoked links return 410 |
 | POST | `/api/one/location/public-invites/{public_token}/submit` | Public | Legacy/request-only visitor intake; submit visitor name, phone, and optional message as metadata-only request intent for links without public location snapshots |
 | DELETE | `/api/one/location/public-invites/{invite_id}` | VAULT_OWNER Bearer | Revoke an active public request link |
 | POST | `/api/one/location/circle-invites` | VAULT_OWNER Bearer | Create a hash-only Invite to One link; claiming never grants live location access directly |
@@ -387,11 +463,14 @@ not the product owner for live location.
 | POST | `/api/one/location/grants/{grant_id}/envelopes` | VAULT_OWNER Bearer | Store the owner-device encrypted latest-location envelope; backend receives ciphertext and metadata only. Save My Soul notifies from this route rather than at grant creation, so for that share kind the response also carries `recipientAlerted`: whether the recipient had a device the alert could be delivered to. It is reachability, not FCM's eventual delivery result, and is absent for every other share kind — an absent field means "not reported" and must never be rendered as a delivery failure |
 | GET | `/api/one/location/grants/{grant_id}/envelope` | VAULT_OWNER Bearer | Return ciphertext only to the exact approved recipient while grant is active |
 | DELETE | `/api/one/location/grants/{grant_id}` | VAULT_OWNER Bearer | Revoke an active owner grant immediately |
-| POST | `/api/one/location/requests` | VAULT_OWNER Bearer | Create metadata-only request for owner approval. Optionally carries the amount asked for (`requestedDurationHours` + `requestedDurationMode`) and the live grant it would lengthen (`extendsGrantId`, verified server-side against the real grant between the two identities and otherwise detected from it). A request, never an authorization: no grant is written here. Re-asking for a different amount updates the one pending row in place and bumps `requestRevision`, so the owner's client shows the raised number instead of de-duplicating it against the first |
-| POST | `/api/one/location/requests/{request_id}/approve` | VAULT_OWNER Bearer | Every caller must send `approvalMode` as `manual` or `automatic`; omission is rejected so a cached automatic client cannot be mistaken for an explicit tap. Manual approval forbids rule context and may omit duration to grant exactly what was requested (1 hour when absent), or supply a duration override. Automatic approval requires only the current `autoApproveRuleVersion` beside its mode and forbids duration overrides; the service locks the pending request and rule, derives duration from that request, requires it to be newer than activation, revalidates the relationship or exact Circle, refuses ongoing access, and commits grant, request transition, and audit atomically. |
+| PATCH | `/api/one/location/grants/{grant_id}/shorten` | VAULT_OWNER Bearer | Move one active grant's expiry earlier. Either the exact owner or recipient may call it; the service rejects any attempt to lengthen access |
+| PATCH | `/api/one/location/grants/{grant_id}/duration` | VAULT_OWNER Bearer | Owner-only same-row duration edit for one exact grant. Timed edits may shorten or extend up to 24 hours and refresh the grant capability. For eligible trusted private shares, `durationMode: "until_stopped"` clears the finite expiry, authorization ceiling, and finite capability; SMS/SOS and Check-In shares remain duration-bounded. The owner-authorized ceiling advances on extension and is not lowered by a later timed shortening |
+| POST | `/api/one/location/requests` | VAULT_OWNER Bearer | Create metadata-only request for owner approval. Optionally carries the amount asked for (`requestedDurationHours` + `requestedDurationMode`) and the live grant it would lengthen (`extendsGrantId`, verified server-side against the real grant between the two identities and otherwise detected from it). A request, never an authorization: no grant is written here. Re-asking for a different amount updates the one pending row in place and bumps `requestRevision`. Command callers supply stable `clientOperationId`; the owning transaction journals its input fingerprint and receipt so a lost response cannot create another request. |
+| POST | `/api/one/location/requests/{request_id}/approve` | VAULT_OWNER Bearer | Every caller must send `approvalMode` as `manual` or `automatic`; omission is rejected so a cached automatic client cannot be mistaken for an explicit tap. Manual approval forbids rule context and may omit duration to grant exactly what was requested (1 hour when absent), or supply a duration override. Command confirmation freezes and displays that duration and sends `expectedRequestRevision`; the service rejects a changed revision under the request lock before writing access. Extension commands require the existing review screen because the receipt cannot pin the current live grant. Automatic approval requires the current `autoApproveRuleVersion` beside its mode and forbids duration overrides; the service locks the pending request and rule, derives duration from that request, requires it to be newer than activation, revalidates the relationship or exact Circle, refuses ongoing access, and commits grant, request transition, and audit atomically. |
 | POST | `/api/one/location/requests/{request_id}/deny` | VAULT_OWNER Bearer | Owner denies pending request. Denying an extra-time request leaves any access the requester already holds untouched |
 | POST | `/api/one/location/grants/{grant_id}/refer` | VAULT_OWNER Bearer | Recipient refers another verified user into a request flow; no access is forwarded |
 | POST | `/api/one/location/retention/purge?older_than_hours=12` | `X-Hushh-Maintenance-Token` backed by dedicated `ONE_LOCATION_RETENTION_TOKEN` | Scrub due nearby-presence anchor material, then delete terminal expired/revoked location grants, nearby-presence metadata, ciphertext envelopes, terminal requests, referrals, public request-link submissions, Invite to One links, expired/revoked named-Circle codes, terminal targeted Circle-member invitations, and related events after the retention window; the hourly hosted scheduler is a release prerequisite |
+| POST | `/api/account/deletion-cleanup/drain?limit=10` | Google OIDC pinned to `ACCOUNT_DELETION_CLEANUP_AUDIENCE` and a dedicated `ACCOUNT_DELETION_CLEANUP_SERVICE_ACCOUNT_EMAIL` | Claim a bounded batch of durable post-erasure Firebase cleanup intents with `SKIP LOCKED`, delete or quarantine each exact UID, and settle claims; the external scheduler is required because the in-process loop is only a latency optimization |
 
 ### Agent One invocation preview (not official A2A v1)
 
@@ -448,6 +527,7 @@ auth-required response.
 | POST   | `/api/ria/picks`                                           | Sync the owner PKM-derived `ria.advisor_package`, including its bounded investor debate thesis, to currently authorized explicit Picks share artifacts; the thesis is available only to a selected investor source during a live debate run |
 | GET    | `/api/kai/market/insights/{user_id}`                       | Investor market home payload with rights-gated `pick_sources[]` and RIA feed share metadata                                                                                                            |
 | GET    | `/api/one/connections/directory`                           | Paginated, privacy-filtered Connect directory; display-name search only, with masked email/phone labels when available so same-name candidates remain distinguishable without exposing raw identifiers |
+| GET    | `/api/one/connections/{counterpart_user_id}/context`       | Firebase-authenticated, directory-bounded person lookup with current connection state and the latest participant-pair request. An accepted historical request does not establish current Location eligibility. This read grants no action or information-sharing authority. |
 | GET    | `/api/one/connections/{counterpart_user_id}/scope-catalog` | Server-authorized metadata and opaque handles available for a bilateral proposal                                                                                                                       |
 | POST   | `/api/one/connections/requests`                            | Create a connection request with `requested_scope_handles[]` and `offered_scope_handles[]`                                                                                                             |
 | POST   | `/api/one/connections/requests/{request_id}/cancel`        | Requester cancels a pending connection request and its pending proposals                                                                                                                               |
@@ -467,13 +547,14 @@ RIA relationship bundle note:
 
 | Method | Path                                                                     | Description                                                                                                                                           |
 | ------ | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/pkm/store-domain`                                                  | Store encrypted PKM domain data + update index; accepts optional non-sensitive `write_projections[]` for derived read models such as decision history |
+| POST   | `/api/pkm/store-domain`                                                  | Store encrypted PKM domain data + update index; accepts optional non-sensitive `write_projections[]` for derived read models such as decision history. For the reserved `wallet` domain the write is additionally gated on `ONE_WALLET_ENABLED` and its plaintext summary envelope (brand, last4, expiry, normalized issuing region, region-locked-scheme check, no secret-shaped keys) is validated server-side; `/one/wallet` introduces **no** new backend routes |
 | GET    | `/api/pkm/data/{user_id}`                                                | Get full encrypted PKM payload                                                                                                                        |
 | GET    | `/api/pkm/domain-data/{user_id}/{domain}`                                | Get encrypted PKM domain data                                                                                                                         |
 | DELETE | `/api/pkm/domain-data/{user_id}/{domain}`                                | Compatibility deletion path for existing first-party callers                                                                                          |
 | POST   | `/api/pkm/delete-domain`                                                 | Delete a PKM domain with an owner-confirmed `PkmMutationPlanV2`, current sharing-impact check, and expected content revision                          |
 | GET    | `/api/pkm/device-sync/{user_id}`                                         | List metadata-only upsert/delete events after a monotonic cursor; trusted devices fetch ciphertext through the domain snapshot contract               |
 | GET    | `/api/pkm/metadata/{user_id}`                                            | Get PKM metadata for UI                                                                                                                               |
+| POST   | `/api/pkm/memory/proposals`                                              | Produce an owner-local PKM preview. `memory_profile` is optional: `general` remains the compatibility default and `kyc_identity_v1` performs one constrained KYC fact-extraction pass. Preview cards may include canonical field IDs, confidence, source disposition, and value-free retrieval hints; they never contain server-stored PKM values. |
 | POST   | `/api/pkm/domains/{domain}/scope-exposure`                               | Set a top-level PKM section posture: private or consent-required                                                                                      |
 | POST   | `/api/pkm/domains/{domain}/public-profile-projection`                    | Vault-owner publishes a client-generated public-profile projection independent of encrypted consent posture                                           |
 | GET    | `/api/pkm/domains/{domain}/public-profile-projections?user_id={user_id}` | Vault-owner lists active public-profile handles and metadata only; never projection payloads                                                          |
@@ -571,8 +652,8 @@ delete/absent lifecycle with cleanup.
 | PATCH  | `/api/one/agent-chat/conversations/{conversation_id}` | Rename an authenticated vault owner's encrypted Agent chat conversation                                                                                       |
 | DELETE | `/api/one/agent-chat/conversations/{conversation_id}` | Delete an authenticated vault owner's Agent chat conversation and its encrypted messages                                                                      |
 | GET    | `/api/one/agent-chat/history/{conversation_id}`       | Read decrypted Agent chat history for the authenticated conversation owner                                                                                    |
-| POST   | `/api/one/adk/relay-session`                          | Mint a short-lived opaque One ADK live relay ticket over HTTPS so Firebase bearer tokens are not placed in WebSocket URLs                                     |
-| WS     | `/api/one/adk/live`                                   | One ADK live relay WebSocket; bridges the browser wire envelope onto `Runner.run_live` (the only full-duplex voice transport)                                 |
+| POST   | `/api/one/adk/relay-session`                          | Retired: HTTP 410; clients must use the Location command lifecycle                                     |
+| WS     | `/api/one/adk/live`                                   | Retired: policy close with an explicit command-runtime retirement response                                 |
 | GET    | `/api/kai/chat/history/{conversation_id}`             | Conversation history                                                                                                                                          |
 | GET    | `/api/kai/chat/conversations/{user_id}`               | List all conversations                                                                                                                                        |
 | GET    | `/api/kai/chat/initial-state/{user_id}`               | Initial chat state                                                                                                                                            |
@@ -580,17 +661,46 @@ delete/absent lifecycle with cleanup.
 
 #### One Voice
 
-There is no `/api/one/voice/*` router. The product-facing voice wrapper described
-in earlier plans was never registered: `consent-protocol/api/routes/one/` has no
-`voice.py`, and no `/api/one/voice/...` path exists in the codebase.
+`consent-protocol/api/routes/one/voice.py` owns One Live Voice (Gemini Live on
+Vertex ADC behind `ONE_VOICE_LIVE_ENABLED`). The retired `/api/one/adk/*` paths
+stay as retirement responders.
 
-The real full-duplex voice transport is the ADK live pair in
-`consent-protocol/api/routes/one/adk_live.py`, listed under Kai Chat below:
+| Method | Path | Notes |
+| ------ | ---- | ----- |
+| GET    | `/api/one/voice/readiness` | Firebase auth. The single flag the app reads: `{enabled, status, model, location, protocol_version, ws_path}`; always 200, fails closed |
+| POST   | `/api/one/voice/sessions` | Vault-owner token. Mints a single-use 60 s HMAC ticket `{ticket, expires_at, session_id, ws_path}`; 404 `ONE_VOICE_LIVE_DISABLED` when off |
+| WS     | `/api/one/voice/live?ticket=` | The relay. Ticket consumed against `relay_ticket_nonces` (fail closed); first frame must be `auth` with the vault-owner token; frames are `one-voice-v1` |
+| GET    | `/api/one/voice/pending-actions?conversation_id=` | Vault-owner token. Open confirmation cards for a conversation (refresh-safe) |
+| POST   | `/api/one/voice/pending-actions/{id}/confirm` | Vault-owner token. HTTP twin of the socket's tap confirmation (`receipt_token`, optional `firebase_id_token`) |
+| POST   | `/api/one/voice/pending-actions/{id}/cancel` | Vault-owner token. Cancels an open confirmation |
+| GET/PATCH | `/api/one/location/account-settings` | Vault-owner token. Owner-level sharing posture: `sharingState on|off`, `precision`, `includeSos`, `consentVersion`, `osPermissionReported` (`api/routes/one/location_settings.py`) |
+| GET/PATCH | `/api/one/location/setup-progress` | Vault-owner token. Voice-first Location setup step machine (`action: start|accept_consent|record_os_permission|set_precision|confirm_recipient_key|complete`) |
+| PATCH  | `/api/account/identity/display-name` | Firebase auth. Changes the display name at Firebase Auth and re-syncs the identity shadow |
 
-| Method | Path                         | Description                                            |
-| ------ | ---------------------------- | ------------------------------------------------------ |
-| POST   | `/api/one/adk/relay-session` | Mints a single-use relay ticket over HTTPS             |
-| WS     | `/api/one/adk/live`          | Consumes that ticket once and carries the live session |
+Location commands (the bounded runtime) keep the canonical proposal namespace.
+The semantic model there has no effect tools; admission, confirmation and
+execution remain separate.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| POST | `/api/one/transcriptions` | Bounded transient recording to ordinary Gemini transcription |
+| POST | `/api/one/agent-chat/proposals` | Structured Location proposal without executing effects |
+| POST | `/api/one/agent-chat/proposals/typed` | Typed Siri/action proposal through the same lifecycle |
+| GET | `/api/one/action-proposals` | Owner-scoped unfinished commands |
+| GET | `/api/one/action-proposals/{id}` | Encrypted checkpoint and authoritative outcome |
+| PUT | `/api/one/action-proposals/{id}/checkpoint` | Revision-checked client-vault-encrypted continuation |
+| POST | `/api/one/action-proposals/{id}/resolve` | Reassess missing inputs and current capabilities |
+| POST | `/api/one/action-proposals/{id}/admit` | Validate prerequisites and issue bounded authority |
+| POST | `/api/one/action-proposals/{id}/confirm` | Correlate genuine user activation with displayed resources |
+| POST | `/api/one/action-proposals/{id}/claim` | Atomically claim a client operation |
+| POST | `/api/one/action-proposals/{id}/execute` | Execute an authored backend binding atomically |
+| POST | `/api/one/action-proposals/{id}/settle` | Record correlated client outcome |
+| POST | `/api/one/action-proposals/{id}/resume` | Revalidate or reconcile; never replay a consumed effect |
+| DELETE | `/api/one/action-proposals/{id}` | Remove sensitive continuation and cancel unused authority |
+
+Unlock is required before command submission or recovery. Continuations expire
+within 24 hours and need explicit Resume after restart. See the
+[Location command runtime](../one/one-voice-runtime-architecture.md).
 
 #### Kai Portfolio
 
@@ -663,10 +773,23 @@ Frontend reads/writes these fields through the centralized onboarding/profile fl
 | ------ | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | POST   | `/api/account/identity/refresh`                   | Refresh backend identity shadow from Firebase Auth                                                                                                                                                       |
 | POST   | `/api/account/phone/claim`                        | Persist a secondary Firebase phone-session token as the signed-in actor's verified app-level phone claim, then delete the safe phone-only secondary Firebase user when it differs from the signed-in UID |
+| GET    | `/api/account/session-status`                     | Linearized, no-store account lifecycle probe. `401 AUTH_ACCOUNT_NOT_FOUND` is terminal; `423 AUTH_ACCOUNT_DELETION_IN_PROGRESS` means the client must retain its privacy gate and re-probe after `Retry-After`; general lookup failure is `503 AUTH_ACCOUNT_STATUS_UNAVAILABLE` |
 | GET    | `/api/account/email-aliases`                      | List vault-owner account email aliases                                                                                                                                                                   |
 | POST   | `/api/account/email-aliases/verification/start`   | Start explicit email alias verification; dev/UAT review mode may echo the code                                                                                                                           |
 | POST   | `/api/account/email-aliases/verification/confirm` | Confirm an email alias before it can match One Email KYC intake                                                                                                                                          |
-| DELETE | `/api/account/delete`                             | Delete user account and all data; full-account deletion also removes the primary Firebase Auth UID and any safe phone-only orphan UID for the verified phone                                             |
+| DELETE | `/api/account/delete`                             | Delete the account, user-owned Vault/profile/application records, and the authenticated Firebase UID. Required append-only or regulated evidence follows its approved retention/redaction policy rather than an incidental cascade. Returns `409 ACCOUNT_DELETION_EXTERNAL_RESOURCES_REQUIRE_DEPROVISIONING` without deleting anything when parked personal-agent/BYOC state may still own an external resource. |
+
+Every Firebase bearer dependency verifies signature, issuer, audience, and
+expiry, preserves revoked/disabled-token enforcement, and always enforces the
+database tombstone. Revocation proof uses a 60-second positive cache bound to
+the exact token digest and UID (never merely the UID), with one bounded
+single-flight remote lookup on a miss. This trades at most 60 seconds of
+revocation-detection latency for bounded Firebase Auth load; local token checks
+run on every request and every locally verified UID is checked against the
+tombstone before it can be accepted. The lookup has a five-second
+caller deadline, bounded worker/capacity pools, and Firebase Admin HTTP calls
+use a four-second per-attempt transport timeout; failures are not cached and
+upstream outage maps to a retryable no-store 503 instead of a generic 500.
 
 Reserved future surface:
 
@@ -1002,6 +1125,8 @@ a nonexistent anchor; the parity document is now the canonical definition.
 ---
 
 ## See Also
+
+- [Personal contact invitations](../../guides/contact-invitations.md) — client-only recipient callback and native composer contract; contact-sync HTTP payloads remain unchanged.
 
 - [Architecture](./architecture.md) -- System overview and tri-flow
 - [Personal Knowledge Model](../../../consent-protocol/docs/reference/personal-knowledge-model.md) -- Data storage endpoints

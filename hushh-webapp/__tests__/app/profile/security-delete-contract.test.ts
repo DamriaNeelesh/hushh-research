@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const profilePageSource = readFileSync(
-  join(process.cwd(), "app/profile/profile-workspace-page.tsx"),
+  join(process.cwd(), "components/profile/profile-workspace-page.tsx"),
   "utf8",
 );
 const topAppBarSource = readFileSync(
@@ -26,9 +26,7 @@ describe("profile security deletion contract", () => {
   it("allows no-vault account deletion without forcing vault creation", () => {
     expect(profilePageSource).toContain("if (!nextHasVault)");
     expect(profilePageSource).toContain("setShowDeleteConfirm(true);");
-    expect(profilePageSource).toContain(
-      "Deletes cloud-linked records.",
-    );
+    expect(profilePageSource).toContain("Deletes cloud-linked records.");
     expect(profilePageSource).not.toContain("Create vault to delete account");
   });
 
@@ -46,13 +44,29 @@ describe("profile security deletion contract", () => {
     expect(topAppBarSource).toContain("Unlock Vault to Delete Account");
     expect(topAppBarSource).toContain("skipFcmCleanup: true");
     expect(deleteFlowSource).toContain(
-      'AccountService.deleteAccount(params.vaultOwnerToken, "both")',
+      "result = await AccountService.deleteAccount(",
     );
+    expect(deleteFlowSource).toContain("confirmDeletionAfterUncertainResponse");
+    expect(deleteFlowSource).toContain("account_deletion_uncertain");
+    expect(deleteFlowSource).toContain("account_delete_uncertain_unverified");
+    expect(deleteFlowSource).toContain("account_delete_confirmed");
+    expect(deleteFlowSource).toContain("getAccountSessionStatus");
+    expect(deleteFlowSource).toContain("result?.success !== true");
+    expect(deleteFlowSource).toContain("result.account_deleted !== true");
     expect(deleteFlowSource).toContain("CacheSyncService.onAccountDeleted");
     expect(deleteFlowSource).toContain("UserLocalStateService.clearForUser");
     expect(deleteFlowSource).toContain("DELETE_ACCOUNT_DIALOG_TITLE");
+    expect(deleteFlowSource).toContain(
+      "Deletes account, Vault, data, and access. Required records may remain. Can’t undo.",
+    );
     expect(profilePageSource).toContain("DELETE_ACCOUNT_DIALOG_TITLE");
     expect(topAppBarSource).toContain("DELETE_ACCOUNT_DIALOG_TITLE");
+    expect(profilePageSource).toContain(
+      'buildLoginRouteWithAuthSessionNotice("account_deleted")',
+    );
+    expect(topAppBarSource).toContain(
+      'buildLoginRouteWithAuthSessionNotice("account_deleted")',
+    );
     expect(profilePageSource).not.toContain("Delete Investor, RIA");
     expect(profilePageSource).not.toContain('"Yes, Delete Investor"');
     expect(profilePageSource).not.toContain('"Yes, Delete RIA"');
@@ -60,6 +74,9 @@ describe("profile security deletion contract", () => {
 
   it("offers a reset-account path that keeps the account and re-runs setup", () => {
     expect(profilePageSource).toContain("Reset account?");
+    expect(profilePageSource).toContain(
+      "Clears saved details and setup progress. Your sign-in and vault stay.",
+    );
     expect(profilePageSource).toContain('"Reset account"');
     expect(profilePageSource).toContain(
       "AccountService.resetAccount(resolution.token)",

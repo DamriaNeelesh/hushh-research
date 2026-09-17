@@ -30,11 +30,28 @@ const service = vi.hoisted(() => ({
   placesSearchErrorMessage: vi.fn(() => "Place search failed."),
   requestNearbyConnection: vi.fn(),
   ratePlace: vi.fn(),
+  listPlaceRatingSummaries: vi.fn(),
 }));
 
+// `listPlaceRatingSummaries` resolves empty by default: the averages are an
+// ornament on the place list, and no test here is about them.
 const visitNotes = vi.hoisted(() => ({
   recordVisitNote: vi.fn(),
 }));
+
+const locationAnalytics = vi.hoisted(() => ({
+  trackOneLocationJourneyAction: vi.fn(),
+}));
+
+vi.mock("@/lib/observability/location-events", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/observability/location-events")>();
+  return {
+    ...actual,
+    trackOneLocationJourneyAction:
+      locationAnalytics.trackOneLocationJourneyAction,
+  };
+});
 
 vi.mock("@/lib/one-location/visit-notes", async (importOriginal) => {
   const actual =
@@ -104,10 +121,14 @@ const point = {
 describe("NearbyCheckInSheet", () => {
   beforeEach(() => {
     Object.values(service).forEach((mock) => mock.mockReset());
+    // Reset wipes the implementation too, and the place list awaits this on
+    // every render. An undefined return would reject inside the effect.
+    service.listPlaceRatingSummaries.mockResolvedValue([]);
     navigation.push.mockReset();
     locationMemory.readLastKnownFix.mockReset();
     locationMemory.rememberLastKnownFix.mockReset();
     locationMemory.rememberLocationGrant.mockReset();
+    locationAnalytics.trackOneLocationJourneyAction.mockReset();
     // Default: nothing carried over, which is what every pre-existing test in
     // this file assumed before durable memory existed.
     locationMemory.readLastKnownFix.mockResolvedValue(null);
@@ -249,21 +270,46 @@ describe("NearbyCheckInSheet", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("Stay visible for")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "See all places" }),
-    ).toBeInTheDocument();
-
-    expect(
-      screen.queryByRole("button", { name: "Food" }),
+      screen.queryByRole("button", { name: "See all places" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
+
+    expect(screen.getByRole("button", { name: "Food" })).toBeInTheDocument();
     expect(
       await screen.findByRole("radio", { name: /Place Four/ }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Food" })).toBeInTheDocument();
     // Attribution only. The place count that used to lead this line is
-    // already on the expansion control and in the list itself.
+    // already represented by the list itself.
     expect(screen.getByText("Google Maps")).toBeInTheDocument();
     expect(screen.queryByText(/places · Google Maps/)).not.toBeInTheDocument();
+  });
+
+  it("withdraws a stale average when the server no longer publishes it", async () => {
+    service.listPlaceRatingSummaries
+      .mockResolvedValueOnce([
+        { placeId: "stanford-main", average: 4.8, countBucket: "5+" },
+      ])
+      .mockResolvedValueOnce([]);
+    const props = {
+      open: true,
+      ownerId: "user-1",
+      vaultOwnerToken: "owner-token",
+      captureCurrentPosition: vi.fn().mockResolvedValue(point),
+      onOpenChange: vi.fn(),
+    };
+    const { rerender } = render(<NearbyCheckInSheet {...props} />);
+
+    expect(await screen.findByText(/4\.8 · 5\+/)).toBeInTheDocument();
+    rerender(
+      <NearbyCheckInSheet {...props} vaultOwnerToken="refreshed-owner-token" />,
+    );
+
+    await waitFor(() =>
+      expect(service.listPlaceRatingSummaries).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText(/4\.8 · 5\+/)).not.toBeInTheDocument(),
+    );
   });
 
   it("is a bottom sheet a phone can put away", async () => {
@@ -316,14 +362,11 @@ describe("NearbyCheckInSheet", () => {
         .map((heading) => heading.textContent?.trim()),
     ).toEqual(["Nearby places", "Visible for", "Visibility"]);
 
-    // Compact setup keeps categories out of the first decision. They appear
-    // only after the person asks for the full chooser.
+    // Category filters are available immediately with their concise labels.
+    expect(screen.getByRole("button", { name: "Food" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Food" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Shops" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "Shops" }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Food & drink" }),
     ).not.toBeInTheDocument();
@@ -495,6 +538,11 @@ describe("NearbyCheckInSheet", () => {
         allowConnectionRequests: false,
       });
     });
+    expect(locationAnalytics.trackOneLocationJourneyAction).toHaveBeenCalledWith({
+      action: "nearby_check_in_result",
+      result: "success",
+      routeId: "one_location_check_in",
+    });
     expect(capture).toHaveBeenCalledTimes(2);
   });
 
@@ -570,7 +618,7 @@ describe("NearbyCheckInSheet", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("tells the owner the fix is broad without blocking check-in", async () => {
+  it("allows coarse-position check-in without the accuracy notice", async () => {
     const coarsePoint = { ...point, accuracyM: 1_200 };
     const capture = vi.fn().mockResolvedValue(coarsePoint);
 
@@ -587,9 +635,7 @@ describe("NearbyCheckInSheet", () => {
     fireEvent.click(
       await screen.findByRole("radio", { name: /Stanford University/ }),
     );
-    expect(
-      await screen.findByText(/accurate to about 1\.2 km/i),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/accurate to about/i)).not.toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("checkbox", {
@@ -964,6 +1010,8 @@ describe("NearbyCheckInSheet", () => {
       "bg-[color:var(--app-destructive)]",
     );
     expect(checkout.className).toContain("bg-[color:var(--app-neutral-fill)]");
+    const addTime = screen.getByRole("button", { name: "Add time" });
+    expect(addTime.className).toContain("text-[color:var(--app-accent)]");
     expect(checkout.className).not.toContain("text-white");
 
     // Behaviour is untouched: the same one call, with no arguments of its own.
@@ -1239,7 +1287,6 @@ describe("NearbyCheckInSheet", () => {
     service.nearbyPlaces.mockClear();
 
     fireEvent.click(screen.getByPlaceholderText("Search places"));
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     const allPlaces = await screen.findByRole("button", { name: "All" });
     await act(async () => {
       // A failed refresh must degrade the drawer, not blank it.
@@ -1439,7 +1486,6 @@ describe("NearbyCheckInSheet", () => {
       category: "all",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     fireEvent.click(screen.getByRole("button", { name: "Health" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Health" })).toHaveAttribute(
@@ -1557,7 +1603,6 @@ describe("NearbyCheckInSheet", () => {
     fireEvent.click(
       await screen.findByRole("radio", { name: /Stanford University/ }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     fireEvent.click(screen.getByRole("button", { name: "Health" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Health" })).toHaveAttribute(
@@ -1684,7 +1729,6 @@ describe("NearbyCheckInSheet", () => {
     );
 
     await screen.findByRole("radio", { name: /Stanford University/ });
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     fireEvent.click(screen.getByRole("button", { name: "Health" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Health" })).toHaveAttribute(
@@ -1890,7 +1934,6 @@ describe("NearbyCheckInSheet", () => {
     );
 
     await screen.findByRole("radio", { name: /Stanford University/ });
-    fireEvent.click(screen.getByRole("button", { name: "See all places" }));
     fireEvent.click(screen.getByRole("button", { name: "Transit" }));
 
     const empty = await screen.findByTestId("nearby-category-empty");

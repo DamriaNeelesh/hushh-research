@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -80,12 +81,123 @@ def _single_segment(message: str):
 
 
 def test_default_preview_budget_outlives_one_tail_contract_without_unbounded_wait() -> None:
-    assert pkm_agent_lab_module._AGENT_CONTRACT_TIMEOUT_SECONDS == 10.0
-    assert pkm_agent_lab_module._PREVIEW_TOTAL_BUDGET_SECONDS == 35.0
+    # Both pins were stale on main: d1af7b695 raised the contract timeout from
+    # ten to thirty and the budget from thirty-five to forty-five while
+    # stabilizing the Gmail and PKM setup flows, and updated neither this test
+    # nor the two comments that justify the values. The test was failing on
+    # main itself, not only after a merge.
+    assert pkm_agent_lab_module._AGENT_CONTRACT_TIMEOUT_SECONDS == 30.0
+    assert pkm_agent_lab_module._PREVIEW_TOTAL_BUDGET_SECONDS == 45.0
     assert (
         pkm_agent_lab_module._PREVIEW_TOTAL_BUDGET_SECONDS
         < pkm_agent_lab_module._AGENT_CONTRACT_TIMEOUT_SECONDS * 4
     )
+
+
+@pytest.mark.asyncio
+async def test_kyc_identity_profile_uses_one_constrained_extraction_call(monkeypatch) -> None:
+    service = PKMAgentLabService()
+    extraction = AsyncMock(
+        return_value={
+            "facts": [
+                {
+                    "field_id": "identity.identity_profile.full_name",
+                    "value": "Akshat Kumar",
+                    "source_text": "My full name is Akshat Kumar.",
+                    "confidence": 0.98,
+                },
+                {
+                    "field_id": "identity.identity_profile.declared_age",
+                    "value": "23",
+                    "source_text": "I am 23 years old.",
+                    "confidence": 0.96,
+                },
+            ],
+            "general_fallback_facts": [],
+        }
+    )
+    monkeypatch.setattr(service, "_run_agent_contract", extraction)
+
+    result = await service.generate_structure_preview(
+        user_id="owner",
+        message="My full name is Akshat Kumar. I am 23 years old.",
+        current_domains=["identity"],
+        memory_profile="kyc_identity_v1",
+        capture_execution_trace=True,
+    )
+
+    assert extraction.await_count == 1
+    assert result["performance"]["extraction_call_count"] == 1
+    assert result["performance"]["strategy"] == "single_constrained_kyc_identity_extraction"
+    assert [card["canonical_field_id"] for card in result["preview_cards"]] == [
+        "identity.identity_profile.full_name",
+        "identity.identity_profile.declared_age",
+    ]
+    assert result["preview_cards"][0]["candidate_payload"] == {
+        "identity_profile": {"full_name": "Akshat Kumar"}
+    }
+
+
+@pytest.mark.asyncio
+async def test_kyc_identity_profile_keeps_safe_unmapped_facts_on_general_pkm_path(
+    monkeypatch,
+) -> None:
+    service = PKMAgentLabService()
+    extraction = AsyncMock(
+        return_value={
+            "facts": [],
+            "general_fallback_facts": [
+                {
+                    "domain": "professional",
+                    "field": "primary_skill",
+                    "value": "machine learning",
+                    "source_text": "My primary skill is machine learning.",
+                    "confidence": 0.82,
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(service, "_run_agent_contract", extraction)
+
+    result = await service.generate_structure_preview(
+        user_id="owner",
+        message="My primary skill is machine learning.",
+        current_domains=["professional"],
+        memory_profile="kyc_identity_v1",
+    )
+
+    assert extraction.await_count == 1
+    assert result["performance"]["extraction_call_count"] == 1
+    assert len(result["preview_cards"]) == 1
+    card = result["preview_cards"][0]
+    assert card["target_domain"] == "professional"
+    assert card["primary_json_path"] == "profile.primary_skill"
+    assert card["write_mode"] == "confirm_first"
+    assert card["source_disposition"] == "general_pkm_fallback"
+    assert card["candidate_payload"] == {"profile": {"primary_skill": "machine learning"}}
+    assert "general_pkm_fallback" in card["validation_hints"]
+
+
+@pytest.mark.asyncio
+async def test_kyc_identity_profile_blocks_secret_input_before_model_extraction(
+    monkeypatch,
+) -> None:
+    service = PKMAgentLabService()
+    extraction = AsyncMock()
+    monkeypatch.setattr(service, "_run_agent_contract", extraction)
+
+    result = await service.generate_structure_preview(
+        user_id="owner",
+        message="My passport number is X12345678.",
+        current_domains=["identity"],
+        memory_profile="kyc_identity_v1",
+    )
+
+    extraction.assert_not_awaited()
+    assert result["preview_cards"] == []
+    assert result["write_mode"] == "do_not_save"
+    assert result["error"] == "sensitive_input_rejected"
+    assert "sensitive_government_id_rejected" in result["validation_hints"]
 
 
 def test_reserved_preview_target_is_rejected_without_a_fallback_domain() -> None:
@@ -191,24 +303,92 @@ async def test_agent_contract_retries_one_timeout_within_preview_budget(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_agent_contract_uses_minimal_thinking_for_schema_workers():
+@pytest.mark.parametrize("model_id", ["gemini-3.8-flash", "gemini-3.7-flash"])
+async def test_agent_contract_asks_every_catalog_model_for_minimal_thinking(monkeypatch, model_id):
+    """Every schema worker requests the lowest thinking level, whichever catalog model the
+    manifest resolves to; the model adapter, not this service, decides how the provider
+    contract carries that request. Asserted at the adapter boundary so the service intent
+    stays visible even when the adapter drops the knob for a Flash generation."""
     service = PKMAgentLabService()
     generate_content = AsyncMock(return_value=SimpleNamespace(parsed={"status": "ok"}, text=""))
     service._client = SimpleNamespace(
         aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
     )
+    requested: list[tuple[str, dict]] = []
+
+    def _capture(types_module, model, **kwargs):
+        requested.append((model, kwargs))
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(pkm_agent_lab_module, "build_generate_content_config", _capture)
 
     result = await service._run_agent_contract(
-        manifest=SimpleNamespace(id="agent_test", model="gemini-3.5-flash"),
+        manifest=SimpleNamespace(id="agent_memory_segmentation", model=model_id),
         prompt="Return a valid structured response.",
         response_schema={"type": "OBJECT"},
         timeout_seconds=3.0,
     )
 
     assert result == {"status": "ok"}
-    config = generate_content.await_args.kwargs["config"]
-    assert config.thinking_config is not None
-    assert config.thinking_config.thinking_level == "MINIMAL"
+    assert generate_content.await_args.kwargs["model"] == model_id
+    assert [model for model, _ in requested] == [model_id]
+    kwargs = requested[0][1]
+    assert kwargs["temperature"] == 0.0
+    assert kwargs["thinking_config"].thinking_level == "MINIMAL"
+
+
+def test_segmentation_fails_closed_and_keeps_only_exact_owner_quotes():
+    message = "Thanks for helping with the form. I avoid dairy and run every morning."
+
+    assert PKMAgentLabService._sanitize_segmented_messages(None, message=message) == []
+    assert PKMAgentLabService._sanitize_segmented_messages(
+        {
+            "segments": [
+                {
+                    "source_text": "I avoid dairy",
+                    "confidence": 0.9,
+                    "reason": "Dietary constraint.",
+                },
+                {
+                    "source_text": "The owner is an athlete",
+                    "confidence": 0.9,
+                    "reason": "Invented.",
+                },
+            ]
+        },
+        message=message,
+    ) == [
+        {
+            "source_text": "I avoid dairy",
+            "confidence": 0.9,
+            "reason": "Dietary constraint.",
+        }
+    ]
+
+
+def test_invalid_structure_write_mode_requires_review():
+    preview = PKMAgentLabService._normalize_structure_preview(
+        message="I avoid dairy.",
+        current_domains=["health"],
+        registry_choices=_registry_choices(),
+        intent_frame={
+            "intent_class": "health",
+            "mutation_intent": "create",
+            "confidence": 0.9,
+            "candidate_domain_choices": [{"domain_key": "health", "recommended": True}],
+        },
+        merge_decision={"target_domain": "health", "merge_mode": "create_entity"},
+        financial_guard={"routing_decision": "non_financial_or_ephemeral"},
+        parsed_structure={
+            "candidate_payload": {"dietary_constraints": {"dairy": "avoid"}},
+            "structure_decision": {"target_domain": "health", "confidence": 0.9},
+        },
+        fallback_target_domain="health",
+        simulated_state=None,
+    )
+
+    assert preview["write_mode"] == "confirm_first"
+    assert "invalid_write_mode_requires_review" in preview["validation_hints"]
 
 
 @pytest.mark.asyncio
@@ -1216,7 +1396,11 @@ async def test_dynamic_scope_crud_matrix_uses_canonical_targets(
         "_load_domain_registry_choices",
         AsyncMock(return_value=_registry_choices()),
     )
-    monkeypatch.setattr(service, "_run_agent_contract", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        service,
+        "_run_agent_contract",
+        AsyncMock(side_effect=[_single_segment(message), None, None, None, None]),
+    )
 
     simulated_state = CRUD_MATRIX_STATE
     if message in {"Actually update that preference.", "Remove that old note."}:
@@ -1233,11 +1417,7 @@ async def test_dynamic_scope_crud_matrix_uses_canonical_targets(
     assert card["target_domain"] == expected_domain
     assert card["intent_class"] == expected_intent
     assert card["merge_mode"] == expected_merge
-    effective_write_mode = (
-        "confirm_first"
-        if expected_write == "can_save" and expected_intent in {"correction", "deletion"}
-        else expected_write
-    )
+    effective_write_mode = "confirm_first" if expected_write == "can_save" else expected_write
     assert card["write_mode"] == effective_write_mode
     if expected_scope:
         assert card["target_entity_scope"] == expected_scope
@@ -1636,7 +1816,9 @@ async def test_generate_structure_preview_splits_multi_intent_into_cards(monkeyp
 
     result = await service.generate_structure_preview(
         user_id="user-7",
-        message="I prefer to go to gym in the morning around 7am and have good breakfast too",
+        message=(
+            "I prefer to go to gym in the morning around 7am. I like to have a good breakfast too."
+        ),
         current_domains=[],
     )
 
@@ -1692,9 +1874,10 @@ async def test_generate_structure_preview_keeps_eight_segment_imports(monkeypatc
         ),
     )
 
+    message = " ".join(segment["source_text"] for segment in segments)
     result = await service.generate_structure_preview(
         user_id="user-8",
-        message="A profile import with eight independent preferences.",
+        message=message,
         current_domains=[],
     )
 
@@ -1802,3 +1985,118 @@ async def test_generate_structure_preview_dedupes_inflight_requests(monkeypatch)
     assert first["structure_decision"]["target_domain"] == "travel"
     assert second["structure_decision"]["target_domain"] == "travel"
     assert preview_stub.await_count == 1
+
+
+class TestSensitiveSecretRejection:
+    """A card number, security code, credential, or government id never becomes a plain memory."""
+
+    def test_names_the_secret_kind(self):
+        from hushh_mcp.services.pkm_agent_lab_service import PKMAgentLabService as S
+
+        assert S._contains_sensitive_secret("Card on file: 4111 1111 1111 1111") == "card_number"
+        assert S._contains_sensitive_secret("my pin is 4321 for the door") == "card_security_code"
+        assert S._contains_sensitive_secret("Bank login password: hunter2-please") == "credential"
+        assert S._contains_sensitive_secret("api key = sk_test_abcdefghij1234") == "credential"
+        assert S._contains_sensitive_secret("SSN 123-45-6789") == "government_id"
+        assert (
+            S._contains_sensitive_secret("Passport number: X12345678 renew soon") == "government_id"
+        )
+        assert (
+            S._contains_sensitive_secret("routing number: 021000021 for payroll") == "bank_account"
+        )
+
+    def test_ordinary_numbers_and_prose_pass(self):
+        from hushh_mcp.services.pkm_agent_lab_service import PKMAgentLabService as S
+
+        assert S._contains_sensitive_secret("Order 1234567890123456 shipped") is None  # fails Luhn
+        assert S._contains_sensitive_secret("I prefer early breakfasts and aisle seats.") is None
+        assert S._contains_sensitive_secret("Compensation is $118,000 with 1.5% equity") is None
+        assert (
+            S._contains_sensitive_secret("Start date March 3, 2026, phone +1 425 555 0100") is None
+        )
+
+    def test_normalize_rejects_before_any_agent_output_is_trusted(self):
+        from hushh_mcp.services.pkm_agent_lab_service import PKMAgentLabService as S
+
+        preview = S._normalize_structure_preview(
+            message="Card on file for subscriptions: 4111 1111 1111 1111",
+            current_domains=["financial"],
+            registry_choices=[],
+            intent_frame={},
+            merge_decision={"target_domain": "financial"},
+            financial_guard={},
+            parsed_structure={"structure_decision": {"target_domain": "financial"}},
+            fallback_target_domain="financial",
+            simulated_state=None,
+        )
+        assert preview["write_mode"] == "do_not_save"
+        assert preview["structure_decision"]["action"] == "reject_sensitive_secret"
+        assert preview["validation_hints"] == ["sensitive_card_number_rejected"]
+        assert preview["candidate_payload"] == {}
+
+
+async def test_compact_ontology_preserves_late_and_owner_defined_domains():
+    service = PKMAgentLabService()
+    choices = await service._load_domain_registry_choices(
+        current_domains=["z_owner_hobby"],
+        override=None,
+    )
+    keys = service._compact_registry_choices(choices)
+    expected_keys = [
+        row["domain_key"]
+        for row in choices
+        if row["domain_key"] not in {"runtime_secrets", "source_library", "wallet"}
+    ]
+    assert len(keys) > 8
+    assert keys == expected_keys
+    assert {"social", "shopping", "travel", "z_owner_hobby"}.issubset(keys)
+    financial_guard = {"routing_decision": "non_financial_or_ephemeral"}
+    memory_intent_prompt = service._build_memory_intent_prompt(
+        message="I trust a familiar brand for everyday basics.",
+        current_domains=[],
+        registry_choices=choices,
+        financial_guard=financial_guard,
+        simulated_state=None,
+        strict_small_model=True,
+    )
+    structure_prompt = service._build_structure_prompt(
+        message="I trust a familiar brand for everyday basics.",
+        current_domains=[],
+        registry_choices=choices,
+        intent_frame={},
+        merge_decision={},
+        financial_guard=financial_guard,
+        simulated_state=None,
+        strict_small_model=True,
+    )
+    financial_guard_prompt = service._build_financial_guard_prompt(
+        message="I trust a familiar brand for everyday basics.",
+        current_domains=[],
+        registry_choices=choices,
+        simulated_state=None,
+        strict_small_model=True,
+    )
+
+    encoded_keys = json.dumps(keys)
+    assert f"Soft ontology domain keys: {encoded_keys}" in memory_intent_prompt
+    assert f"Soft ontology domain keys: {encoded_keys}" in structure_prompt
+    assert f"Registry domain keys: {encoded_keys}" in financial_guard_prompt
+
+
+def test_compact_ontology_removes_nonselectable_and_duplicate_domains():
+    keys = PKMAgentLabService._compact_registry_choices(
+        [
+            {"domain_key": "social"},
+            {"domain_key": "general"},
+            {"domain_key": "runtime_secrets"},
+            {"domain_key": "source_library"},
+            {"domain_key": "wallet"},
+            {"domain_key": "__quarantine_v1"},
+            {"domain_key": "x" * 65},
+            {"domain_key": "social"},
+            {"domain_key": ""},
+            {},
+            {"domain_key": "shopping"},
+        ]
+    )
+    assert keys == ["social", "shopping"]

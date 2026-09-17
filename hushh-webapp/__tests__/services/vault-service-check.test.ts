@@ -1,19 +1,47 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockGetIdToken, mockBootstrapState, sessionStore } = vi.hoisted(() => ({
+const {
+  mockGetIdToken,
+  mockBootstrapState,
+  mockHasVault,
+  mockGetVault,
+  mockMutation,
+  mockIssueOwner,
+  mockResolveRpId,
+  nativePlatform,
+  sessionStore,
+  cacheStore,
+} = vi.hoisted(() => ({
   mockGetIdToken: vi.fn(),
   mockBootstrapState: vi.fn(),
+  mockHasVault: vi.fn(),
+  mockGetVault: vi.fn(),
+  mockMutation: vi.fn(),
+  mockIssueOwner: vi.fn(),
+  mockResolveRpId: vi.fn(),
+  nativePlatform: { current: false },
   sessionStore: new Map<string, string>(),
+  cacheStore: new Map<string, unknown>(),
 }));
 
 vi.mock("@capacitor/core", () => ({
-  Capacitor: { isNativePlatform: () => false },
+  Capacitor: {
+    isNativePlatform: () => nativePlatform.current,
+    getPlatform: () => (nativePlatform.current ? "ios" : "web"),
+  },
 }));
 
 vi.mock("@/lib/capacitor", () => ({
-  HushhVault: {},
+  HushhVault: {
+    hasVault: mockHasVault,
+    getVault: mockGetVault,
+    setupVault: mockMutation,
+    upsertVaultWrapper: mockMutation,
+    deleteVaultWrapper: mockMutation,
+    setPrimaryVaultMethod: mockMutation,
+  },
   HushhAuth: {},
-  HushhConsent: {},
+  HushhConsent: { issueVaultOwnerToken: mockIssueOwner },
 }));
 
 vi.mock("@/lib/services/auth-service", () => ({
@@ -29,9 +57,9 @@ vi.mock("@/lib/firebase/config", () => ({
 vi.mock("@/lib/services/cache-service", () => ({
   CacheService: {
     getInstance: () => ({
-      get: () => undefined,
-      set: () => undefined,
-      invalidate: () => undefined,
+      get: (key: string) => cacheStore.get(key),
+      set: (key: string, value: unknown) => cacheStore.set(key, value),
+      invalidate: (key: string) => cacheStore.delete(key),
       subscribe: () => () => undefined,
     }),
   },
@@ -60,7 +88,18 @@ vi.mock("@/lib/vault/passphrase-key", () => ({
 }));
 
 vi.mock("@/lib/vault/passkey-rp", () => ({
-  resolvePasskeyRpId: () => null,
+  isPasskeyRpIdCompatibleWithHost: (
+    hostname: string | null | undefined,
+    rpId: string | null | undefined,
+  ) => {
+    const normalizedHost = hostname?.trim().toLowerCase();
+    const normalizedRpId = rpId?.trim().toLowerCase();
+    return !!normalizedHost && !!normalizedRpId && (
+      normalizedHost === normalizedRpId ||
+      normalizedHost.endsWith(`.${normalizedRpId}`)
+    );
+  },
+  resolvePasskeyRpId: (...args: unknown[]) => mockResolveRpId(...args),
 }));
 
 vi.mock("@/lib/services/api-client", () => ({
@@ -86,6 +125,28 @@ import {
   VaultAuthSessionNotReadyError,
   VaultService,
 } from "@/lib/services/vault-service";
+import { publishValidatedAuthSessionOwner } from "@/lib/auth/session-owner";
+import { apiJson } from "@/lib/services/api-client";
+
+describe("VaultService owner renewal transport", () => {
+  it("threads prior evidence to the native plugin", async () => {
+    nativePlatform.current = true;
+    mockIssueOwner.mockResolvedValue({ token: "synthetic-renewed", expiresAt: Date.now() + 60_000 });
+    await VaultService.issueVaultOwnerToken("synthetic-owner", "synthetic-firebase", "synthetic-prior");
+    expect(mockIssueOwner).toHaveBeenCalledWith({
+      userId: "synthetic-owner", authToken: "synthetic-firebase", renewalOfToken: "synthetic-prior",
+    });
+    nativePlatform.current = false;
+  });
+
+  it("threads prior evidence to the web proxy", async () => {
+    nativePlatform.current = false;
+    await VaultService.issueVaultOwnerToken("synthetic-owner", "synthetic-firebase", "synthetic-prior");
+    expect(apiJson).toHaveBeenCalledWith("/api/consent/vault-owner-token", expect.objectContaining({
+      body: JSON.stringify({ userId: "synthetic-owner", renewalOfToken: "synthetic-prior" }),
+    }));
+  });
+});
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -99,12 +160,119 @@ function jsonResponse(status: number, body: unknown): Response {
 describe("VaultService.checkVault (web) — session-restore / 401 handling", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
+  const wrapper = {
+    method: "passphrase" as const,
+    encryptedVaultKey: "encrypted",
+    salt: "salt",
+    iv: "iv",
+  };
+  const mutations = [
+    [
+      "/api/vault/setup",
+      () =>
+        VaultService.setupVaultState("mutation-user", {
+          vaultKeyHash: "hash",
+          primaryMethod: "passphrase",
+          recoveryEncryptedVaultKey: "recovery",
+          recoverySalt: "salt",
+          recoveryIv: "iv",
+          wrappers: [wrapper],
+        }),
+    ],
+    [
+      "/api/vault/wrapper/upsert",
+      () =>
+        VaultService.upsertVaultWrapper({
+          userId: "mutation-user",
+          vaultKeyHash: "hash",
+          wrapper,
+        }),
+    ],
+    [
+      "/api/vault/wrapper/delete",
+      () =>
+        VaultService.deleteVaultWrapper({
+          userId: "mutation-user",
+          vaultKeyHash: "hash",
+          method: "generated_default_web_prf",
+          vaultOwnerToken: "owner",
+        }),
+    ],
+    [
+      "/api/vault/primary/set",
+      () => VaultService.setPrimaryVaultMethod("mutation-user", "passphrase"),
+    ],
+  ] as const;
+
+  describe.each([false, true])("terminal mutations, native=%s", (native) => {
+    it.each(mutations)(
+      "invalidates the owner after %s returns account-not-found",
+      async (path, mutation) => {
+        nativePlatform.current = native;
+        publishValidatedAuthSessionOwner("mutation-user");
+        mockGetIdToken.mockResolvedValue("token");
+        mockMutation.mockRejectedValue({ code: "AUTH_ACCOUNT_NOT_FOUND" });
+        fetchMock.mockResolvedValue(
+          jsonResponse(401, { detail: { code: "AUTH_ACCOUNT_NOT_FOUND" } }),
+        );
+        const listener = vi.fn();
+        window.addEventListener("auth-session-invalidated", listener);
+        try {
+          await expect(mutation()).rejects.toMatchObject({
+            code: "AUTH_ACCOUNT_NOT_FOUND",
+          });
+          expect(listener).toHaveBeenCalledTimes(1);
+          expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
+            code: "account_not_found",
+            userId: "mutation-user",
+            path,
+          });
+        } finally {
+          window.removeEventListener("auth-session-invalidated", listener);
+        }
+      },
+    );
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    mockResolveRpId.mockReturnValue(null);
+    nativePlatform.current = false;
     sessionStore.clear();
+    cacheStore.clear();
+    publishValidatedAuthSessionOwner(null);
     VaultService.invalidateVaultStateCache();
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+  });
+
+  it("selects a canonical RP wrapper on a hosted subdomain", () => {
+    mockResolveRpId.mockReturnValue("uat.one.hushh.ai");
+    const state = {
+      vaultKeyHash: "hash",
+      primaryMethod: "generated_default_web_prf" as const,
+      primaryWrapperId: "canonical",
+      recoveryEncryptedVaultKey: "recovery",
+      recoverySalt: "recovery-salt",
+      recoveryIv: "recovery-iv",
+      wrappers: [
+        {
+          method: "generated_default_web_prf" as const,
+          wrapperId: "canonical",
+          encryptedVaultKey: "encrypted",
+          salt: "salt",
+          iv: "iv",
+          passkeyRpId: "one.hushh.ai",
+        },
+      ],
+    };
+
+    expect(
+      VaultService.getWrapperByMethod(state, "generated_default_web_prf"),
+    ).toMatchObject({
+      wrapperId: "canonical",
+      passkeyRpId: "one.hushh.ai",
+    });
   });
 
   it("waits briefly for a still-restoring session, then fails closed instead of guessing hasVault=false", async () => {
@@ -128,9 +296,7 @@ describe("VaultService.checkVault (web) — session-restore / 401 handling", () 
       .mockResolvedValueOnce(jsonResponse(401, { error: "unauthorized" }))
       .mockResolvedValueOnce(jsonResponse(200, { hasVault: true }));
 
-    await expect(VaultService.checkVault("user-401-retry")).resolves.toBe(
-      true,
-    );
+    await expect(VaultService.checkVault("user-401-retry")).resolves.toBe(true);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const firstHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<
@@ -161,4 +327,153 @@ describe("VaultService.checkVault (web) — session-restore / 401 handling", () 
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("never replaces a terminal account-not-found response with stale bootstrap state", async () => {
+    publishValidatedAuthSessionOwner("deleted-user");
+    mockGetIdToken.mockResolvedValue("deleted-user-token");
+    mockBootstrapState.mockResolvedValue({ hasVault: true });
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(401, {
+        detail: {
+          code: "AUTH_ACCOUNT_NOT_FOUND",
+          message: "Account not found",
+        },
+      }),
+    );
+    const invalidations: unknown[] = [];
+    const listener = (event: Event) => {
+      invalidations.push((event as CustomEvent).detail);
+    };
+    window.addEventListener("auth-session-invalidated", listener);
+
+    try {
+      await expect(
+        VaultService.checkVault("deleted-user"),
+      ).rejects.toMatchObject({
+        status: 401,
+        code: "AUTH_ACCOUNT_NOT_FOUND",
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(mockGetIdToken).not.toHaveBeenCalledWith(true);
+      expect(mockBootstrapState).not.toHaveBeenCalled();
+      expect(invalidations).toEqual([
+        {
+          code: "account_not_found",
+          path: "/api/vault/check",
+          userId: "deleted-user",
+        },
+      ]);
+    } finally {
+      window.removeEventListener("auth-session-invalidated", listener);
+    }
+  });
+
+  it("does not let a delayed Account A vault failure invalidate Account B", async () => {
+    let resolveResponse: ((response: Response) => void) | undefined;
+    const responsePromise = new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    publishValidatedAuthSessionOwner("account-a");
+    mockGetIdToken.mockResolvedValue("account-a-token");
+    fetchMock.mockReturnValueOnce(responsePromise);
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+
+    try {
+      const request = VaultService.checkVault("account-a");
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      publishValidatedAuthSessionOwner("account-b");
+      resolveResponse?.(
+        jsonResponse(401, {
+          detail: { code: "AUTH_ACCOUNT_NOT_FOUND" },
+        }),
+      );
+
+      await expect(request).rejects.toMatchObject({
+        code: "AUTH_ACCOUNT_NOT_FOUND",
+      });
+      const invalidations = dispatchSpy.mock.calls.filter(
+        ([event]) =>
+          event instanceof CustomEvent &&
+          event.type === "auth-session-invalidated",
+      );
+      expect(invalidations).toHaveLength(0);
+      expect(mockBootstrapState).not.toHaveBeenCalled();
+    } finally {
+      dispatchSpy.mockRestore();
+    }
+  });
+
+  it("preserves typed terminal errors from the web getVaultState path", async () => {
+    publishValidatedAuthSessionOwner("deleted-state-user");
+    mockGetIdToken.mockResolvedValue("deleted-state-token");
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(401, {
+        detail: {
+          code: "AUTH_ACCOUNT_NOT_FOUND",
+          message: "Account not found",
+        },
+      }),
+    );
+    const invalidations: unknown[] = [];
+    const listener = (event: Event) => {
+      invalidations.push((event as CustomEvent).detail);
+    };
+    window.addEventListener("auth-session-invalidated", listener);
+
+    try {
+      await expect(
+        VaultService.getVaultState("deleted-state-user"),
+      ).rejects.toMatchObject({
+        status: 401,
+        code: "AUTH_ACCOUNT_NOT_FOUND",
+      });
+      expect(invalidations).toEqual([
+        {
+          code: "account_not_found",
+          path: "/api/vault/get",
+          userId: "deleted-state-user",
+        },
+      ]);
+    } finally {
+      window.removeEventListener("auth-session-invalidated", listener);
+    }
+  });
+
+  it.each([
+    ["checkVault", mockHasVault, "/db/vault/check"],
+    ["getVaultState", mockGetVault, "/db/vault/get"],
+  ] as const)(
+    "preserves and dispatches typed terminal errors from native %s",
+    async (method, nativeCall, path) => {
+      nativePlatform.current = true;
+      publishValidatedAuthSessionOwner("native-deleted-user");
+      mockGetIdToken.mockResolvedValue("native-token");
+      nativeCall.mockRejectedValueOnce({
+        code: "AUTH_ACCOUNT_NOT_FOUND",
+        message: "Account not found",
+      });
+      const invalidations: unknown[] = [];
+      const listener = (event: Event) => {
+        invalidations.push((event as CustomEvent).detail);
+      };
+      window.addEventListener("auth-session-invalidated", listener);
+
+      try {
+        await expect(
+          method === "checkVault"
+            ? VaultService.checkVault("native-deleted-user")
+            : VaultService.getVaultState("native-deleted-user"),
+        ).rejects.toMatchObject({ code: "AUTH_ACCOUNT_NOT_FOUND" });
+        expect(invalidations).toEqual([
+          {
+            code: "account_not_found",
+            path,
+            userId: "native-deleted-user",
+          },
+        ]);
+      } finally {
+        window.removeEventListener("auth-session-invalidated", listener);
+      }
+    },
+  );
 });

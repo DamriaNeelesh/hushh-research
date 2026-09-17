@@ -74,7 +74,8 @@ describe("Top app bar responsive contract", () => {
     expect(source).toContain('data-testid="top-app-bar-header"');
     expect(source).toContain('data-testid="top-app-bar-tabs"');
     expect(source).toContain("export function AppTopShell");
-    expect(source).toContain('<AmbientChromeMask\n            edge="top"');
+    expect(source).toContain("<AmbientChromeMask");
+    expect(source).toContain('edge="top"');
     expect(source).toContain("data-ambient-chrome-ignore");
     expect(source).not.toContain("bar-glass bar-glass-top");
     expect(source).toContain("ambient-chrome-top-foreground");
@@ -108,11 +109,42 @@ describe("Top app bar responsive contract", () => {
       '"pointer-events-none relative flex h-full w-full flex-col justify-end"',
     );
     expect(providers).toContain("<AppTopShell model={topShellModel} />");
+    expect(providers).toContain(
+      "Keep persistent top chrome outside the route Suspense",
+    );
+    expect(
+      providers.match(/<AppTopShell model=\{topShellModel\} \/>/g),
+    ).toHaveLength(1);
+    const topShellMount = providers.indexOf(
+      "<AppTopShell model={topShellModel} />",
+    );
+    expect(topShellMount).toBeLessThan(
+      providers.indexOf("<Suspense", topShellMount),
+    );
+    expect(
+      providers.match(/<KaiCommandBarGlobal \/>/g),
+    ).toHaveLength(1);
     expect(providers).toContain("const topShellScrollResetKey =");
     expect(providers).toContain("topShellModel.tabs.activeValue");
     expect(providers).toContain("useScrollReset(topShellScrollResetKey");
     expect(providers).toContain("}, [topShellScrollResetKey]);");
     expect(providers).not.toContain("<TopAppBar />");
+  });
+
+  it("keeps the top-shell scroll lifecycle stable across route swaps", () => {
+    const source = read("components/app-ui/top-app-bar.tsx");
+    const effectStart = source.indexOf("const hasBackControlRef");
+    const effectEnd = source.indexOf(
+      "  useEffect(() => {",
+      source.indexOf("  }, []);", effectStart) + 1,
+    );
+    const scrollLifecycle = source.slice(effectStart, effectEnd);
+
+    expect(scrollLifecycle).toContain("[data-app-shell-root=\"true\"]");
+    expect(scrollLifecycle).toContain("nextScrollRoot");
+    expect(scrollLifecycle).toContain("attach();");
+    expect(scrollLifecycle).toContain("  }, []);");
+    expect(scrollLifecycle).not.toContain("}, [model.mode, pathname]);");
   });
 
   it("does not duplicate Location tabs inside the route body", () => {
@@ -181,14 +213,12 @@ describe("Top app bar responsive contract", () => {
 
     expect(source).not.toContain("WorkspaceTopTabs");
     expect(source).toContain('aria-label="Open Profile"');
-    expect(source).toContain("requestInternalAppNavigation({");
-    // The avatar opens Profile origin-aware (tags the current route as `?from`)
-    // so the shared back control returns to where the user came from instead of
-    // always dropping them on the One dashboard.
-    expect(source).toContain("href: profileOpenHref");
-    expect(source).toContain("const profileOpenHref");
-    expect(source).toContain('source: "tap"');
-    expect(source).toContain('transitionMode: "full"');
+    expect(source).toContain('requestProfilePaneOpen("tap")');
+    // The avatar opens the shared right-side pane. The dedicated Profile route
+    // remains available for deep links and nested settings, but shell entry is
+    // an in-place presentation so the owner can return with the same gesture.
+    expect(source).not.toContain("href: profileOpenHref");
+    expect(source).not.toContain("const profileOpenHref");
     expect(source).not.toContain("onClick={() => router.push(ROUTES.PROFILE)}");
 
     expect(source).toContain("<AvatarImage");
@@ -308,6 +338,9 @@ describe("Top app bar responsive contract", () => {
     const breadcrumbs = read("lib/navigation/top-shell-breadcrumbs.ts");
 
     expect(source).toContain("breadcrumb: topShellBreadcrumb");
+    expect(source).toContain(
+      "visibleTopShellBreadcrumbItems(topShellBreadcrumb?.items ?? [])",
+    );
     expect(source).toContain("navigateTopShellBack({");
     expect(back).toContain("navigate: (action: TopShellBackAction) => void;");
     expect(back).toContain("params.navigate(action);");

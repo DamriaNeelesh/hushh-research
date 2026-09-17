@@ -24,6 +24,9 @@ import {
 import { isSmsTriggeredGrant } from "@/lib/one-location/notifications";
 import type { OneLocationGrant } from "@/lib/one-location/types";
 import { cn } from "@/lib/utils";
+import {
+  ACTIVE_SHARE_LANE_ROW_CLASSNAME,
+} from "./active-share-row-layout";
 
 import { ShareCountdownText } from "./live-share-status-card";
 import { MUTED_TEXT } from "./tokens";
@@ -43,6 +46,7 @@ export function ShareLaneRow({
   counterpartName,
   onStop,
   stopping,
+  onChangeEndTime,
   formatEndsAt,
   action = "stop",
 }: {
@@ -51,6 +55,7 @@ export function ShareLaneRow({
   /** Omitted when there is nothing this side may do about the share. */
   onStop?: () => void;
   stopping?: boolean;
+  onChangeEndTime?: (trigger: HTMLElement) => void;
   formatEndsAt?: (value: string) => string;
   /**
    * Whose share this is, in the only way that changes the words.
@@ -66,7 +71,7 @@ export function ShareLaneRow({
   const removing = action === "remove";
   return (
     <div
-      className="flex min-h-[54px] items-center gap-3 py-1.5"
+      className={ACTIVE_SHARE_LANE_ROW_CLASSNAME}
       data-testid="one-location-share-lane"
       data-share-lane={isSms ? "sos" : "ordinary"}
       data-grant-id={grant.id}
@@ -91,7 +96,21 @@ export function ShareLaneRow({
           )}
         </p>
       </div>
-      {onStop ? (
+      <div className="flex shrink-0 items-center gap-1">
+        {onChangeEndTime ? (
+          <button
+            type="button"
+            className="inline-flex min-h-11 items-center justify-center rounded-full px-2 text-[15px] font-medium leading-[20px] text-[color:var(--app-accent)] transition-colors hover:text-[color:var(--app-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
+            onClick={(event) => onChangeEndTime(event.currentTarget)}
+            disabled={stopping}
+            aria-label={`Change end time for ${counterpartName}`}
+          >
+            {grant.durationMode === "until_stopped"
+              ? "Set end time"
+              : "Change time"}
+          </button>
+        ) : null}
+        {onStop ? (
         <button
           type="button"
           className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-full px-2 text-[15px] font-medium leading-[20px] text-[#FF3B30] transition-colors hover:text-[#D70015] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
@@ -109,7 +128,8 @@ export function ShareLaneRow({
         >
           {stopping ? "Stopping…" : removing ? "Stop viewing" : "Stop"}
         </button>
-      ) : null}
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -132,6 +152,7 @@ export function PersonShareLanes({
   counterpartName,
   onStopGrant,
   revokingGrantId,
+  onChangeEndTime,
   formatEndsAt,
   action,
 }: {
@@ -139,6 +160,7 @@ export function PersonShareLanes({
   counterpartName: string;
   onStopGrant?: (grantId: string) => void;
   revokingGrantId?: string | null;
+  onChangeEndTime?: (grantId: string, trigger: HTMLElement) => void;
   formatEndsAt?: (value: string) => string;
   /** See {@link ShareLaneRow}. Defaults to the owner's "stop". */
   action?: "stop" | "remove";
@@ -153,6 +175,11 @@ export function PersonShareLanes({
           formatEndsAt={formatEndsAt}
           action={action}
           onStop={onStopGrant ? () => onStopGrant(grant.id) : undefined}
+          onChangeEndTime={
+            action !== "remove" && !isSmsTriggeredGrant(grant) && onChangeEndTime
+              ? (trigger) => onChangeEndTime(grant.id, trigger)
+              : undefined
+          }
           stopping={revokingGrantId === grant.id}
         />
       ))}

@@ -10,7 +10,6 @@ import {
   useState,
 } from "react";
 import type { ReactElement, ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
 import { ChevronRight, X } from "lucide-react";
 import { Slot } from "radix-ui";
 
@@ -112,7 +111,7 @@ function containsInteractiveNode(node: ReactNode): boolean {
   });
 }
 
-export const SettingsSegmentedTabs = SegmentedTabs;
+export { SegmentedTabs };
 
 type SettingsPresentation = {
   separatorInset?: boolean;
@@ -169,11 +168,13 @@ type SettingsIconTone = keyof typeof SETTINGS_ICON_TONE_CLASSNAME;
 export function SettingsGroup({
   eyebrow,
   title,
+  titleControl,
   titleAction,
   description,
   toolbar,
   children,
   embedded = false,
+  density,
   separatorInset,
   className,
   headingClassName,
@@ -184,6 +185,8 @@ export function SettingsGroup({
 }: {
   eyebrow?: string;
   title?: ReactNode;
+  /** Replaces the static heading with a section selector, keeping button semantics. */
+  titleControl?: ReactNode;
   /**
    * A control that belongs to this section, shown at the end of the heading
    * row.
@@ -213,6 +216,12 @@ export function SettingsGroup({
   toolbar?: ReactNode;
   children: ReactNode;
   embedded?: boolean;
+  /**
+   * Sets the row/heading density for every SettingsRow in this group. When
+   * omitted, embedded groups use the compact grouped-list recipe while
+   * full-page groups retain the roomier settings-screen rhythm.
+   */
+  density?: "compact" | "comfortable";
   /**
    * Opt-in iOS inset-grouped separators: hairlines that start after the leading
    * icon (aligned to the text) instead of full-width dividers. Default false
@@ -247,14 +256,20 @@ export function SettingsGroup({
   const presentation = useContext(SettingsPresentationContext);
   const resolvedSeparatorInset =
     separatorInset ?? presentation.separatorInset ?? false;
+  const resolvedDensity =
+    density ?? presentation.density ?? (embedded ? "compact" : "comfortable");
   const shell = (
     <div
       data-ui-role="grouped-card"
       data-slot="settings-group-shell"
+      data-settings-density={resolvedDensity}
       className={cn(
         // Inset settings groups use the compact card radius and flat grouped
         // Apple surfaces; separators inside the card carry the structure.
-        "relative isolate [--settings-group-radius:var(--app-card-radius-standard,24px)] overflow-hidden rounded-[var(--settings-group-radius)]",
+        "relative isolate overflow-hidden rounded-[var(--settings-group-radius)]",
+        resolvedDensity === "compact"
+          ? "[--settings-group-radius:var(--app-card-radius-compact,16px)]"
+          : "[--settings-group-radius:var(--app-card-radius-standard,18px)]",
         "bg-[color:var(--app-card-surface-default-solid)] shadow-[var(--app-card-shadow-standard)] ring-0",
         !embedded && "sm:rounded-[var(--settings-group-radius)]",
         shellClassName,
@@ -277,28 +292,38 @@ export function SettingsGroup({
   );
 
   return (
-    <section className={cn("w-full", className)} data-testid={testId}>
-      {eyebrow || title || description || titleAction ? (
+    <section
+      className={cn("w-full", className)}
+      data-settings-density={resolvedDensity}
+      data-testid={testId}
+    >
+      {eyebrow || title || titleControl || description || titleAction ? (
         <div
           className={cn(
-            "mb-2 mt-7 flex items-start justify-between gap-3 px-[6px]",
+            "flex items-start justify-between gap-3 px-1",
+            resolvedDensity === "compact" ? "mb-1.5 mt-5" : "mb-2 mt-7",
             headingClassName,
           )}
         >
           <div className="min-w-0 flex-1 space-y-[var(--settings-heading-stack-gap)]">
-            {eyebrow || title ? (
-              <SectionLabel
-                data-slot="settings-group-heading"
-                role="heading"
-                aria-level={embedded ? 3 : 2}
-                className="flex flex-wrap items-center gap-x-2 gap-y-1 text-pretty [overflow-wrap:anywhere]"
-              >
-                {eyebrow ? <span>{eyebrow}</span> : null}
-                {title ? <span>{title}</span> : null}
-              </SectionLabel>
-            ) : null}
+            {titleControl ??
+              (eyebrow || title ? (
+                <SectionLabel
+                  compact={resolvedDensity === "compact"}
+                  data-slot="settings-group-heading"
+                  role="heading"
+                  aria-level={embedded ? 3 : 2}
+                  className="flex flex-wrap items-center gap-x-2 gap-y-1 text-pretty [overflow-wrap:anywhere]"
+                >
+                  {eyebrow ? <span>{eyebrow}</span> : null}
+                  {title ? <span>{title}</span> : null}
+                </SectionLabel>
+              ) : null)}
             {description ? (
-              <RowDescription className="max-w-2xl [overflow-wrap:anywhere]">
+              <RowDescription
+                compact={resolvedDensity === "compact"}
+                className="max-w-2xl [overflow-wrap:anywhere]"
+              >
                 {description}
               </RowDescription>
             ) : null}
@@ -319,13 +344,19 @@ export function SettingsGroup({
             "mb-3",
             // Without a heading above it there is no `mt-7` to sit under, so
             // the control would hug whatever preceded the group.
-            !(eyebrow || title || description) && "mt-7",
+            !(eyebrow || title || titleControl || description) &&
+              (resolvedDensity === "compact" ? "mt-5" : "mt-7"),
           )}
         >
           {toolbar}
         </div>
       ) : null}
-      {shell}
+      <SettingsPresentationProvider
+        separatorInset={resolvedSeparatorInset}
+        density={resolvedDensity}
+      >
+        {shell}
+      </SettingsPresentationProvider>
     </section>
   );
 }
@@ -345,6 +376,8 @@ export function SettingsRow({
   tone = "default",
   iconTone = "gray",
   density,
+  layout = "settings",
+  textOverflow = "wrap",
   stackTrailingOnMobile = false,
   className,
   voiceControlId,
@@ -357,7 +390,7 @@ export function SettingsRow({
 }: {
   asChild?: boolean;
   children?: ReactNode;
-  icon?: LucideIcon;
+  icon?: React.ComponentType<any>;
   leading?: ReactNode;
   title: ReactNode;
   description?: ReactNode;
@@ -372,6 +405,14 @@ export function SettingsRow({
   iconTone?: SettingsIconTone;
   /** Compact, single-line settings rows for dense grouped menus. */
   density?: "compact" | "comfortable";
+  /** Person lists use a 40px face and a stable 68px text/separator start. */
+  layout?: "settings" | "person";
+  /**
+   * Keeps compact navigation rows to one title and one supporting line while
+   * leaving the complete accessible text in the DOM. Content-heavy settings
+   * rows continue to wrap by default.
+   */
+  textOverflow?: "wrap" | "truncate";
   stackTrailingOnMobile?: boolean;
   className?: string;
   voiceControlId?: string;
@@ -414,14 +455,18 @@ export function SettingsRow({
     // An inset separator aligns with an icon well. Rows without a leading visual
     // need a full-width hairline; otherwise the divider appears arbitrarily cut
     // off, as it did on Connect's plain-text rows.
-    icon || leading
-      ? resolvedDensity === "compact"
-        ? "group-data-[inset-separators=true]/settings-list:after:left-[58px] sm:group-data-[inset-separators=true]/settings-list:after:left-[58px]"
-        : "group-data-[inset-separators=true]/settings-list:after:left-[62px] sm:group-data-[inset-separators=true]/settings-list:after:left-[62px]"
-      : "group-data-[inset-separators=true]/settings-list:after:left-0";
+    layout === "person"
+      ? "group-data-[inset-separators=true]/settings-list:after:left-[68px]"
+      : icon || leading
+        ? resolvedDensity === "compact"
+          ? "group-data-[inset-separators=true]/settings-list:after:left-[58px] sm:group-data-[inset-separators=true]/settings-list:after:left-[58px]"
+          : "group-data-[inset-separators=true]/settings-list:after:left-[62px] sm:group-data-[inset-separators=true]/settings-list:after:left-[62px]"
+        : "group-data-[inset-separators=true]/settings-list:after:left-0";
   const rowShellClassName = cn(
     "group/settings-row relative isolate overflow-hidden bg-transparent",
-    resolvedDensity === "compact" && "[--settings-row-py:10px]",
+    resolvedDensity === "compact" && "[--settings-row-py:8px]",
+    layout === "person" &&
+      "[--settings-row-px:16px] [--settings-row-py:12px] [--settings-row-gap:12px] [--settings-row-stack-indent:52px]",
     // iOS-style separator — active only inside SettingsGroup with
     // separatorInset and hidden on the final row. Its start is derived from
     // whether this row actually has a leading visual.
@@ -441,7 +486,14 @@ export function SettingsRow({
       )}
     >
       {leading ? (
-        <span className="inline-flex shrink-0 self-center">{leading}</span>
+        <span
+          className={cn(
+            "inline-flex shrink-0 self-center",
+            layout === "person" && "w-10 justify-center",
+          )}
+        >
+          {leading}
+        </span>
       ) : icon ? (
         <span
           data-ui-role="settings-icon"
@@ -452,9 +504,11 @@ export function SettingsRow({
             // Agent artwork continues to use AgentSectionIcon, which owns the
             // larger launcher/menu geometry separately.
             "inline-flex shrink-0 items-center justify-center self-center",
-            resolvedDensity === "compact"
-              ? "h-7 w-7 rounded-[7px]"
-              : "h-[34px] w-[34px] rounded-[10px] sm:h-[34px] sm:w-[34px] sm:rounded-[10px]",
+            layout === "person"
+              ? "size-10 rounded-full"
+              : resolvedDensity === "compact"
+                ? "h-7 w-7 rounded-[7px]"
+                : "h-[34px] w-[34px] rounded-[10px] sm:h-[34px] sm:w-[34px] sm:rounded-[10px]",
             SETTINGS_ICON_TONE_CLASSNAME[resolvedIconTone],
           )}
         >
@@ -464,9 +518,12 @@ export function SettingsRow({
       <div className="min-w-0 flex-1 space-y-0.5">
         <RowLabel
           as="div"
+          compact={resolvedDensity === "compact"}
           data-slot="settings-row-title"
           className={cn(
-            "[overflow-wrap:anywhere]",
+            textOverflow === "truncate"
+              ? "truncate whitespace-nowrap"
+              : "[overflow-wrap:anywhere]",
             tone === "destructive" && "text-destructive",
           )}
         >
@@ -475,8 +532,13 @@ export function SettingsRow({
         {description ? (
           <RowDescription
             as="div"
+            compact={resolvedDensity === "compact"}
             data-slot="settings-row-description"
-            className="[overflow-wrap:anywhere]"
+            className={
+              textOverflow === "truncate"
+                ? "truncate whitespace-nowrap"
+                : "[overflow-wrap:anywhere]"
+            }
           >
             {description}
           </RowDescription>
@@ -514,6 +576,7 @@ export function SettingsRow({
   const sharedClassName = cn(
     "relative isolate grid w-full appearance-none overflow-hidden border-0 bg-transparent px-[var(--settings-row-px)] py-[var(--settings-row-py)] text-left outline-hidden ring-0 [-webkit-tap-highlight-color:transparent]",
     resolvedDensity === "compact" ? "min-h-[56px]" : "min-h-[60px]",
+    layout === "person" && "min-h-[72px]",
     shouldStackTrailing
       ? "grid-cols-1 gap-y-[var(--settings-row-stack-gap)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-x-[var(--settings-row-gap)] sm:gap-y-0"
       : "grid-cols-[minmax(0,1fr)_auto] items-center gap-x-[var(--settings-row-gap)]",
@@ -521,11 +584,29 @@ export function SettingsRow({
       "transition-[border-color,box-shadow] focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2",
   );
   const primaryActionClassName = cn(
-    "relative isolate min-w-0 overflow-hidden border-0 bg-transparent px-[var(--settings-row-px)] py-[var(--settings-row-py)] text-left outline-hidden ring-0 transition-[background-color,border-color,box-shadow] [-webkit-tap-highlight-color:transparent] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-    "rounded-[inherit] [@media(hover:hover)]:rounded-xl",
-    "[@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.065]",
+    // No background and no radius of its own.
+    //
+    // This button used to paint the hover itself, with
+    // `[@media(hover:hover)]:rounded-xl` overriding the row radius and its own
+    // `px-[var(--settings-row-px)]` sitting INSIDE a grid cell that already has
+    // that padding. The result was a 12px-rounded pill inset from the row on
+    // every side and stopping short of the trailing controls -- a highlight
+    // that pointed at part of a row while the whole row was the target.
+    //
+    // The hover now comes from the same full-bleed overlay the non-split row
+    // uses, so both shapes of row light up identically: edge to edge, at the
+    // row's own corner radius.
+    "relative isolate min-w-0 border-0 bg-transparent px-[var(--settings-row-px)] py-[var(--settings-row-py)] text-left outline-hidden ring-0 [-webkit-tap-highlight-color:transparent] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+    "rounded-[inherit]",
     resolvedDensity === "compact" ? "min-h-[56px]" : "min-h-[60px]",
+    layout === "person" && "min-h-11 p-0",
   );
+  const rowDataProps = {
+    "data-testid": testId,
+    "data-tone": tone,
+    "data-settings-density": resolvedDensity,
+    "data-row-layout": layout,
+  };
   const voiceProps = {
     "data-voice-control-id": voiceControlId || undefined,
     "data-voice-action-id": voiceActionId || undefined,
@@ -554,12 +635,32 @@ export function SettingsRow({
 
   if (splitPrimaryAction) {
     return (
-      <div className={rowShellClassName} data-testid={testId} data-tone={tone}>
+      <div className={rowShellClassName} {...rowDataProps}>
+        {/*
+          The same hover surface the non-split row draws. It sits on the shell,
+          so it spans the full row and takes the shell's radius, rather than
+          being painted by the inner button at a radius of its own.
+        */}
+        {!disabled ? (
+          <span
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute inset-0 z-[1] rounded-[inherit] bg-transparent transition-[background-color]",
+              "[@media(hover:hover)]:group-hover/settings-row:bg-foreground/[0.04] group-active/settings-row:bg-foreground/[0.065]",
+            )}
+          />
+        ) : null}
         <div
           className={cn(
             "relative z-10 grid w-full px-[var(--settings-row-px)] py-[var(--settings-row-py)]",
+            layout === "person" && "min-h-[72px]",
             shouldStackTrailing
-              ? "grid-cols-1 gap-y-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-x-3"
+              ? cn(
+                  "grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-x-3 sm:gap-y-0",
+                  layout === "person"
+                    ? "gap-y-[var(--settings-row-stack-gap)]"
+                    : "gap-y-0",
+                )
               : "grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3",
           )}
         >
@@ -590,7 +691,7 @@ export function SettingsRow({
 
   if (resolvedAsChild) {
     return (
-      <div className={rowShellClassName} data-testid={testId} data-tone={tone}>
+      <div className={rowShellClassName} {...rowDataProps}>
         <Comp
           {...(!resolvedAsChild
             ? { "aria-disabled": disabled || undefined }
@@ -605,7 +706,7 @@ export function SettingsRow({
   }
 
   return (
-    <div className={rowShellClassName} data-testid={testId} data-tone={tone}>
+    <div className={rowShellClassName} {...rowDataProps}>
       {isInteractive ? (
         <span
           aria-hidden
@@ -661,8 +762,12 @@ export type AdaptiveDetailSurfaceProps = {
   mobilePresentation?: "fullscreen" | "sheet";
   /** Direct-decision sheets may omit a redundant visual X. */
   showCloseButton?: boolean;
+  /** Draggable mobile sheets can use the handle as their only close affordance. */
+  showMobileCloseButton?: boolean;
   desktopMaxWidthClassName?: string;
   desktopMaxWidth?: string;
+  /** Keep record identities complete when the caller cannot safely abbreviate them. */
+  headerTextOverflow?: "truncate" | "wrap";
 };
 
 /** The one cross-app, adaptive record-detail surface. */
@@ -680,8 +785,10 @@ export function AdaptiveDetailSurface({
   contentClassName,
   mobilePresentation = "fullscreen",
   showCloseButton = true,
+  showMobileCloseButton = showCloseButton,
   desktopMaxWidthClassName,
   desktopMaxWidth,
+  headerTextOverflow = "truncate",
 }: AdaptiveDetailSurfaceProps) {
   const isMobile = useIsMobile();
   // A query-backed selection can mount this surface before the mobile media
@@ -699,15 +806,24 @@ export function AdaptiveDetailSurface({
     return null;
   }
 
+  const titleOverflowClassName =
+    headerTextOverflow === "wrap"
+      ? "whitespace-normal break-words [overflow-wrap:anywhere]"
+      : "truncate";
+  const descriptionOverflowClassName =
+    headerTextOverflow === "wrap"
+      ? "whitespace-normal break-words [overflow-wrap:anywhere]"
+      : "line-clamp-2";
+
   const closeButton = (
     <button
       type="button"
       aria-label="Close detail panel"
       onClick={() => onOpenChange(false)}
       className={cn(
-        "group absolute right-3 top-3 z-20 isolate inline-flex h-9 w-9 items-center justify-center overflow-hidden rounded-full",
-        "border border-transparent bg-[color:var(--app-card-surface-compact)] text-muted-foreground opacity-75",
-        "transition-[opacity,transform,color] duration-200 hover:text-foreground hover:opacity-100 active:scale-[0.97]",
+        "group absolute right-4 top-4 z-20 isolate inline-flex h-10 w-10 items-center justify-center overflow-hidden rounded-full",
+        "border border-transparent bg-[color:var(--app-neutral-fill)] text-[color:var(--app-secondary-label)]",
+        "transition-[transform,color,background-color] duration-200 hover:bg-[color:var(--app-neutral-fill-strong)] hover:text-foreground active:scale-[0.97]",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
       )}
     >
@@ -722,26 +838,37 @@ export function AdaptiveDetailSurface({
         <Sheet open={open} onOpenChange={onOpenChange} modal>
           <SheetContent
             side="bottom"
-            showCloseButton={showCloseButton}
+            showCloseButton={showMobileCloseButton}
             className={cn("gap-0", surfaceClassName, contentClassName)}
             onOpenAutoFocus={(event) => {
               event.preventDefault();
               (event.currentTarget as HTMLElement).focus();
             }}
           >
-            <SheetHeader className="morphy-theme-content sticky top-0 z-10 border-b border-[color:var(--app-card-border-standard)] bg-[var(--activeGlassColor)] px-4 pt-8 pb-3 text-left backdrop-blur-[var(--blur-standard)]">
-              <div className="flex min-w-0 items-center gap-3 pr-10 text-left">
+            <SheetHeader className="morphy-theme-content sticky top-0 z-10 border-b border-[color:var(--app-card-border-standard)] bg-[var(--activeGlassColor)] px-4 pt-7 pb-3 text-left backdrop-blur-[var(--blur-standard)]">
+              <div
+                className={cn(
+                  "flex min-w-0 items-center gap-3 text-left",
+                  showMobileCloseButton && "pr-10",
+                )}
+              >
                 {leading ? <div className="shrink-0">{leading}</div> : null}
                 <div className="min-w-0 text-left">
                   {eyebrow ? (
                     <SectionLabel as="p">{eyebrow}</SectionLabel>
                   ) : null}
-                  <SheetTitle className="ui-text-navigation-title truncate">
+                  <SheetTitle
+                    className={cn(
+                      "ui-text-navigation-title",
+                      titleOverflowClassName,
+                    )}
+                  >
                     {title}
                   </SheetTitle>
                   <SheetDescription
                     className={cn(
-                      "ui-text-row-description line-clamp-2",
+                      "ui-text-row-description",
+                      descriptionOverflowClassName,
                       !description && "sr-only",
                     )}
                   >
@@ -752,7 +879,7 @@ export function AdaptiveDetailSurface({
             </SheetHeader>
             <div
               className={cn(
-                "bg-[color:var(--app-card-surface-default-solid)] px-3 pb-[calc(var(--app-safe-area-bottom-effective,env(safe-area-inset-bottom,0px))+1rem)] pt-3 sm:px-4 sm:pt-4",
+                "bg-[color:var(--app-card-surface-default-solid)] px-3 pb-[calc(var(--app-safe-area-bottom-effective,env(safe-area-inset-bottom,0px))+1rem)] pt-1 sm:px-4 sm:pt-2",
                 bodyClassName,
               )}
             >
@@ -784,17 +911,23 @@ export function AdaptiveDetailSurface({
             (e.currentTarget as HTMLElement).focus();
           }}
         >
-          <DrawerHeader className="morphy-theme-content sticky top-0 z-10 border-b border-[color:var(--app-card-border-standard)] bg-[var(--activeGlassColor)] px-4 pt-8 pb-3 pr-14 text-left backdrop-blur-[var(--blur-standard)] sm:px-5 sm:pt-6 sm:pb-4 sm:pr-14">
+          <DrawerHeader className="morphy-theme-content sticky top-0 z-10 border-b border-[color:var(--app-card-border-standard)] bg-[var(--activeGlassColor)] px-4 pt-8 pb-2 pr-14 text-left backdrop-blur-[var(--blur-standard)] sm:px-5 sm:pt-6 sm:pb-3 sm:pr-14">
             <div className="flex min-w-0 items-center gap-3 text-left">
               {leading ? <div className="shrink-0">{leading}</div> : null}
               <div className="min-w-0 text-left">
                 {eyebrow ? <SectionLabel as="p">{eyebrow}</SectionLabel> : null}
-                <DrawerTitle className="ui-text-navigation-title truncate">
+                <DrawerTitle
+                  className={cn(
+                    "ui-text-navigation-title",
+                    titleOverflowClassName,
+                  )}
+                >
                   {title}
                 </DrawerTitle>
                 <DrawerDescription
                   className={cn(
-                    "ui-text-row-description line-clamp-2",
+                    "ui-text-row-description",
+                    descriptionOverflowClassName,
                     !description && "sr-only",
                   )}
                 >
@@ -802,11 +935,11 @@ export function AdaptiveDetailSurface({
                 </DrawerDescription>
               </div>
             </div>
-            {showCloseButton ? closeButton : null}
+            {showMobileCloseButton ? closeButton : null}
           </DrawerHeader>
           <div
             className={cn(
-              "flex-1 overflow-y-auto bg-[color:var(--app-card-surface-default-solid)] px-3 pb-[calc(var(--app-safe-area-bottom-effective,env(safe-area-inset-bottom,0px))+2rem)] pt-3 sm:px-4 sm:pt-4",
+              "flex-1 overflow-y-auto bg-[color:var(--app-card-surface-default-solid)] px-3 pb-[calc(var(--app-safe-area-bottom-effective,env(safe-area-inset-bottom,0px))+2rem)] pt-2 sm:px-4 sm:pt-3",
               bodyClassName,
             )}
           >
@@ -839,17 +972,23 @@ export function AdaptiveDetailSurface({
           (e.currentTarget as HTMLElement).focus();
         }}
       >
-        <DialogHeader className="morphy-theme-content sticky top-0 z-10 border-b border-[color:var(--app-card-border-standard)] bg-[var(--activeGlassColor)] px-6 py-4 pr-16 text-left backdrop-blur-[var(--blur-standard)]">
+        <DialogHeader className="morphy-theme-content sticky top-0 z-10 border-b border-[color:var(--app-card-border-standard)] bg-[var(--activeGlassColor)] px-6 pt-4 pb-3 pr-16 text-left backdrop-blur-[var(--blur-standard)]">
           <div className="flex min-w-0 items-center gap-3 text-left">
             {leading ? <div className="shrink-0">{leading}</div> : null}
             <div className="min-w-0 text-left">
               {eyebrow ? <SectionLabel as="p">{eyebrow}</SectionLabel> : null}
-              <DialogTitle className="ui-text-navigation-title truncate">
+              <DialogTitle
+                className={cn(
+                  "ui-text-navigation-title",
+                  titleOverflowClassName,
+                )}
+              >
                 {title}
               </DialogTitle>
               <DialogDescription
                 className={cn(
-                  "ui-text-row-description line-clamp-2",
+                  "ui-text-row-description",
+                  descriptionOverflowClassName,
                   !description && "sr-only",
                 )}
               >
@@ -861,7 +1000,7 @@ export function AdaptiveDetailSurface({
         </DialogHeader>
         <div
           className={cn(
-            "min-h-0 flex-1 overflow-y-auto bg-[color:var(--app-card-surface-default-solid)] px-4 pb-8 pt-4 sm:px-5 sm:pt-5",
+            "min-h-0 flex-1 overflow-y-auto bg-[color:var(--app-card-surface-default-solid)] px-4 pb-8 pt-2 sm:px-5 sm:pt-2.5",
             bodyClassName,
           )}
         >

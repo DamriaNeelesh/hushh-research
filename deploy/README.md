@@ -129,3 +129,22 @@ repair command into an alternative release path.
 4. Apply the smallest owner-routed correction, rerun local parity, and dispatch
    a new governed workflow from an eligible SHA.
 5. Do not mask a failed workflow with a manual Cloud Run mutation.
+
+## Location command runtime deployment
+
+Talk to One now uses bounded recording, ordinary Gemini transcription and
+semantic Location planning. Deploy the matching generated contracts and the
+complete ordered release migration manifest with the backend. The Location
+repair requires migrations 213–219 in addition to the existing command schema;
+rebuild and sync native web assets before
+packaging the apps. The existing fleet model configuration supplies command
+reasoning. No Live API key, ASR pack, intent-ranker pack, or model-pack registry is
+required by the command path. One Live Voice (Gemini Live on Vertex ADC) is a separate,
+flag-gated adapter: `_ONE_VOICE_LIVE_ENABLED`, `_VERTEX_LIVE_MODEL_ID` and
+`_VERTEX_LIVE_LOCATION` are the only knobs and there is still no API key.
+
+The model-pack publication workflow is retired. Preserve historical release
+records without treating them as current prerequisites. Follow the
+[command runtime contract](../docs/reference/one/one-voice-runtime-architecture.md)
+for checkpoint, receipt and rollback requirements. Provider access and physical
+device acceptance remain release evidence, not conclusions from a static build.

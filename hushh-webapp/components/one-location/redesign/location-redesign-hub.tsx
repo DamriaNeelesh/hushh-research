@@ -49,10 +49,10 @@ import {
 
 import {
   requestRecipientStatus,
-  shortAgo,
   type RequestRecipientStatus,
 } from "@/lib/one-location/request-recipient-status";
 import { SmsTextIcon } from "@/components/one-location/redesign/sms-text-icon";
+import { isLocationRequestPending } from "@/lib/one-location/request-expiry";
 import { isSmsTriggeredGrant } from "@/lib/one-location/notifications";
 import {
   formatLocationDurationLabel,
@@ -91,7 +91,6 @@ import {
   FormLabel,
   MediumRowLabel,
   PageTitle,
-  PageSubtitle,
   RowDescription,
   RowLabel,
   SectionLabel,
@@ -117,11 +116,9 @@ import type {
   PlainLocationPoint,
 } from "@/lib/one-location/types";
 import { locationStatusLabel } from "@/lib/one-location/location-readiness";
-import {
-  isCircleSelectionFullySelected,
-  type CircleRecipientSelection,
-} from "@/lib/one-location/circle-recipient-selection";
+import type { CircleRecipientSelection } from "@/lib/one-location/circle-recipient-selection";
 import type { AutoApproveScope } from "@/lib/one-location/location-control-state";
+import { resolveOwnSmsSystemCircleId } from "@/lib/one-location/system-circles";
 
 import {
   Avatar,
@@ -134,11 +131,7 @@ import {
 import { MUTED_TEXT, SUBCARD_SURFACE } from "./tokens";
 import { ContactSourceBadge } from "@/components/connections/contact-source-badge";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
-import {
-  RequestCard,
-  SharedWithMeCard,
-  type GrantViewStatus,
-} from "./cards";
+import { RequestCard, SharedWithMeCard, type GrantViewStatus } from "./cards";
 
 export type { GrantViewStatus } from "./cards";
 import {
@@ -146,6 +139,9 @@ import {
   ShareLanesDisclosure,
   useExpandedShareLanes,
 } from "./share-lanes";
+import {
+  ACTIVE_SHARE_STOP_CLASSNAME,
+} from "./active-share-row-layout";
 import {
   ShareReplacementConfirmDialog,
   ShareReplacementNotice,
@@ -160,14 +156,17 @@ import {
   type ReasonValue,
 } from "./selectors";
 import {
+  SHARE_CONFIRM_ACTIONS_CLASSNAME,
+  SHARE_CONFIRM_PRIMARY_CTA_CLASSNAME,
+} from "./location-cta-layout";
+import {
+} from "./location-header-layout";
+import {
   CHANGE_TIME_DURATION_LADDER,
   REQUEST_DURATION_LADDER,
 } from "./duration-presets";
 import { approveShorterDurationOptions } from "@/lib/one-location/approve-duration-options";
-import {
-  AskForMoreTime,
-  type RequestMoreTimeHours,
-} from "./request-more-time";
+import { AskForMoreTime, type RequestMoreTimeHours } from "./request-more-time";
 import {
   LiveShareStatusCard,
   ShareCountdownText,
@@ -177,7 +176,11 @@ import { SosPanel } from "@/components/one-location/redesign/sos-panel";
 import { SmsContactsFlow } from "@/components/one-location/redesign/sms-contacts-flow";
 import { CheckInFlow } from "@/components/one-location/redesign/check-in-flow";
 import { SavedLocationsSection } from "@/components/one-location/saved-locations-section";
-import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
+import {
+  SettingsGroup,
+  SettingsPresentationProvider,
+  SettingsRow,
+} from "@/components/app-ui/settings-ui";
 import { ShellActionSurface } from "@/components/app-ui/shell-action-surface";
 import { roleClasses } from "@/lib/morphy-ux/tokens/semantic-roles";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -195,7 +198,6 @@ import { usePageEnterAnimation } from "@/lib/morphy-ux/hooks/use-page-enter";
 import { resolveSmsContactsBackAction } from "@/lib/navigation/top-shell-breadcrumbs";
 import {
   CircleDetailFlow,
-  CirclesSection,
   CreateCircleFlow,
   JoinCircleFlow,
 } from "@/components/one-location/redesign/circles/named-circle-flows";
@@ -216,6 +218,107 @@ type ReadinessTone = "ready" | "warning" | "blocked" | "checking";
 
 export const ONE_LOCATION_SHARE_DEFAULT_DURATION_HOURS = "0.25";
 const ONE_LOCATION_REQUEST_REASON_MAX_LENGTH = 80;
+const ASK_FLOW_DRAFT_STORAGE_KEY = "hushh:one-location:ask-draft";
+const CONNECT_SEARCH_QUERY_PARAM = "q";
+const CONNECT_RETURN_PARAM = "return_to";
+
+export type LocationRequestSendResult = {
+  sent: boolean;
+  completed: boolean;
+};
+
+type AskFlowDraft = {
+  search: string;
+  selectedOwnerIds: string[];
+  durationHours: string;
+  requestMessage: string;
+  reason: ReasonValue | null;
+};
+
+function readStoredAskFlowDraft(): AskFlowDraft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(ASK_FLOW_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AskFlowDraft>;
+    return {
+      search: typeof parsed.search === "string" ? parsed.search : "",
+      selectedOwnerIds: Array.isArray(parsed.selectedOwnerIds)
+        ? parsed.selectedOwnerIds.filter(
+            (id): id is string => typeof id === "string",
+          )
+        : [],
+      durationHours:
+        typeof parsed.durationHours === "string" && parsed.durationHours
+          ? parsed.durationHours
+          : "1",
+      requestMessage:
+        typeof parsed.requestMessage === "string" ? parsed.requestMessage : "",
+      reason:
+        parsed.reason === "Safety check-in" ||
+        parsed.reason === "Meeting nearby" ||
+        parsed.reason === "Pick-up" ||
+        parsed.reason === "Other"
+          ? parsed.reason
+          : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredAskFlowDraft(draft: AskFlowDraft): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(
+      ASK_FLOW_DRAFT_STORAGE_KEY,
+      JSON.stringify(draft),
+    );
+  } catch {
+    // Best effort: losing a draft is better than blocking the Ask flow.
+  }
+}
+
+function clearStoredAskFlowDraft(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(ASK_FLOW_DRAFT_STORAGE_KEY);
+  } catch {
+    // Best effort only.
+  }
+}
+
+function askFlowConnectRecoveryHref(query: string): string {
+  const params = new URLSearchParams();
+  params.set("tab", "all");
+  const trimmed = query.trim();
+  if (trimmed) params.set(CONNECT_SEARCH_QUERY_PARAM, trimmed);
+  params.set(
+    CONNECT_RETURN_PARAM,
+    `${ROUTES.ONE_LOCATION}?view=now&action=ask`,
+  );
+  return `${ROUTES.CONNECT}?${params.toString()}`;
+}
+
+function peopleConnectRecoveryHref(query: string): string {
+  const params = new URLSearchParams();
+  params.set("tab", "all");
+  const trimmed = query.trim();
+  if (trimmed) params.set(CONNECT_SEARCH_QUERY_PARAM, trimmed);
+  params.set(CONNECT_RETURN_PARAM, `${ROUTES.ONE_LOCATION}?view=people`);
+  return `${ROUTES.CONNECT}?${params.toString()}`;
+}
+
+function connectCirclesHref(): string {
+  const params = new URLSearchParams();
+  params.set("tab", "circles");
+  params.set(CONNECT_RETURN_PARAM, `${ROUTES.ONE_LOCATION}?view=people`);
+  return `${ROUTES.CONNECT}?${params.toString()}`;
+}
+
+function waitingResponsesLabel(count: number): string {
+  return `Waiting for ${count} ${count === 1 ? "response" : "responses"}`;
+}
 
 export type PrivateCheckInResult = {
   succeededRecipientIds: string[];
@@ -223,11 +326,17 @@ export type PrivateCheckInResult = {
 };
 
 export type PrivateCheckInRequest = {
+  commandDirectiveId?: string;
+  /** Consented owner snapshot from the draft, including Circle recipients. */
+  recipientSnapshots?: OneLocationRecipient[];
   recipientIds: string[];
   durationHours: string;
   message?: string;
   point: PlainLocationPoint;
   clientOperationId: string;
+  commandOperationId?: string;
+  commandSignal?: AbortSignal;
+  commandOwner?: string;
   confirmedAt: string;
   /** Named-Circle provenance when the check-in was targeted at a Circle. */
   sourceCircleId?: string | null;
@@ -252,23 +361,11 @@ function resolveLocationHubTab(value: string | null): LocationHubTab {
   ) as LocationHubTab;
 }
 
-/**
- * What a settled request says in the "Requests sent" list.
- *
- * Everything that was not live used to read "Pending", including requests that
- * had been declined or taken back -- so a request the person themselves had
- * already withdrawn still sat there claiming to be waiting on somebody.
- */
-function requestStatusWord(status: string): string {
-  if (status === "denied") return "Declined";
-  if (status === "cancelled") return "Taken back";
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
-
 export type LocationHubViewModel = {
   /* identity / gating */
   userId: string | null;
   canShare: boolean;
+  shareDeliveryPending: boolean;
   busy: string | null;
   /** Id of the grant currently being revoked (per-grant Stop sharing spinner). */
   revokingGrantId: string | null;
@@ -337,7 +434,8 @@ export type LocationHubViewModel = {
   /* data lists */
   recipients: OneLocationRecipient[];
   circles: OneLocationCircleSummary[];
-  selectedShareCircleSelection: CircleRecipientSelection | null;
+  selectedShareCircleSelections: CircleRecipientSelection[];
+  pendingShareCircleIds: string[];
   incomingCircleMemberInvites: OneLocationCircleMemberInvite[];
   incomingCircleMemberInvitesLoading: boolean;
   incomingCircleMemberInvitesError: string | null;
@@ -368,10 +466,13 @@ export type LocationHubViewModel = {
   /* composer state */
   recipientSearch: string;
   shareRecipientSearch: string;
+  selectedDirectRecipientIds: string[];
   selectedRecipientIds: string[];
   selectedRequestOwnerIds: string[];
   shareDurationHours: string;
   shareMessage: string;
+  /** Last failed share attempt, rendered in-flow instead of over the header. */
+  shareError: string | null;
   durationHours: string;
   requestMessage: string;
   shareReviewOpen: boolean;
@@ -399,6 +500,7 @@ export type LocationHubViewModel = {
   setShareReviewOpen: (v: boolean) => void;
   resetShareComposer: () => void;
   startShareComposer: (initialRecipientId?: string) => void;
+  setSelectedRequestOwnerIds: (ids: string[]) => void;
 
   /* selection */
   toggleShareRecipient: (id: string, surface?: string) => void;
@@ -437,8 +539,10 @@ export type LocationHubViewModel = {
    */
   onEnterShareConfirm: () => void;
   onConfirmShare: () => void;
-  /** Resolves true when at least one request actually reached the server. */
-  onSendRequest: (reason?: string | null) => Promise<boolean>;
+  /** Reports whether any request reached the server, and whether all did. */
+  onSendRequest: (
+    reason?: string | null,
+  ) => Promise<LocationRequestSendResult>;
   onAskReshare: (grant: OneLocationGrant) => void;
   onApprove: (
     request: OneLocationAccessRequest,
@@ -491,11 +595,16 @@ export type LocationHubViewModel = {
    */
   /** True while the live share card's inline time editor is open. */
   liveShareDurationEditing: boolean;
+  /** Grant currently being edited in the owner's duration editor. */
+  liveShareDurationGrantId: string | null;
   /** Wheel value, in decimal hours, or "until_stopped". */
   liveShareDurationHours: string;
   setLiveShareDurationHours: (v: string) => void;
   liveShareDurationSaving: boolean;
-  onEditLiveShareDurationStart: () => void;
+  onEditLiveShareDurationStart: (
+    grantId?: string,
+    trigger?: HTMLElement,
+  ) => void;
   onEditLiveShareDurationCancel: () => void;
   onSaveLiveShareDuration: () => void;
   onCreatePublicInvite: () => void;
@@ -826,16 +935,16 @@ export function resolveLocationDeepLinkFocus(input: {
 
 /**
  * The id the header switch points `aria-describedby` at. A constant, not
- * `useId`: the status text now renders under the title while the switch stays
- * in the actions column, and `aria-describedby` resolves by id anywhere in the
- * document. There is exactly one Location header on screen.
+ * `useId`: the status text now renders below the switch in the actions column,
+ * and `aria-describedby` resolves by id anywhere in the document. There is
+ * exactly one Location header on screen.
  */
 const LOCATION_HEADER_STATUS_ID = "one-location-header-status";
 
 /** What the header switch currently means, in words. */
 function locationHeaderStatusText(vm: LocationHubViewModel): string {
   if (vm.locationAcquiring) return "Finding you\u2026";
-  return locationStatusLabel({
+  const status = locationStatusLabel({
     readiness: vm.locationBlocked
       ? ("blocked" as const)
       : vm.locationEnabled
@@ -845,18 +954,29 @@ function locationHeaderStatusText(vm: LocationHubViewModel): string {
     paused: vm.locationPaused,
     accuracyLimited: vm.locationAccuracyLimited,
   });
+  if (status === "Location on") return "Location on";
+  if (status === "Location off") return "Location off";
+  return status;
 }
 
-/** The header switch status sits under the switch without becoming a page subtitle. */
-function LocationHeaderStatus({ vm }: { vm: LocationHubViewModel }) {
+/** The status stays with the switch and may wrap rather than clip on a narrow phone. */
+function LocationHeaderStatus({
+  vm,
+  onToggle,
+}: {
+  vm: LocationHubViewModel;
+  onToggle: () => void;
+}) {
   return (
-    <span
+    <button
+      type="button"
+      onClick={onToggle}
       id={LOCATION_HEADER_STATUS_ID}
       data-testid="one-location-header-status"
-      className="mt-1 block w-full whitespace-nowrap text-right font-[family-name:var(--font-app-body)] text-[13px] font-normal leading-[18px] tracking-[-0.01em] text-[color:var(--app-secondary-label)]"
+      className="mt-1 block w-full whitespace-nowrap text-center font-[family-name:var(--font-app-body)] text-[13px] font-medium leading-[18px] tracking-[-0.01em] text-[color:var(--app-secondary-label)]"
     >
       {locationHeaderStatusText(vm)}
-    </span>
+    </button>
   );
 }
 
@@ -873,11 +993,13 @@ function LocationHeaderActions({ vm }: { vm: LocationHubViewModel }) {
     vm.onHideMyLocation();
   };
 
+  const handleLocationToggle = () => handleLocationChange(!locationOn);
+
   return (
     <div
       role="group"
       aria-label="Location"
-      className="ml-auto flex min-h-[58px] w-[92px] shrink-0 flex-col items-end justify-center overflow-visible"
+      className="ml-auto flex min-h-0 w-[92px] shrink-0 flex-col items-center justify-center overflow-visible"
       data-testid="one-location-header-actions"
     >
       <Switch
@@ -902,7 +1024,7 @@ function LocationHeaderActions({ vm }: { vm: LocationHubViewModel }) {
         // system green, so this toggle reads the same as every other one.
         className={cn("shrink-0", acquiring && "animate-pulse")}
       />
-      <LocationHeaderStatus vm={vm} />
+      <LocationHeaderStatus vm={vm} onToggle={handleLocationToggle} />
     </div>
   );
 }
@@ -952,6 +1074,23 @@ function selectedCountCopy(count: number, emptyCopy: string) {
   return `${count} selected`;
 }
 
+function shareAudienceSelectionCopy(circleCount: number, contactCount: number) {
+  if (!circleCount && !contactCount) {
+    return "Choose one or more Circles or contacts.";
+  }
+
+  const parts: string[] = [];
+  if (circleCount) {
+    parts.push(`${circleCount} ${circleCount === 1 ? "Circle" : "Circles"}`);
+  }
+  if (contactCount) {
+    parts.push(
+      `${contactCount} ${contactCount === 1 ? "contact" : "contacts"}`,
+    );
+  }
+  return `${parts.join(" + ")} selected`;
+}
+
 export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -960,17 +1099,6 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   const nearbyPrivateCheckIn =
     searchParams.get(FLOW_ACTION_PARAM) === PRIVATE_CHECK_IN_ACTION &&
     searchParams.get(FLOW_SOURCE_PARAM) === NEARBY_CHECK_IN_SOURCE;
-  // Editing emergency contacts from SOS is a detour, not a destination.
-  //
-  // "Edit contacts" opens ?action=sms-contacts&source=sos, which then
-  // redirects to the SMS Circle -- and openCircleDetail pins the hub tab
-  // to "people", because that is where circles live. Closing therefore
-  // returned to the People tab and dropped the person out of the SOS flow
-  // they were part-way through. The source param already rode along; only
-  // the way back never read it. Mirrors nearbyPrivateCheckIn above.
-  const editingSosContacts =
-    searchParams.get(FLOW_ACTION_PARAM) === FLOW_TO_ACTION["circle-detail"] &&
-    searchParams.get(FLOW_SOURCE_PARAM) === SOS_FLOW_SOURCE;
   const nearbyReturnToken = searchParams.get(NEARBY_PRIVATE_RETURN_TOKEN_PARAM);
   const nearbyCheckInReturnHref =
     nearbyPrivateCheckIn && isNearbyPrivateReturnToken(nearbyReturnToken)
@@ -980,6 +1108,24 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
     resolveLocationHubTab(searchParams.get(LOCATION_HUB_TAB_PARAM)),
   );
   const [flow, setFlow] = useState<FlowKind>("none");
+  const [selectedCircleId, setSelectedCircleId] = useState<string | null>(() =>
+    searchParams.get("circleId"),
+  );
+  const [flowSource, setFlowSource] = useState<string | null>(() =>
+    searchParams.get(FLOW_SOURCE_PARAM),
+  );
+  // Editing emergency contacts from SOS is a detour, not a destination.
+  //
+  // "Edit contacts" opens ?action=circle-detail&source=sos directly, which
+  // used to pin the hub tab to "people", because that is where circles live.
+  // Closing therefore returned to the People tab and dropped the person out
+  // of the SOS flow they were part-way through. The source param already rode
+  // along; only the way back never read it. Mirrors nearbyPrivateCheckIn above.
+  const editingSosContacts =
+    (flow === "circle-detail" ||
+      searchParams.get(FLOW_ACTION_PARAM) === FLOW_TO_ACTION["circle-detail"]) &&
+    (flowSource === SOS_FLOW_SOURCE ||
+      searchParams.get(FLOW_SOURCE_PARAM) === SOS_FLOW_SOURCE);
   // Opening a flow (SOS, Share, Ask, ...) mounts a fresh subtree under
   // whatever scroll offset the Now/People/Links tab was left at -- the
   // app-shell scroll-reset instance only keys on tab identity, never on
@@ -994,8 +1140,27 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   // re-triggers it (#5430).
   usePageEnterAnimation(flowContainerRef, {
     key: flow,
-    enabled: flow !== "none",
+    // The hub is also a destination: closing a focused flow should settle back
+    // into it with the same page-enter beat used when opening that flow. This
+    // removes the hard cut that made Location feel unlike the One home roster.
+    enabled: true,
   });
+  const liveShareDurationTriggerRef = useRef<HTMLElement | null>(null);
+  const openLiveShareDuration = (
+    grantId: string | undefined,
+    trigger: HTMLElement,
+  ) => {
+    liveShareDurationTriggerRef.current = trigger;
+    vm.onEditLiveShareDurationStart(grantId);
+  };
+  const renderLocationSurface = (children: ReactNode) => (
+    <LocationFeatureRoot
+      vm={vm}
+      liveShareDurationTriggerRef={liveShareDurationTriggerRef}
+    >
+      {children}
+    </LocationFeatureRoot>
+  );
   const focusedCircleMemberInviteId =
     String(searchParams.get("circleInviteId") || "").trim() || null;
   // Router state can settle one paint after a tap. Keep the local focused
@@ -1113,8 +1278,14 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   // been removed from the flows — each action screen shows exactly one back
   // affordance plus its own Cancel/Done control.
   const openFlow = useCallback(
-    (next: Exclude<FlowKind, "none">, source?: string) => {
+    (
+      next: Exclude<FlowKind, "none">,
+      source?: string,
+      navigation: "push" | "replace" = "push",
+    ) => {
       setFlow(next);
+      setSelectedCircleId(null);
+      setFlowSource(source ?? null);
       activeFlowRef.current = next;
       pendingFlowRef.current = next;
       const params = new URLSearchParams(searchParams.toString());
@@ -1126,19 +1297,35 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
         params.delete(FLOW_SOURCE_PARAM);
       }
       params.set(FLOW_ACTION_PARAM, FLOW_TO_ACTION[next]);
-      router.push(`${pathname}?${params.toString()}`, { scroll: false });
+      params.delete("circleId");
+      router[navigation](`${pathname}?${params.toString()}`, { scroll: false });
     },
     [pathname, router, searchParams],
   );
 
   const openCircleDetail = useCallback(
-    (circleId: string, navigation: "push" | "replace" = "push") => {
+    (
+      circleId: string,
+      navigation: "push" | "replace" = "push",
+      source?: string,
+    ) => {
       const next: FlowKind = "circle-detail";
+      setFlow(next);
+      setSelectedCircleId(circleId);
+      setFlowSource(source ?? null);
+      activeFlowRef.current = next;
       pendingFlowRef.current = next;
       const params = new URLSearchParams(searchParams.toString());
       params.set(FLOW_ACTION_PARAM, FLOW_TO_ACTION[next]);
       params.set("circleId", circleId);
-      params.set(LOCATION_HUB_TAB_PARAM, "people");
+      if (source) {
+        params.set(FLOW_SOURCE_PARAM, source);
+      } else {
+        params.delete(FLOW_SOURCE_PARAM);
+      }
+      if (source !== SOS_FLOW_SOURCE) {
+        params.set(LOCATION_HUB_TAB_PARAM, "people");
+      }
       const href = `${pathname}?${params.toString()}`;
       router[navigation](href, { scroll: false });
     },
@@ -1158,9 +1345,11 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
    * and redirecting again. And it waits for the Circle to exist -- provisioning
    * is a network call, and until it answers the old screen is still a working
    * answer to the same question rather than a dead end.
+   *
+   * Must be YOUR OWN system Circle -- see resolveOwnSmsSystemCircleId.
    */
   const smsSystemCircleId = useMemo(
-    () => vm.circles.find((circle) => circle.isSystem)?.id ?? null,
+    () => resolveOwnSmsSystemCircleId(vm.circles),
     [vm.circles],
   );
   // Trusted can grow to thousands of auto-synced connections. It is a useful
@@ -1172,16 +1361,29 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   );
   useEffect(() => {
     if (flow !== "sms-contacts" || !smsSystemCircleId) return;
-    openCircleDetail(smsSystemCircleId, "replace");
-  }, [flow, openCircleDetail, smsSystemCircleId]);
+    const currentSource =
+      flowSource ?? searchParams.get(FLOW_SOURCE_PARAM) ?? undefined;
+    openCircleDetail(smsSystemCircleId, "replace", currentSource);
+  }, [flow, flowSource, openCircleDetail, searchParams, smsSystemCircleId]);
 
   const openShareFlow = useCallback(
     (initialRecipientId?: string) => {
-      resetShareLocalState();
+      setShareStep(initialRecipientId ? "details" : "person");
       startShareComposer(initialRecipientId);
       openFlow("share");
     },
-    [openFlow, resetShareLocalState, startShareComposer],
+    [openFlow, startShareComposer],
+  );
+
+  const openAskFlowForPerson = useCallback(
+    (initialRecipientId?: string) => {
+      const recipientId = initialRecipientId?.trim();
+      if (recipientId) {
+        vm.setSelectedRequestOwnerIds([recipientId]);
+      }
+      openFlow("ask");
+    },
+    [openFlow, vm],
   );
 
   const closeFlow = useCallback(
@@ -1190,6 +1392,8 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
         vm.clearNamedCircleShareContext();
       }
       setFlow("none");
+      setSelectedCircleId(null);
+      setFlowSource(null);
       activeFlowRef.current = "none";
       pendingFlowRef.current = "none";
       setShareStep("person");
@@ -1319,6 +1523,8 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
     }
     activeFlowRef.current = desired;
     setFlow((current) => (current === desired ? current : desired));
+    setSelectedCircleId(searchParams.get("circleId"));
+    setFlowSource(searchParams.get(FLOW_SOURCE_PARAM));
     if (desired === "none") {
       setShareStep("person");
       vm.setShareReviewOpen(false);
@@ -1380,7 +1586,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   /* Task flows (full-screen, no local tabs)                           */
   /* ----------------------------------------------------------------- */
   if (flow !== "none") {
-    return (
+    return renderLocationSurface(
       <div
         ref={flowContainerRef}
         className="space-y-6 pb-6"
@@ -1413,7 +1619,13 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           <SosFlow
             vm={vm}
             onClose={() => closeFlow("now")}
-            onEditContacts={() => openFlow("sms-contacts", SOS_FLOW_SOURCE)}
+            onEditContacts={() => {
+              if (smsSystemCircleId) {
+                openCircleDetail(smsSystemCircleId, "push", SOS_FLOW_SOURCE);
+              } else {
+                openFlow("sms-contacts", SOS_FLOW_SOURCE);
+              }
+            }}
           />
         ) : flow === "sms-contacts" ? (
           <SmsContactsFlow
@@ -1455,11 +1667,16 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           />
         ) : flow === "circle-detail" ? (
           <CircleDetailFlow
-            circleId={String(searchParams.get("circleId") || "")}
+            circleId={
+              selectedCircleId ||
+              String(searchParams.get("circleId") || "")
+            }
             currentUserId={vm.userId}
             busy={vm.busy === "namedCircle"}
             onBack={() =>
-              editingSosContacts ? openFlow("sos") : closeFlow("people")
+              editingSosContacts
+                ? openFlow("sos", undefined, "replace")
+                : closeFlow("people")
             }
             onLoad={vm.onLoadNamedCircle}
             onLoadOverview={vm.onLoadNamedCircleOverview}
@@ -1504,6 +1721,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
               vm.clearNamedCircleShareContext();
               openShareFlow();
             }}
+            onEditLiveShareDurationStart={openLiveShareDuration}
             onCollapseGrant={(grantId) =>
               setCollapsedGrantIds((current) => new Set(current).add(grantId))
             }
@@ -1522,14 +1740,20 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           <LocationSettingsFlow
             vm={vm}
             smsContactCount={vm.smsContactUserIds.length}
-            onManageSmsContacts={() => openFlow("sms-contacts")}
+            onManageSmsContacts={() => {
+              if (smsSystemCircleId) {
+                openCircleDetail(smsSystemCircleId, "push");
+              } else {
+                openFlow("sms-contacts");
+              }
+            }}
           />
         ) : // Every FlowKind above is matched, and `none` never reaches here.
         // This used to fall through to the temporary-link screen, so any
         // flow slug nobody had wired up quietly rendered "Share outside your
         // Circle" instead of failing visibly.
         null}
-      </div>
+       </div>
     );
   }
 
@@ -1537,10 +1761,13 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
   /* Hub (Now | People | Links)                                        */
   /* ----------------------------------------------------------------- */
   return (
-    <div className="space-y-4 sm:space-y-5">
+    <div
+      data-location-hub
+      className="mx-auto w-full max-w-[820px] space-y-3.5 sm:space-y-3.5"
+    >
       <PageHeader
         title={
-          <PageTitle as="span">
+          <PageTitle as="span" className="!text-[22px] !leading-7 !font-bold">
             Location
           </PageTitle>
         }
@@ -1549,7 +1776,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
         titleRole="agent"
         actionsInlineMobile
         actions={<LocationHeaderActions vm={vm} />}
-        className="[&>div:first-child]:!gap-3.5 [&_[data-slot=page-header-actions]]:!self-center [&_[data-slot=page-header-row]]:!items-center"
+        className="[&>div:first-child]:!gap-2.5 [&_[data-slot=page-header-actions]]:!self-center [&_[data-slot=page-header-row]]:!items-center"
       />
 
       {/*
@@ -1585,6 +1812,7 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           <LocationHubPanel>
             <NowHub
               vm={vm}
+              onEditLiveShareDurationStart={openLiveShareDuration}
               onStartShare={() => {
                 vm.clearNamedCircleShareContext();
                 openShareFlow();
@@ -1617,12 +1845,14 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
               vm={vm}
               onAddConnections={() => router.push(ROUTES.CONNECT)}
               onInvite={() => openFlow("invite")}
-              onCreateCircle={() => openFlow("create-circle")}
-              onJoinCircle={() => openFlow("join-circle")}
-              onOpenCircle={openCircleDetail}
+              onOpenCircleManager={() => router.push(connectCirclesHref())}
               focusedInviteId={focusedCircleMemberInviteId}
               onDismissFocusedInvite={dismissFocusedCircleMemberInvite}
               onStartShare={openShareFlow}
+              onStartAsk={openAskFlowForPerson}
+              onOpenCheckIn={() => openFlow("check-in")}
+              onOpenActiveShares={() => openFlow("active-shares")}
+              onOpenSharedWithMe={() => openFlow("shared-with-me")}
             />
           </LocationHubPanel>
 
@@ -1631,26 +1861,112 @@ export function LocationRedesignHub({ vm }: { vm: LocationHubViewModel }) {
           </LocationHubPanel>
         </SwipeViews>
       </div>
-    </div>
+     </div>
   );
 }
 
-/** Quiet text actions used by the reference-style People section headers. */
-const PEOPLE_HEADER_ACTION =
-  "relative !h-auto !min-h-0 !rounded-none !px-0 !py-0 text-[16px] font-normal leading-5 tracking-[-0.24px] after:absolute after:-inset-x-2 after:-inset-y-3 after:content-[''] sm:text-[15px]";
+function LocationFeatureRoot({
+  vm,
+  liveShareDurationTriggerRef,
+  children,
+}: {
+  vm: LocationHubViewModel;
+  liveShareDurationTriggerRef: { current: HTMLElement | null };
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <SettingsPresentationProvider density="compact">
+        {children}
+        <LiveShareDurationDialog
+          vm={vm}
+          triggerRef={liveShareDurationTriggerRef}
+        />
+      </SettingsPresentationProvider>
+    </>
+  );
+}
+
+function LiveShareDurationDialog({
+  vm,
+  triggerRef,
+}: {
+  vm: LocationHubViewModel;
+  triggerRef: { current: HTMLElement | null };
+}) {
+  const grant = vm.liveShareDurationGrantId
+    ? vm.activeOwnerGrants.find(
+        (candidate) => candidate.id === vm.liveShareDurationGrantId,
+      )
+    : vm.liveShare?.stoppableGrantId
+      ? vm.activeOwnerGrants.find(
+          (candidate) => candidate.id === vm.liveShare?.stoppableGrantId,
+        )
+      : null;
+  const title =
+    grant?.durationMode === "until_stopped"
+      ? "Set an end time"
+      : "Change end time";
+
+  return (
+    <Dialog
+      modal
+      open={Boolean(grant && vm.liveShareDurationEditing)}
+      onOpenChange={(open) => {
+        if (!open && !vm.liveShareDurationSaving) {
+          vm.onEditLiveShareDurationCancel();
+        }
+      }}
+    >
+      <DialogContent
+        className="max-w-[min(420px,calc(100%-2rem))] gap-4 rounded-[24px] p-4 sm:max-w-[420px]"
+        showCloseButton={!vm.liveShareDurationSaving}
+        srDescription="Choose how long this live location share should continue."
+        aria-modal="true"
+        aria-busy={vm.liveShareDurationSaving}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const trigger = triggerRef.current;
+          triggerRef.current = null;
+          if (trigger?.isConnected) trigger.focus();
+        }}
+        onEscapeKeyDown={(event) => {
+          if (vm.liveShareDurationSaving) event.preventDefault();
+        }}
+        onPointerDownOutside={(event) => {
+          if (vm.liveShareDurationSaving) event.preventDefault();
+        }}
+      >
+        <DialogHeader className="gap-1 text-left">
+          <DialogTitle className="text-[20px] font-semibold leading-[25px] text-[color:var(--app-primary-label)]">
+            {title}
+          </DialogTitle>
+        </DialogHeader>
+        <LiveShareDurationEditor
+          value={vm.liveShareDurationHours}
+          onChange={vm.setLiveShareDurationHours}
+          onCancel={vm.onEditLiveShareDurationCancel}
+          onSave={vm.onSaveLiveShareDuration}
+          saving={vm.liveShareDurationSaving}
+          surface={false}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 const LOCATION_GROUP_SURFACE =
-  "overflow-hidden rounded-[var(--app-radius-md)] bg-[color:var(--app-primary-surface)] shadow-[var(--app-card-shadow-standard)] ring-1 ring-inset ring-[color:var(--app-separator)] dark:shadow-none";
+  "overflow-hidden rounded-[16px] bg-[color:var(--app-primary-surface)] ring-1 ring-inset ring-[color:var(--app-separator)]";
 
 const LOCATION_GROUP_SHELL_CLASSNAME =
   "[--settings-group-radius:var(--app-radius-md)] !rounded-[var(--app-radius-md)] !bg-[color:var(--app-primary-surface)] !shadow-[var(--app-card-shadow-standard)] ring-1 ring-inset ring-[color:var(--app-separator)] dark:!shadow-none";
 
 const LOCATION_INTERACTIVE_SURFACE =
-  "bg-[color:var(--app-primary-surface)] shadow-[var(--app-card-shadow-standard)] ring-1 ring-inset ring-[color:var(--app-separator)] dark:shadow-none";
+  "bg-[color:var(--app-primary-surface)] ring-1 ring-inset ring-[color:var(--app-separator)]";
 
 function LocationHubPanel({ children }: { children: ReactNode }) {
   return (
-    <div className="space-y-4 px-[var(--page-inline-gutter-standard)]">
+    <div className="space-y-3.5 px-[var(--page-inline-gutter-standard)]">
       {children}
     </div>
   );
@@ -1662,6 +1978,7 @@ function LocationHubPanel({ children }: { children: ReactNode }) {
 
 function NowHub({
   vm,
+  onEditLiveShareDurationStart,
   onStartShare,
   onCheckIn,
   onSos,
@@ -1673,6 +1990,10 @@ function NowHub({
   onRequestLocation,
 }: {
   vm: LocationHubViewModel;
+  onEditLiveShareDurationStart: (
+    grantId: string | undefined,
+    trigger: HTMLElement,
+  ) => void;
   onStartShare: () => void;
   onCheckIn: () => void;
   onSos: () => void;
@@ -1721,9 +2042,22 @@ function NowHub({
       voiceActionId: "location.open_settings",
     },
   ];
+  const liveShareDurationGrant = vm.liveShareDurationGrantId
+    ? vm.activeOwnerGrants.find(
+        (grant) => grant.id === vm.liveShareDurationGrantId,
+      )
+    : vm.liveShare?.stoppableGrantId
+      ? vm.activeOwnerGrants.find(
+          (grant) => grant.id === vm.liveShare?.stoppableGrantId,
+        )
+      : null;
+  const liveShareDurationTitle =
+    liveShareDurationGrant?.durationMode === "until_stopped"
+      ? "Set an end time"
+      : "Change end time";
 
   return (
-    <div className="space-y-3" data-testid="one-location-now-hub">
+    <div className="space-y-2.5" data-testid="one-location-now-hub">
       {/* Sharing is the one thing on this screen that keeps running after you
           leave it, so it reports itself first and keeps its own clock. */}
       {vm.liveShare ? (
@@ -1731,19 +2065,22 @@ function NowHub({
           status={vm.liveShare}
           onManage={onOpenActiveShares}
           onStop={
-            vm.liveShare.stoppableGrantId
+            vm.liveShare.grantCount === 1 && vm.liveShare.stoppableGrantId
               ? () => vm.onStopGrant(vm.liveShare?.stoppableGrantId ?? "")
               : undefined
           }
           stopBusy={
+            vm.liveShare.grantCount === 1 &&
             Boolean(vm.liveShare.stoppableGrantId) &&
             vm.revokingGrantId === vm.liveShare.stoppableGrantId
           }
           // Same gate as Stop, for the same reason: with several shares
           // running there is no single one for "change time" to mean.
           onChangeDuration={
-            vm.liveShare.stoppableGrantId
-              ? vm.onEditLiveShareDurationStart
+            vm.liveShare.grantCount === 1 &&
+            vm.liveShare.stoppableGrantId &&
+            !vm.liveShare.singleGrantIsSms
+              ? (trigger) => onEditLiveShareDurationStart(undefined, trigger)
               : undefined
           }
           onShareMore={onStartShare}
@@ -1762,7 +2099,7 @@ function NowHub({
         >
           <DialogHeader className="gap-1 text-left">
             <DialogTitle className="text-[20px] font-semibold leading-[25px] text-[color:var(--app-primary-label)]">
-              Change time
+              {liveShareDurationTitle}
             </DialogTitle>
             <DialogDescription className="text-[15px] leading-5 text-[color:var(--app-secondary-label)]">
               Set a new end time for this share.
@@ -1790,7 +2127,7 @@ function NowHub({
           {
             title: "Ask for location",
             ariaLabel: "Ask for location",
-            icon: <LocationMenuGlyph name="ask" size={34} />,
+            icon: <LocationMenuGlyph name="ask" size={21} />,
             tone: "blue",
             onClick: onRequestLocation,
             controlId: "one-location-action-ask",
@@ -1798,9 +2135,9 @@ function NowHub({
             testId: "one-location-request-row",
           },
           {
-            title: "Check in",
-            ariaLabel: "Check in",
-            icon: <LocationMenuGlyph name="checkIn" size={34} />,
+            title: "Arrival confirm",
+            ariaLabel: "Arrival confirm",
+            icon: <LocationMenuGlyph name="checkIn" size={21} />,
             tone: "blue",
             onClick: onCheckIn,
             controlId: "one-location-action-check-in",
@@ -1820,7 +2157,7 @@ function NowHub({
       />
 
       {activityRows.length ? (
-        <div className="pt-1">
+        <div>
           <LocationMenuListGroup testId="one-location-now-activity">
             {activityRows.map((row) => (
               <LocationMenuListRow
@@ -1837,7 +2174,7 @@ function NowHub({
           </LocationMenuListGroup>
         </div>
       ) : null}
-      <div className="pt-1">
+      <div>
         <LocationMenuListGroup testId="one-location-now-more">
           {moreRows.map((row) => (
             <LocationMenuListRow
@@ -1902,11 +2239,14 @@ function LocationMenuListRow({
       data-voice-label={ariaLabel}
       aria-label={ariaLabel}
       onClick={onClick}
-      className="group flex min-h-14 w-full cursor-pointer items-center justify-between border-b border-[color:var(--app-separator)] px-4 py-2.5 text-left transition-colors last:border-b-0 hover:bg-[color:var(--app-secondary-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)]"
+      className="group flex min-h-12 w-full cursor-pointer items-center justify-between border-b border-[color:var(--app-separator)] px-[14px] py-2 text-left transition-colors last:border-b-0 hover:bg-[color:var(--app-secondary-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)]"
     >
       <span className="flex min-w-0 items-center gap-3">
         {leading}
-        <RowLabel as="span" className="min-w-0">
+        <RowLabel
+          as="span"
+          className="min-w-0 !text-[17px] !font-medium !leading-[22px]"
+        >
           {title}
         </RowLabel>
       </span>
@@ -1918,7 +2258,7 @@ function LocationMenuListRow({
         ) : null}
         <ChevronRight
           aria-hidden="true"
-          className="h-5 w-5 shrink-0 text-[color:var(--app-tertiary-label)] transition-transform group-active:translate-x-0.5"
+          className="h-3.5 w-3.5 shrink-0 text-[color:var(--app-tertiary-label)] transition-transform group-active:translate-x-0.5"
         />
       </span>
     </button>
@@ -1932,20 +2272,15 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
         data-testid="one-location-share-row"
         className={cn(
           LOCATION_INTERACTIVE_SURFACE,
-          "grid w-full gap-4 rounded-[20px] px-5 py-5 text-left sm:grid-cols-[auto_minmax(0,1fr)_194px] sm:items-center sm:gap-5 sm:px-6 sm:py-5",
+          "flex w-full flex-col gap-3 rounded-[18px] px-4 py-4 text-left",
         )}
       >
-        <div className="flex min-w-0 items-center gap-4">
-          <LocationSharePulseIcon />
-          <span className="min-w-0 space-y-1">
-            <CardTitle as="span" className="block">
-              You&apos;re not sharing
-            </CardTitle>
-            <PageSubtitle as="span" className="block">
-              Choose a Circle or contact.
-            </PageSubtitle>
-          </span>
-        </div>
+        <CardTitle
+          as="span"
+          className="block !text-[17px] !font-semibold !leading-[22px]"
+        >
+          Not sharing with anyone
+        </CardTitle>
         <button
           type="button"
           data-voice-control-id="one-location-action-share"
@@ -1953,9 +2288,14 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
           data-voice-label="Share location"
           aria-label="Share location"
           onClick={onClick}
-          className="inline-flex min-h-[47px] w-full items-center justify-center rounded-[15px] bg-[color:var(--app-accent)] px-5 text-[color:var(--app-accent-fg)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-accent-hover)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] sm:col-start-3"
+           className="mx-auto inline-flex h-11 min-h-11 w-[76%] items-center justify-center rounded-[14px] bg-[color:var(--app-accent)] px-5 !text-[15px] !font-semibold !leading-5 text-[color:var(--app-accent-fg)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-accent-hover)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
         >
-          <ButtonLabel as="span">Share location</ButtonLabel>
+          <ButtonLabel
+            as="span"
+            className="!text-[15px] !font-semibold !leading-5"
+          >
+            Share location
+          </ButtonLabel>
         </button>
       </div>
     </section>
@@ -1963,30 +2303,19 @@ function LocationPrimaryShareCard({ onClick }: { onClick: () => void }) {
 }
 
 function LocationHeaderIconTile() {
+  // The tile itself now lives with the header primitive, so RIA's agent
+  // screens draw the same one instead of a second copy of these classes.
   return (
     <span
       aria-hidden="true"
-      className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-[12px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]"
+      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]"
       data-testid="one-location-header-icon"
     >
-      <MapPin className="h-6 w-6" strokeWidth={2} />
+      <MapPin className="h-5 w-5" strokeWidth={2} />
     </span>
   );
 }
 
-function LocationSharePulseIcon() {
-  return (
-    <span
-      aria-hidden="true"
-      data-location-share-pulse-icon=""
-      className="relative inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-accent-tint)] shadow-[inset_0_0_0_1px_rgba(0,122,255,0.025)] dark:shadow-none sm:h-16 sm:w-16"
-    >
-      <span className="absolute inset-[13%] rounded-full bg-[color:var(--app-accent-surface)]" />
-      <span className="absolute inset-[28%] rounded-full bg-[color:var(--app-accent)]/20" />
-      <span className="relative h-[25%] w-[25%] rounded-full bg-[color:var(--app-accent)] shadow-[0_0_0_4px_var(--app-primary-surface),0_8px_16px_rgba(0,122,255,0.18)] dark:shadow-[0_0_0_4px_var(--app-primary-surface)]" />
-    </span>
-  );
-}
 
 type LocationActionGridItem = {
   title: string;
@@ -2007,13 +2336,10 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
   return (
     <section
       aria-label="Actions"
-      className="pt-1"
+      className="space-y-2.5"
       data-testid="one-location-now-actions"
     >
-      <div
-        data-one-location-action-grid=""
-        className="grid w-full grid-cols-1 gap-3 min-[360px]:grid-cols-2 sm:gap-4"
-      >
+      <div data-one-location-action-grid="" className="grid grid-cols-2 gap-2.5">
         {regularItems.map((item) => (
           <button
             key={item.controlId}
@@ -2025,20 +2351,20 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
             data-voice-label={item.ariaLabel}
             aria-label={item.ariaLabel}
             onClick={item.onClick}
-            className={cn(
-              LOCATION_INTERACTIVE_SURFACE,
-              "group flex min-h-[96px] min-w-0 flex-col items-center justify-center gap-2.5 rounded-[16px] px-5 py-4 text-center transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-secondary-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent-ring)]",
-            )}
+          className="group flex h-[62px] min-h-[62px] min-w-0 flex-col items-center justify-center gap-1 rounded-[14px] bg-[color:var(--app-primary-surface)] px-3 py-2 text-center shadow-none ring-1 ring-inset ring-[color:var(--app-separator)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-secondary-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
           >
             <span
               aria-hidden
               data-one-location-action-icon=""
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-[color:var(--app-accent)] transition-transform group-active:scale-95 [&>svg]:h-8 [&>svg]:w-8"
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-[color:var(--app-accent)] transition-colors"
             >
               {item.icon}
             </span>
             <span className="min-w-0">
-              <ButtonLabel as="span" className="block min-w-0">
+              <ButtonLabel
+                as="span"
+                className="block min-w-0 !text-[15px] !font-semibold !leading-5"
+              >
                 {item.title}
               </ButtonLabel>
             </span>
@@ -2057,23 +2383,26 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
           data-voice-label={emergencyItem.ariaLabel}
           aria-label={emergencyItem.ariaLabel}
           onClick={emergencyItem.onClick}
-          className="group mt-3 flex min-h-[68px] w-full items-center justify-between gap-4 rounded-[16px] bg-[color:var(--app-destructive-tint)] px-5 py-3 text-left ring-1 ring-inset ring-[color:var(--app-destructive-border)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-destructive-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-destructive-border)]"
+          className="group mt-0 flex min-h-[52px] w-full items-center justify-between gap-3 rounded-[14px] bg-[color:var(--app-destructive-tint)] px-[14px] py-1 text-left shadow-none ring-1 ring-inset ring-[color:var(--app-destructive-border)]/30 transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-destructive-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-destructive-border)]"
         >
-          <span className="flex min-w-0 items-center gap-4">
+          <span className="flex min-w-0 items-center gap-2.5">
             <span
               aria-hidden
               data-one-location-action-icon=""
-              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)] transition-transform group-active:scale-95"
+            className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)] transition-transform group-active:scale-95"
             >
               {emergencyItem.icon}
             </span>
             <span className="min-w-0">
-              <RowLabel as="span" className="block min-w-0 font-semibold">
+              <RowLabel
+                as="span"
+                className="block min-w-0 !text-[17px] !font-semibold !leading-[22px]"
+              >
                 {emergencyItem.title}
               </RowLabel>
               <RowDescription
                 as="span"
-                className="mt-0.5 block min-w-0 !text-[color:var(--app-destructive)]"
+                className="mt-0.5 block min-w-0 !text-[13px] !font-medium !leading-[18px] !text-[color:var(--app-destructive)]"
               >
                 {emergencyItem.subtitle}
               </RowDescription>
@@ -2203,7 +2532,7 @@ function LocationMenuListIcon({ name }: { name: LocationMenuGlyphName }) {
   return (
     <span
       aria-hidden="true"
-      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[color:var(--app-secondary-surface)] text-[color:var(--app-secondary-label)]"
+      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] bg-[color:var(--app-secondary-surface)] text-[color:var(--app-secondary-label)]"
       data-location-menu-list-icon=""
     >
       <span className="inline-flex h-[18px] w-[18px] items-center justify-center">
@@ -2221,6 +2550,7 @@ function LocationDetailFlow({
   collapsedGrantIds,
   onRequestLocation,
   onStartShare,
+  onEditLiveShareDurationStart,
   onCollapseGrant,
   onExpandGrant,
 }: {
@@ -2234,6 +2564,7 @@ function LocationDetailFlow({
   /** Opens the share composer AND its flow. Seeding the composer alone
    *  leaves the person on the same screen with nothing visibly changed. */
   onStartShare?: () => void;
+  onEditLiveShareDurationStart: (grantId: string, trigger: HTMLElement) => void;
   onCollapseGrant: (grantId: string) => void;
   onExpandGrant: (grant: OneLocationGrant) => void;
 }) {
@@ -2379,12 +2710,20 @@ function LocationDetailFlow({
   }, [kind, focusGrantId]);
   const copy = {
     "active-shares": {
-      title: "Active shares",
-      description: "People who can see your location.",
+      title: "Manage sharing",
+      description:
+        ownerGrantGroups.length === 1
+          ? "1 person can see your location."
+          : `${ownerGrantGroups.length} people can see your location.`,
     },
     "shared-with-me": {
       title: "Shared with me",
-      description: "People sharing location with you.",
+      description:
+        receivedGrantGroups.length === 1
+          ? "1 person is sharing their location with you."
+          : receivedGrantGroups.length > 1
+            ? `${receivedGrantGroups.length} people are sharing their locations with you.`
+            : "Locations shared with you appear here.",
     },
     "needs-review": {
       title: "Needs review",
@@ -2395,7 +2734,11 @@ function LocationDetailFlow({
   return (
     <div className="space-y-5" data-testid={`one-location-${kind}`}>
       <TaskFlowHeader
-        eyebrow={kind === "needs-review" ? undefined : "Location"}
+        eyebrow={
+          kind === "active-shares" || kind === "needs-review"
+            ? undefined
+            : "Location"
+        }
         title={copy.title}
         description={copy.description}
       />
@@ -2404,11 +2747,6 @@ function LocationDetailFlow({
           <SettingsGroup separatorInset>
             {ownerGrantGroups.map((group) => {
               const name = vm.grantRecipientLabel(group.primaryGrant);
-              const expanded = expandedLaneUserIds.has(group.counterpartUserId);
-              const lanesId = `one-location-share-lanes-${group.counterpartUserId}`;
-              // One share is still one tap. The chevron only appears for a
-              // person who genuinely has two, so nothing about the common case
-              // grew a step.
               const single =
                 group.grants.length === 1 ? group.primaryGrant : null;
               return (
@@ -2423,15 +2761,31 @@ function LocationDetailFlow({
                   title={name}
                   description={
                     single ? (
-                      <ActiveShareMetadata grant={single} />
+                      <div className="space-y-1">
+                        <ActiveShareMetadata grant={single} />
+                        {!isSmsTriggeredGrant(single) ? (
+                          <button
+                            type="button"
+                            className="min-h-8 text-[15px] font-medium text-[color:var(--app-accent)]"
+                            onClick={(event) =>
+                              onEditLiveShareDurationStart(single.id, event.currentTarget)
+                            }
+                          >
+                            {single.durationMode === "until_stopped"
+                              ? "Set end time"
+                              : "Change time"}
+                          </button>
+                        ) : null}
+                      </div>
                     ) : (
                       <>
                         <span>{`${group.grants.length} active shares`}</span>
-                        <div id={lanesId} hidden={!expanded} className="pt-1.5">
+                        <div className="pt-1.5">
                           <PersonShareLanes
                             group={group}
                             counterpartName={name}
                             onStopGrant={vm.onStopGrant}
+                            onChangeEndTime={onEditLiveShareDurationStart}
                             revokingGrantId={vm.revokingGrantId}
                           />
                         </div>
@@ -2445,17 +2799,9 @@ function LocationDetailFlow({
                         revokingGrantId={vm.revokingGrantId}
                         onStopGrant={vm.onStopGrant}
                       />
-                    ) : (
-                      <ShareLanesDisclosure
-                        expanded={expanded}
-                        onToggle={() =>
-                          toggleLaneExpansion(group.counterpartUserId)
-                        }
-                        controlsId={lanesId}
-                        label={`Manage your shares with ${name}`}
-                      />
-                    )
+                    ) : null
                   }
+                  stackTrailingOnMobile={Boolean(single)}
                 />
               );
             })}
@@ -2765,13 +3111,19 @@ function ownedUserCircleScopeOptions(
   circles: readonly OneLocationCircleSummary[],
 ): OneLocationCircleSummary[] {
   return circles.filter(
-    (circle) => circle.role === "owner" && circle.systemKind == null,
+    (circle) => circle.role === "owner" && circle.systemKind !== "trusted",
   );
 }
 
 function autoApproveScopeKey(scope: AutoApproveScope | null): string {
   if (!scope) return "";
-  return scope.kind === "circle" ? `circle:${scope.circleId}` : "all_contacts";
+  if (scope.kind === "circle") return `circle:${scope.circleId}`;
+  if (scope.kind === "circles") {
+    // Sorted: two picks of the same Circles in a different tap order are the
+    // same scope, not two different ones the equality check would miss.
+    return `circles:${[...scope.circleIds].sort().join(",")}`;
+  }
+  return "all_contacts";
 }
 
 function autoApproveScopeEqual(
@@ -2779,6 +3131,27 @@ function autoApproveScopeEqual(
   right: AutoApproveScope | null,
 ): boolean {
   return autoApproveScopeKey(left) === autoApproveScopeKey(right);
+}
+
+/** The Circle ids a scope covers, regardless of whether it is the original
+ * single-Circle shape or the multi-Circle one -- one read path for both. */
+function autoApproveScopeCircleIds(scope: AutoApproveScope | null): string[] {
+  if (scope?.kind === "circle") return [scope.circleId];
+  if (scope?.kind === "circles") return scope.circleIds;
+  return [];
+}
+
+/** Toggle one Circle in/out of a scope's selection, collapsing to `null`
+ * (no scope) rather than an empty "circles" scope when the last one clears. */
+function toggleAutoApproveCircle(
+  scope: AutoApproveScope | null,
+  circleId: string,
+): AutoApproveScope | null {
+  const current = autoApproveScopeCircleIds(scope);
+  const next = current.includes(circleId)
+    ? current.filter((id) => id !== circleId)
+    : [...current, circleId];
+  return next.length ? { kind: "circles", circleIds: next } : null;
 }
 
 function scopeMemberCountLabel(count: number): string {
@@ -2801,28 +3174,56 @@ function LocationSettingsFlow({
     [vm.circles],
   );
   const autoApproveScope = vm.autoApproveScope;
-  const selectedCircle =
-    autoApproveScope?.kind === "circle"
-      ? ownedCircles.find((circle) => circle.id === autoApproveScope.circleId)
-      : null;
+  // Only Circles the person still owns count -- one may have been deleted
+  // since the rule was saved, and a stale id must not draw a blank row.
+  const activeCircles = useMemo(() => {
+    const ids = new Set(autoApproveScopeCircleIds(autoApproveScope));
+    return ownedCircles.filter((circle) => ids.has(circle.id));
+  }, [autoApproveScope, ownedCircles]);
   const activeScope =
     autoApproveScope?.kind === "all_contacts"
       ? autoApproveScope
-      : selectedCircle && autoApproveScope?.kind === "circle"
+      : activeCircles.length
         ? autoApproveScope
         : null;
   const activeScopeLabel = !vm.autoApproveRequestsEnabled
     ? "Choose a Circle or all contacts."
     : activeScope?.kind === "all_contacts"
       ? "All contacts"
-      : selectedCircle
-        ? selectedCircle.name
-        : "Choose another scope.";
+      : activeCircles.length === 1
+        ? (activeCircles[0]?.name ?? "Choose another scope.")
+        : activeCircles.length > 1
+          ? `${activeCircles.length} Circles`
+          : "Choose another scope.";
   const primaryScopeAction = vm.autoApproveRequestsEnabled ? "Save" : "Turn on";
   const allContactsScope = useMemo<AutoApproveScope>(
     () => ({ kind: "all_contacts" }),
     [],
   );
+  const draftCircleIds = useMemo(
+    () => autoApproveScopeCircleIds(draftScope),
+    [draftScope],
+  );
+  const draftCircles = useMemo(
+    () => ownedCircles.filter((circle) => draftCircleIds.includes(circle.id)),
+    [ownedCircles, draftCircleIds],
+  );
+  const allDraftCirclesSelected =
+    ownedCircles.length > 0 &&
+    draftCircleIds.length === ownedCircles.length &&
+    ownedCircles.every((circle) => draftCircleIds.includes(circle.id));
+  const toggleAllDraftCircles = useCallback(() => {
+    setDraftScope(
+      allDraftCirclesSelected
+        ? null
+        : ownedCircles.length
+          ? {
+              kind: "circles",
+              circleIds: ownedCircles.map((circle) => circle.id),
+            }
+          : null,
+    );
+  }, [allDraftCirclesSelected, ownedCircles]);
 
   const openScopeSheet = useCallback(() => {
     setDraftScope(vm.autoApproveRequestsEnabled ? activeScope : null);
@@ -2891,9 +3292,7 @@ function LocationSettingsFlow({
           <SettingsRow
             title="Emergency contacts"
             trailing={
-              <TrailingValue as="span">
-                {smsContactCount}
-              </TrailingValue>
+              <TrailingValue as="span">{smsContactCount}</TrailingValue>
             }
             onClick={onManageSmsContacts}
             chevron
@@ -2918,7 +3317,7 @@ function LocationSettingsFlow({
               Auto-approve for
             </DialogTitle>
             <DialogDescription className="ui-text-page-subtitle">
-              Choose one.
+              All contacts, or any combination of your Circles.
             </DialogDescription>
           </DialogHeader>
 
@@ -2931,26 +3330,34 @@ function LocationSettingsFlow({
 
             {ownedCircles.length ? (
               <div className="space-y-2">
-                <SectionLabel as="p" className="px-1">
-                  Circles
-                </SectionLabel>
+                <div className="flex items-center justify-between gap-3 px-1">
+                  <SectionLabel as="p" compact>
+                    Circles
+                  </SectionLabel>
+                  <button
+                    type="button"
+                    onClick={toggleAllDraftCircles}
+                    className="press-scale text-[13px] font-semibold text-[color:var(--app-accent)]"
+                  >
+                    {allDraftCirclesSelected ? "Clear all" : "Select all"}
+                  </button>
+                </div>
                 <div className="overflow-hidden rounded-[18px] bg-[color:var(--app-card-surface-default-solid)] ring-1 ring-[color:var(--app-separator)]">
-                  {ownedCircles.map((circle) => {
-                    const scope: AutoApproveScope = {
-                      kind: "circle",
-                      circleId: circle.id,
-                    };
-                    return (
-                      <AutoApproveScopeOption
-                        key={circle.id}
-                        title={circle.name}
-                        description={scopeMemberCountLabel(circle.memberCount)}
-                        selected={autoApproveScopeEqual(draftScope, scope)}
-                        onSelect={() => setDraftScope(scope)}
-                        inset
-                      />
-                    );
-                  })}
+                  {ownedCircles.map((circle) => (
+                    <AutoApproveScopeOption
+                      key={circle.id}
+                      title={circle.name}
+                      description={scopeMemberCountLabel(circle.memberCount)}
+                      selected={draftCircleIds.includes(circle.id)}
+                      onSelect={() =>
+                        setDraftScope((current) =>
+                          toggleAutoApproveCircle(current, circle.id),
+                        )
+                      }
+                      multi
+                      inset
+                    />
+                  ))}
                 </div>
               </div>
             ) : null}
@@ -2960,11 +3367,9 @@ function LocationSettingsFlow({
             <p className="ui-text-helper-text">
               {draftScope.kind === "all_contacts"
                 ? "New requests from current and future contacts will be approved automatically."
-                : `New requests from current and future members of ${
-                    ownedCircles.find(
-                      (circle) => circle.id === draftScope.circleId,
-                    )?.name ?? "this Circle"
-                  } will be approved automatically.`}{" "}
+                : draftCircles.length === 1
+                  ? `New requests from current and future members of ${draftCircles[0]?.name ?? "this Circle"} will be approved automatically.`
+                  : `New requests from current and future members of these ${draftCircles.length} Circles will be approved automatically.`}{" "}
               Requests already waiting still need your answer.
             </p>
           ) : (
@@ -3006,7 +3411,7 @@ function LocationSettingSection({
 }) {
   return (
     <section className="w-full">
-      <SectionLabel as="p" className="mb-2 px-[6px]">
+      <SectionLabel as="p" compact className="mb-2 px-[6px]">
         {title}
       </SectionLabel>
       {children}
@@ -3020,17 +3425,21 @@ function AutoApproveScopeOption({
   selected,
   onSelect,
   inset = false,
+  multi = false,
 }: {
   title: string;
   description?: string;
   selected: boolean;
   onSelect: () => void;
   inset?: boolean;
+  /** Checkbox semantics (independently toggled, several may be selected)
+   * instead of the default radio semantics (picking one clears the rest). */
+  multi?: boolean;
 }) {
   return (
     <button
       type="button"
-      role="radio"
+      role={multi ? "checkbox" : "radio"}
       aria-checked={selected}
       onClick={onSelect}
       className={cn(
@@ -3053,7 +3462,8 @@ function AutoApproveScopeOption({
       </span>
       <span
         className={cn(
-          "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors",
+          "flex h-6 w-6 shrink-0 items-center justify-center border transition-colors",
+          multi ? "rounded-[7px]" : "rounded-full",
           selected
             ? "border-[color:var(--app-accent)] bg-[color:var(--app-accent)] text-white"
             : "border-[color:var(--app-separator)] bg-transparent text-transparent",
@@ -3138,7 +3548,7 @@ function StopGrantTextButton({
   return (
     <button
       type="button"
-      className="inline-flex min-h-11 items-center justify-center rounded-full px-2 text-[15px] font-medium leading-[20px] text-[#FF3B30] transition-colors hover:text-[#D70015] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
+      className={ACTIVE_SHARE_STOP_CLASSNAME}
       onClick={() => onStopGrant(grantId)}
       disabled={stopping}
     >
@@ -3147,56 +3557,68 @@ function StopGrantTextButton({
   );
 }
 
-/** One person in the People list: avatar (+ live dot) · name · status · action. */
+/** One person in the People list: avatar (+ live dot) · name · status · chevron. */
 function PersonRow({
   name,
   photoUrl,
   verified,
-  fromContacts,
   subtitle,
   active,
   first,
-  action,
-  expansion,
+  onOpen,
+  onAsk,
+  onShare,
+  onCheckIn,
+  shareReady = true,
 }: {
   name: string;
   photoUrl?: string | null;
   verified?: boolean;
-  fromContacts?: boolean;
-  subtitle: string;
+  subtitle: string | null;
   /** True when there's a live connection (you're sharing or they're sharing). */
   active: boolean;
   first: boolean;
-  action: ReactNode;
-  /**
-   * The row's per-share breakdown, when this person holds more than one live
-   * share. Rendered UNDER the row rather than beside it: it is a list with its
-   * own controls, and the row's own line has one name, one status and one
-   * action's worth of room.
-   */
-  expansion?: ReactNode;
+  onOpen: () => void;
+  onAsk?: () => void;
+  onShare?: () => void;
+  onCheckIn?: () => void;
+  shareReady?: boolean;
 }) {
+  const hasQuickActions = Boolean(onAsk || onShare || onCheckIn);
+  const ariaLabel = subtitle
+    ? `Open Location actions for ${name}. ${subtitle}`
+    : `Open Location actions for ${name}`;
   return (
-    // The separator and the hover wash belong to the whole row INCLUDING its
-    // breakdown: a person's two shares are one row, and a hairline cutting
-    // between the name and the shares underneath it would read as two people.
     <div
       className={cn(
-        "relative transition-colors hover:bg-[color:var(--app-neutral-fill)] motion-reduce:transition-none",
+        hasQuickActions
+          ? "rounded-[var(--app-card-radius-standard,24px)] bg-[color:var(--app-card-surface-default-solid)] p-3.5 shadow-[var(--app-card-shadow-standard)]"
+          : "relative",
         !first &&
+          !hasQuickActions &&
           "before:absolute before:left-16 before:right-4 before:top-0 before:h-px before:bg-[color:var(--app-separator)] before:content-['']",
       )}
     >
-      <div className="flex min-h-[60px] items-center gap-3 px-4 py-2.5 sm:min-h-16">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={ariaLabel}
+        className={cn(
+          "grid min-h-[54px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 text-left outline-none transition-colors motion-reduce:transition-none",
+          "focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2",
+          "[@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
+        )}
+      >
         <div className="relative shrink-0">
           <ConnectionPersonAvatar
             label={name}
             photoUrl={photoUrl}
             verified={verified}
-            className="h-9 w-9 text-[13px]"
+            className="h-10 w-10 text-[13px]"
           />
           {active ? (
             <span
+              aria-hidden="true"
               className={cn(
                 "absolute h-3 w-3 rounded-full border-2 border-[color:var(--app-primary-surface)] bg-[color:var(--app-success)]",
                 verified ? "-right-0.5 -top-0.5" : "bottom-0 right-0",
@@ -3205,22 +3627,60 @@ function PersonRow({
           ) : null}
         </div>
         <div className="min-w-0 flex-1 space-y-0.5">
-          <div className="flex min-w-0 items-start gap-1.5">
-            <p className="min-w-0 flex-1 break-words text-[17px] font-medium leading-[22px] tracking-[-0.3px] text-foreground">
-              {name}
-            </p>
-            {fromContacts ? (
-              <ContactSourceBadge className="mt-px shrink-0" />
-            ) : null}
-          </div>
-          <p className="break-words text-[13px] font-normal leading-[18px] tracking-[-0.2px] text-[color:var(--app-secondary-label)]">
-            {subtitle}
+          <p className="min-w-0 break-words text-[17px] font-medium leading-[22px] tracking-[-0.3px] text-foreground">
+            {name}
           </p>
+          {subtitle ? (
+            <p className="break-words text-[13px] font-normal leading-[18px] tracking-[-0.2px] text-[color:var(--app-secondary-label)]">
+              {subtitle}
+            </p>
+          ) : null}
         </div>
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
-      {expansion ? (
-        <div className="px-[18px] pb-2 sm:px-6">{expansion}</div>
+        {!hasQuickActions ? (
+          <ChevronRight
+            className="h-4 w-4 shrink-0 text-[color:var(--app-tertiary-label)]"
+            aria-hidden="true"
+          />
+        ) : null}
+      </button>
+      {hasQuickActions ? (
+        <div className="mt-1.5 flex gap-2" role="group" aria-label={`Actions for ${name}`}>
+          {onAsk ? (
+            <button
+              type="button"
+              onClick={onAsk}
+              className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-full bg-[color:var(--app-accent-tint)] px-3 text-[13px] font-semibold text-[color:var(--app-accent)] transition-colors hover:bg-[color:var(--app-accent-ring)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2"
+              aria-label={`Ask ${name} for their location`}
+            >
+              <LocationMenuGlyph name="ask" size={17} />
+              Ask
+            </button>
+          ) : null}
+          {onShare ? (
+            <button
+              type="button"
+              onClick={onShare}
+              disabled={!shareReady}
+              className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-full bg-[color:var(--app-accent-tint)] px-3 text-[13px] font-semibold text-[color:var(--app-accent)] transition-colors hover:bg-[color:var(--app-accent-ring)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label={`Share your location with ${name}`}
+            >
+              <LocationMenuGlyph name="share" size={17} />
+              Share
+            </button>
+          ) : null}
+          {onCheckIn ? (
+            <button
+              type="button"
+              onClick={onCheckIn}
+              disabled={!shareReady}
+              className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-full bg-[color:var(--app-neutral-fill)] px-3 text-[13px] font-semibold text-[color:var(--app-primary-label)] transition-colors hover:bg-[color:var(--app-neutral-fill)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label={`Check in with ${name}`}
+            >
+              <LocationMenuGlyph name="checkIn" size={17} />
+              Check-In
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );
@@ -3237,166 +3697,682 @@ function countdownAsLeft(label: string | null | undefined): string | null {
   return label;
 }
 
-function isGenericConnectionCopy(value: string): boolean {
-  return (
-    value === "Ready for private location sharing" ||
-    /existing trust or sharing history/i.test(value)
-  );
-}
+type PeopleDirectoryStatus = {
+  label: string | null;
+  active: boolean;
+  kind: "both" | "outgoing" | "incoming" | "pending" | "neutral";
+};
 
-function peopleShareStatus(
-  group: OneLocationGrantLaneGroup | null,
-  receiving: boolean,
+function shareGroupStatusLabel({
+  group,
+  countdownLabel,
+  incoming,
+}: {
+  group: OneLocationGrantLaneGroup;
   countdownLabel: (value?: string | null) => string,
-  fallback: string,
-): string {
-  if (group && receiving) {
-    return `${group.grants.length + 1} active shares`;
-  }
-  if (!group) {
-    return receiving
-      ? "Sharing with you"
-      : isGenericConnectionCopy(fallback)
-        ? "Connected"
-        : fallback;
-  }
+  incoming?: boolean;
+}): string {
   if (group.grants.length > 1) {
     return `${group.grants.length} active shares`;
   }
   const grant = group.primaryGrant;
   const left =
     grant.durationMode === "until_stopped"
-      ? "Until you stop"
+      ? incoming
+        ? "Until they stop"
+        : "Until you stop"
       : countdownAsLeft(countdownLabel(grant.expiresAt));
-  const prefix = isSmsTriggeredGrant(grant) ? "Save My Soul" : "You’re sharing";
+  const prefix = incoming
+    ? "Sharing with you"
+    : isSmsTriggeredGrant(grant)
+      ? "Save My Soul"
+      : "You’re sharing";
   return left ? `${prefix} · ${left}` : prefix;
 }
 
-function requestDurationLabel(request: OneLocationAccessRequest): string {
-  if (request.requestedDurationMode === "until_stopped") {
-    return "Until stopped";
+function peopleDirectoryStatus(input: {
+  outgoingGroup: OneLocationGrantLaneGroup | null;
+  incomingGroup: OneLocationGrantLaneGroup | null;
+  pendingRequest: OneLocationAccessRequest | null;
+  countdownLabel: (value?: string | null) => string;
+}): PeopleDirectoryStatus {
+  const { outgoingGroup, incomingGroup, pendingRequest, countdownLabel } = input;
+  if (outgoingGroup && incomingGroup) {
+    return { label: "Sharing both ways", active: true, kind: "both" };
   }
-  return formatLocationDurationLabel(request.requestedDurationHours);
+  if (outgoingGroup) {
+    return {
+      label: shareGroupStatusLabel({ group: outgoingGroup, countdownLabel }),
+      active: true,
+      kind: "outgoing",
+    };
+  }
+  if (incomingGroup) {
+    return {
+      label: shareGroupStatusLabel({
+        group: incomingGroup,
+        countdownLabel,
+        incoming: true,
+      }),
+      active: true,
+      kind: "incoming",
+    };
+  }
+  if (pendingRequest) {
+    return { label: "Waiting for response", active: false, kind: "pending" };
+  }
+  return { label: null, active: false, kind: "neutral" };
 }
 
-function pendingAskMeta(
-  request: OneLocationAccessRequest,
-  nowMs: number,
-): string {
-  const duration = requestDurationLabel(request);
-  const requestedAt = request.requestedAt
-    ? Date.parse(request.requestedAt)
-    : Number.NaN;
-  const sent = Number.isFinite(requestedAt)
-    ? `Sent ${shortAgo(requestedAt, nowMs)}`
-    : "Sent";
-  return duration ? `${duration} · ${sent}` : sent;
+function personalCircleSummary(circles: readonly OneLocationCircleSummary[]) {
+  const personal = circles.filter(
+    (circle) => circle.systemKind == null && !Boolean(circle.isSystem),
+  );
+  const created = personal.filter((circle) => circle.role === "owner").length;
+  const joined = personal.filter((circle) => circle.role === "member").length;
+  return { personal, created, joined };
 }
 
-function sentRequestStatusLine(
-  request: OneLocationAccessRequest,
-  nowMs: number,
-  activeGrant?: OneLocationGrant | null,
-  countdownLabel?: (value?: string | null) => string,
-): string {
-  if (/active|approved|shared|granted/i.test(request.status)) {
-    const left =
-      activeGrant?.durationMode === "until_stopped"
-        ? "Until you stop"
-        : countdownAsLeft(countdownLabel?.(activeGrant?.expiresAt));
-    return left ? `Sharing with you · ${left}` : "Sharing with you";
+function personalCircleCountLabel({
+  created,
+  joined,
+}: {
+  created: number;
+  joined: number;
+}): string {
+  const parts: string[] = [];
+  if (created) parts.push(`${created} created`);
+  if (joined) parts.push(`${joined} joined`);
+  return parts.length ? parts.join(" · ") : "Create or join a Circle";
+}
+
+function circleInitials(value: string): string {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+function circleFlowErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : fallback;
+}
+
+function CircleIdentityStack({
+  circles,
+}: {
+  circles: readonly OneLocationCircleSummary[];
+}) {
+  const visible = circles.slice(0, 3);
+  const fallback = visible.length
+    ? visible
+    : [
+        {
+          id: "circle-summary-fallback",
+          name: "Circles",
+          memberCount: 0,
+        } as OneLocationCircleSummary,
+      ];
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-11 w-[54px] shrink-0 items-center"
+    >
+      {fallback.map((circle, index) => {
+        const isSmsCircle = circle.systemKind === "sms";
+        const isTrustedCircle = circle.systemKind === "trusted";
+        const initials = circleInitials(circle.name);
+        return (
+          <span
+            key={`${circle.id}-${index}`}
+            className={cn(
+              "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border-2 border-[color:var(--app-primary-surface)] text-[13px] font-semibold shadow-sm",
+              index > 0 && "-ml-6",
+              isSmsCircle
+                ? "bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)]"
+                : "bg-[#E5E5EA] text-[#6E6E73] dark:bg-[rgba(142,142,147,0.28)] dark:text-[#F2F2F7]",
+            )}
+          >
+            {isSmsCircle ? (
+              <SmsTextIcon className="text-[10px] font-bold tracking-[-0.2px]" />
+            ) : isTrustedCircle ? (
+              <ShieldCheck className="h-[17px] w-[17px]" />
+            ) : initials ? (
+              initials
+            ) : (
+              <UsersRound className="h-[17px] w-[17px]" />
+            )}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+function CircleSummaryGroup({
+  circles,
+  invitationCount,
+  onOpenCircles,
+  onOpenInvitations,
+}: {
+  circles: readonly OneLocationCircleSummary[];
+  invitationCount: number;
+  onOpenCircles: () => void;
+  onOpenInvitations: () => void;
+}) {
+  const { personal, created, joined } = personalCircleSummary(circles);
+  const summary = personalCircleCountLabel({ created, joined });
+  const invitationTitle =
+    invitationCount === 1 ? "Circle invitation" : "Circle invitations";
+  return (
+    <div
+      className={LOCATION_GROUP_SURFACE}
+      data-testid="one-location-circles-summary"
+    >
+      <button
+        type="button"
+        onClick={onOpenCircles}
+        aria-label={`Circles, ${summary.replace(" · ", " and ")}`}
+        className={cn(
+          "grid min-h-[68px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-left outline-none transition-colors motion-reduce:transition-none",
+          "focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2",
+          "[@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
+        )}
+      >
+        <CircleIdentityStack circles={personal.length ? personal : circles} />
+        <span className="min-w-0">
+          <span className="block text-[17px] font-semibold leading-[22px] tracking-[-0.3px] text-foreground">
+            Circles
+          </span>
+          <span className="mt-0.5 block text-[13px] font-normal leading-[18px] tracking-[-0.2px] text-[color:var(--app-secondary-label)]">
+            {summary}
+          </span>
+        </span>
+        <ChevronRight
+          className="h-4 w-4 text-[color:var(--app-tertiary-label)]"
+          aria-hidden="true"
+        />
+      </button>
+      {invitationCount > 0 ? (
+        <button
+          type="button"
+          onClick={onOpenInvitations}
+          aria-label={`${invitationTitle}, ${invitationCount} pending`}
+          className={cn(
+            "relative grid min-h-[56px] w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left outline-none transition-colors motion-reduce:transition-none",
+            "before:absolute before:left-4 before:right-4 before:top-0 before:h-px before:bg-[color:var(--app-separator)] before:content-['']",
+            "focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2",
+            "[@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
+          )}
+          data-testid="one-location-circle-invitations-summary"
+        >
+          <span className="text-[15px] font-medium leading-5 text-foreground">
+            {invitationTitle}
+          </span>
+          <span className="text-[15px] font-semibold leading-5 text-[color:var(--app-accent)]">
+            {invitationCount}
+          </span>
+          <ChevronRight
+            className="h-4 w-4 text-[color:var(--app-tertiary-label)]"
+            aria-hidden="true"
+          />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function CircleInvitationsDialog({
+  open,
+  invites,
+  loading,
+  focusedInviteId,
+  focusedInviteResolutionReady,
+  inviteBusy,
+  onOpenChange,
+  onAcceptInvite,
+  onDeclineInvite,
+  onDismissFocusedInvite,
+}: {
+  open: boolean;
+  invites: OneLocationCircleMemberInvite[];
+  loading: boolean;
+  focusedInviteId: string | null;
+  focusedInviteResolutionReady: boolean;
+  inviteBusy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onAcceptInvite: (inviteId: string) => Promise<void>;
+  onDeclineInvite: (inviteId: string) => Promise<void>;
+  onDismissFocusedInvite: () => void;
+}) {
+  const [respondingInviteId, setRespondingInviteId] = useState<string | null>(
+    null,
+  );
+  const focusedInviteAvailable = focusedInviteId
+    ? invites.some((invite) => invite.id === focusedInviteId)
+    : true;
+  const showUnavailable =
+    Boolean(focusedInviteId) &&
+    focusedInviteResolutionReady &&
+    !loading &&
+    !focusedInviteAvailable;
+
+  const respondToInvite = async (
+    inviteId: string,
+    decision: "accept" | "decline",
+  ) => {
+    if (respondingInviteId || inviteBusy) return;
+    setRespondingInviteId(inviteId);
+    try {
+      if (decision === "accept") {
+        await onAcceptInvite(inviteId);
+      } else {
+        await onDeclineInvite(inviteId);
+      }
+    } catch (error) {
+      toast.error(
+        circleFlowErrorMessage(
+          error,
+          decision === "accept"
+            ? "Could not join this Circle."
+            : "Could not decline this invitation.",
+        ),
+      );
+    } finally {
+      setRespondingInviteId(null);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        onOpenChange(next);
+        if (!next && focusedInviteId) onDismissFocusedInvite();
+      }}
+    >
+      <DialogContent className="max-w-[420px] rounded-[24px] p-0">
+        <DialogHeader className="px-5 pb-2 pt-5 text-left">
+          <DialogTitle className="text-[20px] font-semibold leading-[25px] tracking-[-0.3px]">
+            Circle invitations
+          </DialogTitle>
+          {showUnavailable ? (
+            <DialogDescription>
+              This Circle invitation is no longer available.
+            </DialogDescription>
+          ) : null}
+        </DialogHeader>
+
+        {showUnavailable ? (
+          <div className="px-5 pb-5 pt-1">
+            <Button
+              type="button"
+              onClick={() => {
+                onOpenChange(false);
+                onDismissFocusedInvite();
+              }}
+              className="h-12 w-full rounded-2xl bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]"
+            >
+              Done
+            </Button>
+          </div>
+        ) : (
+          <div
+            className={cn("mx-4 mb-4", LOCATION_GROUP_SURFACE)}
+            data-testid="one-location-circle-invitations-dialog-list"
+          >
+            {invites.map((invite, index) => {
+              const responding = respondingInviteId === invite.id;
+              const inviter =
+                invite.inviterDisplayName?.trim() || "Someone you know";
+              const circleName = invite.circleName?.trim() || "Circle";
+              return (
+                <div
+                  key={invite.id}
+                  className={cn(
+                    "relative grid min-h-[68px] grid-cols-[auto_minmax(0,1fr)] gap-3 px-4 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto]",
+                    index > 0 &&
+                      "before:absolute before:left-16 before:right-4 before:top-0 before:h-px before:bg-[color:var(--app-separator)] before:content-['']",
+                  )}
+                  tabIndex={invite.id === focusedInviteId ? -1 : undefined}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#E5E5EA] text-[13px] font-semibold text-[#6E6E73] dark:bg-[rgba(142,142,147,0.28)] dark:text-[#F2F2F7]"
+                  >
+                    {circleInitials(circleName) || (
+                      <UsersRound className="h-[17px] w-[17px]" />
+                    )}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="break-words text-[17px] font-medium leading-[22px] tracking-[-0.3px] text-foreground">
+                      {circleName}
+                    </p>
+                    <p className="mt-0.5 break-words text-[13px] leading-[18px] tracking-[-0.2px] text-[color:var(--app-secondary-label)]">
+                      Invited by {inviter}
+                    </p>
+                  </div>
+                  <div className="col-span-2 flex items-center justify-end gap-2 sm:col-span-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={responding || inviteBusy}
+                      onClick={() => void respondToInvite(invite.id, "decline")}
+                      className="h-11 rounded-full px-3 text-[15px] text-[color:var(--app-secondary-label)] hover:bg-transparent"
+                    >
+                      {responding && inviteBusy ? "Declining…" : "Decline"}
+                    </Button>
+                    <Button
+                      type="button"
+                      disabled={responding || inviteBusy}
+                      onClick={() => void respondToInvite(invite.id, "accept")}
+                      className="h-11 rounded-full bg-[color:var(--app-accent)] px-4 text-[15px] text-[color:var(--app-accent-fg)]"
+                    >
+                      {responding && inviteBusy ? "Joining…" : "Join"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PersonActionsDialog({
+  open,
+  name,
+  photoUrl,
+  verified,
+  status,
+  shareReady,
+  pendingRequest,
+  withdrawingRequestId,
+  onOpenChange,
+  onShare,
+  onAsk,
+  onManageSharing,
+  onViewLocation,
+  onManageConnection,
+  onCancelRequest,
+}: {
+  open: boolean;
+  name: string;
+  photoUrl?: string | null;
+  verified?: boolean;
+  status: PeopleDirectoryStatus;
+  shareReady: boolean;
+  pendingRequest: OneLocationAccessRequest | null;
+  withdrawingRequestId: string | null;
+  onOpenChange: (open: boolean) => void;
+  onShare: () => void;
+  onAsk: () => void;
+  onManageSharing: () => void;
+  onViewLocation: () => void;
+  onManageConnection: () => void;
+  onCancelRequest: () => void;
+}) {
+  const cancelBusy =
+    Boolean(pendingRequest) && withdrawingRequestId === pendingRequest?.id;
+  const actionRows: ReactNode[] = [];
+  const action = (
+    key: string,
+    title: string,
+    onClick: () => void,
+    options?: { tone?: "default" | "destructive"; chevron?: boolean },
+  ) => (
+    <SettingsRow
+      key={key}
+      title={title}
+      density="compact"
+      tone={options?.tone ?? "default"}
+      chevron={options?.chevron ?? true}
+      onClick={onClick}
+      testId={`one-location-person-action-${key}`}
+    />
+  );
+
+  if (status.kind === "both") {
+    actionRows.push(action("view", "View their location", onViewLocation));
+    actionRows.push(action("manage", "Manage my sharing", onManageSharing));
+  } else if (status.kind === "outgoing") {
+    actionRows.push(action("manage", "Manage my sharing", onManageSharing));
+    if (!pendingRequest) {
+      actionRows.push(action("ask", "Ask for location", onAsk));
+    }
+  } else if (status.kind === "incoming") {
+    actionRows.push(action("view", "View their location", onViewLocation));
+    if (shareReady) {
+      actionRows.push(action("share", "Share my location", onShare));
+    }
+  } else if (status.kind === "pending" && pendingRequest) {
+    actionRows.push(
+      <SettingsRow
+        key="cancel"
+        title={cancelBusy ? "Cancelling…" : "Cancel request"}
+        density="compact"
+        tone="destructive"
+        disabled={cancelBusy}
+        onClick={onCancelRequest}
+        testId="one-location-person-action-cancel"
+      />,
+    );
+    if (shareReady) {
+      actionRows.push(action("share", "Share my location", onShare));
+    }
+  } else if (shareReady) {
+    actionRows.push(action("share", "Share my location", onShare));
+    actionRows.push(action("ask", "Ask for location", onAsk));
+  } else {
+    actionRows.push(
+      <SettingsRow
+        key="unavailable"
+        title="Location sharing is not available with this person yet."
+        density="compact"
+        disabled
+        testId="one-location-person-action-unavailable"
+      />,
+    );
+    actionRows.push(
+      action("connection", "Manage connection", onManageConnection),
+    );
   }
-  const requestedAt = request.requestedAt
-    ? Date.parse(request.requestedAt)
-    : Number.NaN;
-  const when = Number.isFinite(requestedAt)
-    ? `Requested ${shortAgo(requestedAt, nowMs)}`
-    : "Requested";
-  const duration = requestDurationLabel(request);
-  if (request.status === "pending") {
-    return duration ? `${when} · ${duration}` : when;
-  }
-  return requestStatusWord(request.status);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        aria-label={`Location actions for ${name}`}
+        className="max-w-[420px] rounded-[24px] p-0"
+      >
+        <DialogHeader className="px-5 pb-3 pt-5 text-left">
+          <div className="flex items-center gap-3">
+            <ConnectionPersonAvatar
+              label={name}
+              photoUrl={photoUrl}
+              verified={verified}
+              className="h-11 w-11 text-[14px]"
+            />
+            <div className="min-w-0">
+              <DialogTitle className="break-words text-[20px] font-semibold leading-[25px] tracking-[-0.3px]">
+                {name}
+              </DialogTitle>
+              {status.label ? (
+                <DialogDescription className="mt-0.5 text-[15px] leading-5 text-[color:var(--app-secondary-label)]">
+                  {status.label}
+                </DialogDescription>
+              ) : null}
+            </div>
+          </div>
+        </DialogHeader>
+        <div className="mx-4 mb-4">
+          <SettingsGroup separatorInset shellClassName={LOCATION_GROUP_SHELL_CLASSNAME}>
+            {actionRows.slice(0, 3)}
+          </SettingsGroup>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 export function PeopleHub({
   vm,
   onAddConnections,
   onInvite,
-  onCreateCircle,
-  onJoinCircle,
-  onOpenCircle,
+  onOpenCircleManager,
   focusedInviteId,
   onDismissFocusedInvite,
   onStartShare,
+  onStartAsk,
+  onOpenCheckIn,
+  onOpenActiveShares,
+  onOpenSharedWithMe,
 }: {
   vm: LocationHubViewModel;
   onAddConnections: () => void;
   onInvite: () => void;
-  onCreateCircle: () => void;
-  onJoinCircle: () => void;
-  onOpenCircle: (circleId: string) => void;
+  onOpenCircleManager: () => void;
   focusedInviteId: string | null;
   onDismissFocusedInvite: () => void;
   onStartShare: (initialRecipientId?: string) => void;
+  onStartAsk: (initialRecipientId?: string) => void;
+  onOpenCheckIn: () => void;
+  onOpenActiveShares: () => void;
+  onOpenSharedWithMe: () => void;
 }) {
   const hasSearch = vm.recipientSearch.trim().length > 0;
   const filtered = vm.visibleRecipients;
-  // Your live shares, by the person they point at -- ALL of them, not the
-  // first one found. This list used to read `activeOwnerGrants.find(...)`,
-  // which was correct only while a pair could hold one grant. Once an ordinary
-  // share and an SMS (SOS) share can both be live with the same person, `find`
-  // bound the row's single Stop to whichever happened to come first and left
-  // the other share running with no way to see it, let alone end it.
+  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
+  const [invitationsOpen, setInvitationsOpen] = useState(false);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+
   const ownerGroupsByUserId = useMemo(() => {
     const byUserId = new globalThis.Map<string, OneLocationGrantLaneGroup>();
     for (const group of groupGrantsByCounterpart(
-      vm.activeOwnerGrants,
+      vm.activeOwnerGrants.filter((grant) => grant.status === "active"),
       "owner",
     )) {
       byUserId.set(group.counterpartUserId, group);
     }
     return byUserId;
   }, [vm.activeOwnerGrants]);
-  const activeReceivedGrantById = useMemo(() => {
-    const byId = new globalThis.Map<string, OneLocationGrant>();
-    for (const grant of vm.receivedGrants) {
-      if (grant.status === "active") byId.set(grant.id, grant);
+
+  const receivedGroupsByOwnerId = useMemo(() => {
+    const byUserId = new globalThis.Map<string, OneLocationGrantLaneGroup>();
+    for (const group of groupGrantsByCounterpart(
+      vm.receivedGrants.filter((grant) => grant.status === "active"),
+      "recipient",
+    )) {
+      byUserId.set(group.counterpartUserId, group);
     }
-    return byId;
+    return byUserId;
   }, [vm.receivedGrants]);
-  const pendingExtensionByGrantId = useMemo(() => {
-    const byGrantId = new globalThis.Map<string, OneLocationAccessRequest>();
+
+  const pendingRequestByOwnerId = useMemo(() => {
+    const byUserId = new globalThis.Map<string, OneLocationAccessRequest>();
     for (const request of vm.requestedByMe) {
-      if (request.status !== "pending" || !request.extendsGrantId) continue;
-      if (!byGrantId.has(request.extendsGrantId)) {
-        byGrantId.set(request.extendsGrantId, request);
+      if (request.status !== "pending" || request.extendsGrantId) continue;
+      if (!byUserId.has(request.ownerUserId)) {
+        byUserId.set(request.ownerUserId, request);
       }
     }
-    return byGrantId;
+    return byUserId;
   }, [vm.requestedByMe]);
-  const requestsSentRows = useMemo(
-    () =>
-      vm.requestedByMe.filter(
-        (request) => !(request.status === "pending" && request.extendsGrantId),
-      ),
-    [vm.requestedByMe],
-  );
-  const { expandedLaneUserIds, toggleLaneExpansion } = useExpandedShareLanes();
-  const addPeopleEmptyAction = (
+
+  const selectedPerson = useMemo(() => {
+    if (!selectedPersonId) return null;
+    return (
+      vm.recipients.find((recipient) => recipient.userId === selectedPersonId) ??
+      filtered.find((recipient) => recipient.userId === selectedPersonId) ??
+      null
+    );
+  }, [filtered, selectedPersonId, vm.recipients]);
+
+  const selectedPersonName = selectedPerson
+    ? vm.recipientLabel(selectedPerson)
+    : "";
+  const selectedPersonStatus = selectedPerson
+    ? peopleDirectoryStatus({
+        outgoingGroup: ownerGroupsByUserId.get(selectedPerson.userId) ?? null,
+        incomingGroup:
+          receivedGroupsByOwnerId.get(selectedPerson.userId) ?? null,
+        pendingRequest:
+          pendingRequestByOwnerId.get(selectedPerson.userId) ?? null,
+        countdownLabel: vm.expiresCountdownLabel,
+      })
+    : null;
+  const selectedPendingRequest = selectedPerson
+    ? (pendingRequestByOwnerId.get(selectedPerson.userId) ?? null)
+    : null;
+
+  useEffect(() => {
+    if (!focusedInviteId) return;
+    if (
+      vm.incomingCircleMemberInvitesLoading ||
+      !vm.incomingCircleMemberInviteFocusResolved
+    ) {
+      return;
+    }
+    setInvitationsOpen(true);
+  }, [
+    focusedInviteId,
+    vm.incomingCircleMemberInviteFocusResolved,
+    vm.incomingCircleMemberInvitesLoading,
+  ]);
+
+  const onLoadMoreRecipients = vm.onLoadMoreRecipients;
+  useEffect(() => {
+    if (
+      !vm.recipientPageHasMore ||
+      vm.recipientPageLoading ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return;
+    }
+    const node = loadMoreSentinelRef.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void onLoadMoreRecipients();
+        }
+      },
+      { rootMargin: "240px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [
+    onLoadMoreRecipients,
+    vm.recipientPageHasMore,
+    vm.recipientPageLoading,
+  ]);
+
+  const addPeopleEmptyAction = hasSearch ? (
+    <Link
+      href={peopleConnectRecoveryHref(vm.recipientSearch)}
+      data-testid="one-location-people-find-or-invite"
+      className="inline-flex h-11 min-h-11 items-center justify-center rounded-full bg-[color:var(--app-accent)] px-6 text-[16px] font-semibold text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent-hover)]"
+    >
+      Find or invite someone
+    </Link>
+  ) : (
     <Button
       type="button"
       onClick={onAddConnections}
       data-voice-control-id="one-location-add-connections"
       className="h-11 min-h-11 rounded-full bg-[color:var(--app-accent)] px-6 text-[16px] font-semibold text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent-hover)]"
     >
-      Add people
+      Find or invite someone
     </Button>
   );
   const addConnectionsMenu = (
     <ActionMenu
-      label="Add people"
-      title="Connections"
+      label="Add or manage people"
+      title="People"
       triggerIcon={Plus}
       testId="one-location-add-people"
       items={[
@@ -3406,11 +4382,12 @@ export function PeopleHub({
           // second tap is refused rather than queued -- single-flight, and
           // visibly so. Removing the row instead would make the control
           // disappear mid-action.
-          label: vm.busy === "contactSync"
-            ? "Finding contacts…"
-            : vm.contactSyncSummary
-              ? "Sync contacts again"
-              : "Find contacts",
+          label:
+            vm.busy === "contactSync"
+              ? "Finding contacts…"
+              : vm.contactSyncSummary
+                ? "Sync contacts again"
+                : "Find contacts",
           onSelect: () => vm.onSyncContacts(),
           disabled: vm.busy === "contactSync",
           busy: vm.busy === "contactSync",
@@ -3442,64 +4419,31 @@ export function PeopleHub({
   );
 
   return (
-    <div className="pt-5 sm:pt-9" data-testid="one-location-people-hub">
-      <div className="space-y-7 sm:space-y-10">
-        <CirclesSection
-          circles={vm.circles}
-          incomingInvites={vm.incomingCircleMemberInvites}
-          incomingInvitesLoading={vm.incomingCircleMemberInvitesLoading}
-          incomingInvitesError={vm.incomingCircleMemberInvitesError}
-          focusedInviteId={focusedInviteId}
-          focusedInviteResolutionReady={
-            vm.incomingCircleMemberInviteFocusResolved
-          }
-          inviteBusy={vm.busy === "circleMemberInvite"}
-          onCreate={onCreateCircle}
-          onJoin={onJoinCircle}
-          onOpen={onOpenCircle}
-          onAcceptInvite={vm.onAcceptNamedCircleMemberInvite}
-          onDeclineInvite={vm.onDeclineNamedCircleMemberInvite}
-          onRetryInvites={vm.onRetryNamedCircleMemberInvites}
-          onDismissFocusedInvite={onDismissFocusedInvite}
-        />
+    <div className="pt-4 sm:pt-5" data-testid="one-location-people-hub">
+      <div className="mx-auto w-full max-w-[640px] space-y-4">
+        {!hasSearch ? (
+          <CircleSummaryGroup
+            circles={vm.circles}
+            invitationCount={vm.incomingCircleMemberInvites.length}
+            onOpenCircles={onOpenCircleManager}
+            onOpenInvitations={() => setInvitationsOpen(true)}
+          />
+        ) : null}
 
-        <div className="space-y-7 sm:space-y-9">
-          <section
-            aria-labelledby="one-location-connections-heading"
-            className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-4 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:gap-x-6"
-            data-testid="one-location-people-connections"
-          >
-            <h2
-              id="one-location-connections-heading"
-              className="col-start-1 row-start-1 text-[15px] font-medium leading-5 tracking-[-0.01em] text-[color:var(--app-section-label)]"
-            >
-              Connections · {vm.recipientPageTotalCount}
-            </h2>
+        <section
+          aria-labelledby="one-location-people-heading"
+          className="space-y-2"
+          data-testid="one-location-people-connections"
+        >
+          <span id="one-location-people-heading" className="sr-only">
+            People
+          </span>
 
-            {vm.contactSyncSummary && vm.onViewContactSyncResults ? (
-              <button
-                type="button"
-                className="col-start-2 row-start-1 min-h-11 justify-self-end rounded-full px-2 text-[13px] font-medium text-[color:var(--app-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)]"
-                onClick={vm.onViewContactSyncResults}
-              >
-                {vm.contactSyncSummary.unknownCount
-                  ? `${vm.contactSyncSummary.unknownCount} need confirmation · View results`
-                  : vm.contactSyncSummary.connectedCount
-                    ? `${vm.contactSyncSummary.connectedCount} connected · View results`
-                    : `${vm.contactSyncSummary.matchedCount} matched · View results`}
-              </button>
-            ) : null}
-
-            <div className="col-start-3 row-start-1 justify-self-end sm:col-start-4">
-              {addConnectionsMenu}
-            </div>
-
+          <div className="flex items-center gap-2">
             <div
               className={cn(
-                "col-span-3 row-start-2 mt-3 sm:col-span-4 sm:mt-3.5",
-                "[&_input]:h-[46px] [&_input]:rounded-full [&_input]:border-0 [&_input]:bg-[color:var(--app-primary-surface)] [&_input]:pl-[46px] [&_input]:pr-[18px] [&_input]:text-[17px] [&_input]:leading-[22px] [&_input]:tracking-[-0.3px] dark:[&_input]:bg-[color:var(--app-secondary-surface)]",
+                "min-w-0 flex-1 [&_input]:h-[46px] [&_input]:rounded-[14px] [&_input]:border-0 [&_input]:bg-[color:var(--app-primary-surface)] [&_input]:pl-[46px] [&_input]:pr-[18px] [&_input]:text-[16px] [&_input]:leading-[22px] dark:[&_input]:bg-[color:var(--app-secondary-surface)]",
                 "[&_svg]:left-[18px] [&_svg]:text-[color:var(--app-tertiary-label)]",
-                "sm:[&_input]:h-12 sm:[&_input]:rounded-[var(--app-radius-md)] sm:[&_input]:pl-12 sm:[&_input]:pr-5 sm:[&_input]:text-base sm:[&_svg]:left-5",
               )}
               data-testid="one-location-people-search"
             >
@@ -3509,283 +4453,129 @@ export function PeopleHub({
                 placeholder="Search people"
               />
             </div>
+            {!hasSearch ? addConnectionsMenu : null}
+          </div>
 
-            <div className="col-span-3 row-start-3 mt-3 sm:col-span-4 sm:mt-3.5">
-              {filtered.length ? (
-                <div
-                  className={LOCATION_GROUP_SURFACE}
-                  data-testid="one-location-people-list"
-                >
-                  {filtered.map((r, i) => {
-                    const shareGroup =
-                      ownerGroupsByUserId.get(r.userId) ?? null;
-                    const sharing = Boolean(shareGroup);
-                    // One share is still one tap: the row keeps its single
-                    // Stop and grows nothing. The breakdown appears only for a
-                    // person who genuinely has two.
-                    const singleGrant =
-                      shareGroup && shareGroup.grants.length === 1
-                        ? shareGroup.primaryGrant
-                        : null;
-                    const lanesExpanded = expandedLaneUserIds.has(r.userId);
-                    const lanesId = `one-location-people-lanes-${r.userId}`;
-                    const receiving = vm.receivedGrants.some(
-                      (g) => g.ownerUserId === r.userId,
-                    );
-                    const ready = vm.isRecipientShareReady(r);
-                    const name = vm.recipientLabel(r);
-                    return (
-                      <PersonRow
-                        key={r.userId}
-                        name={name}
-                        photoUrl={r.photoUrl}
-                        verified={Boolean(r.isRia)}
-                        fromContacts={r.connectedFromContacts}
-                        expansion={
-                          shareGroup && !singleGrant ? (
-                            <div id={lanesId} hidden={!lanesExpanded}>
-                              {/* Stopping the SMS share here is exactly the
-                                  same act as stopping it from the Emergency
-                                  help screen: the same grant id through the
-                                  same `revokeGrant`. The normal share keeps
-                                  its original countdown, and stopping the
-                                  normal share never touches the SMS one --
-                                  that is the whole of #5506, made visible. */}
-                              <PersonShareLanes
-                                group={shareGroup}
-                                counterpartName={name}
-                                onStopGrant={vm.onStopGrant}
-                                revokingGrantId={vm.revokingGrantId}
-                              />
-                            </div>
-                          ) : null
-                        }
-                        // Someone sharing location with you right now
-                        // used to read "Ready for private location sharing" —
-                        // the recommendation line, which describes what COULD
-                        // happen and so says the opposite of what is. The row
-                        // already knew (`receiving`), and spent it on an accent
-                        // colour. Two people with the same name, one sharing
-                        // and one not, were then indistinguishable except by a
-                        // tint, which is the whole reason "is this the same
-                        // person or a different one" is hard to answer here.
-                        subtitle={peopleShareStatus(
-                          shareGroup,
-                          receiving,
-                          vm.expiresCountdownLabel,
-                          vm.recipientSubtitle(r),
-                        )}
-                        active={sharing || receiving}
-                        first={i === 0}
-                        action={
-                          singleGrant ? (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => vm.onStopGrant(singleGrant.id)}
-                              isLoading={vm.revokingGrantId === singleGrant.id}
-                              aria-label={`Stop sharing with ${name}`}
-                              className="relative h-9 min-h-9 rounded-full px-2 text-[15px] font-medium text-[#FF3B30] after:absolute after:-inset-y-1 after:inset-x-0 after:content-[''] hover:bg-transparent hover:text-[#D70015]"
-                            >
-                              Stop
-                            </Button>
-                          ) : shareGroup ? (
-                            <ShareLanesDisclosure
-                              expanded={lanesExpanded}
-                              onToggle={() => toggleLaneExpansion(r.userId)}
-                              controlsId={lanesId}
-                              label={`Manage your shares with ${name}`}
-                            />
-                          ) : ready ? (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => onStartShare(r.userId)}
-                              aria-label={`Share with ${name}`}
-                              className="relative h-9 min-h-9 rounded-full px-2 text-[15px] font-medium text-[color:var(--app-accent)] after:absolute after:-inset-y-1 after:inset-x-0 after:content-[''] hover:bg-transparent hover:text-[color:var(--app-accent-hover)]"
-                            >
-                              Share
-                            </Button>
-                          ) : null
-                        }
-                      />
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="[&>[data-ui-role=grouped-card]]:rounded-[var(--app-radius-md)] [&>[data-ui-role=grouped-card]]:!bg-[color:var(--app-primary-surface)] [&>[data-ui-role=grouped-card]]:shadow-[var(--app-card-shadow-standard)] dark:[&>[data-ui-role=grouped-card]]:shadow-none">
-                  <EmptyState
-                    title={
-                      hasSearch ? "No matching people" : "No connections yet"
-                    }
-                    description={
-                      hasSearch
-                        ? "Try another name."
-                        : "Add people to share location privately."
-                    }
-                    // The first link in a chain that already had its other
-                    // two. A name matching nobody here usually belongs to
-                    // someone not connected yet, so this hands over to
-                    // Connect -- where a search that also finds nobody offers
-                    // "Invite them to One". Without it the person had to guess
-                    // that Connect was the next place to look.
-                    //
-                    // The header actions sit above the list and are out of
-                    // view once results have scrolled, so the way out belongs
-                    // here, where the dead end is.
-                    action={
-                      hasSearch ? (
-                        <Button
-                          type="button"
-                          variant="link"
-                          size="sm"
-                          onClick={onAddConnections}
-                          data-voice-control-id="one-location-empty-connect-bridge"
-                          className={PEOPLE_HEADER_ACTION}
-                        >
-                          Manage connections
-                        </Button>
-                      ) : (
-                        addPeopleEmptyAction
-                      )
-                    }
-                  />
-                </div>
+          {filtered.length ? (
+            <div
+              className={cn(
+                filtered.length ? "space-y-2" : LOCATION_GROUP_SURFACE,
               )}
-              {vm.recipientPageHasMore ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={vm.recipientPageLoading}
-                  isLoading={vm.recipientPageLoading}
-                  onClick={() => void vm.onLoadMoreRecipients()}
-                  className="mt-3 h-11 w-full rounded-full"
-                  data-testid="one-location-people-load-more"
-                >
-                  Load more connections
-                </Button>
-              ) : null}
-            </div>
-          </section>
-
-          {requestsSentRows.length ? (
-            <SettingsGroup
-              title="Requests sent"
-              separatorInset
-              shellClassName="[--settings-group-radius:var(--app-radius-md)] !rounded-[var(--app-radius-md)] !bg-[color:var(--app-primary-surface)] !shadow-[var(--app-card-shadow-standard)]"
+              data-testid="one-location-people-list"
+              aria-busy={vm.recipientPageLoading || undefined}
             >
-              {requestsSentRows.map((request) => {
-                const isLive = /active|approved|shared|granted/i.test(
-                  request.status,
-                );
-                const grantId = request.approvedGrantId;
-                const activeGrant = grantId
-                  ? activeReceivedGrantById.get(grantId)
-                  : null;
-                const pendingExtension = grantId
-                  ? pendingExtensionByGrantId.get(grantId)
-                  : null;
-                const canEdit = isLive && Boolean(grantId);
-                const isEditing =
-                  Boolean(grantId) && vm.editingGrantId === grantId;
-                const ownerLabel = vm.requestOwnerLabel(request);
+              {filtered.map((recipient, index) => {
+                const name = vm.recipientLabel(recipient);
+                const status = peopleDirectoryStatus({
+                  outgoingGroup:
+                    ownerGroupsByUserId.get(recipient.userId) ?? null,
+                  incomingGroup:
+                    receivedGroupsByOwnerId.get(recipient.userId) ?? null,
+                  pendingRequest:
+                    pendingRequestByOwnerId.get(recipient.userId) ?? null,
+                  countdownLabel: vm.expiresCountdownLabel,
+                });
                 return (
-                  <div key={request.id}>
-                    <SettingsRow
-                      title={ownerLabel}
-                      description={sentRequestStatusLine(
-                        request,
-                        vm.nowMs,
-                        activeGrant,
-                        vm.expiresCountdownLabel,
-                      )}
-                      trailing={
-                        canEdit && grantId ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-9 px-2 text-[15px] font-medium text-[color:var(--app-accent)] hover:bg-transparent hover:text-[color:var(--app-accent-hover)]"
-                            onClick={() =>
-                              isEditing
-                                ? vm.onEditGrantCancel()
-                                : vm.onEditGrantStart(grantId)
-                            }
-                          >
-                            {isEditing ? "Done" : "Manage"}
-                          </Button>
-                        ) : isLive ? (
-                          "Active"
-                        ) : request.status === "pending" ? (
-                          // "Pending" as bare text was the whole trailing slot:
-                          // the state was reported and there was nothing to do
-                          // about it. The button replaces the word rather than
-                          // joining it -- a row you can still take back IS the
-                          // waiting one, and every settled row names itself.
-                          //
-                          // Measured, not assumed: word plus button came to
-                          // 161px in this fixed-width slot against the shipped
-                          // Edit/Stop pair's 115px, which wrapped the person's
-                          // name onto a second line at 320px. The button alone
-                          // is 99px. See the layout contract in e2e/.
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-9 px-2 text-[15px] font-medium text-[#FF3B30] hover:bg-transparent hover:text-[#D70015]"
-                            onClick={() => vm.onWithdrawRequest(request.id)}
-                            disabled={vm.withdrawingRequestId === request.id}
-                            aria-label={`Take back your request to ${ownerLabel}`}
-                          >
-                            Take back
-                          </Button>
-                        ) : (
-                          requestStatusWord(request.status)
-                        )
-                      }
-                      density="compact"
-                      className={cn(
-                        "[--settings-row-gap:12px] [--settings-row-px:16px] [--settings-row-py:10px]",
-                        "[&>button]:min-h-[60px] sm:[&>button]:min-h-16 [&>div]:min-h-[60px] sm:[&>div]:min-h-16",
-                        "[&_[data-slot=settings-row-title]]:!text-[17px] [&_[data-slot=settings-row-title]]:!font-medium [&_[data-slot=settings-row-title]]:!leading-[22px] [&_[data-slot=settings-row-title]]:!tracking-[-0.3px]",
-                        "[&_[data-slot=settings-row-description]]:!text-[13px] [&_[data-slot=settings-row-description]]:!font-normal [&_[data-slot=settings-row-description]]:!leading-[18px] [&_[data-slot=settings-row-description]]:!tracking-[-0.2px]",
-                      )}
-                    />
-                    {isEditing && grantId ? (
-                      <div className="space-y-3 px-4 pb-4 pt-1">
-                        {/* The same control step 1 of Request location shows,
-                            because it is the same decision about the same
-                            share. That screen used to render an absolute
-                            "New duration" picker here instead -- see
-                            `redesign/request-more-time`. */}
-                        <AskForMoreTime
-                          grantId={grantId}
-                          ownerUserId={request.ownerUserId}
-                          ownerLabel={ownerLabel}
-                          pendingExtension={pendingExtension}
-                          requestingMoreTimeKey={vm.requestingMoreTimeKey}
-                          withdrawingRequestId={vm.withdrawingRequestId}
-                          onRequestMoreTime={vm.onRequestMoreTime}
-                          onWithdrawRequest={vm.onWithdrawRequest}
-                        />
-                        <div className="border-t border-[color:var(--app-separator)] pt-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-11 min-h-11 rounded-full px-0 text-[15px] font-medium text-[#FF3B30] hover:bg-transparent hover:text-[#D70015]"
-                            onClick={() => vm.onStopGrant(grantId)}
-                            disabled={vm.revokingGrantId === grantId}
-                          >
-                            Stop viewing
-                          </Button>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
+                  <PersonRow
+                    key={recipient.userId}
+                    name={name}
+                    photoUrl={recipient.photoUrl}
+                    verified={Boolean(recipient.isRia)}
+                    subtitle={status.label}
+                    active={status.active}
+                    first={index === 0}
+                    onOpen={() => setSelectedPersonId(recipient.userId)}
+                    onAsk={() => onStartAsk(recipient.userId)}
+                    onShare={() => onStartShare(recipient.userId)}
+                    onCheckIn={onOpenCheckIn}
+                    shareReady={vm.isRecipientShareReady(recipient)}
+                  />
                 );
               })}
-            </SettingsGroup>
-          ) : null}
-        </div>
+              {vm.recipientPageHasMore ? (
+                <div
+                  ref={loadMoreSentinelRef}
+                  role="status"
+                  data-testid="one-location-people-load-more-sentinel"
+                  className="border-t border-[color:var(--app-separator)] px-4 py-3 text-center text-[13px] leading-[18px] text-[color:var(--app-secondary-label)]"
+                >
+                  {vm.recipientPageLoading ? "Loading more…" : ""}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="[&>[data-ui-role=grouped-card]]:rounded-[var(--app-radius-md)] [&>[data-ui-role=grouped-card]]:!bg-[color:var(--app-primary-surface)] [&>[data-ui-role=grouped-card]]:shadow-[var(--app-card-shadow-standard)] dark:[&>[data-ui-role=grouped-card]]:shadow-none">
+              <EmptyState
+                title={
+                  hasSearch
+                    ? `No match for “${vm.recipientSearch.trim()}”`
+                    : "No people yet"
+                }
+                description={
+                  hasSearch
+                    ? "They may not be in your connections yet."
+                    : "Find or invite someone to start sharing privately."
+                }
+                action={addPeopleEmptyAction}
+              />
+            </div>
+          )}
+        </section>
       </div>
+
+      <CircleInvitationsDialog
+        open={invitationsOpen}
+        invites={vm.incomingCircleMemberInvites}
+        loading={vm.incomingCircleMemberInvitesLoading}
+        focusedInviteId={focusedInviteId}
+        focusedInviteResolutionReady={vm.incomingCircleMemberInviteFocusResolved}
+        inviteBusy={vm.busy === "circleMemberInvite"}
+        onOpenChange={setInvitationsOpen}
+        onAcceptInvite={vm.onAcceptNamedCircleMemberInvite}
+        onDeclineInvite={vm.onDeclineNamedCircleMemberInvite}
+        onDismissFocusedInvite={onDismissFocusedInvite}
+      />
+
+      {selectedPerson && selectedPersonStatus ? (
+        <PersonActionsDialog
+          open={Boolean(selectedPerson)}
+          name={selectedPersonName}
+          photoUrl={selectedPerson.photoUrl}
+          verified={Boolean(selectedPerson.isRia)}
+          status={selectedPersonStatus}
+          shareReady={vm.isRecipientShareReady(selectedPerson)}
+          pendingRequest={selectedPendingRequest}
+          withdrawingRequestId={vm.withdrawingRequestId}
+          onOpenChange={(open) => {
+            if (!open) setSelectedPersonId(null);
+          }}
+          onShare={() => {
+            setSelectedPersonId(null);
+            onStartShare(selectedPerson.userId);
+          }}
+          onAsk={() => {
+            setSelectedPersonId(null);
+            onStartAsk(selectedPerson.userId);
+          }}
+          onManageSharing={() => {
+            setSelectedPersonId(null);
+            onOpenActiveShares();
+          }}
+          onViewLocation={() => {
+            setSelectedPersonId(null);
+            onOpenSharedWithMe();
+          }}
+          onManageConnection={() => {
+            setSelectedPersonId(null);
+            onAddConnections();
+          }}
+          onCancelRequest={() => {
+            if (selectedPendingRequest) {
+              vm.onWithdrawRequest(selectedPendingRequest.id);
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -3795,8 +4585,9 @@ export function PeopleHub({
 /* =================================================================== */
 
 const PUBLIC_LINK_DURATION_OPTIONS = [
-  { value: "0.5", label: "30 min" },
+  { value: "0.25", label: "15 min" },
   { value: "1", label: "1 hour" },
+  { value: "2", label: "2 hours" },
 ] as const;
 
 function publicLinkStatusLabel(label?: string | null): string {
@@ -3870,11 +4661,11 @@ function PublicLinkActionRows({
   };
 
   return (
-    <div className="space-y-3 px-4 pb-4 pt-2">
+    <div className="space-y-2.5 px-4 pb-4 pt-1.5">
       <div className="grid grid-cols-1 gap-2 min-[340px]:grid-cols-2">
         <Button
           onClick={onShare}
-          className="ui-text-button-label h-12 rounded-[15px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90"
+          className="ui-text-button-label h-11 rounded-[13px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90"
         >
           <Share2 className="mr-1.5 h-4 w-4" />
           Share
@@ -3884,7 +4675,7 @@ function PublicLinkActionRows({
           onClick={handleCopy}
           disabled={copyBusy}
           aria-busy={copyBusy || undefined}
-          className="ui-text-button-label h-12 rounded-[15px]"
+          className="ui-text-button-label h-11 rounded-[13px]"
         >
           <Copy className="mr-1.5 h-4 w-4" />
           {copyBusy ? "Copying…" : copyLabel}
@@ -3977,7 +4768,7 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
   const hasShareableLink = Boolean(vm.publicInviteUrl);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <SettingsGroup
         title="Temporary link"
         separatorInset
@@ -4057,17 +4848,11 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
                 presentation="buttons"
                 maxWidthClassName={null}
               />
-              {/* The label changes while it works. This press waits on a device fix
-                  before it can post anything, so on a cold start it can sit for
-                  several seconds -- and it used to sit as a bare spinner with the
-                  label hidden, which is why it read as "taking longer than
-                  expected" rather than as "still finding you". Naming the wait is
-                  the fix available here; the wait itself is a GPS acquisition. */}
               <Button
                 onClick={vm.onCreatePublicInvite}
                 isLoading={vm.busy === "publicInvite"}
                 data-voice-control-id="one-location-action-temp-link"
-                className="h-12 min-h-12 w-full rounded-[15px] bg-[color:var(--app-accent)] text-[17px] font-semibold leading-[22px] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90"
+                 className="mx-auto block h-11 min-h-11 w-[76%] min-w-0 rounded-[14px] px-5 text-[15px] font-semibold leading-5 text-[color:var(--app-accent-fg)] bg-[color:var(--app-accent)] hover:bg-[color:var(--app-accent)]/90"
               >
                 {vm.busy === "publicInvite"
                   ? "Creating link…"
@@ -4234,6 +5019,17 @@ function ShareFlow({
   }, [onEnterShareConfirm, step]);
 
   const filtered = vm.visibleShareRecipients;
+  const selectedCircleByRecipientId = new globalThis.Map<
+    string,
+    CircleRecipientSelection
+  >();
+  for (const selection of vm.selectedShareCircleSelections) {
+    for (const target of selection.ready) {
+      if (!selectedCircleByRecipientId.has(target.recipient.userId)) {
+        selectedCircleByRecipientId.set(target.recipient.userId, selection);
+      }
+    }
+  }
   /**
    * Who can already see you, by recipient — the same `activeOwnerGrants` the
    * Active shares screen lists, read here for the first time.
@@ -4277,13 +5073,15 @@ function ShareFlow({
     r: OneLocationRecipient,
     activeGrant: OneLocationGrant | undefined,
   ) => {
-    const selected = vm.selectedRecipientIds.includes(r.userId);
+    const selected = vm.selectedDirectRecipientIds.includes(r.userId);
+    const includedThroughCircle = selectedCircleByRecipientId.get(r.userId);
     const ready = vm.isRecipientShareReady(r);
     const label = vm.recipientLabel(r);
     return (
       <SettingsRow
         key={r.userId}
         density="compact"
+        textOverflow="truncate"
         disabled={!ready}
         onClick={
           ready
@@ -4293,7 +5091,13 @@ function ShareFlow({
         ariaPressed={ready ? selected : undefined}
         ariaLabel={
           ready
-            ? `${selected ? "Deselect" : "Select"} ${label} for private sharing`
+            ? selected
+              ? includedThroughCircle
+                ? `Remove ${label} as an individual contact; they will still be included through ${includedThroughCircle.circle.name}`
+                : `Deselect ${label} for private sharing`
+              : includedThroughCircle
+                ? `Also select ${label} as an individual contact; already included through ${includedThroughCircle.circle.name}`
+                : `Select ${label} for private sharing`
             : undefined
         }
         leading={
@@ -4324,11 +5128,29 @@ function ShareFlow({
             ) : (
               <ShareCountdownText expiresAt={activeGrant.expiresAt} />
             )
+          ) : includedThroughCircle ? (
+            `Included through ${includedThroughCircle.circle.name}`
           ) : ready ? undefined : (
             "Invite them first"
           )
         }
-        trailing={ready ? <SelectionDot selected={selected} /> : undefined}
+        trailing={
+          ready ? (
+            selected ? (
+              <SelectionDot selected />
+            ) : includedThroughCircle ? (
+              <span
+                aria-label={`Included through ${includedThroughCircle.circle.name}`}
+                className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-full bg-[color:var(--app-accent-surface)] px-2 text-[11px] font-semibold text-[color:var(--app-accent)]"
+              >
+                <UsersRound className="h-3.5 w-3.5" aria-hidden="true" />
+                Circle
+              </span>
+            ) : (
+              <SelectionDot selected={false} />
+            )
+          ) : undefined
+        }
       />
     );
   };
@@ -4353,33 +5175,32 @@ function ShareFlow({
    * Reuses the `nowMs` this step already ticks every 30 seconds, so a screen
    * left open cannot quote a remaining time that has since run out.
    */
-  const shareReplacementRows: ShareReplacementRow[] = shareReplacementsLosingTime(
-    {
+  const shareReplacementRows: ShareReplacementRow[] =
+    shareReplacementsLosingTime({
       recipientUserIds: selectedReady.map((recipient) => recipient.userId),
       activeOwnerGrants: vm.activeOwnerGrants,
       durationValue: vm.shareDurationHours,
       nowMs,
-    },
-  ).map(({ recipientUserId, grant, untilStopped }) => {
-    const recipient = recipientById.get(recipientUserId);
-    return {
-      recipientUserId,
-      label: recipient ? vm.recipientLabel(recipient) : "This person",
-      untilStopped,
-      // The two vocabularies this app already owns for the two kinds of live
-      // share: "Until you stop" is what every surface that lists a share calls
-      // an open-ended one, and `formatLocationRemaining` is what the approvals
-      // card, the feed and the Consent Manager call the time left on a timed
-      // one. A warning about a share must not be the one place that words it
-      // differently.
-      remainingLabel: untilStopped
-        ? "Until you stop"
-        : (formatLocationRemaining(
-            parseTimestamp(grant.expiresAt) ?? nowMs,
-            nowMs,
-          ) ?? "less than a minute more"),
-    };
-  });
+    }).map(({ recipientUserId, grant, untilStopped }) => {
+      const recipient = recipientById.get(recipientUserId);
+      return {
+        recipientUserId,
+        label: recipient ? vm.recipientLabel(recipient) : "This person",
+        untilStopped,
+        // The two vocabularies this app already owns for the two kinds of live
+        // share: "Until you stop" is what every surface that lists a share calls
+        // an open-ended one, and `formatLocationRemaining` is what the approvals
+        // card, the feed and the Consent Manager call the time left on a timed
+        // one. A warning about a share must not be the one place that words it
+        // differently.
+        remainingLabel: untilStopped
+          ? "Until you stop"
+          : (formatLocationRemaining(
+              parseTimestamp(grant.expiresAt) ?? nowMs,
+              nowMs,
+            ) ?? "less than a minute more"),
+      };
+    });
   const shareReplacementDurationLabel = formatLocationDurationLabel(
     resolveShareDurationHours(vm.shareDurationHours),
   );
@@ -4403,18 +5224,36 @@ function ShareFlow({
     shareNoteLength > 0 ||
     shareNoteLength >= ONE_LOCATION_SHARE_NOTE_MAX_LENGTH - 20 ||
     shareNoteLimitExceeded;
-  // Picking a Circle selects its ready members in the list below, and those
-  // rows remain individually deselectable. Once one is turned off the recipients
-  // are no longer that Circle, so the Circle row stops reading as selected.
+  // Circles stay atomic in the picker. Their recipients are expanded only for
+  // review and encrypted delivery.
   const shareableCircles = useMemo(
     () => vm.circles.filter((circle) => circle.systemKind !== "trusted"),
     [vm.circles],
   );
-  const shareCircleFullySelected = isCircleSelectionFullySelected(
-    vm.selectedShareCircleSelection,
-    vm.selectedRecipientIds,
-  );
+  const shareCircleGroups = useMemo(() => {
+    const ownedSystem: OneLocationCircleSummary[] = [];
+    const ownedNamed: OneLocationCircleSummary[] = [];
+    const joined: OneLocationCircleSummary[] = [];
 
+    for (const circle of shareableCircles) {
+      if (circle.role !== "owner") {
+        joined.push(circle);
+      } else if (circle.systemKind === "sms" || circle.isSystem) {
+        ownedSystem.push(circle);
+      } else {
+        ownedNamed.push(circle);
+      }
+    }
+
+    return [
+      {
+        key: "owned",
+        title: "Your circles",
+        circles: [...ownedSystem, ...ownedNamed],
+      },
+      { key: "joined", title: "Joined circles", circles: joined },
+    ].filter((group) => group.circles.length > 0);
+  }, [shareableCircles]);
   // Step 2 of 2 — "Details" and the old separate "Consent check" merged.
   //
   // They were split as set-then-confirm, which put a screen transition between
@@ -4446,6 +5285,20 @@ function ShareFlow({
             is the design explaining itself. */}
         <TaskFlowHeader eyebrow="Step 2 of 2" title="Ready to share?" />
 
+        {vm.shareError ? (
+          <div
+            role="alert"
+            className="rounded-[var(--app-radius-control)] border border-destructive/20 bg-destructive/[0.06] px-4 py-3"
+          >
+            <p className="text-[14px] font-semibold leading-[19px] text-foreground">
+              Sharing didn’t start
+            </p>
+            <p className="mt-0.5 text-[13px] leading-[18px] text-muted-foreground">
+              {vm.shareError}
+            </p>
+          </div>
+        ) : null}
+
         <SectionCard className="p-5 sm:p-6">
           <div className="space-y-6">
             {/* The absolute end time is the part people actually reason
@@ -4462,16 +5315,14 @@ function ShareFlow({
               hint={shareEndsAtLabel(vm.shareDurationHours, nowMs)}
               presentation="ladder"
               untilStopValue="until_stopped"
+              compact
             />
             {/* space-y-2.5 matches DurationSelector's own label→control gap
                 above. The two label/field pairs sit in the same card, so an
                 8px gap under one and 10px under the other reads as a
                 mistake. */}
             <div className="space-y-2.5">
-              <FormLabel
-                as="label"
-                htmlFor="one-location-share-note"
-              >
+              <FormLabel as="label" htmlFor="one-location-share-note">
                 Optional note
               </FormLabel>
               <div className="relative">
@@ -4545,7 +5396,7 @@ function ShareFlow({
           newDurationLabel={shareReplacementDurationLabel}
         />
 
-        <div className="space-y-2.5">
+        <div className={SHARE_CONFIRM_ACTIONS_CLASSNAME}>
           <Button
             // Unchanged for every share that takes nothing away. When one
             // would, the tap opens the confirm dialog instead of posting, and
@@ -4560,13 +5411,13 @@ function ShareFlow({
             disabled={!vm.canShare || shareNoteLimitExceeded}
             isLoading={vm.busy === "share"}
             data-voice-control-id="one-location-confirm-share"
-            className="h-[52px] w-full rounded-2xl bg-[color:var(--app-accent)] text-[17px] font-semibold leading-[22px] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90 disabled:bg-black/10 disabled:text-black/35 disabled:opacity-100 dark:disabled:bg-white/10 dark:disabled:text-white/35"
+            className={SHARE_CONFIRM_PRIMARY_CTA_CLASSNAME}
           >
             Start sharing
           </Button>
           <Button
             variant="ghost"
-            onClick={onClose}
+            onClick={() => onClose()}
             className="h-11 w-full rounded-2xl bg-transparent text-[17px] font-medium leading-[22px] text-[color:var(--app-accent)] hover:bg-transparent"
           >
             Cancel
@@ -4594,9 +5445,9 @@ function ShareFlow({
       <TaskFlowHeader
         eyebrow="Step 1 of 2"
         title="Who can see you?"
-        description={selectedCountCopy(
-          selectedReady.length,
-          "Choose a Circle or contact.",
+        description={shareAudienceSelectionCopy(
+          vm.selectedShareCircleSelections.length,
+          vm.selectedDirectRecipientIds.length,
         )}
       />
       {/* Trusted is not a group you share with.
@@ -4613,52 +5464,51 @@ function ShareFlow({
        * invite step already filters the same way. Only this picker is
        * narrowed: the People tab, SOS contacts and the SMS flow still list
        * every Circle. */}
-      {shareableCircles.length ? (
+      {shareCircleGroups.map((group) => (
         <SettingsGroup
-          title="Circles"
+          key={group.key}
+          title={group.title}
           separatorInset
           className="[&>div:first-child]:mt-0"
+          testId={`one-location-share-circles-${group.key}`}
         >
-          {[...shareableCircles]
-            .sort((a, b) => (a.name === "SMS Circle" ? 1 : b.name === "SMS Circle" ? -1 : 0))
-            .map((circle) => {
-            const selected =
-              vm.selectedShareCircleSelection?.circle.id === circle.id &&
-              shareCircleFullySelected;
-            const circleRole = roleClasses("people");
-            return (
-              <SettingsRow
-                key={circle.id}
-                density="compact"
-                disabled={vm.busy === "shareCircle"}
-                onClick={() => void vm.onSelectShareCircle(circle.id)}
-                ariaPressed={selected}
-                ariaLabel={`${selected ? "Deselect" : "Select"} the ${circle.name} Circle`}
-                leading={
-                  <span
-                    className={cn(
-                      "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-                      circleRole.tile,
-                      circleRole.glyph,
-                    )}
-                  >
-                    <UsersRound className="h-[18px] w-[18px]" />
-                  </span>
-                }
-                title={circle.name}
-                description={
-                  vm.busy === "shareCircle"
-                    ? "Loading…"
-                    : selected
-                      ? `${selectedReady.length} selected`
-                      : circleMemberCountLabel(circle.memberCount)
-                }
-                trailing={<SelectionDot selected={selected} />}
-              />
-            );
-          })}
+          {group.circles.map((circle) => {
+              const selected = vm.selectedShareCircleSelections.some(
+                (selection) => selection.circle.id === circle.id,
+              );
+              const pending = vm.pendingShareCircleIds.includes(circle.id);
+              const circleSelectionDescription = circleMemberCountLabel(
+                circle.memberCount,
+              );
+              const circleRole = roleClasses("people");
+              return (
+                <SettingsRow
+                  key={circle.id}
+                  density="compact"
+                  textOverflow="truncate"
+                  disabled={pending}
+                  onClick={() => void vm.onSelectShareCircle(circle.id)}
+                  ariaPressed={selected}
+                  ariaLabel={`${selected ? "Deselect" : "Select"} the ${circle.name} Circle, ${circleSelectionDescription}`}
+                  leading={
+                    <span
+                      className={cn(
+                        "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
+                        circleRole.tile,
+                        circleRole.glyph,
+                      )}
+                    >
+                      <UsersRound className="h-[18px] w-[18px]" />
+                    </span>
+                  }
+                  title={circle.name}
+                  description={pending ? "Adding…" : circleSelectionDescription}
+                  trailing={<SelectionDot selected={selected} />}
+                />
+              );
+            })}
         </SettingsGroup>
-      ) : null}
+      ))}
       <PersonSearchInput
         value={vm.shareRecipientSearch}
         onChange={vm.setShareRecipientSearch}
@@ -4700,6 +5550,14 @@ function ShareFlow({
           ) : null}
           {notSharing.length ? (
             <SettingsGroup
+              title={
+                <span className="flex w-full items-center justify-between gap-4">
+                  <span>Not sharing</span>
+                  <span className="font-normal text-muted-foreground">
+                    {notSharing.length}
+                  </span>
+                </span>
+              }
               testId="one-location-share-people"
               separatorInset
               className="[&>div:first-child]:mt-0"
@@ -4729,10 +5587,18 @@ function ShareFlow({
       <div className={STICKY_FLOW_ACTION_CLASSNAME}>
         <Button
           onClick={() => setStep("details")}
-          disabled={!selectedReady.length}
+          disabled={
+            !selectedReady.length ||
+            Boolean(vm.pendingShareCircleIds.length) ||
+            vm.shareDeliveryPending
+          }
           className="h-[52px] w-full rounded-2xl bg-[color:var(--app-accent)] text-[17px] font-semibold leading-[22px] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90 disabled:bg-black/10 disabled:text-black/35 disabled:opacity-100 dark:disabled:bg-white/10 dark:disabled:text-white/35"
         >
-          Continue
+          {vm.shareDeliveryPending
+            ? "Sharing…"
+            : vm.pendingShareCircleIds.length
+              ? "Adding Circle…"
+              : "Continue"}
         </Button>
       </div>
     </div>
@@ -4803,7 +5669,9 @@ function LiveShareDurationEditor({
       */}
       <DurationSelector
         value={value}
-        onChange={onChange}
+        onChange={(next) => {
+          if (!saving) onChange(next);
+        }}
         presentation="ladder"
         rungs={CHANGE_TIME_DURATION_LADDER}
         untilStopValue="until_stopped"
@@ -4821,6 +5689,7 @@ function LiveShareDurationEditor({
           variant="ghost"
           className="h-11 rounded-full"
           onClick={onCancel}
+          disabled={saving}
           data-testid="one-location-live-share-duration-cancel"
         >
           Cancel
@@ -5051,11 +5920,10 @@ function AskFlow({
   vm: LocationHubViewModel;
   reason: ReasonValue | null;
   setReason: (r: ReasonValue) => void;
-  onClose: () => void;
+  onClose: (nextTab?: LocationHubTab) => void;
 }) {
   const filtered = vm.visibleRecipients;
   const [step, setStep] = useState<"person" | "details">("person");
-  const [pendingSheetOpen, setPendingSheetOpen] = useState(false);
   /**
    * The field is local; the FILTER is debounced.
    *
@@ -5070,6 +5938,7 @@ function AskFlow({
    */
   const [searchDraft, setSearchDraft] = useState(vm.recipientSearch);
   const debouncedSearch = useDebouncedValue(searchDraft, 250);
+  const [askDraftReady, setAskDraftReady] = useState(false);
   useEffect(() => {
     if (debouncedSearch !== vm.recipientSearch) {
       vm.setRecipientSearch(debouncedSearch);
@@ -5078,6 +5947,28 @@ function AskFlow({
     // render and defeat the debounce entirely.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedSearch]);
+
+  useEffect(() => {
+    if (askDraftReady) return;
+    const draft = readStoredAskFlowDraft();
+    if (draft) {
+      const knownRecipients = new Set(
+        vm.recipients.map((recipient) => recipient.userId),
+      );
+      setSearchDraft(draft.search);
+      vm.setRecipientSearch(draft.search);
+      vm.setDurationHours(draft.durationHours);
+      vm.setRequestMessage(draft.requestMessage);
+      if (draft.reason) setReason(draft.reason);
+      vm.setSelectedRequestOwnerIds(
+        draft.selectedOwnerIds.filter((id) => knownRecipients.has(id)),
+      );
+    }
+    setAskDraftReady(true);
+    // Restore once per flow mount. The view model object is intentionally not a
+    // dependency because it is rebuilt by the page on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askDraftReady]);
 
   // Keep the person on this screen after sending, so the roster they just acted
   // on is still the thing in front of them and the next ask is one tap away
@@ -5107,6 +5998,24 @@ function AskFlow({
         Boolean(recipient),
       );
   }, [selectedRequestOwnerIds, vm.recipients]);
+
+  useEffect(() => {
+    if (!askDraftReady) return;
+    writeStoredAskFlowDraft({
+      search: searchDraft,
+      selectedOwnerIds: selectedRequestOwnerIds,
+      durationHours: vm.durationHours,
+      requestMessage: vm.requestMessage,
+      reason,
+    });
+  }, [
+    askDraftReady,
+    reason,
+    searchDraft,
+    selectedRequestOwnerIds,
+    vm.durationHours,
+    vm.requestMessage,
+  ]);
   // Guards a double-tap inside the same frame, where `vm.busy` has not yet
   // re-rendered the button as disabled.
   const sendInFlightRef = useRef(false);
@@ -5116,7 +6025,8 @@ function AskFlow({
   //
   // Coarse on purpose: these labels move in minutes, so a 30s tick keeps them
   // honest without re-rendering a list of people every second.
-  const [statusNowMs, setStatusNowMs] = useState(() => Date.now());
+  // Reuse the page clock, which refreshes on foreground as well as its timer.
+  const statusNowMs = vm.nowMs;
 
   /**
    * Every live grant with each owner, indexed once.
@@ -5153,6 +6063,23 @@ function AskFlow({
       }),
     [vm.requestedByMe, vm.receivedGrants, vm.activeOwnerGrants],
   );
+  const rosterRows = useMemo(
+    () =>
+      flattenRecipientSections(
+        sectionRecipients({
+          recipients: filtered,
+          lastInteraction,
+          label: vm.recipientLabel,
+          querying: vm.recipientSearch.trim().length > 0,
+        }),
+      ),
+    [filtered, lastInteraction, vm.recipientLabel, vm.recipientSearch],
+  );
+  const rosterRecipientRows = useMemo(
+    () => rosterRows.filter((row) => row.kind === "recipient"),
+    [rosterRows],
+  );
+
   const receivedGroupsByOwner = useMemo(() => {
     const byOwner = new globalThis.Map<string, OneLocationGrantLaneGroup>();
     // `"recipient"` -- the side argument names WHICH SIDE I AM, so for grants
@@ -5168,22 +6095,6 @@ function AskFlow({
     }
     return byOwner;
   }, [vm.receivedGrants]);
-
-  const pendingAskRequests = useMemo(
-    () =>
-      vm.requestedByMe.filter(
-        (request) =>
-          request.status === "pending" && request.extendsGrantId == null,
-      ),
-    [vm.requestedByMe],
-  );
-
-  const recipientById = useMemo(() => {
-    const byId = new globalThis.Map<string, OneLocationRecipient>();
-    for (const recipient of vm.recipients)
-      byId.set(recipient.userId, recipient);
-    return byId;
-  }, [vm.recipients]);
 
   /**
    * What each visible row says, computed once per data change.
@@ -5209,60 +6120,26 @@ function AskFlow({
     return byRecipient;
   }, [filtered, vm.requestedByMe, vm.receivedGrants, statusNowMs]);
 
-  const queryActive =
-    searchDraft.trim().length > 0 || vm.recipientSearch.trim().length > 0;
-  const askableRecipients = useMemo(
+  const normalizedRecipientSearch = vm.recipientSearch.trim().toLowerCase();
+  const searchActive = normalizedRecipientSearch.length > 0;
+  const eligibleRecipientRows = useMemo(
     () =>
-      queryActive
-        ? filtered
-        : filtered.filter(
-            (recipient) =>
-              statusByRecipient.get(recipient.userId)?.selectable ?? true,
-          ),
-    [filtered, queryActive, statusByRecipient],
-  );
-
-  const rosterRows = useMemo(
-    () =>
-      flattenRecipientSections(
-        sectionRecipients({
-          recipients: askableRecipients,
-          lastInteraction,
-          label: vm.recipientLabel,
-          querying: queryActive,
-        }),
+      rosterRecipientRows.filter(
+        (row) => statusByRecipient.get(row.recipient.userId)?.selectable,
       ),
-    [askableRecipients, lastInteraction, queryActive, vm.recipientLabel],
+    [rosterRecipientRows, statusByRecipient],
   );
-  const rosterRecipientRows = useMemo(
-    () => rosterRows.filter((row) => row.kind === "recipient"),
-    [rosterRows],
-  );
-
-  /**
-   * Whether anything on screen is actually measured against the clock.
-   *
-   * "Asked 6m ago" and "Sharing with you, 29 more min" go stale; "Ready for
-   * private sharing" does not. A roster of people you have never asked and who
-   * are not sharing has nothing that ages, and re-rendering it every 30 seconds
-   * is CPU spent to redraw identical text -- battery, on a phone.
-   */
-  const hasTimeRelativeRow = useMemo(
+  const askRecipientRows = searchActive
+    ? rosterRecipientRows
+    : eligibleRecipientRows;
+  const pendingNewRequestCount = useMemo(
     () =>
-      [...statusByRecipient.values()].some(
-        (status) =>
-          status.statusLabel !== undefined ||
-          status.pendingRequestId !== undefined ||
-          status.tone !== "ready",
-      ),
-    [statusByRecipient],
+      vm.requestedByMe.filter(
+        (request) =>
+          isLocationRequestPending(request, statusNowMs) && !request.extendsGrantId,
+      ).length,
+    [statusNowMs, vm.requestedByMe],
   );
-
-  useEffect(() => {
-    if (!hasTimeRelativeRow) return;
-    const timer = window.setInterval(() => setStatusNowMs(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, [hasTimeRelativeRow]);
 
   /**
    * The extension already waiting on each live grant, indexed once.
@@ -5274,13 +6151,13 @@ function AskFlow({
   const pendingExtensionByGrantId = useMemo(() => {
     const byGrantId = new globalThis.Map<string, OneLocationAccessRequest>();
     for (const request of vm.requestedByMe) {
-      if (request.status !== "pending" || !request.extendsGrantId) continue;
+      if (!isLocationRequestPending(request, statusNowMs) || !request.extendsGrantId) continue;
       if (!byGrantId.has(request.extendsGrantId)) {
         byGrantId.set(request.extendsGrantId, request);
       }
     }
     return byGrantId;
-  }, [vm.requestedByMe]);
+  }, [statusNowMs, vm.requestedByMe]);
 
   const isRequestFormValid = vm.selectedRequestOwnerIds.length > 0;
   const sendingRequest = vm.busy === "request";
@@ -5296,8 +6173,13 @@ function AskFlow({
         // only once at least one request reached the server, and raises the
         // toast itself; a failure leaves the composer intact with its own error
         // toast and never moves the step.
-        const sent = await vm.onSendRequest(reason);
-        if (sent) setStep("person");
+        const result = await vm.onSendRequest(reason);
+        if (result.completed) {
+          clearStoredAskFlowDraft();
+          onClose("now");
+        } else if (result.sent) {
+          setStep("details");
+        }
       } finally {
         sendInFlightRef.current = false;
       }
@@ -5307,7 +6189,16 @@ function AskFlow({
   if (step === "details") {
     return (
       <div className={FLOW_STEP_CONFIRM_CLASSNAME}>
-        <TaskFlowHeader eyebrow="Step 2 of 2" title="Request details" />
+        {/* Names the two fields under it rather than asking whether the
+            person is ready.
+
+            "Ready to ask?" was a yes/no question about the reader's state of
+            mind, on a screen whose whole job is to collect two answers -- how
+            long, and why. It told somebody arriving here nothing they did not
+            already know (they tapped Continue; they are ready) and nothing
+            about what the screen wanted from them. This is the same two words
+            the section labels below use, in the same order. */}
+        <TaskFlowHeader eyebrow="Step 2 of 2" title="Who, then how long?" />
 
         <SelectedRecipientsRail
           title="Asking"
@@ -5351,10 +6242,7 @@ function AskFlow({
             />
             {reason === "Other" ? (
               <div className="space-y-2.5">
-                <FormLabel
-                  as="label"
-                  htmlFor="one-location-ask-other-reason"
-                >
+                <FormLabel as="label" htmlFor="one-location-ask-other-reason">
                   Add reason
                 </FormLabel>
                 <textarea
@@ -5378,28 +6266,10 @@ function AskFlow({
           </div>
         </SectionCard>
 
-        <TrustNoteCard description="They can approve or decline." />
-
-        {/* Pinned for the same reason Continue is on step 1: the last check
-            before an outward action -- how many people, and to whom -- must be
-            on screen at the moment the action is. The count is `aria-live`, so
-            it is spoken as it changes rather than only when the button is
-            reached. */}
         <div
           data-testid="one-location-ask-send-bar"
           className={cn(STICKY_FLOW_ACTION_CLASSNAME, "space-y-2.5")}
         >
-          {isRequestFormValid ? (
-            <p
-              aria-live="polite"
-              data-testid="one-location-ask-selection-summary"
-              className={cn(MUTED_TEXT, "px-1")}
-            >
-              {vm.selectedRequestOwnerIds.length === 1
-                ? "1 person selected"
-                : `${vm.selectedRequestOwnerIds.length} people selected`}
-            </p>
-          ) : null}
           <Button
             onClick={sendRequest}
             disabled={!isRequestFormValid || sendingRequest}
@@ -5411,7 +6281,7 @@ function AskFlow({
           </Button>
           <Button
             variant="ghost"
-            onClick={onClose}
+            onClick={() => onClose()}
             className="h-11 w-full rounded-2xl bg-transparent text-[17px] font-medium leading-[22px] text-[color:var(--app-accent)] hover:bg-transparent"
           >
             Cancel
@@ -5428,41 +6298,35 @@ function AskFlow({
         title="Ask for location"
         description={selectedCountCopy(
           selectedRequestRecipients.length,
-          "Choose one or more people.",
+          "Choose who to ask.",
         )}
       />
 
       {/* No confirmation banner here. The send raises a toast, and each person
           asked says so in their own row -- see the note beside `sendRequest`. */}
       <section className="space-y-3">
-        {pendingAskRequests.length ? (
-          <button
-            type="button"
-            onClick={() => setPendingSheetOpen(true)}
-            className="flex min-h-12 w-full items-center gap-3 rounded-[16px] border border-[color:var(--app-separator)] bg-[color:var(--app-card-surface-default-solid)] px-4 text-left text-[15px] font-semibold leading-5 text-[color:var(--app-label)] shadow-[var(--app-card-shadow-subtle)] transition-colors hover:bg-[color:var(--app-neutral-fill)] dark:shadow-none"
-          >
-            <span className="min-w-0 flex-1">
-              Waiting for {pendingAskRequests.length}{" "}
-              {pendingAskRequests.length === 1 ? "response" : "responses"}
-            </span>
-            <ChevronRight
-              className="h-4 w-4 shrink-0 text-[color:var(--app-tertiary-label)]"
-              aria-hidden="true"
-            />
-          </button>
-        ) : null}
         <PersonSearchInput
           value={searchDraft}
           onChange={setSearchDraft}
           placeholder="Search people"
         />
-        {filtered.length ? (
+        {!searchActive && pendingNewRequestCount > 0 ? (
+          <div
+            data-testid="one-location-ask-waiting-summary"
+            className="rounded-[18px] border border-[color:var(--app-separator)] bg-[color:var(--app-primary-surface)] px-4 py-3"
+          >
+            <p className="text-[15px] font-semibold leading-5 text-foreground">
+              {waitingResponsesLabel(pendingNewRequestCount)}
+            </p>
+          </div>
+        ) : null}
+        {askRecipientRows.length ? (
           <VirtualContactList
-            items={rosterRecipientRows}
+            items={askRecipientRows}
             getKey={(row) => row.key}
             testId="one-location-ask-recipients"
             ariaLabel="People you can ask"
-            maxHeightClassName="max-h-[48vh]"
+            maxHeightClassName="max-h-[min(640px,70vh)]"
             renderItem={(row) => {
               const r = row.recipient;
               const selected = vm.selectedRequestOwnerIds.includes(r.userId);
@@ -5481,6 +6345,10 @@ function AskFlow({
                 Boolean(activeGrant) && vm.editingGrantId === activeGrant?.id;
               const pendingRequestId = status.pendingRequestId;
               const recipientLabel = vm.recipientLabel(r);
+              const exactStatusSearch =
+                searchActive &&
+                recipientLabel.toLowerCase().includes(normalizedRecipientSearch);
+              const showStateActions = !status.selectable && exactStatusSearch;
               return (
                 <RequestRecipientListRow
                   key={r.userId}
@@ -5506,7 +6374,7 @@ function AskFlow({
                   }
                   selected={selected && status.selectable}
                   onEdit={
-                    activeGrant
+                    showStateActions && activeGrant
                       ? () =>
                           isEditingThis
                             ? vm.onEditGrantCancel()
@@ -5515,18 +6383,24 @@ function AskFlow({
                   }
                   editActive={isEditingThis}
                   onRemove={
-                    activeGrant
+                    showStateActions && activeGrant
                       ? () => vm.onStopGrant(activeGrant.id)
+                      : showStateActions && pendingRequestId
+                        ? () => vm.onWithdrawRequest(pendingRequestId)
+                        : undefined
+                  }
+                  removeAriaLabel={
+                    !activeGrant && pendingRequestId
+                      ? `Take back your request to ${recipientLabel}`
                       : undefined
                   }
-                  removeAriaLabel={undefined}
                   removeBusy={
                     activeGrant
                       ? vm.revokingGrantId === activeGrant.id
                       : vm.withdrawingRequestId === pendingRequestId
                   }
                   expandedContent={
-                    isEditingThis && activeGrant ? (
+                    showStateActions && isEditingThis && activeGrant ? (
                       /* Reported: "4 hours ke liye approval maine le liya toh
                          neeche ke time duration edit mein aana illogical ...
                          agar deni hain toh user can ask for more time".
@@ -5565,76 +6439,26 @@ function AskFlow({
           <div className="mt-3">
             {vm.recipientSearch.trim() ? (
               <EmptyState
-                title="No matching people"
-                description="Try a different name."
+                title="No one new to ask"
+                description="Find or invite them in Connect."
               />
             ) : (
               <EmptyState
-                title="No one to request from yet"
-                description="Invite someone first."
+                title="No one to ask yet"
+                description="Find or invite someone first."
               />
             )}
+            <Link
+              href={askFlowConnectRecoveryHref(searchDraft)}
+              data-testid="one-location-ask-find-or-invite"
+              className="mt-3 inline-flex min-h-11 items-center gap-1 rounded-full px-1 text-[15px] font-medium text-[color:var(--app-accent)]"
+            >
+              Find or invite someone
+              <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" />
+            </Link>
           </div>
         )}
-        <Link
-          href={ROUTES.CONNECT}
-          data-testid="one-location-ask-manage-connections"
-          className="mt-2 inline-flex min-h-11 items-center gap-1 rounded-full px-1 text-[15px] font-medium text-[color:var(--app-accent)]"
-        >
-          Manage connections
-          <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" />
-        </Link>
       </section>
-
-      <Dialog open={pendingSheetOpen} onOpenChange={setPendingSheetOpen}>
-        <DialogContent className="max-w-[420px] rounded-[24px] border-[color:var(--app-separator)] bg-[color:var(--app-primary-surface)] p-0 shadow-[var(--app-card-shadow-standard)] dark:shadow-none">
-          <DialogHeader className="px-5 pb-3 pt-5 text-left">
-            <DialogTitle className="text-[22px] font-semibold leading-[27px] tracking-[-0.35px] text-[color:var(--app-label)]">
-              Waiting for responses
-            </DialogTitle>
-            <DialogDescription className="text-[15px] leading-5 text-[color:var(--app-secondary-label)]">
-              They can approve or decline.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="divide-y divide-[color:var(--app-separator)]">
-            {pendingAskRequests.map((request) => {
-              const recipient = recipientById.get(request.ownerUserId);
-              const name = recipient
-                ? vm.recipientLabel(recipient)
-                : vm.requestOwnerLabel(request);
-              const cancelling = vm.withdrawingRequestId === request.id;
-              return (
-                <div
-                  key={request.id}
-                  className="flex min-h-[66px] items-center gap-3 px-5 py-3"
-                >
-                  <ContactAvatar
-                    label={name}
-                    photoUrl={recipient?.photoUrl}
-                    className="h-10 w-10"
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[17px] font-medium leading-[22px] text-[color:var(--app-label)]">
-                      {name}
-                    </span>
-                    <span className="mt-0.5 block truncate text-[13px] leading-[18px] text-[color:var(--app-secondary-label)]">
-                      {pendingAskMeta(request, statusNowMs)}
-                    </span>
-                  </span>
-                  <Button
-                    variant="ghost"
-                    onClick={() => vm.onWithdrawRequest(request.id)}
-                    disabled={cancelling}
-                    className="min-h-11 shrink-0 rounded-full px-3 text-[15px] font-semibold text-destructive hover:bg-destructive/10 hover:text-destructive"
-                  >
-                    {cancelling ? "Cancelling…" : "Cancel request"}
-                  </Button>
-                </div>
-              );
-            })}
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <div className={STICKY_FLOW_ACTION_CLASSNAME}>
         <Button

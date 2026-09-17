@@ -34,6 +34,10 @@ from hushh_mcp.operons.location.policy import (
     normalize_source_platform,
 )
 from hushh_mcp.runtime_settings import get_core_security_settings
+from hushh_mcp.services.one_location_public_invite_url import (
+    public_invite_bearer_token,
+    public_invite_url,
+)
 from hushh_mcp.services.people_search_sql import people_query_match_params
 from hushh_mcp.services.ria_status import RIA_VERIFIED_STATUS_SQL
 from hushh_mcp.types import AgentID, UserID
@@ -105,6 +109,11 @@ COORDINATE_METADATA_KEYS = {
     "reverse_geocode",
 }
 LOCATION_TERMINAL_RETENTION_HOURS = 12
+LOCATION_REQUEST_EXPIRY_HOURS = 24
+# Keep a small outcome tombstone long enough for the reported three-day return
+# visit to explain what happened and offer Ask again. Other terminal work still
+# uses the 12-hour privacy cleanup window.
+LOCATION_EXPIRED_REQUEST_RETENTION_HOURS = 7 * 24
 ATOMIC_LOCATION_SHARE_NAMESPACE = uuid.UUID("ef983dac-5044-49b0-9d35-c523b3437a54")
 
 
@@ -221,6 +230,38 @@ def _parse_datetime(value: datetime | str | None, *, field_name: str) -> datetim
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _request_effective_expires_at(row: dict[str, Any]) -> Any:
+    """Persisted deadline, or a rolling-deploy projection for an old direct row."""
+
+    expires_at = row.get("expires_at")
+    if expires_at is not None or not bool(row.get("legacy_direct_request")):
+        return expires_at
+    try:
+        requested_at = _parse_datetime(row.get("requested_at"), field_name="requestedAt")
+    except OneLocationAgentError:
+        return None
+    return requested_at + timedelta(hours=LOCATION_REQUEST_EXPIRY_HOURS)
+
+
+def _request_expiry_has_passed(row: dict[str, Any], *, now: datetime | None = None) -> bool:
+    """Whether a direct request crossed its server-owned deadline.
+
+    A NULL deadline is intentional for referral/public-link workflows. A read
+    query can mark an unlinked NULL as an old-revision direct row, in which case
+    its original send time projects the same one-day deadline until repaired.
+    Invalid persisted values fail closed so a read projection cannot 500.
+    """
+
+    expires_at = _request_effective_expires_at(row)
+    if expires_at is None:
+        return False
+    try:
+        parsed = _parse_datetime(expires_at, field_name="expiresAt")
+    except OneLocationAgentError:
+        return False
+    return parsed <= (now or _utcnow())
 
 
 def _validated_envelope_fields(
@@ -490,7 +531,7 @@ def _hash_public_value(value: str) -> str:
 # digest. Rows minted before this carry no version marker, so their token stays
 # unrecoverable and the payload simply omits the URL -- unchanged behaviour for
 # them, rather than a wrong link.
-# A public link is readable by anyone who holds it, so its ceiling is one hour
+# A public link is readable by anyone who holds it, so its ceiling is two hours
 # and the screen says so.
 #
 # The screen was the ONLY thing saying so. `normalize_duration_hours` allows up
@@ -501,9 +542,9 @@ def _hash_public_value(value: str) -> str:
 #
 # Rejected rather than clamped: silently shortening what was asked for is how
 # the client-side clamp hid this in the first place, and no shipped client can
-# reach this branch -- every public-link caller already clamps to one hour
+# reach this branch -- every public-link caller already clamps to two hours
 # before it posts.
-PUBLIC_INVITE_MAX_DURATION_HOURS = 1.0
+PUBLIC_INVITE_MAX_DURATION_HOURS = 2.0
 
 _PUBLIC_INVITE_TOKEN_DOMAIN = b"one-location-public-invite-token:v1:"
 _PUBLIC_INVITE_CODE_VERSION = "derived-v1"
@@ -568,7 +609,7 @@ def _public_invite_token_if_derivable(row: dict[str, Any] | None) -> str | None:
     return token
 
 
-def _public_invite_url(token: str) -> str:
+def _public_invite_url(token: str, owner_label: str = "") -> str:
     """The app-relative page a public live-location link points at.
 
     `/view/`, not `/request/`. The path was named after the submission form the
@@ -582,7 +623,7 @@ def _public_invite_url(token: str) -> str:
     client-side forwarder for the native static export, which has no proxy.
     """
 
-    return f"/one/location/view/{token}"
+    return public_invite_url(token, owner_label)
 
 
 def _circle_invite_url(token: str) -> str:
@@ -729,6 +770,33 @@ def _is_sos_lane(share_kind: str | None) -> bool:
     return str(share_kind or "").strip() == "sos"
 
 
+def _assert_sharing_not_off(
+    execute_one: Any,
+    *,
+    owner_user_id: str,
+    share_kind: str | None,
+) -> None:
+    """Enforce the owner-level ``sharing_state='off'`` posture (migration 221).
+
+    Called at the entry of every write path that would start or continue a
+    share. The SOS lane is exempt: an emergency must never be blocked by a
+    privacy toggle. ``execute_one`` is the caller's executor so the check runs
+    inside the caller's transaction when one is bound.
+    """
+    if _is_sos_lane(share_kind):
+        return
+    row = execute_one(
+        "SELECT sharing_state FROM one_location_account_settings WHERE user_id = :user_id",
+        {"user_id": owner_user_id},
+    )
+    if row and str(row.get("sharing_state") or "") == "off":
+        raise OneLocationAgentError(
+            "LOCATION_SHARING_OFF",
+            "Location sharing is turned off. Turn it on to share.",
+            status_code=409,
+        )
+
+
 def _classify_share_kind(reason: str | None) -> str:
     """Classify a grant's share kind from its stored ``reason`` marker.
 
@@ -747,6 +815,29 @@ def _classify_share_kind(reason: str | None) -> str:
     if not text or text in {"owner_approved", "request_approved"}:
         return "share"
     return "check_in"
+
+
+def requires_recipient_phone_verification(
+    *,
+    share_kind: str | None,
+    reason: str | None,
+) -> bool:
+    """Keep the verified-phone gate on the emergency SMS lane only.
+
+    Ordinary private shares are authorized by an active One relationship and
+    encrypted to the recipient's active Location key.  Requiring an unrelated
+    phone claim after the recipient picker has already proved both facts makes
+    a connected, cryptographically ready Google-only account impossible to
+    share with.  SOS is different: its recipient list is explicitly the SMS
+    contact list, so that lane keeps the verified-phone requirement.
+
+    Classify legacy callers from ``reason`` exactly as grant creation does, so
+    an older ``sos_panic`` request cannot bypass the SMS protection merely by
+    omitting ``shareKind``.
+    """
+
+    resolved_kind = share_kind or _classify_share_kind(reason)
+    return _is_sos_lane(resolved_kind)
 
 
 def _is_until_stopped_share(duration_mode: str | None) -> bool:
@@ -1060,6 +1151,21 @@ class OneLocationAgentService:
         result = get_db().execute_raw(sql, params or {})
         return result.data or []
 
+    @staticmethod
+    def _location_read_worker_limit(*, max_workers: int) -> int:
+        """Bound read fan-out to the SQLAlchemy pool's usable capacity."""
+        pool_size = _bounded_int_env("DB_SQLALCHEMY_POOL_SIZE", default=5, minimum=1, maximum=32)
+        # Keep one pooled connection available for session/auth and other
+        # foreground work while Location assembles its full state projection.
+        default_workers = max(1, pool_size - 1)
+        worker_limit = _bounded_int_env(
+            "ONE_LOCATION_READ_MAX_WORKERS",
+            default=default_workers,
+            minimum=1,
+            maximum=pool_size,
+        )
+        return min(max_workers, worker_limit)
+
     def _run_read_queries_parallel(
         self,
         tasks: list[tuple[str, str, dict[str, Any]]],
@@ -1092,8 +1198,16 @@ class OneLocationAgentService:
         """
         if not tasks:
             return {}
+        # ``execute_raw`` checks a connection out of SQLAlchemy's shared
+        # QueuePool for every task.  The local runtime deliberately has a
+        # two-connection pool, so the historical fixed fan-out of eight made
+        # this read wait on itself and starve unrelated request work.  Reserve
+        # one pooled connection for the rest of the process, and let an
+        # operator tighten the limit further without changing code.
         results: dict[str, list[dict[str, Any]]] = {}
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(tasks))) as pool:
+        with ThreadPoolExecutor(
+            max_workers=min(self._location_read_worker_limit(max_workers=max_workers), len(tasks))
+        ) as pool:
             future_to_key = {
                 pool.submit(contextvars.copy_context().run, self._execute_many, sql, params): key
                 for key, sql, params in tasks
@@ -1129,6 +1243,64 @@ class OneLocationAgentService:
         """
 
         with get_db_connection() as connection:
+            command = None
+            prior = None
+            from hushh_mcp.services.location_command_audience_receipts import (
+                SHARE_ACTIONS,
+                CommandAudienceReceipt,
+                audience_terms,
+                command_operation_for_client,
+            )
+
+            command_operation = (
+                command_operation_for_client(
+                    connection,
+                    owner=params["owner_user_id"],
+                    operation=params.get("_client_operation_id"),
+                    explicit=params.get("_command_operation_id"),
+                )
+                if params.get("_client_operation_id") or params.get("_command_operation_id")
+                else None
+            )
+            if command_operation:
+                if params.get("_command_share_kind") not in SHARE_ACTIONS:
+                    raise OneLocationAgentError(
+                        "LOCATION_COMMAND_CHANGED",
+                        "This command did not review that kind of share.",
+                        status_code=409,
+                    )
+                command = CommandAudienceReceipt(
+                    connection,
+                    owner=params["owner_user_id"],
+                    operation=command_operation,
+                    directive_id=params.get("_command_directive_id"),
+                    action=SHARE_ACTIONS[params["_command_share_kind"]],
+                    terms=audience_terms(
+                        recipient=params["recipient_user_id"],
+                        key=params["recipient_key_id"],
+                        duration=params["duration_hours"],
+                        mode=params["duration_mode"],
+                        message=params["_command_note"],
+                        circle=params["_command_source_circle"],
+                    ),
+                )
+                prior = command.claim()
+            if params.get("enforce_connection") and not prior:
+                # Use the relationship owner's lock order, not just an MVCC
+                # existence read. Removal must either precede this share or
+                # observe and revoke the share after its transaction commits.
+                source_circle = self._lock_circle_share_eligibility(
+                    connection,
+                    owner_user_id=params["owner_user_id"],
+                    recipient_user_id=params["recipient_user_id"],
+                    requested_circle_id=params.get("source_circle_id"),
+                )
+                if source_circle != params.get("source_circle_id"):
+                    raise OneLocationAgentError(
+                        "LOCATION_RECIPIENT_NOT_CONNECTED",
+                        "The sharing relationship changed. Review this person again.",
+                        status_code=409,
+                    )
             # Recipient-key rotation and grant creation acquire this same lock
             # first. The fixed ordering prevents deadlocks and guarantees that
             # the mutation below never commits against a key that was rotated
@@ -1153,7 +1325,61 @@ class OneLocationAgentService:
                 ),
                 {"pair_lock_key": pair_lock_key},
             )
+            if command and prior:
+                existing = connection.execute(
+                    text("""SELECT g.id FROM one_location_share_grants g
+                    JOIN one_location_envelopes e ON e.id=g.latest_envelope_id AND e.grant_id=g.id
+                    WHERE g.id=CAST(:grant_id AS UUID) AND e.id=CAST(:envelope_id AS UUID)
+                      AND g.owner_user_id=:owner_user_id AND g.recipient_user_id=:recipient_user_id"""),
+                    params,
+                ).first()
+                if not existing:
+                    raise OneLocationAgentError(
+                        "LOCATION_OPERATION_CONFLICT",
+                        "The earlier share needs review.",
+                        status_code=409,
+                    )
+            if command and not prior:
+                replacements = (
+                    connection.execute(
+                        text("""SELECT id,expires_at,duration_mode FROM one_location_share_grants
+                    WHERE owner_user_id=:owner_user_id AND recipient_user_id=:recipient_user_id AND status='active'
+                      AND (expires_at IS NULL OR expires_at>NOW())
+                      AND COALESCE(metadata->>'share_kind',CASE WHEN metadata->>'reason'='sos_panic' THEN 'sos' ELSE 'share' END)<>'sos'
+                    ORDER BY id FOR UPDATE"""),
+                        params,
+                    )
+                    .mappings()
+                    .all()
+                )
+                command.verify_replacements([dict(value) for value in replacements])
             row = connection.execute(text(mutation_sql), params).mappings().first()
+            if command and not prior and row is None:
+                # A result-less mutation may already have written dependent
+                # CTEs. Reject inside this transaction so no unreceipted effect
+                # can commit before the caller diagnoses the failed operation.
+                raise OneLocationAgentError(
+                    "LOCATION_ATOMIC_SHARE_FAILED",
+                    "The share could not be verified. Review its current state.",
+                    status_code=409,
+                )
+            if command and not prior and row:
+                grant = _loads_json(row.get("grant_row"))
+                envelope = _loads_json(row.get("envelope_row"))
+                if (
+                    not isinstance(grant, dict)
+                    or not isinstance(envelope, dict)
+                    or (_loads_json(grant.get("metadata")) or {}).get(
+                        "client_operation_fingerprint"
+                    )
+                    != params["_command_fingerprint"]
+                ):
+                    raise OneLocationAgentError(
+                        "LOCATION_OPERATION_CONFLICT",
+                        "The saved share differs from this command.",
+                        status_code=409,
+                    )
+                command.save(str(grant["id"]))
             return dict(row) if row is not None else None
 
     def _execute_recipient_key_registration(
@@ -1208,6 +1434,45 @@ class OneLocationAgentService:
                     del self._key_writer_connection
                 else:
                     self._key_writer_connection = previous_connection
+
+    def _assert_envelope_precision_matches_preference(
+        self,
+        *,
+        owner_user_id: str,
+        envelope: dict[str, Any],
+        share_kind: str | None,
+    ) -> None:
+        """Reject an envelope whose plaintext ``metadata.precision`` tag disagrees
+        with the owner's stored preference (migration 221).
+
+        The tag is the only thing the server can check: coordinates are
+        ciphertext, so coarsening is the device's job before encryption. SOS
+        envelopes are always precise and are exempt from the preference.
+        """
+        metadata = envelope.get("metadata")
+        tag = None
+        if isinstance(metadata, dict):
+            raw = metadata.get("precision")
+            tag = str(raw).strip().lower() if raw is not None else None
+        if tag is not None and tag not in {"precise", "approximate"}:
+            raise OneLocationAgentError(
+                "LOCATION_PRECISION_INVALID",
+                "Envelope precision must be precise or approximate.",
+                status_code=422,
+            )
+        if _is_sos_lane(share_kind):
+            return
+        row = self._execute_one(
+            "SELECT precision FROM one_location_account_settings WHERE user_id = :user_id",
+            {"user_id": owner_user_id},
+        )
+        preference = str((row or {}).get("precision") or "precise")
+        if preference == "approximate" and tag != "approximate":
+            raise OneLocationAgentError(
+                "LOCATION_PRECISION_MISMATCH",
+                "Your sharing precision is approximate. Coarsen the point before encrypting it.",
+                status_code=409,
+            )
 
     @contextmanager
     def _event_bound_writer(self) -> Iterator[None]:
@@ -1668,6 +1933,7 @@ class OneLocationAgentService:
             "publicKeyJwk": _loads_json(row.get("public_key_jwk")),
             "keyAlgorithm": str(row.get("algorithm") or "ECDH-P256-AES256-GCM"),
             "keyRegisteredAt": _iso(row.get("key_created_at") or row.get("created_at")),
+            "publicPersonRef": str(row.get("public_person_ref") or "") or None,
             "canReceiveLocation": bool(row.get("key_id")),
             "connectedFromContacts": bool(row.get("connected_from_contacts")),
             "isRia": bool(row.get("is_ria")),
@@ -2238,7 +2504,27 @@ class OneLocationAgentService:
                 (
                     "one_location_requests",
                     """
-                    SELECT owner_user_id, requester_user_id, referred_by_user_id, status,
+                    SELECT owner_user_id, requester_user_id, referred_by_user_id,
+                           CASE
+                             WHEN status = 'pending' AND (
+                               (expires_at IS NOT NULL AND expires_at <= clock_timestamp())
+                               OR (
+                                 expires_at IS NULL
+                                 AND referred_by_user_id IS NULL
+                                 AND requested_at + INTERVAL '24 hours' <= clock_timestamp()
+                                 AND NOT EXISTS (
+                                   SELECT 1 FROM one_location_referrals referral
+                                   WHERE referral.request_id = one_location_access_requests.id
+                                 )
+                                 AND NOT EXISTS (
+                                   SELECT 1 FROM one_location_public_invite_submissions submission
+                                   WHERE submission.request_id = one_location_access_requests.id
+                                 )
+                               )
+                             )
+                               THEN 'expired'
+                             ELSE status
+                           END AS status,
                            requested_at, resolved_at
                     FROM one_location_access_requests
                     WHERE owner_user_id = :owner_user_id OR requester_user_id = :owner_user_id
@@ -2610,10 +2896,12 @@ class OneLocationAgentService:
         enabled = bool((row or {}).get("enabled"))
         scope_kind = str((row or {}).get("scope_kind") or "")
         circle_id = str((row or {}).get("circle_id") or "") or None
+        circle_ids = [str(value) for value in ((row or {}).get("circle_ids") or []) if value]
         if (
             not enabled
-            or scope_kind not in {"all_contacts", "circle"}
+            or scope_kind not in {"all_contacts", "circle", "circles"}
             or (scope_kind == "circle" and not circle_id)
+            or (scope_kind == "circles" and not circle_ids)
         ):
             return {
                 "enabled": False,
@@ -2622,11 +2910,13 @@ class OneLocationAgentService:
                 "ruleVersion": int((row or {}).get("rule_version") or 0),
                 "updatedAt": _iso((row or {}).get("updated_at")),
             }
-        scope = (
-            {"kind": "circle", "circleId": circle_id}
-            if scope_kind == "circle" and circle_id
-            else {"kind": "all_contacts"}
-        )
+        scope: dict[str, Any]
+        if scope_kind == "circle" and circle_id:
+            scope = {"kind": "circle", "circleId": circle_id}
+        elif scope_kind == "circles" and circle_ids:
+            scope = {"kind": "circles", "circleIds": circle_ids}
+        else:
+            scope = {"kind": "all_contacts"}
         return {
             "enabled": True,
             "scope": scope,
@@ -2651,6 +2941,14 @@ class OneLocationAgentService:
             if row.get("requested_duration_hours") is not None
             else None
         )
+        expires_at = _request_effective_expires_at(row)
+        raw_status = str(row.get("status") or "pending")
+        status = (
+            "expired" if raw_status == "pending" and _request_expiry_has_passed(row) else raw_status
+        )
+        resolved_at = row.get("resolved_at")
+        if status == "expired" and resolved_at is None:
+            resolved_at = expires_at
         return {
             "id": str(row.get("id") or ""),
             "ownerUserId": str(row.get("owner_user_id") or ""),
@@ -2672,10 +2970,11 @@ class OneLocationAgentService:
             or None,
             "ownerMaskedPhone": _mask_phone(row.get("owner_phone_number")),
             "referredByUserId": str(row.get("referred_by_user_id") or "") or None,
-            "status": str(row.get("status") or "pending"),
+            "status": status,
             "message": str(row.get("message") or "") or None,
             "requestedAt": _iso(row.get("requested_at")),
-            "resolvedAt": _iso(row.get("resolved_at")),
+            "expiresAt": _iso(expires_at),
+            "resolvedAt": _iso(resolved_at),
             "approvedGrantId": str(row.get("approved_grant_id") or "") or None,
             "requestedDurationHours": requested_duration_hours,
             "requestedDurationMode": str(row.get("requested_duration_mode") or "") or None,
@@ -2750,7 +3049,7 @@ class OneLocationAgentService:
         if str(row.get("status") or "") == "active":
             token = _public_invite_token_if_derivable(row)
             if token:
-                payload["publicUrl"] = _public_invite_url(token)
+                payload["publicUrl"] = _public_invite_url(token, safe_label)
         return payload
 
     @staticmethod
@@ -3278,6 +3577,100 @@ class OneLocationAgentService:
         for notification in notifications:
             self._send_metadata_notification(**notification)
 
+    def _repair_legacy_direct_request_deadlines(self, user_id: str | None) -> None:
+        """Adopt direct asks written by an older revision during rollout.
+
+        Release migrations run before the new backend is fully promoted. An
+        old replica can therefore insert a NULL-expiry direct request after the
+        one-time backfill. Parent rows distinguish the intentional NULLs used
+        by public-link/referral workflows; only unlinked rows are repaired.
+        """
+
+        self._execute_many(
+            """
+            WITH repair_clock AS (
+              SELECT clock_timestamp() AS observed_at
+            )
+            UPDATE one_location_access_requests AS legacy_request
+            SET expires_at = legacy_request.requested_at
+                + (:hours * INTERVAL '1 hour'),
+                status = CASE
+                  WHEN legacy_request.requested_at
+                    + (:hours * INTERVAL '1 hour') <= repair_clock.observed_at
+                    THEN 'expired'
+                  ELSE legacy_request.status
+                END,
+                resolved_at = CASE
+                  WHEN legacy_request.requested_at
+                    + (:hours * INTERVAL '1 hour') <= repair_clock.observed_at
+                    THEN COALESCE(
+                      legacy_request.resolved_at,
+                      legacy_request.requested_at + (:hours * INTERVAL '1 hour')
+                    )
+                  ELSE legacy_request.resolved_at
+                END
+            FROM repair_clock
+            WHERE legacy_request.status = 'pending'
+              AND legacy_request.expires_at IS NULL
+              AND legacy_request.referred_by_user_id IS NULL
+              AND (
+                :user_id IS NULL
+                OR legacy_request.owner_user_id = :user_id
+                OR legacy_request.requester_user_id = :user_id
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM one_location_referrals AS referral
+                WHERE referral.request_id = legacy_request.id
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM one_location_public_invite_submissions AS submission
+                WHERE submission.request_id = legacy_request.id
+              )
+            RETURNING legacy_request.id
+            """,
+            {"hours": LOCATION_REQUEST_EXPIRY_HOURS, "user_id": user_id},
+        )
+
+    def _expire_stale_requests(self, user_id: str | None) -> None:
+        """Settle direct asks whose one-day answer window has ended.
+
+        Reads and action mutations also enforce ``expires_at`` immediately, so
+        scheduler lag can never widen consent. This bounded transition exists
+        to keep persistence and terminal-retention cleanup in step with that
+        effective state. NULL-expiry linked workflows are deliberately outside
+        this policy.
+        """
+
+        self._repair_legacy_direct_request_deadlines(user_id)
+        self._execute_many(
+            """
+            WITH stale AS (
+              SELECT id
+              FROM one_location_access_requests
+              WHERE status = 'pending'
+                AND expires_at IS NOT NULL
+                AND expires_at <= clock_timestamp()
+                AND (
+                  :user_id IS NULL
+                  OR owner_user_id = :user_id
+                  OR requester_user_id = :user_id
+                )
+              ORDER BY expires_at
+              LIMIT 500
+              FOR UPDATE SKIP LOCKED
+            )
+            UPDATE one_location_access_requests AS target_request
+            SET status = 'expired',
+                resolved_at = COALESCE(target_request.resolved_at, target_request.expires_at)
+            FROM stale
+            WHERE target_request.id = stale.id
+            RETURNING target_request.id
+            """,
+            {"user_id": user_id},
+        )
+
     def _purge_terminal_work(
         self,
         *,
@@ -3315,7 +3708,14 @@ class OneLocationAgentService:
                   AND COALESCE(resolved_at, requested_at)
                     <= NOW() - (:hours * INTERVAL '1 hour')
                 )
+                OR (
+                  status = 'expired'
+                  AND COALESCE(resolved_at, expires_at, requested_at)
+                    <= NOW() - (:expired_request_hours * INTERVAL '1 hour')
+                )
                 OR approved_grant_id IN (SELECT id FROM stale_grants))
+                AND (NOT (COALESCE(metadata,'{}'::jsonb) ? 'command_operations')
+                     OR COALESCE(resolved_at, expires_at, requested_at) <= NOW()-INTERVAL '24 hours')
                 AND (
                   :user_id IS NULL
                   OR owner_user_id = :user_id
@@ -3571,7 +3971,11 @@ class OneLocationAgentService:
               (SELECT COUNT(*) FROM deleted_public_submissions) AS deleted_public_submissions,
               (SELECT COUNT(*) FROM deleted_events) AS deleted_events
             """,
-                {"user_id": user_id, "hours": hours},
+                {
+                    "user_id": user_id,
+                    "hours": hours,
+                    "expired_request_hours": LOCATION_EXPIRED_REQUEST_RETENTION_HOURS,
+                },
             )
             or {}
         )
@@ -3594,6 +3998,7 @@ class OneLocationAgentService:
     def purge_terminal_work(
         self, *, older_than_hours: float = LOCATION_TERMINAL_RETENTION_HOURS
     ) -> dict[str, Any]:
+        self._expire_stale_requests(None)
         self._expire_stale_grants(None)
         return self._purge_terminal_work(user_id=None, older_than_hours=older_than_hours)
 
@@ -3808,6 +4213,7 @@ class OneLocationAgentService:
             f"""
             SELECT
               a.user_id, a.display_name, a.email, a.phone_number, a.phone_verified,
+              profile.public_person_ref,
               COALESCE(a.custom_photo_url, a.photo_url) AS photo_url,
               k.key_id, k.public_key_jwk, k.algorithm, k.created_at AS key_created_at,
               EXISTS (
@@ -3834,6 +4240,7 @@ class OneLocationAgentService:
                   AND {RIA_VERIFIED_STATUS_SQL}
               ) AS is_ria
             FROM actor_identity_cache a
+            LEFT JOIN actor_profiles profile ON profile.user_id = a.user_id
             LEFT JOIN LATERAL (
               SELECT key_id, public_key_jwk, algorithm, created_at
               FROM one_location_recipient_keys
@@ -4227,9 +4634,11 @@ class OneLocationAgentService:
             """
             SELECT
               a.user_id, a.display_name, a.email, a.phone_number, a.phone_verified,
+              profile.public_person_ref,
               COALESCE(a.custom_photo_url, a.photo_url) AS photo_url,
               k.key_id, k.public_key_jwk, k.algorithm, k.created_at AS key_created_at
             FROM actor_identity_cache a
+            LEFT JOIN actor_profiles profile ON profile.user_id = a.user_id
             LEFT JOIN LATERAL (
               SELECT key_id, public_key_jwk, algorithm, created_at
               FROM one_location_recipient_keys
@@ -4372,9 +4781,16 @@ class OneLocationAgentService:
             },
         )
         if not row:
+            resolved_unavailable_message = unavailable_message
+            if resolved_unavailable_message is None and require_phone_verified:
+                identity = self._identity_row(recipient_user_id)
+                if identity and not bool(identity.get("phone_verified")):
+                    resolved_unavailable_message = (
+                        "Ask this SMS contact to verify their phone before receiving alerts."
+                    )
             raise OneLocationAgentError(
                 "LOCATION_RECIPIENT_UNAVAILABLE",
-                unavailable_message
+                resolved_unavailable_message
                 or (
                     # Two lines in a toast. The old copy explained the whole
                     # mechanism and ran to four; what the reader needs is the
@@ -4587,6 +5003,12 @@ class OneLocationAgentService:
                         FROM one_location_sms_contacts
                         WHERE owner_user_id = :owner_user_id
                           AND contact_user_id = :contact_user_id
+                      AND NOT EXISTS (
+                        SELECT 1 FROM one_location_circle_memberships sms_membership
+                        JOIN one_location_circles sms_circle ON sms_circle.id=sms_membership.circle_id
+                        WHERE sms_circle.owner_user_id=:owner_user_id AND sms_circle.is_system AND sms_circle.system_kind='sms'
+                          AND sms_membership.user_id=:contact_user_id
+                      )
                       )
                    -- The same two-armed test the grant gate makes. This one is
                    -- only the EXPLAINER -- it produces
@@ -4599,7 +5021,7 @@ class OneLocationAgentService:
                         JOIN one_location_circles circle
                           ON circle.id = membership.circle_id
                          AND circle.owner_user_id = :owner_user_id
-                         AND circle.is_system
+                         AND circle.is_system AND circle.system_kind = 'sms'
                          AND circle.status = 'active'
                         WHERE membership.user_id = :contact_user_id
                           AND membership.status = 'active'
@@ -4627,6 +5049,12 @@ class OneLocationAgentService:
             SELECT sms.contact_user_id AS contact_user_id
             FROM one_location_sms_contacts sms
             WHERE sms.owner_user_id = :owner_user_id
+              AND NOT EXISTS (
+                        SELECT 1 FROM one_location_circle_memberships sms_membership
+                        JOIN one_location_circles sms_circle ON sms_circle.id=sms_membership.circle_id
+                        WHERE sms_circle.owner_user_id=:owner_user_id AND sms_circle.is_system AND sms_circle.system_kind='sms'
+                          AND sms_membership.user_id=sms.contact_user_id
+                      )
               AND EXISTS (
                 SELECT 1 WHERE EXISTS (
                   SELECT 1
@@ -4706,7 +5134,7 @@ class OneLocationAgentService:
             JOIN one_location_circles circle
               ON circle.id = membership.circle_id
              AND circle.owner_user_id = :owner_user_id
-             AND circle.is_system
+             AND circle.is_system AND circle.system_kind = 'sms'
              AND circle.status = 'active'
             WHERE membership.status = 'active'
               AND membership.user_id <> :owner_user_id
@@ -4769,54 +5197,52 @@ class OneLocationAgentService:
                 status_code=500,
             ) from exc
 
-    def add_sms_contact(self, *, owner_user_id: str, contact_user_id: str) -> list[str]:
+    def _sms_circle_service(self):
+        """The Circle owner remains the only emergency-membership writer."""
+        from hushh_mcp.services.one_location_circle_service import OneLocationCircleService
+
+        return OneLocationCircleService()
+
+    def add_sms_contact(
+        self, *, owner_user_id: str, contact_user_id: str, operation_id: str | None = None
+    ) -> list[str]:
         if owner_user_id == contact_user_id:
             raise OneLocationAgentError(
                 "LOCATION_SMS_CONTACT_SELF",
                 "Choose a different connection as an SMS contact.",
                 status_code=422,
             )
-        # Reject contacts that cannot actually decrypt a live-location envelope.
-        self._recipient_key_row(
-            recipient_user_id=contact_user_id,
-            require_phone_verified=True,
-            unavailable_message=(
-                "This connection must finish Location setup before they can be "
-                "added as an SMS contact."
-            ),
-        )
-        self._add_sms_contact_with_locked_eligibility(
-            owner_user_id=owner_user_id,
-            contact_user_id=contact_user_id,
-        )
-        self._record_sms_contact_change(
+        self._recipient_key_row(recipient_user_id=contact_user_id, require_phone_verified=True)
+        result = self._sms_circle_service().set_sms_contact(
             owner_user_id=owner_user_id,
             contact_user_id=contact_user_id,
             added=True,
+            operation_id=operation_id,
         )
+        if result["changed"]:
+            self._record_sms_contact_change(
+                owner_user_id=owner_user_id,
+                contact_user_id=contact_user_id,
+                added=True,
+                event_recorded=True,
+            )
         return self.list_sms_contact_ids(owner_user_id=owner_user_id)
 
-    def remove_sms_contact(self, *, owner_user_id: str, contact_user_id: str) -> list[str]:
-        removed = self._execute_one(
-            """
-            DELETE FROM one_location_sms_contacts
-            WHERE owner_user_id = :owner_user_id
-              AND contact_user_id = :contact_user_id
-            RETURNING contact_user_id
-            """,
-            {
-                "owner_user_id": owner_user_id,
-                "contact_user_id": contact_user_id,
-            },
+    def remove_sms_contact(
+        self, *, owner_user_id: str, contact_user_id: str, operation_id: str | None = None
+    ) -> list[str]:
+        result = self._sms_circle_service().set_sms_contact(
+            owner_user_id=owner_user_id,
+            contact_user_id=contact_user_id,
+            added=False,
+            operation_id=operation_id,
         )
-        # Only when a row really went. Removing somebody who was never on the
-        # list is a no-op, and announcing it would tell a person they had lost
-        # a duty they never held.
-        if removed:
+        if result["changed"]:
             self._record_sms_contact_change(
                 owner_user_id=owner_user_id,
                 contact_user_id=contact_user_id,
                 added=False,
+                event_recorded=True,
             )
         return self.list_sms_contact_ids(owner_user_id=owner_user_id)
 
@@ -4826,6 +5252,7 @@ class OneLocationAgentService:
         owner_user_id: str,
         contact_user_id: str,
         added: bool,
+        event_recorded: bool = False,
     ) -> None:
         """Announce an SMS Circle membership change to both people.
 
@@ -4844,22 +5271,23 @@ class OneLocationAgentService:
         succeeded must not be reported as failed because an announcement did
         not land.
         """
-        owner_label = _identity_notification_label(self._identity_row(owner_user_id))
-        contact_label = _identity_notification_label(self._identity_row(contact_user_id))
-        event_type = "location_sms_contact_added" if added else "location_sms_contact_removed"
-        self._insert_event(
-            owner_user_id=owner_user_id,
-            actor_user_id=owner_user_id,
-            recipient_user_id=contact_user_id,
-            grant_id=None,
-            event_type=event_type,
-            metadata={
-                "counterpart_label": contact_label,
-                "owner_label": owner_label,
-            },
-            required=False,
-        )
         try:
+            owner_label = _identity_notification_label(self._identity_row(owner_user_id))
+            contact_label = _identity_notification_label(self._identity_row(contact_user_id))
+            event_type = "location_sms_contact_added" if added else "location_sms_contact_removed"
+            if not event_recorded:
+                self._insert_event(
+                    owner_user_id=owner_user_id,
+                    actor_user_id=owner_user_id,
+                    recipient_user_id=contact_user_id,
+                    grant_id=None,
+                    event_type=event_type,
+                    metadata={
+                        "counterpart_label": contact_label,
+                        "owner_label": owner_label,
+                    },
+                    required=False,
+                )
             self._send_metadata_notification(
                 user_id=contact_user_id,
                 notification_type=event_type,
@@ -5110,8 +5538,10 @@ class OneLocationAgentService:
                         CAST(:require_owned_person_circle AS BOOLEAN) IS FALSE
                         OR (
                           owner_user_id = :owner_user_id
-                          AND system_kind IS NULL
-                          AND NOT is_system
+                          AND (
+                            (system_kind IS NULL AND NOT is_system)
+                            OR system_kind = 'sms'
+                          )
                         )
                       )
                     FOR SHARE
@@ -5334,6 +5764,11 @@ class OneLocationAgentService:
                 status_code=422,
             )
         if not _key_writer_guarded:
+            _assert_sharing_not_off(
+                self._execute_one,
+                owner_user_id=owner_user_id,
+                share_kind=share_kind or _classify_share_kind(reason),
+            )
             with self._key_bound_writer_guard(
                 owner_user_id=owner_user_id,
                 recipient_user_id=recipient_user_id,
@@ -5577,6 +6012,8 @@ class OneLocationAgentService:
         duration_hours: float | None,
         client_operation_id: str,
         confirmed_at: datetime | str,
+        command_operation_id: str | None = None,
+        command_directive_id: str | None = None,
         envelope: dict[str, Any],
         duration_mode: str = TIMED_LOCATION_SHARE_DURATION_MODE,
         reason: str | None = None,
@@ -5595,6 +6032,12 @@ class OneLocationAgentService:
         """
 
         operation_id = str(client_operation_id or "").strip()
+        if command_operation_id and (
+            command_operation_id != operation_id or share_kind not in {"share", "check_in"}
+        ):
+            raise OneLocationAgentError(
+                "LOCATION_COMMAND_CHANGED", "Review this command before sharing.", status_code=409
+            )
         if not operation_id or len(operation_id) > 160:
             raise OneLocationAgentError(
                 "LOCATION_OPERATION_ID_INVALID",
@@ -5828,6 +6271,12 @@ class OneLocationAgentService:
                     FROM one_location_sms_contacts sc
                     WHERE sc.owner_user_id = :owner_user_id
                       AND sc.contact_user_id = :recipient_user_id
+                      AND NOT EXISTS (
+                        SELECT 1 FROM one_location_circle_memberships sms_membership
+                        JOIN one_location_circles sms_circle ON sms_circle.id=sms_membership.circle_id
+                        WHERE sms_circle.owner_user_id=:owner_user_id AND sms_circle.is_system AND sms_circle.system_kind='sms'
+                          AND sms_membership.user_id=:recipient_user_id
+                      )
                   )
                   -- ...or a member of the owner's emergency Circle.
                   --
@@ -5853,7 +6302,7 @@ class OneLocationAgentService:
                     JOIN one_location_circles circle
                       ON circle.id = membership.circle_id
                      AND circle.owner_user_id = :owner_user_id
-                     AND circle.is_system
+                     AND circle.is_system AND circle.system_kind = 'sms'
                      AND circle.status = 'active'
                     WHERE membership.user_id = :recipient_user_id
                       AND membership.status = 'active'
@@ -5885,14 +6334,14 @@ class OneLocationAgentService:
               INSERT INTO one_location_share_grants (
                 id, owner_user_id, recipient_user_id, recipient_key_id,
                 status, consent_scope, capability_scopes, duration_hours,
-                expires_at, duration_mode, source_circle_id, created_at, updated_at, metadata
+                expires_at, duration_mode, source_circle_id, latest_envelope_id, created_at, updated_at, metadata
               )
               SELECT
                 CAST(:grant_id AS UUID),
                 :owner_user_id, :recipient_user_id, :recipient_key_id, 'active',
                 'cap.location.live.view', CAST(:capability_scopes AS JSONB),
                 :duration_hours, :expires_at, :duration_mode,
-                CAST(:source_circle_id AS UUID), NOW(), NOW(),
+                CAST(:source_circle_id AS UUID), CAST(:envelope_id AS UUID), NOW(), NOW(),
                 CAST(:metadata_json AS JSONB)
               FROM eligible_recipient
               CROSS JOIN (SELECT COUNT(*) FROM revoked_grants) revoke_barrier
@@ -5916,11 +6365,12 @@ class OneLocationAgentService:
               RETURNING *
             ),
             completed_grant AS (
-              UPDATE one_location_share_grants g
-              SET latest_envelope_id = e.id, updated_at = NOW()
-              FROM created_envelope e
-              WHERE g.id = e.grant_id
-              RETURNING g.*
+              -- Sibling CTE writes share one snapshot: an UPDATE cannot see
+              -- the grant just inserted above. Insert its deterministic
+              -- envelope pointer up front, then consume both RETURNING rows.
+              -- Foreign keys validate after this whole statement finishes.
+              SELECT g.* FROM created_grant g
+              JOIN created_envelope e ON e.grant_id = g.id
             ),
             created_grant_event AS (
               INSERT INTO one_location_events (
@@ -5997,6 +6447,13 @@ class OneLocationAgentService:
             LIMIT 1
             """,
             params={
+                "_client_operation_id": operation_id,
+                "_command_operation_id": command_operation_id,
+                "_command_directive_id": command_directive_id,
+                "_command_share_kind": resolved_kind,
+                "_command_note": stored_reason,
+                "_command_source_circle": source_circle_id,
+                "_command_fingerprint": operation_fingerprint,
                 "grant_id": grant_id,
                 "envelope_id": envelope_id,
                 "owner_user_id": owner_user_id,
@@ -6209,6 +6666,20 @@ class OneLocationAgentService:
             raise OneLocationAgentError(
                 "LOCATION_GRANT_NOT_ACTIVE", "Location share is not active.", status_code=409
             )
+        _grant_meta = _loads_json(grant_row.get("metadata"))
+        grant_share_kind = (
+            str((_grant_meta if isinstance(_grant_meta, dict) else {}).get("share_kind") or "")
+            or str(grant_row.get("share_kind") or "")
+            or _classify_share_kind(grant_row.get("reason"))
+        )
+        _assert_sharing_not_off(
+            self._execute_one, owner_user_id=owner_user_id, share_kind=grant_share_kind
+        )
+        self._assert_envelope_precision_matches_preference(
+            owner_user_id=owner_user_id,
+            envelope=envelope,
+            share_kind=grant_share_kind,
+        )
         is_first_envelope = not bool(grant_row.get("latest_envelope_id"))
         if _grant_expires_at_is_past(grant_row):
             self._expire_stale_grants(owner_user_id)
@@ -6403,7 +6874,8 @@ class OneLocationAgentService:
         """
         row = self._execute_one(
             """
-            SELECT enabled, scope_kind, circle_id, enabled_at, rule_version, updated_at
+            SELECT enabled, scope_kind, circle_id, circle_ids, enabled_at,
+                   rule_version, updated_at
             FROM one_location_auto_approve_preferences
             WHERE user_id = :user_id
             LIMIT 1
@@ -6419,20 +6891,36 @@ class OneLocationAgentService:
         enabled: bool,
         scope_kind: str | None,
         circle_id: str | None,
+        circle_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Write one revocable standing rule using the server clock."""
         normalized_scope = str(scope_kind or "").strip()
         normalized_circle_id = str(circle_id or "").strip() or None
+        # De-duplicated but NOT sorted -- order carries no meaning, so a
+        # stable dedupe (first occurrence wins) is enough and avoids
+        # rewriting the same set into a different row on every re-save.
+        normalized_circle_ids = list(
+            dict.fromkeys(
+                str(value or "").strip() for value in (circle_ids or []) if str(value or "").strip()
+            )
+        )
         if not enabled:
             normalized_scope = ""
             normalized_circle_id = None
-        elif normalized_scope not in {"all_contacts", "circle"}:
+            normalized_circle_ids = []
+        elif normalized_scope not in {"all_contacts", "circle", "circles"}:
             raise OneLocationAgentError(
                 "LOCATION_AUTO_APPROVE_SCOPE_INVALID",
                 "Choose who can be auto-approved.",
                 status_code=422,
             )
         if enabled and (normalized_scope == "circle") != bool(normalized_circle_id):
+            raise OneLocationAgentError(
+                "LOCATION_AUTO_APPROVE_SCOPE_INVALID",
+                "Choose who can be auto-approved.",
+                status_code=422,
+            )
+        if enabled and (normalized_scope == "circles") != bool(normalized_circle_ids):
             raise OneLocationAgentError(
                 "LOCATION_AUTO_APPROVE_SCOPE_INVALID",
                 "Choose who can be auto-approved.",
@@ -6445,6 +6933,15 @@ class OneLocationAgentService:
                 raise OneLocationAgentError(
                     "LOCATION_AUTO_APPROVE_SCOPE_INVALID",
                     "Choose a Circle you created.",
+                    status_code=422,
+                ) from exc
+        if normalized_circle_ids:
+            try:
+                normalized_circle_ids = [str(UUID(value)) for value in normalized_circle_ids]
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise OneLocationAgentError(
+                    "LOCATION_AUTO_APPROVE_SCOPE_INVALID",
+                    "Choose Circles you created.",
                     status_code=422,
                 ) from exc
 
@@ -6463,8 +6960,10 @@ class OneLocationAgentService:
                             WHERE id = CAST(:circle_id AS UUID)
                               AND owner_user_id = :user_id
                               AND status = 'active'
-                              AND system_kind IS NULL
-                              AND NOT is_system
+                              AND (
+                                (system_kind IS NULL AND NOT is_system)
+                                OR system_kind = 'sms'
+                              )
                             FOR SHARE
                             """
                         ),
@@ -6479,17 +6978,47 @@ class OneLocationAgentService:
                         "Choose a Circle you created.",
                         status_code=403,
                     )
+            elif normalized_scope == "circles":
+                owned_circles = (
+                    connection.execute(
+                        text(
+                            """
+                            SELECT id
+                            FROM one_location_circles
+                            WHERE id = ANY(CAST(:circle_ids AS UUID[]))
+                              AND owner_user_id = :user_id
+                              AND status = 'active'
+                              AND (
+                                (system_kind IS NULL AND NOT is_system)
+                                OR system_kind = 'sms'
+                              )
+                            FOR SHARE
+                            """
+                        ),
+                        {"circle_ids": normalized_circle_ids, "user_id": user_id},
+                    )
+                    .mappings()
+                    .all()
+                )
+                owned_circle_ids = {str(row["id"]) for row in owned_circles}
+                if owned_circle_ids != set(normalized_circle_ids):
+                    raise OneLocationAgentError(
+                        "LOCATION_AUTO_APPROVE_SCOPE_INVALID",
+                        "Choose Circles you created.",
+                        status_code=403,
+                    )
 
             row = (
                 connection.execute(
                     text(
                         """
                         INSERT INTO one_location_auto_approve_preferences (
-                          user_id, enabled, scope_kind, circle_id, enabled_at,
-                          rule_version, created_at, updated_at
+                          user_id, enabled, scope_kind, circle_id, circle_ids,
+                          enabled_at, rule_version, created_at, updated_at
                         ) VALUES (
                           :user_id, :enabled, :scope_kind,
                           CAST(:circle_id AS UUID),
+                          CAST(:circle_ids AS UUID[]),
                           CASE WHEN :enabled THEN NOW() ELSE NULL END,
                           1, NOW(), NOW()
                         )
@@ -6497,11 +7026,12 @@ class OneLocationAgentService:
                           enabled = EXCLUDED.enabled,
                           scope_kind = EXCLUDED.scope_kind,
                           circle_id = EXCLUDED.circle_id,
+                          circle_ids = EXCLUDED.circle_ids,
                           enabled_at = CASE WHEN EXCLUDED.enabled THEN NOW() ELSE NULL END,
                           rule_version = one_location_auto_approve_preferences.rule_version + 1,
                           updated_at = NOW()
-                        RETURNING enabled, scope_kind, circle_id, enabled_at,
-                                  rule_version, updated_at
+                        RETURNING enabled, scope_kind, circle_id, circle_ids,
+                                  enabled_at, rule_version, updated_at
                         """
                     ),
                     {
@@ -6509,6 +7039,7 @@ class OneLocationAgentService:
                         "enabled": enabled,
                         "scope_kind": normalized_scope or None,
                         "circle_id": normalized_circle_id,
+                        "circle_ids": normalized_circle_ids or None,
                     },
                 )
                 .mappings()
@@ -6539,6 +7070,8 @@ class OneLocationAgentService:
                             "enabled": bool(stored.get("enabled")),
                             "scope_kind": str(stored.get("scope_kind") or "") or None,
                             "circle_id": str(stored.get("circle_id") or "") or None,
+                            "circle_ids": [str(value) for value in (stored.get("circle_ids") or [])]
+                            or None,
                             "enabled_at": _iso(stored.get("enabled_at")),
                             "rule_version": int(stored.get("rule_version") or 0),
                         }
@@ -6686,7 +7219,8 @@ class OneLocationAgentService:
             )
         row = self._execute_one(
             """
-            SELECT enabled, scope_kind, circle_id, enabled_at, rule_version, updated_at
+            SELECT enabled, scope_kind, circle_id, circle_ids, enabled_at,
+                   rule_version, updated_at
             FROM one_location_auto_approve_preferences
             WHERE user_id = :user_id
             FOR UPDATE
@@ -6705,10 +7239,12 @@ class OneLocationAgentService:
             )
         scope_kind = str(row.get("scope_kind") or "")
         circle_id = str(row.get("circle_id") or "") or None
+        circle_ids = [str(value) for value in (row.get("circle_ids") or []) if value]
         if (
-            scope_kind not in {"all_contacts", "circle"}
+            scope_kind not in {"all_contacts", "circle", "circles"}
             or row.get("enabled_at") is None
             or (scope_kind == "circle") != bool(circle_id)
+            or (scope_kind == "circles") != bool(circle_ids)
         ):
             raise OneLocationAgentError(
                 "LOCATION_AUTO_APPROVE_RULE_INVALID",
@@ -6716,6 +7252,42 @@ class OneLocationAgentService:
                 status_code=409,
             )
         return dict(row)
+
+    def _first_owned_circle_membership(
+        self,
+        *,
+        other_user_id: str,
+        circle_ids: list[str],
+    ) -> str | None:
+        """Which of these Circles `other_user_id` currently belongs to, if any.
+
+        Used to resolve the "circles" auto-approve scope down to the single
+        `source_circle_id` the rest of the grant path (`create_grant`,
+        `_lock_circle_share_eligibility`) already knows how to enforce, so
+        that machinery needs no multi-Circle awareness of its own -- this is
+        a hint for which circle to cite, not the authority; the grant path
+        re-validates ownership and membership fresh, under lock, regardless
+        of what is picked here. Ownership itself is not re-checked here on
+        purpose: it was already required at write time
+        (`update_auto_approve_preference`), and a stale circle_id (e.g. one no
+        longer owned) simply fails the grant path's own ownership check
+        instead of matching here.
+        """
+        if not circle_ids:
+            return None
+        row = self._execute_one(
+            """
+            SELECT membership.circle_id::text AS circle_id
+            FROM one_location_circle_memberships membership
+            WHERE membership.user_id = :other_user_id
+              AND membership.status = 'active'
+              AND membership.circle_id = ANY(CAST(:circle_ids AS UUID[]))
+            ORDER BY membership.joined_at, membership.circle_id
+            LIMIT 1
+            """,
+            {"other_user_id": other_user_id, "circle_ids": circle_ids},
+        )
+        return str(row.get("circle_id")) if row and row.get("circle_id") else None
 
     def get_map_preferences(self, *, user_id: str) -> dict[str, Any]:
         """Return the caller's metadata-only Map visibility preference.
@@ -6983,6 +7555,47 @@ class OneLocationAgentService:
         owner_user_id: str,
         duration_hours: float,
         location_snapshot: dict[str, Any] | None = None,
+        command_operation_id: str | None = None,
+        command_binding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from hushh_mcp.services.action_directive_ledger import ActionDirectiveAuthorityError
+        from hushh_mcp.services.location_public_link_writer import write_public_link
+
+        action = (command_binding or {}).get("action", "location.create_public_link")
+        if action != "location.create_public_link":
+            raise OneLocationAgentError(
+                "LOCATION_PUBLIC_LINK_ACTION_INVALID",
+                "Review the public-link action.",
+                status_code=422,
+            )
+        _assert_sharing_not_off(
+            self._execute_one, owner_user_id=owner_user_id, share_kind="public_link"
+        )
+        try:
+            return write_public_link(
+                self,
+                owner=owner_user_id,
+                action=action,
+                duration=duration_hours,
+                operation=command_operation_id,
+                binding=command_binding,
+                effect=lambda: self._create_public_invite(
+                    owner_user_id=owner_user_id,
+                    duration_hours=duration_hours,
+                    location_snapshot=location_snapshot,
+                ),
+            )
+        except ActionDirectiveAuthorityError as exc:
+            raise OneLocationAgentError(
+                "LOCATION_PUBLIC_LINK_REVIEW_REQUIRED", str(exc), status_code=409
+            ) from None
+
+    def _create_public_invite(
+        self,
+        *,
+        owner_user_id: str,
+        duration_hours: float,
+        location_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not owner_user_id:
             raise OneLocationAgentError(
@@ -6999,7 +7612,7 @@ class OneLocationAgentService:
         if duration > PUBLIC_INVITE_MAX_DURATION_HOURS:
             raise OneLocationAgentError(
                 "LOCATION_DURATION_INVALID",
-                "A public location link can stay live for at most 1 hour.",
+                "A public location link can stay live for at most 2 hours.",
                 status_code=422,
             )
         # Validated before either branch below: a malformed snapshot is a 422
@@ -7018,10 +7631,10 @@ class OneLocationAgentService:
         self._execute_one(
             """
             UPDATE one_location_public_invites
-            SET status = 'expired', updated_at = NOW()
+            SET status = 'expired', updated_at = clock_timestamp()
             WHERE owner_user_id = :owner_user_id
               AND status = 'active'
-              AND expires_at <= NOW()
+              AND expires_at <= clock_timestamp()
             """,
             {"owner_user_id": owner_user_id},
         )
@@ -7046,7 +7659,7 @@ class OneLocationAgentService:
             FROM one_location_public_invites
             WHERE owner_user_id = :owner_user_id
               AND status = 'active'
-              AND expires_at > NOW()
+              AND expires_at > clock_timestamp()
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -7090,11 +7703,11 @@ class OneLocationAgentService:
                     """
                     UPDATE one_location_public_invites
                     SET duration_hours = :duration_hours,
-                        expires_at = NOW() + (
+                        expires_at = clock_timestamp() + (
                           CAST(:duration_hours AS double precision) * INTERVAL '1 hour'
                         ),
                         metadata = CAST(:metadata_json AS JSONB),
-                        updated_at = NOW()
+                        updated_at = clock_timestamp()
                     WHERE id = CAST(:invite_id AS UUID)
                       AND status = 'active'
                     RETURNING *
@@ -7122,6 +7735,7 @@ class OneLocationAgentService:
                         owner_user_id=owner_user_id,
                         actor_user_id=owner_user_id,
                         event_type="location_public_invite_created",
+                        required=True,
                         metadata={
                             "invite_id": existing_payload["id"],
                             "duration_hours": duration,
@@ -7132,7 +7746,7 @@ class OneLocationAgentService:
                     return {
                         "invite": existing_payload,
                         "publicToken": existing_token,
-                        "publicUrl": _public_invite_url(existing_token),
+                        "publicUrl": existing_payload["publicUrl"],
                         # The caller asked for a link and got one; it is simply
                         # the one that was already live. Named so a client can
                         # tell "created" from "here is the one you have" without
@@ -7146,7 +7760,7 @@ class OneLocationAgentService:
             self._execute_one(
                 """
                 UPDATE one_location_public_invites
-                SET status = 'revoked', revoked_at = NOW(), updated_at = NOW()
+                SET status = 'revoked', revoked_at = clock_timestamp(), updated_at = clock_timestamp()
                 WHERE id = CAST(:invite_id AS UUID)
                   AND status = 'active'
                 """,
@@ -7182,8 +7796,8 @@ class OneLocationAgentService:
             VALUES (
               CAST(:invite_id AS UUID),
               :owner_user_id, :public_code_hash, 'active', :duration_hours,
-              NOW() + (CAST(:duration_hours AS double precision) * INTERVAL '1 hour'),
-              NOW(), NOW(), CAST(:metadata_json AS JSONB)
+              clock_timestamp() + (CAST(:duration_hours AS double precision) * INTERVAL '1 hour'),
+              clock_timestamp(), clock_timestamp(), CAST(:metadata_json AS JSONB)
             )
             RETURNING *
             """,
@@ -7206,6 +7820,7 @@ class OneLocationAgentService:
             owner_user_id=owner_user_id,
             actor_user_id=owner_user_id,
             event_type="location_public_invite_created",
+            required=True,
             metadata={
                 "invite_id": invite["id"],
                 "duration_hours": duration,
@@ -7215,7 +7830,7 @@ class OneLocationAgentService:
         return {
             "invite": invite,
             "publicToken": raw_token,
-            "publicUrl": _public_invite_url(raw_token),
+            "publicUrl": invite["publicUrl"],
         }
 
     def refresh_public_invite_location(
@@ -7320,7 +7935,7 @@ class OneLocationAgentService:
         for a location rather than shows them one.
         """
 
-        normalized_token = str(public_token or "").strip()
+        normalized_token = public_invite_bearer_token(public_token)
         if len(normalized_token) < 16:
             raise OneLocationAgentError(
                 "LOCATION_PUBLIC_INVITE_INVALID",
@@ -7524,6 +8139,7 @@ class OneLocationAgentService:
                         message=message_value or f"Public request from {display_name}",
                         notify_owner=False,
                         require_requester_key_material=True,
+                        _expires_after_hours=None,
                     )
                     status_value = "matched_request_pending"
                 except OneLocationAgentError as exc:
@@ -7619,7 +8235,43 @@ class OneLocationAgentService:
             result["publicLocation"] = public_location
         return result
 
-    def revoke_public_invite(self, *, owner_user_id: str, invite_id: str) -> dict[str, Any]:
+    def revoke_public_invite(
+        self,
+        *,
+        owner_user_id: str,
+        invite_id: str,
+        command_operation_id: str | None = None,
+        command_binding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from hushh_mcp.services.action_directive_ledger import ActionDirectiveAuthorityError
+        from hushh_mcp.services.location_public_link_writer import write_public_link
+
+        try:
+            result = write_public_link(
+                self,
+                owner=owner_user_id,
+                action="location.revoke_public_link",
+                invite_id=invite_id,
+                operation=command_operation_id,
+                binding=command_binding,
+                effect=lambda: {
+                    "invite": self._revoke_public_invite(
+                        owner_user_id=owner_user_id, invite_id=invite_id
+                    )
+                },
+            )
+            return {
+                **result["invite"],
+                **(
+                    {"operationReceipt": result["operationReceipt"]} if command_operation_id else {}
+                ),
+            }
+        except ActionDirectiveAuthorityError as exc:
+            raise OneLocationAgentError(
+                "LOCATION_PUBLIC_LINK_REVIEW_REQUIRED", str(exc), status_code=409
+            ) from None
+
+    def _revoke_public_invite(self, *, owner_user_id: str, invite_id: str) -> dict[str, Any]:
         row = self._execute_one(
             """
             UPDATE one_location_public_invites
@@ -7642,6 +8294,7 @@ class OneLocationAgentService:
             owner_user_id=owner_user_id,
             actor_user_id=owner_user_id,
             event_type="location_public_invite_revoked",
+            required=True,
             metadata={"invite_id": invite_id},
         )
         return invite
@@ -7946,6 +8599,14 @@ class OneLocationAgentService:
         ).strip().lower() in {"1", "true", "yes", "on"}
         if not read_only_state:
             try:
+                self._expire_stale_requests(user_id)
+            except Exception as exc:  # noqa: BLE001 - compatibility housekeeping
+                logger.warning(
+                    "one_location.list_state.expire_stale_requests_failed user=%s error=%s",
+                    user_id,
+                    exc,
+                )
+            try:
                 self._expire_stale_grants(user_id)
             except Exception as exc:  # noqa: BLE001 - compatibility housekeeping
                 logger.warning(
@@ -8054,7 +8715,19 @@ class OneLocationAgentService:
                       owner.photo_url AS owner_photo_url,
                       owner.custom_photo_url AS owner_custom_photo_url,
                       owner.phone_number AS owner_phone_number,
-                      extended.expires_at AS extends_grant_expires_at
+                      extended.expires_at AS extends_grant_expires_at,
+                      (
+                        req.expires_at IS NULL
+                        AND req.referred_by_user_id IS NULL
+                        AND NOT EXISTS (
+                          SELECT 1 FROM one_location_referrals referral
+                          WHERE referral.request_id = req.id
+                        )
+                        AND NOT EXISTS (
+                          SELECT 1 FROM one_location_public_invite_submissions submission
+                          WHERE submission.request_id = req.id
+                        )
+                      ) AS legacy_direct_request
                     FROM one_location_access_requests req
                     LEFT JOIN actor_identity_cache requester ON requester.user_id = req.requester_user_id
                     LEFT JOIN actor_identity_cache owner ON owner.user_id = req.owner_user_id
@@ -8122,6 +8795,12 @@ class OneLocationAgentService:
                     SELECT sms.contact_user_id AS contact_user_id
                     FROM one_location_sms_contacts sms
                     WHERE sms.owner_user_id = :user_id
+                      AND NOT EXISTS (
+                        SELECT 1 FROM one_location_circle_memberships sms_membership
+                        JOIN one_location_circles sms_circle ON sms_circle.id=sms_membership.circle_id
+                        WHERE sms_circle.owner_user_id=:user_id AND sms_circle.is_system AND sms_circle.system_kind='sms'
+                          AND sms_membership.user_id=sms.contact_user_id
+                      )
                       AND EXISTS (
                         SELECT 1 WHERE EXISTS (
                           SELECT 1
@@ -8191,7 +8870,7 @@ class OneLocationAgentService:
                     JOIN one_location_circles circle
                       ON circle.id = membership.circle_id
                      AND circle.owner_user_id = :user_id
-                     AND circle.is_system
+                     AND circle.is_system AND circle.system_kind = 'sms'
                      AND circle.status = 'active'
                     WHERE membership.status = 'active'
                       AND membership.user_id <> :user_id
@@ -8317,6 +8996,73 @@ class OneLocationAgentService:
             "capabilityScopes": LOCATION_CAPABILITY_SCOPES,
         }
 
+    def observe_command_status(
+        self, *, user_id: str, kind: str, page: int = 1, limit: int = 20
+    ) -> dict[str, Any]:
+        """Metadata-only observation: no expiry mutation, key, envelope or coordinate."""
+        if kind not in {"shares", "requests", "links"}:
+            raise ValueError("Unknown Location observation.")
+        if not 1 <= page <= 250 or not 1 <= limit <= 20:
+            raise ValueError("Location observation exceeds its bounds.")
+        if kind == "links":
+            rows = self._execute_many(
+                """SELECT status, expires_at, duration_hours
+                FROM one_location_public_invites WHERE owner_user_id=:user
+                  AND status='active' AND expires_at>clock_timestamp()
+                ORDER BY created_at DESC, id LIMIT :limit OFFSET :offset""",
+                {"user": user_id, "limit": limit + 1, "offset": (page - 1) * limit},
+            )
+            return {
+                "hasMore": len(rows) > limit,
+                "items": [
+                    {
+                        "status": row["status"],
+                        "expiresAt": _iso(row["expires_at"]),
+                        "durationHours": float(row["duration_hours"]),
+                    }
+                    for row in rows[:limit]
+                ],
+            }
+        queries = {
+            "shares": """SELECT item.id, item.status, item.expires_at,
+                CASE WHEN item.owner_user_id=:user THEN 'outgoing' ELSE 'incoming' END AS direction,
+                identity.display_name AS person_name
+                FROM one_location_share_grants item LEFT JOIN actor_identity_cache identity
+                  ON identity.user_id=CASE WHEN item.owner_user_id=:user THEN item.recipient_user_id ELSE item.owner_user_id END
+                WHERE item.owner_user_id=:user OR item.recipient_user_id=:user
+                ORDER BY item.created_at DESC, item.id
+                LIMIT :limit OFFSET :offset""",
+            "requests": """SELECT item.id, item.status, item.expires_at,
+                CASE WHEN item.owner_user_id=:user THEN 'incoming' ELSE 'outgoing' END AS direction,
+                identity.display_name AS person_name
+                FROM one_location_access_requests item LEFT JOIN actor_identity_cache identity
+                  ON identity.user_id=CASE WHEN item.owner_user_id=:user THEN item.requester_user_id ELSE item.owner_user_id END
+                WHERE item.owner_user_id=:user OR item.requester_user_id=:user
+                ORDER BY item.requested_at DESC, item.id
+                LIMIT :limit OFFSET :offset""",
+        }
+        rows = self._execute_many(
+            queries[kind], {"user": user_id, "limit": limit + 1, "offset": (page - 1) * limit}
+        )
+        now = datetime.now(timezone.utc)
+        return {
+            "hasMore": len(rows) > limit,
+            "items": [
+                {
+                    "id": str(row["id"]),
+                    "direction": row["direction"],
+                    "personName": row.get("person_name"),
+                    "status": "expired"
+                    if row.get("expires_at")
+                    and row["expires_at"] <= now
+                    and row["status"] in {"active", "pending"}
+                    else row["status"],
+                    "expiresAt": _iso(row.get("expires_at")),
+                }
+                for row in rows[:limit]
+            ],
+        }
+
     def list_active_owner_grants(self, *, owner_user_id: str) -> list[dict[str, Any]]:
         """The owner's own active shares, for a caller that needs only this.
 
@@ -8376,6 +9122,7 @@ class OneLocationAgentService:
 
     def list_pending_owner_requests(self, *, owner_user_id: str) -> list[dict[str, Any]]:
         """The owner's own pending access requests -- see list_active_owner_grants."""
+        self._expire_stale_requests(owner_user_id)
         rows = self._execute_many(
             """
             SELECT
@@ -8390,6 +9137,7 @@ class OneLocationAgentService:
             LEFT JOIN one_location_share_grants extended ON extended.id = req.extends_grant_id
             WHERE req.owner_user_id = :owner_user_id
               AND req.status = 'pending'
+              AND (req.expires_at IS NULL OR req.expires_at > clock_timestamp())
             ORDER BY req.requested_at DESC
             LIMIT 50
             """,
@@ -8402,6 +9150,7 @@ class OneLocationAgentService:
         outgoing asks still waiting on someone else's approve/decline.
         Joins the owner's identity instead of the requester's, since the
         requester already knows who they are."""
+        self._expire_stale_requests(requester_user_id)
         rows = self._execute_many(
             """
             SELECT
@@ -8416,6 +9165,7 @@ class OneLocationAgentService:
             LEFT JOIN one_location_share_grants extended ON extended.id = req.extends_grant_id
             WHERE req.requester_user_id = :requester_user_id
               AND req.status = 'pending'
+              AND (req.expires_at IS NULL OR req.expires_at > clock_timestamp())
             ORDER BY req.requested_at DESC
             LIMIT 50
             """,
@@ -8773,8 +9523,7 @@ class OneLocationAgentService:
         with self._event_bound_writer():
             row = self._execute_one(
                 """
-                SELECT id, owner_user_id, recipient_user_id, expires_at, status,
-                       duration_mode, duration_hours, metadata
+                SELECT *
                 FROM one_location_share_grants
                 WHERE id = CAST(:grant_id AS UUID)
                   AND owner_user_id = :owner_user_id
@@ -8822,6 +9571,20 @@ class OneLocationAgentService:
                 share_kind=share_kind,
                 now=_utcnow(),
             )
+            updated_metadata = dict(metadata or {})
+            updated_metadata["duration_mode"] = resolved_mode
+            if duration is None:
+                # Until-stopped grants intentionally rely on the durable row
+                # rather than carrying a finite capability that will expire
+                # while the owner still expects the share to be live.
+                updated_metadata.pop("capability_token", None)
+            else:
+                capability = self._mint_grant_capability_token(
+                    owner_user_id=owner_user_id,
+                    recipient_user_id=str(row.get("recipient_user_id") or ""),
+                    duration_hours=duration,
+                )
+                updated_metadata["capability_token"] = capability["token"]
             previous_expires_at = row.get("expires_at")
             updated = self._execute_one(
                 """
@@ -8829,6 +9592,12 @@ class OneLocationAgentService:
                 SET duration_mode = :duration_mode,
                     duration_hours = :duration_hours,
                     expires_at = :new_expires_at,
+                    ceiling_expires_at = CASE
+                      WHEN :new_expires_at IS NULL THEN NULL
+                      WHEN ceiling_expires_at IS NULL THEN :new_expires_at
+                      ELSE GREATEST(ceiling_expires_at, :new_expires_at)
+                    END,
+                    metadata = CAST(:metadata_json AS JSONB),
                     updated_at = NOW()
                 WHERE id = CAST(:grant_id AS UUID)
                   AND owner_user_id = :owner_user_id
@@ -8841,6 +9610,7 @@ class OneLocationAgentService:
                     "duration_mode": resolved_mode,
                     "duration_hours": duration,
                     "new_expires_at": expires_at,
+                    "metadata_json": _json_param(updated_metadata),
                 },
             )
             if not updated:
@@ -8915,7 +9685,11 @@ class OneLocationAgentService:
         requested_duration_hours: float | None = None,
         requested_duration_mode: str | None = None,
         extends_grant_id: str | None = None,
+        client_operation_id: str | None = None,
+        command_operation_id: str | None = None,
+        command_directive_id: str | None = None,
         _notification_outbox: list[_MetadataNotification] | None = None,
+        _expires_after_hours: float | None = LOCATION_REQUEST_EXPIRY_HOURS,
     ) -> dict[str, Any]:
         """Ask an owner for location access -- optionally for a named duration.
 
@@ -8946,6 +9720,7 @@ class OneLocationAgentService:
             duration_hours=requested_duration_hours,
             duration_mode=requested_duration_mode,
         )
+        expires_after_hours = None if _expires_after_hours is None else float(_expires_after_hours)
 
         # Resolve which live share (if any) this ask is about. A client-supplied
         # id is a hint that must be verified -- it is only honoured when the
@@ -8977,11 +9752,67 @@ class OneLocationAgentService:
         remaining_label = _remaining_label(active_grant.get("expires_at")) if active_grant else ""
         is_extension = bool(extends_grant_value)
 
+        operation_id = str(client_operation_id or "").strip()[:160] or None
+        operation_fingerprint = hashlib.sha256(
+            json.dumps(
+                [
+                    owner_user_id,
+                    requester_user_id,
+                    referred_by_user_id,
+                    message_value,
+                    duration_hours_value,
+                    duration_mode_value,
+                    requested_grant_id,
+                ],
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        if command_operation_id and command_operation_id != operation_id:
+            raise OneLocationAgentError(
+                "LOCATION_COMMAND_CHANGED", "Review this request command.", status_code=409
+            )
         transitioned = False
         requester_label = ""
         owner_label_for_feed = ""
         ask_summary = ""
         with self._event_bound_writer():
+            command = None
+            command_prior = None
+            from hushh_mcp.services.location_command_audience_receipts import (
+                CommandAudienceReceipt,
+                audience_terms,
+                command_operation_for_client,
+            )
+
+            connection = getattr(self, "_key_writer_connection", None)
+            if connection is not None:
+                command_operation_id = command_operation_for_client(
+                    connection,
+                    owner=requester_user_id,
+                    operation=operation_id,
+                    explicit=command_operation_id,
+                )
+            if command_operation_id:
+                if connection is None:
+                    raise OneLocationAgentError(
+                        "LOCATION_COMMAND_CHANGED",
+                        "The command writer is unavailable.",
+                        status_code=409,
+                    )
+                command = CommandAudienceReceipt(
+                    connection,
+                    owner=requester_user_id,
+                    operation=command_operation_id,
+                    directive_id=command_directive_id,
+                    action="location.send_request",
+                    terms=audience_terms(
+                        recipient=owner_user_id,
+                        duration=duration_hours_value,
+                        mode=duration_mode_value,
+                        message=message_value,
+                    ),
+                )
+                command_prior = command.claim()
             # Serialize this logical request even when no pending row exists
             # yet. A row lock cannot protect an absent row, so without this
             # transaction-scoped lock two simultaneous taps can both insert a
@@ -8997,14 +9828,47 @@ class OneLocationAgentService:
                     )
                 },
             )
+            if operation_id:
+                prior = self._execute_one(
+                    """SELECT *, metadata->'command_operations'->>:operation AS command_fingerprint
+                    FROM one_location_access_requests WHERE owner_user_id=:owner AND requester_user_id=:requester
+                    AND metadata->'command_operations' ? :operation LIMIT 1""",
+                    {
+                        "owner": owner_user_id,
+                        "requester": requester_user_id,
+                        "operation": operation_id,
+                    },
+                )
+                if prior:
+                    if prior["command_fingerprint"] != operation_fingerprint:
+                        raise OneLocationAgentError(
+                            "LOCATION_OPERATION_CONFLICT",
+                            "This request operation has different inputs.",
+                            status_code=409,
+                        )
+                    if command and not command_prior:
+                        command.save(str(prior["id"]))
+                    return self._request_payload(prior) or {}
+            if command_prior:
+                raise OneLocationAgentError(
+                    "LOCATION_OPERATION_CONFLICT",
+                    "The earlier request needs review.",
+                    status_code=409,
+                )
+            self._repair_legacy_direct_request_deadlines(owner_user_id)
             row = self._execute_one(
                 """
-                SELECT *
+                SELECT *,
+                       (expires_at IS NOT NULL AND expires_at <= clock_timestamp()) AS request_expired
                 FROM one_location_access_requests
                 WHERE owner_user_id = :owner_user_id
                   AND requester_user_id = :requester_user_id
                   AND status = 'pending'
                   AND referred_by_user_id IS NOT DISTINCT FROM :referred_by_user_id
+                  AND (
+                    (:has_request_expiry AND expires_at IS NOT NULL)
+                    OR (NOT :has_request_expiry AND expires_at IS NULL)
+                  )
                 ORDER BY requested_at DESC
                 LIMIT 1
                 FOR UPDATE
@@ -9013,20 +9877,46 @@ class OneLocationAgentService:
                     "owner_user_id": owner_user_id,
                     "requester_user_id": requester_user_id,
                     "referred_by_user_id": referred_by_user_id,
+                    "has_request_expiry": expires_after_hours is not None,
                 },
             )
+            if row and bool(row.get("request_expired")):
+                # Retire the old question before inserting the new one. Reusing
+                # it would make an exact "Ask again" a no-op with no event or
+                # notification, which is the failure the expired affordance is
+                # specifically promising to repair.
+                expired = self._execute_one(
+                    """
+                    UPDATE one_location_access_requests
+                    SET status = 'expired',
+                        resolved_at = COALESCE(resolved_at, expires_at)
+                    WHERE id = CAST(:request_id AS UUID)
+                      AND status = 'pending'
+                      AND expires_at IS NOT NULL
+                      AND expires_at <= clock_timestamp()
+                    RETURNING *
+                    """,
+                    {"request_id": str(row.get("id") or "")},
+                )
+                if expired:
+                    row = None
             if not row:
                 row = self._execute_one(
                     """
                     INSERT INTO one_location_access_requests (
                       owner_user_id, requester_user_id, referred_by_user_id, status,
-                      message, requested_at, metadata,
+                      message, requested_at, expires_at, metadata,
                       requested_duration_hours, requested_duration_mode, extends_grant_id,
                       request_revision
                     )
                     VALUES (
                       :owner_user_id, :requester_user_id, :referred_by_user_id, 'pending',
-                      :message, NOW(), '{}'::jsonb,
+                      :message, clock_timestamp(),
+                      CASE
+                        WHEN :expires_after_hours IS NULL THEN NULL
+                        ELSE clock_timestamp() + (:expires_after_hours * INTERVAL '1 hour')
+                      END,
+                      '{}'::jsonb,
                       :requested_duration_hours, :requested_duration_mode,
                       CAST(:extends_grant_id AS UUID), 1
                     )
@@ -9040,6 +9930,7 @@ class OneLocationAgentService:
                         "requested_duration_hours": duration_hours_value,
                         "requested_duration_mode": duration_mode_value,
                         "extends_grant_id": extends_grant_value,
+                        "expires_after_hours": expires_after_hours,
                     },
                 )
                 transitioned = row is not None
@@ -9061,17 +9952,30 @@ class OneLocationAgentService:
                     or existing_mode != duration_mode_value
                     or existing_grant != extends_grant_value
                 )
-                message_changed = bool(message_value) and existing_message != message_value
+                # A command reviews exact terms, including removal of a prior
+                # note. Ordinary callers retain their historical omitted-note
+                # behavior; they have not reviewed a replacement note.
+                message_changed = (
+                    bool(command) or bool(message_value)
+                ) and existing_message != message_value
                 if ask_changed or message_changed:
                     refreshed = self._execute_one(
                         """
                         UPDATE one_location_access_requests
-                        SET message = COALESCE(:message, message),
+                        SET message = CASE WHEN :exact_message THEN :message ELSE COALESCE(:message, message) END,
                             requested_duration_hours = :requested_duration_hours,
                             requested_duration_mode = :requested_duration_mode,
                             extends_grant_id = CAST(:extends_grant_id AS UUID),
                             request_revision = request_revision + CASE WHEN :ask_changed THEN 1 ELSE 0 END,
-                            requested_at = CASE WHEN :ask_changed THEN NOW() ELSE requested_at END
+                            requested_at = CASE
+                              WHEN :ask_changed THEN clock_timestamp()
+                              ELSE requested_at
+                            END,
+                            expires_at = CASE
+                              WHEN :ask_changed AND :expires_after_hours IS NOT NULL
+                                THEN clock_timestamp() + (:expires_after_hours * INTERVAL '1 hour')
+                              ELSE expires_at
+                            END
                         WHERE id = CAST(:request_id AS UUID)
                           AND status = 'pending'
                         RETURNING *
@@ -9079,15 +9983,32 @@ class OneLocationAgentService:
                         {
                             "request_id": str(row.get("id") or ""),
                             "message": message_value,
+                            "exact_message": bool(command),
                             "requested_duration_hours": duration_hours_value,
                             "requested_duration_mode": duration_mode_value,
                             "extends_grant_id": extends_grant_value,
                             "ask_changed": ask_changed,
+                            "expires_after_hours": expires_after_hours,
                         },
                     )
                     if refreshed:
                         row = refreshed
                         transitioned = ask_changed
+            if operation_id and row:
+                # The existing event-bound writer commits the effect, its receipt,
+                # and notifications atomically. A retry after approval still finds
+                # this receipt and cannot create a second request.
+                row = self._execute_one(
+                    """UPDATE one_location_access_requests SET metadata=
+                    COALESCE(metadata,'{}'::jsonb) || jsonb_build_object('command_operations',
+                      COALESCE(metadata->'command_operations','{}'::jsonb) || jsonb_build_object(CAST(:operation AS TEXT),CAST(:fingerprint AS TEXT)))
+                    WHERE id=CAST(:id AS UUID) RETURNING *""",
+                    {
+                        "id": str(row["id"]),
+                        "operation": operation_id,
+                        "fingerprint": operation_fingerprint,
+                    },
+                )
             request = self._request_payload(row)
             if not request:
                 raise OneLocationAgentError(
@@ -9132,6 +10053,9 @@ class OneLocationAgentService:
                     required=True,
                 )
 
+            if command:
+                command.save(str(request["id"]))
+
         if transitioned and notify_owner:
             notification: _MetadataNotification = {
                 "user_id": owner_user_id,
@@ -9170,6 +10094,7 @@ class OneLocationAgentService:
         duration_hours: float | None,
         duration_mode: str | None = None,
         auto_approve_rule_version: int | None = None,
+        expected_request_revision: int | None = None,
     ) -> dict[str, Any]:
         """Grant the requested access and resolve the ask in one transaction.
 
@@ -9203,6 +10128,8 @@ class OneLocationAgentService:
                 "Auto-approve is unavailable. Review this request.",
                 status_code=422,
             )
+        # An approval starts a share, so the owner-level "off" posture applies.
+        _assert_sharing_not_off(self._execute_one, owner_user_id=owner_user_id, share_kind="share")
         if not automatic and auto_approve_rule_version is not None:
             raise OneLocationAgentError(
                 "LOCATION_APPROVAL_MODE_INVALID",
@@ -9229,16 +10156,30 @@ class OneLocationAgentService:
             )
         request_identity = self._execute_one(
             """
-            SELECT requester_user_id
+            SELECT requester_user_id, status, expires_at,
+                   (expires_at IS NOT NULL AND expires_at <= clock_timestamp()) AS request_expired
             FROM one_location_access_requests
             WHERE id = CAST(:request_id AS UUID)
               AND owner_user_id = :owner_user_id
-              AND status = 'pending'
             LIMIT 1
             """,
             {"owner_user_id": owner_user_id, "request_id": request_id},
         )
         if not request_identity:
+            raise OneLocationAgentError(
+                "LOCATION_REQUEST_NOT_FOUND",
+                "Pending location access request was not found.",
+                status_code=404,
+            )
+        if str(request_identity.get("status") or "") == "expired" or bool(
+            request_identity.get("request_expired")
+        ):
+            raise OneLocationAgentError(
+                "LOCATION_REQUEST_EXPIRED",
+                "This location request expired. Ask them to send a new one.",
+                status_code=410,
+            )
+        if str(request_identity.get("status") or "") != "pending":
             raise OneLocationAgentError(
                 "LOCATION_REQUEST_NOT_FOUND",
                 "Pending location access request was not found.",
@@ -9250,13 +10191,14 @@ class OneLocationAgentService:
             owner_user_id=owner_user_id,
             recipient_user_id=expected_requester_user_id,
         ):
+            self._repair_legacy_direct_request_deadlines(owner_user_id)
             request_row = self._execute_one(
                 """
-                SELECT *
+                SELECT *,
+                       (expires_at IS NOT NULL AND expires_at <= clock_timestamp()) AS request_expired
                 FROM one_location_access_requests
                 WHERE id = CAST(:request_id AS UUID)
                   AND owner_user_id = :owner_user_id
-                  AND status = 'pending'
                 LIMIT 1
                 FOR UPDATE
                 """,
@@ -9268,11 +10210,37 @@ class OneLocationAgentService:
                     "Pending location access request was not found.",
                     status_code=404,
                 )
+            if str(request_row.get("status") or "") == "expired" or bool(
+                request_row.get("request_expired")
+            ):
+                raise OneLocationAgentError(
+                    "LOCATION_REQUEST_EXPIRED",
+                    "This location request expired. Ask them to send a new one.",
+                    status_code=410,
+                )
+            if str(request_row.get("status") or "") != "pending":
+                raise OneLocationAgentError(
+                    "LOCATION_REQUEST_NOT_FOUND",
+                    "Pending location access request was not found.",
+                    status_code=404,
+                )
             requester_user_id = str(request_row.get("requester_user_id") or "")
-            if requester_user_id != expected_requester_user_id:
+            if requester_user_id != expected_requester_user_id or (
+                expected_request_revision is not None
+                and int(request_row.get("request_revision") or 1) != expected_request_revision
+            ):
                 raise OneLocationAgentError(
                     "LOCATION_REQUEST_CHANGED",
                     "This request changed. Review it again.",
+                    status_code=409,
+                )
+            if expected_request_revision is not None and request_row.get("extends_grant_id"):
+                # Command receipts do not yet pin the mutable grant used by
+                # extension arithmetic. Keep those approvals on the authored
+                # review screen; never widen a confirmed timed command here.
+                raise OneLocationAgentError(
+                    "LOCATION_EXTENSION_REVIEW_REQUIRED",
+                    "Review this extension against the current share before approving it.",
                     status_code=409,
                 )
 
@@ -9306,6 +10274,22 @@ class OneLocationAgentService:
                         "This request needs approval.",
                         status_code=403,
                     )
+                if automatic_scope == "circles":
+                    automatic_circle_ids = [
+                        str(value)
+                        for value in (automatic_preference.get("circle_ids") or [])
+                        if value
+                    ]
+                    automatic_circle_id = self._first_owned_circle_membership(
+                        other_user_id=requester_user_id,
+                        circle_ids=automatic_circle_ids,
+                    )
+                    if automatic_circle_id is None:
+                        raise OneLocationAgentError(
+                            "LOCATION_AUTO_APPROVE_REQUEST_OUT_OF_SCOPE",
+                            "This request needs approval.",
+                            status_code=403,
+                        )
             requested_hours, requested_mode = _normalized_requested_duration(
                 duration_hours=request_row.get("requested_duration_hours"),
                 duration_mode=request_row.get("requested_duration_mode"),
@@ -9453,13 +10437,15 @@ class OneLocationAgentService:
                 duration_hours=resolved_hours,
                 duration_mode=resolved_mode,
                 reason="request_approved",
-                source_circle_id=(automatic_circle_id if automatic_scope == "circle" else None),
+                source_circle_id=(
+                    automatic_circle_id if automatic_scope in {"circle", "circles"} else None
+                ),
                 require_recipient_phone_verified=False,
                 # Manual approval is explicit owner consent. A standing rule is
                 # narrower and must recheck its relationship under this same
                 # transaction before the grant is inserted.
                 enforce_connection=automatic_preference is not None,
-                require_owned_source_circle=automatic_scope == "circle",
+                require_owned_source_circle=automatic_scope in {"circle", "circles"},
                 _key_writer_guarded=True,
             )
             approved_recipient = self._recipient_payload(
@@ -9479,6 +10465,7 @@ class OneLocationAgentService:
                 WHERE id = CAST(:request_id AS UUID)
                   AND owner_user_id = :owner_user_id
                   AND status = 'pending'
+                  AND (expires_at IS NULL OR expires_at > clock_timestamp())
                 RETURNING *
                 """,
                 {
@@ -9488,6 +10475,12 @@ class OneLocationAgentService:
                 },
             )
             if not resolved:
+                if _request_expiry_has_passed(request_row):
+                    raise OneLocationAgentError(
+                        "LOCATION_REQUEST_EXPIRED",
+                        "This location request expired. Ask them to send a new one.",
+                        status_code=410,
+                    )
                 raise OneLocationAgentError(
                     "LOCATION_REQUEST_CHANGED",
                     "This request changed. Review it again.",
@@ -9551,7 +10544,7 @@ class OneLocationAgentService:
                     ),
                     "auto_approve_scope_kind": automatic_scope or None,
                     "auto_approve_circle_id": (
-                        automatic_circle_id if automatic_scope == "circle" else None
+                        automatic_circle_id if automatic_scope in {"circle", "circles"} else None
                     ),
                 },
                 required=True,
@@ -9610,6 +10603,7 @@ class OneLocationAgentService:
 
     def deny_request(self, *, owner_user_id: str, request_id: str) -> dict[str, Any]:
         with self._event_bound_writer():
+            self._repair_legacy_direct_request_deadlines(owner_user_id)
             row = self._execute_one(
                 """
                 UPDATE one_location_access_requests
@@ -9617,11 +10611,32 @@ class OneLocationAgentService:
                 WHERE id = CAST(:request_id AS UUID)
                   AND owner_user_id = :owner_user_id
                   AND status = 'pending'
+                  AND (expires_at IS NULL OR expires_at > clock_timestamp())
                 RETURNING *
                 """,
                 {"owner_user_id": owner_user_id, "request_id": request_id},
             )
             if not row:
+                existing = self._execute_one(
+                    """
+                    SELECT status, expires_at,
+                           (expires_at IS NOT NULL AND expires_at <= clock_timestamp()) AS request_expired
+                    FROM one_location_access_requests
+                    WHERE id = CAST(:request_id AS UUID)
+                      AND owner_user_id = :owner_user_id
+                    LIMIT 1
+                    """,
+                    {"owner_user_id": owner_user_id, "request_id": request_id},
+                )
+                if existing and (
+                    str(existing.get("status") or "") == "expired"
+                    or bool(existing.get("request_expired"))
+                ):
+                    raise OneLocationAgentError(
+                        "LOCATION_REQUEST_EXPIRED",
+                        "This location request has expired.",
+                        status_code=410,
+                    )
                 raise OneLocationAgentError(
                     "LOCATION_REQUEST_NOT_FOUND",
                     "Pending location access request was not found.",
@@ -9693,6 +10708,7 @@ class OneLocationAgentService:
         second call is a 404 rather than a silent success.
         """
         with self._event_bound_writer():
+            self._repair_legacy_direct_request_deadlines(requester_user_id)
             row = self._execute_one(
                 """
                 UPDATE one_location_access_requests
@@ -9700,11 +10716,32 @@ class OneLocationAgentService:
                 WHERE id = CAST(:request_id AS UUID)
                   AND requester_user_id = :requester_user_id
                   AND status = 'pending'
+                  AND (expires_at IS NULL OR expires_at > clock_timestamp())
                 RETURNING *
                 """,
                 {"requester_user_id": requester_user_id, "request_id": request_id},
             )
             if not row:
+                existing = self._execute_one(
+                    """
+                    SELECT status, expires_at,
+                           (expires_at IS NOT NULL AND expires_at <= clock_timestamp()) AS request_expired
+                    FROM one_location_access_requests
+                    WHERE id = CAST(:request_id AS UUID)
+                      AND requester_user_id = :requester_user_id
+                    LIMIT 1
+                    """,
+                    {"requester_user_id": requester_user_id, "request_id": request_id},
+                )
+                if existing and (
+                    str(existing.get("status") or "") == "expired"
+                    or bool(existing.get("request_expired"))
+                ):
+                    raise OneLocationAgentError(
+                        "LOCATION_REQUEST_EXPIRED",
+                        "This location request has expired.",
+                        status_code=410,
+                    )
                 raise OneLocationAgentError(
                     "LOCATION_REQUEST_NOT_FOUND",
                     "Pending location access request was not found.",
@@ -9792,6 +10829,7 @@ class OneLocationAgentService:
                 message=message,
                 referred_by_user_id=referring_user_id,
                 _notification_outbox=notifications,
+                _expires_after_hours=None,
             )
             # Keep the global request -> grant lock order used by approval.
             # If the grant ended after the first eligibility read, this second

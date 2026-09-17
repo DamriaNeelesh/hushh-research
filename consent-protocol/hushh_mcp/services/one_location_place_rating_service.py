@@ -41,6 +41,7 @@ import hmac
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
@@ -52,6 +53,7 @@ from db.db_client import get_db
 from hushh_mcp.config import VAULT_DATA_KEY
 from hushh_mcp.operons.location.place_rating_policy import (
     PLACE_RATING_PUBLICATION_MIN_COUNT,
+    SENSITIVE_PLACE_TYPES,
     bucket_rating_count,
     google_write_review_url,
     is_aggregatable_category,
@@ -76,6 +78,10 @@ PLACE_RATING_CONSENT_VERSION = "one-location-place-rating-v1"
 PLACE_RATING_VISIT_TTL_HOURS = 168.0
 
 PLACE_RATING_HISTORY_LIMIT = 50
+
+# The nearby list caps at twenty places, so a batch larger than this is either a
+# mistake or somebody enumerating the aggregate table one page at a time.
+PLACE_RATING_SUMMARY_BATCH_LIMIT = 25
 
 _VISIT_ALGORITHM = "aes-256-gcm"
 _VISIT_SCHEMA_VERSION = 1
@@ -197,7 +203,20 @@ def _iso(value: Any) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class PreparedRatingVisit:
+    """Already protected visit information, carried into the presence transaction."""
+
+    owner_user_id: str
+    envelope: dict[str, str]
+    place_token_value: str
+    checked_in_at: datetime
+    expires_at: datetime
+
+
 class PlaceRatingStore(Protocol):
+    def get_exact_visit(self, *, user_id: str, visit_id: str) -> dict[str, Any] | None: ...
+
     def insert_visit(self, **kwargs: Any) -> dict[str, Any] | None: ...
 
     def end_open_visits(self, *, user_id: str, ended_at: datetime) -> dict[str, Any] | None: ...
@@ -214,13 +233,13 @@ class PlaceRatingStore(Protocol):
 
     def mark_visit_rated(self, *, visit_id: Any, rated_at: datetime) -> None: ...
 
-    def upsert_rating(self, **kwargs: Any) -> dict[str, Any] | None: ...
+    def upsert_rating_and_recompute(self, **kwargs: Any) -> dict[str, Any] | None: ...
 
     def list_ratings(self, *, user_id: str, limit: int) -> list[dict[str, Any]]: ...
 
-    def delete_rating(self, *, user_id: str, place_id: str) -> dict[str, Any] | None: ...
-
-    def recompute_aggregate(self, *, place_id: str) -> dict[str, Any] | None: ...
+    def delete_rating_and_recompute(
+        self, *, user_id: str, place_id: str
+    ) -> dict[str, Any] | None: ...
 
     def read_aggregate(self, *, place_id: str) -> dict[str, Any] | None: ...
 
@@ -240,6 +259,36 @@ class PostgresPlaceRatingStore:
         result = get_db().execute_raw(sql, params or {})
         return result.data or []
 
+    def _execute_bound(
+        self, connection: Any | None, sql: str, params: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        if connection is None:
+            return self._execute_one(sql, params)
+        from sqlalchemy import text
+
+        row = connection.execute(text(sql), params).mappings().first()
+        return dict(row) if row else None
+
+    def end_exact_visit(
+        self, *, connection: Any, user_id: str, visit_id: str, ended_at: datetime
+    ) -> dict[str, Any] | None:
+        return self._execute_bound(
+            connection,
+            """UPDATE one_location_nearby_visits
+            SET ended_at=:ended,updated_at=clock_timestamp()
+            WHERE id=CAST(:visit AS UUID) AND owner_user_id=:owner AND ended_at IS NULL
+            RETURNING id""",
+            {"owner": user_id, "visit": visit_id, "ended": ended_at},
+        )
+
+    def get_exact_visit(self, *, user_id: str, visit_id: str) -> dict[str, Any] | None:
+        return self._execute_one(
+            """SELECT * FROM one_location_nearby_visits
+            WHERE id=CAST(:visit AS UUID) AND owner_user_id=:owner AND ended_at IS NOT NULL
+              AND expires_at>clock_timestamp() AND rated_at IS NULL""",
+            {"owner": user_id, "visit": visit_id},
+        )
+
     def insert_visit(
         self,
         *,
@@ -248,12 +297,14 @@ class PostgresPlaceRatingStore:
         place_token_value: str,
         checked_in_at: datetime,
         expires_at: datetime,
+        connection: Any | None = None,
     ) -> dict[str, Any] | None:
         # ON CONFLICT on the partial unique index: re-checking into the same
         # venue while the first visit is still open refreshes it rather than
         # opening a second reviewable row, or one afternoon at one cafe becomes
         # three prompts.
-        return self._execute_one(
+        return self._execute_bound(
+            connection,
             """
             INSERT INTO one_location_nearby_visits (
               owner_user_id, place_ciphertext, place_iv, place_tag,
@@ -368,7 +419,7 @@ class PostgresPlaceRatingStore:
             {"visit_id": visit_id, "rated_at": rated_at},
         )
 
-    def upsert_rating(
+    def upsert_rating_and_recompute(
         self,
         *,
         user_id: str,
@@ -383,31 +434,58 @@ class PostgresPlaceRatingStore:
     ) -> dict[str, Any] | None:
         return self._execute_one(
             """
-            INSERT INTO one_location_place_ratings (
-              author_user_id, place_id, place_label, place_category, rating,
-              aggregatable, consent_version, consent_accepted_at,
-              source_visit_id, visited_at, visit_count, revision,
-              created_at, updated_at
-            ) VALUES (
-              :user_id, :place_id, :place_label, :place_category, :rating,
-              :aggregatable, :consent_version, NOW(),
-              :source_visit_id, :visited_at, 1, 1, NOW(), NOW()
+            WITH upserted AS (
+              INSERT INTO one_location_place_ratings (
+                author_user_id, place_id, place_label, place_category, rating,
+                aggregatable, consent_version, consent_accepted_at,
+                source_visit_id, visited_at, visit_count, revision,
+                created_at, updated_at
+              ) VALUES (
+                :user_id, :place_id, :place_label, :place_category, :rating,
+                :aggregatable, :consent_version, NOW(),
+                :source_visit_id, :visited_at, 1, 1, NOW(), NOW()
+              )
+              ON CONFLICT (author_user_id, place_id) DO UPDATE SET
+                place_label = EXCLUDED.place_label,
+                place_category = EXCLUDED.place_category,
+                rating = EXCLUDED.rating,
+                aggregatable = EXCLUDED.aggregatable,
+                consent_version = EXCLUDED.consent_version,
+                consent_accepted_at = NOW(),
+                source_visit_id = EXCLUDED.source_visit_id,
+                visited_at = EXCLUDED.visited_at,
+                visit_count = one_location_place_ratings.visit_count + 1,
+                revision = one_location_place_ratings.revision + 1,
+                updated_at = NOW()
+              RETURNING id, place_id, place_label, place_category, rating,
+                        aggregatable, consent_version, visited_at, visit_count,
+                        revision, created_at, updated_at
+            ), aggregate AS (
+              INSERT INTO one_location_place_rating_aggregates (
+                place_id, rating_count, rating_sum, updated_at
+              )
+              SELECT :place_id, COUNT(*), COALESCE(SUM(candidate.rating), 0), NOW()
+              FROM (
+                SELECT rating, aggregatable, consent_version, place_category
+                FROM one_location_place_ratings
+                WHERE place_id = :place_id AND author_user_id <> :user_id
+                UNION ALL
+                SELECT rating, aggregatable, consent_version, place_category
+                FROM upserted
+              ) AS candidate
+              WHERE candidate.aggregatable
+                AND candidate.consent_version = :consent_version
+                AND NOT (
+                  LOWER(BTRIM(COALESCE(candidate.place_category, '')))
+                  = ANY(:sensitive_categories)
+                )
+              ON CONFLICT (place_id) DO UPDATE SET
+                rating_count = EXCLUDED.rating_count,
+                rating_sum = EXCLUDED.rating_sum,
+                updated_at = NOW()
+              RETURNING place_id
             )
-            ON CONFLICT (author_user_id, place_id) DO UPDATE SET
-              place_label = EXCLUDED.place_label,
-              place_category = EXCLUDED.place_category,
-              rating = EXCLUDED.rating,
-              aggregatable = EXCLUDED.aggregatable,
-              consent_version = EXCLUDED.consent_version,
-              consent_accepted_at = NOW(),
-              source_visit_id = EXCLUDED.source_visit_id,
-              visited_at = EXCLUDED.visited_at,
-              visit_count = one_location_place_ratings.visit_count + 1,
-              revision = one_location_place_ratings.revision + 1,
-              updated_at = NOW()
-            RETURNING id, place_id, place_label, place_category, rating,
-                      aggregatable, consent_version, visited_at, visit_count,
-                      revision, created_at, updated_at
+            SELECT upserted.* FROM upserted CROSS JOIN aggregate
             """,
             {
                 "user_id": user_id,
@@ -419,6 +497,7 @@ class PostgresPlaceRatingStore:
                 "consent_version": consent_version,
                 "source_visit_id": source_visit_id,
                 "visited_at": visited_at,
+                "sensitive_categories": sorted(SENSITIVE_PLACE_TYPES),
             },
         )
 
@@ -436,50 +515,63 @@ class PostgresPlaceRatingStore:
             {"user_id": user_id, "limit": limit},
         )
 
-    def delete_rating(self, *, user_id: str, place_id: str) -> dict[str, Any] | None:
+    def delete_rating_and_recompute(self, *, user_id: str, place_id: str) -> dict[str, Any] | None:
         return self._execute_one(
             """
-            DELETE FROM one_location_place_ratings
-            WHERE author_user_id = :user_id AND place_id = :place_id
-            RETURNING id, place_id
-            """,
-            {"user_id": user_id, "place_id": place_id},
-        )
-
-    def recompute_aggregate(self, *, place_id: str) -> dict[str, Any] | None:
-        # Recomputed from the rows, never incremented. An increment drifts the
-        # moment one write is retried, and an aggregate that still counts a
-        # deleted rating has not deleted it.
-        return self._execute_one(
-            """
-            INSERT INTO one_location_place_rating_aggregates (
-              place_id, rating_count, rating_sum, updated_at
+            WITH removed AS (
+              DELETE FROM one_location_place_ratings
+              WHERE author_user_id = :user_id AND place_id = :place_id
+              RETURNING id, place_id
+            ), aggregate AS (
+              INSERT INTO one_location_place_rating_aggregates (
+                place_id, rating_count, rating_sum, updated_at
+              )
+              SELECT :place_id, COUNT(*), COALESCE(SUM(rating), 0), NOW()
+              FROM one_location_place_ratings
+              WHERE place_id = :place_id
+                AND author_user_id <> :user_id
+                AND aggregatable
+                AND consent_version = :consent_version
+                AND NOT (
+                  LOWER(BTRIM(COALESCE(place_category, '')))
+                  = ANY(:sensitive_categories)
+                )
+                AND EXISTS (SELECT 1 FROM removed)
+              ON CONFLICT (place_id) DO UPDATE SET
+                rating_count = EXCLUDED.rating_count,
+                rating_sum = EXCLUDED.rating_sum,
+                updated_at = NOW()
+              RETURNING place_id
             )
-            SELECT
-              :place_id,
-              COALESCE(COUNT(*), 0),
-              COALESCE(SUM(rating), 0),
-              NOW()
-            FROM one_location_place_ratings
-            WHERE place_id = :place_id AND aggregatable
-            ON CONFLICT (place_id) DO UPDATE SET
-              rating_count = EXCLUDED.rating_count,
-              rating_sum = EXCLUDED.rating_sum,
-              updated_at = NOW()
-            RETURNING place_id, rating_count, rating_sum
+            SELECT removed.* FROM removed CROSS JOIN aggregate
             """,
-            {"place_id": place_id},
+            {
+                "user_id": user_id,
+                "place_id": place_id,
+                "consent_version": PLACE_RATING_CONSENT_VERSION,
+                "sensitive_categories": sorted(SENSITIVE_PLACE_TYPES),
+            },
         )
 
     def read_aggregate(self, *, place_id: str) -> dict[str, Any] | None:
         return self._execute_one(
             """
-            SELECT place_id, rating_count, rating_sum
-            FROM one_location_place_rating_aggregates
+            SELECT :place_id AS place_id, COUNT(*) AS rating_count,
+                   COALESCE(SUM(rating), 0) AS rating_sum
+            FROM one_location_place_ratings
             WHERE place_id = :place_id
-            LIMIT 1
+              AND aggregatable
+              AND consent_version = :consent_version
+              AND NOT (
+                LOWER(BTRIM(COALESCE(place_category, '')))
+                = ANY(:sensitive_categories)
+              )
             """,
-            {"place_id": place_id},
+            {
+                "place_id": place_id,
+                "consent_version": PLACE_RATING_CONSENT_VERSION,
+                "sensitive_categories": sorted(SENSITIVE_PLACE_TYPES),
+            },
         )
 
     def purge_expired_visits(self) -> int:
@@ -515,7 +607,7 @@ class OneLocationPlaceRatingService:
 
     # -- visits ------------------------------------------------------------
 
-    def record_visit(
+    def prepare_visit(
         self,
         *,
         user_id: str,
@@ -525,13 +617,11 @@ class OneLocationPlaceRatingService:
         longitude: Any = None,
         place_category: Any = None,
         checked_in_at: datetime | None = None,
-    ) -> None:
-        """Log a check-in as a rateable visit.
+    ) -> PreparedRatingVisit:
+        """Protect visit information without writing it.
 
-        Callers treat this as best-effort. It is invoked from ``check_in()``,
-        and a failure to write a rating ledger must never fail somebody's
-        check-in -- the same fail-open discipline the continuity guard already
-        applies for the same reason.
+        Nearby carries this into its presence transaction. Optional rating
+        failures must never prevent the requested check-in or checkout.
         """
         normalized_place_id = normalize_place_id(place_id)
         normalized_label = normalize_place_label(place_label)
@@ -550,13 +640,32 @@ class OneLocationPlaceRatingService:
             payload["latitude"] = float(latitude)
             payload["longitude"] = float(longitude)
 
-        self._store.insert_visit(
-            user_id=user_id,
+        return PreparedRatingVisit(
+            owner_user_id=user_id,
             envelope=_encrypt_visit_place(payload, owner_user_id=user_id),
             place_token_value=place_token(normalized_place_id),
             checked_in_at=moment,
             expires_at=moment + timedelta(hours=PLACE_RATING_VISIT_TTL_HOURS),
         )
+
+    def record_visit(self, **kwargs: Any) -> dict[str, Any] | None:
+        visit = self.prepare_visit(**kwargs)
+        return self._store.insert_visit(
+            user_id=visit.owner_user_id,
+            envelope=visit.envelope,
+            place_token_value=visit.place_token_value,
+            checked_in_at=visit.checked_in_at,
+            expires_at=visit.expires_at,
+        )
+
+    def describe_exact_visit(self, *, user_id: str, visit_id: str) -> dict[str, Any] | None:
+        row = self._store.get_exact_visit(user_id=user_id, visit_id=visit_id)
+        if not row:
+            return None
+        try:
+            return self._visit_payload(row, _decrypt_visit_place(row))
+        except Exception:
+            return None
 
     def end_visit(self, *, user_id: str, ended_at: datetime | None = None) -> dict[str, Any] | None:
         """Close the open visit and describe what may now be rated."""
@@ -685,7 +794,7 @@ class OneLocationPlaceRatingService:
         )
         aggregatable = is_aggregatable_category(resolved_category)
 
-        row = self._store.upsert_rating(
+        row = self._store.upsert_rating_and_recompute(
             user_id=user_id,
             place_id=normalized_place_id,
             place_label=resolved_label,
@@ -704,7 +813,6 @@ class OneLocationPlaceRatingService:
             )
 
         self._store.mark_visit_rated(visit_id=visit.get("id"), rated_at=self._now())
-        self._store.recompute_aggregate(place_id=normalized_place_id)
         return self._rating_payload(row)
 
     def list_own_ratings(self, *, user_id: str, limit: int = 25) -> dict[str, Any]:
@@ -719,17 +827,47 @@ class OneLocationPlaceRatingService:
             raise PlaceRatingError(
                 "PLACE_RATING_PLACE_REQUIRED", str(exc), status_code=422
             ) from exc
-        removed = self._store.delete_rating(user_id=user_id, place_id=normalized_place_id)
+        removed = self._store.delete_rating_and_recompute(
+            user_id=user_id,
+            place_id=normalized_place_id,
+        )
         if not removed:
             raise PlaceRatingError(
                 "PLACE_RATING_NOT_FOUND",
                 "You haven't rated that place.",
                 status_code=404,
             )
-        # In the same call as the delete, or the average keeps reporting a
-        # rating that no longer exists -- which is not a deletion.
-        self._store.recompute_aggregate(place_id=normalized_place_id)
         return {"placeId": normalized_place_id, "deleted": True}
+
+    def place_summaries(self, *, place_ids: Any) -> list[dict[str, Any]]:
+        """Anonymous summaries for a list of places, in one call.
+
+        The nearby list shows up to twenty places at a time. Asking per row
+        would be twenty round trips for a decoration, and would also hand an
+        observer a per-place timing signal they do not otherwise have.
+
+        Order and length are not promised to match the input: a place with no
+        aggregate row simply does not appear, so a caller keys the result by
+        `placeId` rather than by index.
+        """
+        seen: set[str] = set()
+        summaries: list[dict[str, Any]] = []
+        for raw in list(place_ids or [])[:PLACE_RATING_SUMMARY_BATCH_LIMIT]:
+            try:
+                place_id = normalize_place_id(raw)
+            except ValueError:
+                continue
+            if place_id in seen:
+                continue
+            seen.add(place_id)
+            summary = self.place_summary(place_id=place_id)
+            # Below the publication threshold there is nothing to say, and
+            # saying "no rating yet" for every unrated place would be a row of
+            # noise on a list whose job is to be scanned.
+            if summary.get("average") is None:
+                continue
+            summaries.append(summary)
+        return summaries
 
     def place_summary(self, *, place_id: Any) -> dict[str, Any]:
         """The anonymous projection. Holds no user reference of any kind."""

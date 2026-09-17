@@ -80,15 +80,17 @@ describe("navigation routes", () => {
   });
 
   it("resolves the active person ref from public profile pathnames", () => {
-    expect(resolvePersonRefFromProfilePathname("/people/public-person-ref")).toBe(
-      "public-person-ref",
-    );
+    expect(
+      resolvePersonRefFromProfilePathname("/people/public-person-ref"),
+    ).toBe("public-person-ref");
     expect(
       resolvePersonRefFromProfilePathname(
         "/people/public%20person%2Fref?from=%2Fone%2Fconnect",
       ),
     ).toBe("public person/ref");
-    expect(resolvePersonRefFromProfilePathname("/one/profile/access")).toBeNull();
+    expect(
+      resolvePersonRefFromProfilePathname("/one/profile/access"),
+    ).toBeNull();
   });
 
   it("builds canonical nested profile routes while preserving transient query state", () => {
@@ -110,21 +112,29 @@ describe("navigation routes", () => {
     expect(buildProfileRoute({ panel: "preferences", detail: "gemini" })).toBe(
       "/one/profile/preferences/gemini",
     );
+    expect(buildProfileRoute({ panel: "preferences", detail: "voice" })).toBe(
+      "/one/profile/preferences/voice",
+    );
     expect(buildProfileRoute({ panel: "security", detail: "vault" })).toBe(
       "/one/profile/security/vault",
     );
     expect(
       buildProfileRoute({ panel: "my-data", detail: "domain:finance" }),
     ).toBe("/one/profile/my-data/domain?key=finance");
+    // Sharing and its per-connection detail are sub-views of the unified Memory
+    // panel but keep the legacy /one/profile/access URLs for deep-link parity.
     expect(
-      buildProfileRoute({ panel: "access", detail: "connection:abc 123" }),
+      buildProfileRoute({ panel: "my-data", detail: "connection:abc 123" }),
     ).toBe("/one/profile/access/connection?id=abc+123");
+    expect(buildProfileRoute({ panel: "my-data", detail: "sharing" })).toBe(
+      "/one/profile/access",
+    );
     expect(
       buildProfileRoute({
         panel: "support",
         detail: "support-compose:bug_report",
       }),
-    ).toBe("/one/profile/support/compose?kind=bug_report");
+    ).toBe("/one/profile/support?kind=bug_report");
     expect(buildProfileRoute({ panel: "gmail" })).toBe("/one/gmail");
     expect(
       buildProfileRoute({
@@ -140,6 +150,9 @@ describe("navigation routes", () => {
     ).toBe(
       "/one/profile/security?unlock_vault=1&return_to=%2Fone%2Flocation%2Finvite%2Ftoken_123",
     );
+    expect(
+      buildProfileRoute({ panel: "security", detail: "trusted-devices" }),
+    ).toBe("/one/profile/security");
   });
 
   it("resolves nested and legacy profile route state through the same contract", () => {
@@ -155,17 +168,43 @@ describe("navigation routes", () => {
         "/one/profile",
         "tab=privacy&detail=connection:abc",
       ),
-    ).toEqual({ panel: "access", detail: "connection:abc" });
+    ).toEqual({ panel: "my-data", detail: "connection:abc" });
+    expect(resolveProfileRouteState("/one/profile/access")).toEqual({
+      panel: "my-data",
+      detail: "sharing",
+    });
+    expect(
+      resolveProfileRouteState(
+        "/one/profile/preferences/voice/changelog",
+      ),
+    ).toEqual({ panel: "preferences", detail: "voice" });
+    expect(
+      resolveProfileRouteState(
+        "/one/profile/preferences/voice/examples",
+      ),
+    ).toEqual({ panel: "preferences", detail: "voice" });
+    expect(
+      resolveProfileRouteState("/one/profile/access/connection", "id=abc"),
+    ).toEqual({ panel: "my-data", detail: "connection:abc" });
     expect(resolveProfileRouteState("/one/profile/regulatory")).toEqual({
       panel: null,
       detail: null,
     });
     expect(
+      resolveProfileRouteState("/one/profile/security/devices"),
+    ).toEqual({ panel: null, detail: null });
+    expect(
       buildCanonicalProfileRouteFromLegacyQuery(
         "/one/profile",
         "panel=support&detail=support-routing",
       ),
-    ).toBe("/one/profile/support/routing");
+    ).toBe("/one/profile/support");
+    expect(
+      buildCanonicalProfileRouteFromLegacyQuery(
+        "/one/profile",
+        "panel=support&detail=support-compose:developer_reachout&from=%2Fone",
+      ),
+    ).toBe("/one/profile/support?from=%2Fone&kind=developer_reachout");
     expect(
       buildCanonicalProfileRouteFromLegacyQuery(
         "/one/profile",
@@ -178,6 +217,18 @@ describe("navigation routes", () => {
         "panel=gmail&detail=gmail-actions",
       ),
     ).toBe("/one/gmail");
+    expect(
+      buildCanonicalProfileRouteFromLegacyQuery(
+        "/one/profile",
+        "panel=preferences&detail=voice-changelog",
+      ),
+    ).toBe("/one/profile/preferences/voice");
+    expect(
+      buildCanonicalProfileRouteFromLegacyQuery(
+        "/one/profile",
+        "panel=preferences&detail=voice-examples",
+      ),
+    ).toBe("/one/profile/preferences/voice");
   });
 
   it("preserves query parameter integrity for ria workspace tabs", () => {

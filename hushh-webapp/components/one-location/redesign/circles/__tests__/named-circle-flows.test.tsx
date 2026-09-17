@@ -212,9 +212,12 @@ describe("named Circle flows", () => {
 
     render(<CreateCircleFlow busy={false} onSubmit={onSubmit} />);
 
-    fireEvent.change(screen.getByPlaceholderText("e.g. Family"), {
+    fireEvent.change(
+      screen.getByPlaceholderText("Family, close friends, project team"),
+      {
       target: { value: "Meena Family" },
-    });
+      },
+    );
     fireEvent.click(screen.getByRole("button", { name: "Create Circle" }));
 
     await waitFor(() =>
@@ -231,24 +234,39 @@ describe("named Circle flows", () => {
     render(<CreateCircleFlow busy={false} onSubmit={onSubmit} />);
 
     const create = screen.getByRole("button", { name: "Create Circle" });
-    const input = screen.getByPlaceholderText("e.g. Family");
+    const input = screen.getByPlaceholderText(
+      "Family, close friends, project team",
+    );
 
     // Nothing typed: the button is genuinely blocked, and it is painted as a
     // neutral fill rather than a half-opacity accent that still reads as live.
     expect(create).toBeDisabled();
     expect(create.className).toContain("disabled:bg-black/10");
     expect(create.className).toContain("disabled:opacity-100");
+    expect(screen.queryByText("Enter a Circle name.")).toBeNull();
 
     // Whitespace is not a name.
     fireEvent.change(input, { target: { value: "   " } });
     expect(create).toBeDisabled();
 
+    // Choosing a Type is not the Circle name; the form explains the blocked CTA.
+    fireEvent.click(screen.getByRole("radio", { name: "Friends" }));
+    await waitFor(() =>
+      expect(input).toHaveAttribute("aria-invalid", "true"),
+    );
+    expect(screen.getByText("Enter a Circle name.")).toBeTruthy();
+    expect(input).toHaveAttribute(
+      "aria-describedby",
+      "one-location-create-circle-name-help",
+    );
+
     // One character is.
     fireEvent.change(input, { target: { value: "A" } });
     expect(create).toBeEnabled();
+    expect(input).not.toHaveAttribute("aria-describedby");
 
     fireEvent.click(create);
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("A", "family"));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("A", "friends"));
   });
 
   it("finds a connection from the first letter of any of their names", async () => {
@@ -330,18 +348,14 @@ describe("named Circle flows", () => {
         value: "Join my BEST TEAM EVER Circle on One with code 2345-6789-ABCD.",
       },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Preview circle" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review Circle" }));
 
     expect(await screen.findByText("Meena Family")).toBeTruthy();
-    expect(
-      screen.getByText(/connects you with current and future Circle members/i),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/location and SMS contacts stay private/i),
-    ).toBeTruthy();
+    expect(screen.queryByText(/current and future Circle members/i)).toBeNull();
+    expect(screen.getByText(/Location and SMS stay private/i)).toBeTruthy();
     expect(onResolve).toHaveBeenCalledWith("2345-6789-ABCD");
 
-    fireEvent.click(screen.getByRole("button", { name: "Join circle" }));
+    fireEvent.click(screen.getByRole("button", { name: "Join Circle" }));
     await waitFor(() => expect(onJoin).toHaveBeenCalledWith("2345-6789-ABCD"));
   });
 
@@ -358,6 +372,38 @@ describe("named Circle flows", () => {
     expect(screen.getByLabelText("Circle invite code")).toHaveValue(
       "2345-6789-ABCD",
     );
+  });
+
+  it("opens an already-joined Circle after review and lets the code be changed", async () => {
+    const preview: OneLocationCircleInvitePreview = {
+      name: "Meena Family",
+      kind: "family",
+      ownerDisplayName: "Meena",
+      memberCount: 1,
+      expiresAt: "2026-07-27T00:00:00Z",
+      alreadyMember: true,
+    };
+    const onResolve = vi.fn(async () => preview);
+    const onJoin = vi.fn(async () => undefined);
+
+    render(
+      <JoinCircleFlow busy={false} onResolve={onResolve} onJoin={onJoin} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Circle invite code"), {
+      target: { value: "2345-6789-ABCD" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Review Circle" }));
+
+    expect(await screen.findByRole("button", { name: "Open Circle" })).toBeTruthy();
+    expect(screen.getByText("Meena · 1 member")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use Another Code" }));
+    expect(screen.queryByRole("button", { name: "Open Circle" })).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByLabelText("Circle invite code")).toHaveFocus(),
+    );
+    expect(screen.getByLabelText("Circle invite code")).toHaveValue("");
   });
 
   it("ignores a stale preview and joins the exact code that was reviewed", async () => {
@@ -383,9 +429,9 @@ describe("named Circle flows", () => {
 
     const input = screen.getByLabelText("Circle invite code");
     fireEvent.change(input, { target: { value: "2345-6789-ABCD" } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview circle" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review Circle" }));
     fireEvent.change(input, { target: { value: "BCDE-FGHJ-KMNP" } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview circle" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review Circle" }));
 
     await act(async () => {
       resolveSecond?.({
@@ -413,7 +459,7 @@ describe("named Circle flows", () => {
     });
     expect(screen.queryByText("Stale Circle")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Join circle" }));
+    fireEvent.click(screen.getByRole("button", { name: "Join Circle" }));
     await waitFor(() => expect(onJoin).toHaveBeenCalledWith("BCDE-FGHJ-KMNP"));
   });
 
@@ -1267,6 +1313,77 @@ describe("named Circle flows", () => {
     );
   });
 
+  it("shows every member of a joined Circle and Connect only for the four strangers", async () => {
+    const members: OneLocationCircleDetail["members"] = [
+      {
+        userId: "owner-user",
+        displayName: "Circle owner",
+        role: "owner",
+        phoneVerified: true,
+        secureLocationReady: true,
+        relationship: "connected",
+      },
+      {
+        userId: "viewer-user",
+        displayName: "You",
+        role: "member",
+        phoneVerified: true,
+        secureLocationReady: true,
+        relationship: "self",
+      },
+      ...Array.from({ length: 4 }, (_, index) => ({
+        userId: `known-${index + 1}`,
+        displayName: `Connected member ${index + 1}`,
+        role: "member" as const,
+        phoneVerified: true,
+        secureLocationReady: true,
+        relationship: "connected" as const,
+      })),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        userId: `stranger-${index + 1}`,
+        displayName: `New member ${index + 1}`,
+        role: "member" as const,
+        phoneVerified: true,
+        secureLocationReady: true,
+        relationship: "none" as const,
+        canConnect: true,
+      })),
+    ];
+    const joinedCircle: OneLocationCircleDetail = {
+      ...circle("circle-1", "Friends of friends"),
+      role: "member",
+      memberCount: 10,
+      viewerCapabilities: {
+        canInviteMembers: false,
+        canViewInviteCode: false,
+        canRotateInviteCode: false,
+        canManageCircle: false,
+        canModerateInvites: false,
+      },
+      members,
+    };
+
+    render(
+      <CircleDetailFlow
+        circleId="circle-1"
+        {...detailProps(async () => joinedCircle)}
+        currentUserId="viewer-user"
+      />,
+    );
+
+    const roster = await screen.findByTestId("one-location-circle-members");
+    const rosterRows = roster.querySelector(
+      '[data-slot="settings-group-shell"] > div',
+    );
+    expect(rosterRows?.children).toHaveLength(10);
+    expect(screen.getAllByText("10 people").length).toBeGreaterThanOrEqual(1);
+    expect(
+      within(roster).getAllByRole("button", { name: /^Connect with / }),
+    ).toHaveLength(4);
+    expect(within(roster).getByText("Connected member 4")).toBeTruthy();
+    expect(within(roster).getByText("New member 4")).toBeTruthy();
+  });
+
   it("sends an incoming request to where it can actually be answered", async () => {
     const onConnectMember = vi.fn(async () => undefined);
     const ownerCircle = {
@@ -1640,7 +1757,7 @@ describe("named Circle flows", () => {
     expect(screen.queryByText("No members found")).not.toBeInTheDocument();
   });
 
-  it("bounds the Members list to a scrollable region instead of growing the page indefinitely", async () => {
+  it("uses the page scroller on phones and bounds the Members list on larger screens", async () => {
     const rosterCircle = {
       ...circle("circle-1", "Meena Family"),
       memberLimit: 100,
@@ -1665,9 +1782,7 @@ describe("named Circle flows", () => {
 
     await screen.findByText("Synced Contact 0");
 
-    // "Delete circle" sits after the roster in source order; it must still
-    // mount even with 81 rows above it, because the roster scrolls inside
-    // its own bounded region instead of pushing the rest of the page down.
+    // "Delete circle" remains in source order even with 81 rows above it.
     expect(
       screen.getByRole("button", { name: "Delete circle" }),
     ).toBeInTheDocument();
@@ -1676,9 +1791,17 @@ describe("named Circle flows", () => {
     const shell = membersGroup.querySelector(
       '[data-slot="settings-group-shell"]',
     );
-    expect(shell?.className).toContain("max-h-[60vh]");
+    expect(shell?.className).toContain("sm:max-h-[60vh]");
+    expect(shell?.className).not.toMatch(/(?:^|\s)max-h-\[60vh\](?:\s|$)/);
     const scrollRegion = shell?.firstElementChild as HTMLElement | null;
-    expect(scrollRegion?.className).toContain("overflow-y-auto");
+    expect(scrollRegion?.className).toContain("sm:overflow-y-auto");
+    expect(scrollRegion?.className).toContain("sm:overscroll-contain");
+    expect(scrollRegion?.className).not.toMatch(
+      /(?:^|\s)overflow-y-auto(?:\s|$)/,
+    );
+    expect(scrollRegion?.className).not.toMatch(
+      /(?:^|\s)overscroll-contain(?:\s|$)/,
+    );
   });
 
   it("keeps the member search bar hidden for a small Circle", async () => {
@@ -2182,9 +2305,10 @@ describe("an impatient second tap never makes a second Circle", () => {
 
     render(<CreateCircleFlow busy={false} onSubmit={onSubmit} />);
 
-    fireEvent.change(screen.getByPlaceholderText("e.g. Family"), {
-      target: { value: "Roommates" },
-    });
+    fireEvent.change(
+      screen.getByPlaceholderText("Family, close friends, project team"),
+      { target: { value: "Roommates" } },
+    );
     const create = screen.getByRole("button", { name: /create/i });
     fireEvent.click(create);
     fireEvent.click(create);
@@ -2204,9 +2328,10 @@ describe("an impatient second tap never makes a second Circle", () => {
       .mockResolvedValueOnce(undefined);
 
     render(<CreateCircleFlow busy={false} onSubmit={onSubmit} />);
-    fireEvent.change(screen.getByPlaceholderText("e.g. Family"), {
-      target: { value: "Roommates" },
-    });
+    fireEvent.change(
+      screen.getByPlaceholderText("Family, close friends, project team"),
+      { target: { value: "Roommates" } },
+    );
     const create = screen.getByRole("button", { name: /create/i });
 
     fireEvent.click(create);

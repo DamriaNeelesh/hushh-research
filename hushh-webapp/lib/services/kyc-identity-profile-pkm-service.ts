@@ -157,18 +157,32 @@ export class KycIdentityProfilePkmService {
       vaultKey: params.vaultKey,
       vaultOwnerToken: params.vaultOwnerToken,
       source: "kyc_identity_onboarding",
+      memoryProfile: "kyc_identity_v1",
       confirmation: {
         confirmedByUser: true,
         surface: "web",
         source: "kyc_identity_onboarding",
       },
+      // The person has reviewed the imported export and explicitly pressed
+      // “Save KYC details”. That action satisfies the PKM confirmation
+      // requirement for review-only cards. Keep rejected cards excluded in
+      // the canonical writer; do not discard valid KYC facts merely because
+      // their inferred destination needs review.
+      writePolicy: "reviewable",
+      // KYC extraction yields independent, fixed-schema profile fields. Merge
+      // accepted fields for each domain into one encrypted write instead of
+      // serially reloading and rewriting identity for every field.
+      batchSimpleDomainExtensions: true,
     });
     if (ingestion.save.saved === 0) {
       return {
         ...(profileResult ?? { fullBlob: {} }),
         success: false,
         saveState: "failed",
-        message: "We couldn't save the imported details as separate memories. Try again.",
+        message:
+          ingestion.save.attempted > 0
+            ? "We couldn't save the imported details as separate memories. Try again."
+            : "No private details could be recognized. Edit the summary and try again.",
       };
     }
 
@@ -211,14 +225,22 @@ export class KycIdentityProfilePkmService {
       };
     }
 
-    const skippedMessage = ingestion.save.failed > 0
-      ? ` ${ingestion.save.failed} ${ingestion.save.failed === 1 ? "detail was" : "details were"} skipped and can be retried later.`
-      : "";
+    const reviewRequiredBlockCount = (ingestion.sourceCoverage ?? []).filter(
+      (block) => block.disposition === "review_required" && block.accountedFactCount === 0,
+    ).length;
+    const skippedMessage = [
+      ingestion.save.failed > 0
+        ? `${ingestion.save.failed} ${ingestion.save.failed === 1 ? "detail was" : "details were"} skipped and can be retried later.`
+        : "",
+      reviewRequiredBlockCount > 0
+        ? `${reviewRequiredBlockCount} ${reviewRequiredBlockCount === 1 ? "section needs" : "sections need"} a clearer KYC detail before it can be saved.`
+        : "",
+    ].filter(Boolean).join(" ");
     return {
       ...completionResult,
       message:
         `Saved ${ingestion.save.saved} separate memory ${ingestion.save.saved === 1 ? "detail" : "details"}.` +
-        skippedMessage,
+        (skippedMessage ? ` ${skippedMessage}` : ""),
     };
   }
 }

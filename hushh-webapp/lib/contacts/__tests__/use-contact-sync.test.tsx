@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   permissionState: "prompt" as "prompt" | "granted" | "unavailable",
@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
   toastInfo: vi.fn(),
+  contactCheckAllowed: true,
+  requestContactCheck: vi.fn(),
 }));
 
 vi.mock("@/lib/capacitor", () => ({
@@ -38,6 +40,24 @@ vi.mock("@/lib/contacts/google-contacts-token", () => ({
   preloadGoogleContactsAuth: mocks.preloadGoogle,
   isGoogleContactsConsentCancelled: (error: unknown) =>
     (error as { name?: string })?.name === "AbortError",
+}));
+
+vi.mock("@/lib/contacts/use-contact-discoverability-consent", () => ({
+  useContactDiscoverabilityConsent: () => ({
+    requestContactCheck: mocks.requestContactCheck,
+    preference: { status: "decided", enabled: false, ruleVersion: 1 },
+    dialogProps: {
+      open: false,
+      ready: false,
+      loading: false,
+      savingChoice: null,
+      error: null,
+      actionLabel: "Sync contacts",
+      onOpenChange: vi.fn(),
+      onChoose: vi.fn(),
+      onRetry: vi.fn(),
+    },
+  }),
 }));
 
 vi.mock("sonner", () => ({
@@ -69,6 +89,9 @@ vi.mock("@/lib/one-location/contact-signals", async (importOriginal) => ({
 
 import { OneLocationContactSyncError } from "@/lib/one-location/contact-signals";
 import { useContactSync } from "@/lib/contacts/use-contact-sync";
+import { createContactGraphReconciler, reconcileContactGraph } from "@/lib/contacts/reconcile-contact-graph";
+import { ReferralService } from "@/lib/services/referral-service";
+import * as invitationSharing from "@/lib/share/share-link";
 
 /**
  * The branches the Connect page cannot reach.
@@ -125,6 +148,9 @@ function setup(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // An invalidated Google attempt intentionally never consumes its pipeline mock.
+  mocks.syncSignals.mockReset();
+  mocks.requestGoogleToken.mockReset();
   mocks.permissionState = "prompt";
   mocks.googleAvailability = "unconfigured";
   mocks.isNative.mockReturnValue(false);
@@ -132,13 +158,84 @@ beforeEach(() => {
     state: mocks.permissionState,
   }));
   mocks.syncSignals.mockResolvedValue(EMPTY_RESULT);
+  mocks.contactCheckAllowed = true;
+  mocks.requestContactCheck.mockImplementation(() => mocks.contactCheckAllowed);
   // The hook calls `.catch()` on this directly. A bare vi.fn() returns
   // undefined and throws inside the mount effect, which vitest reports as an
   // unhandled error while the assertions still pass.
   mocks.preloadGoogle.mockResolvedValue(undefined);
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
+
+it("retains invite rows outside sync results and makes old invite toasts inert after dismissal", async () => {
+  const referral = vi
+    .spyOn(ReferralService, "getSummary")
+    .mockRejectedValue(new Error("unavailable"));
+  const share = vi
+    .spyOn(invitationSharing, "shareLink")
+    .mockResolvedValue("copied");
+  vi.stubEnv("NEXT_PUBLIC_CONTACT_INVITATIONS_ENABLED", "true");
+  mocks.syncSignals.mockImplementation(async (options) => {
+    options.onInviteCandidates?.([
+      {
+        id: "local",
+        displayName: "Private name",
+        classification: "no_match",
+        destinations: [{ kind: "phone", value: "+14155550101" }],
+      },
+    ]);
+    return {
+      ...EMPTY_RESULT,
+      inviteCandidateCount: 1,
+      unmatchedContactCount: 1,
+      checkedContactCount: 1,
+    };
+  });
+  const { result } = setup();
+  await act(async () => {
+    await result.current.sync();
+  });
+  expect(result.current.resultsSheetProps.invitations?.candidates).toHaveLength(
+    1,
+  );
+  expect(JSON.stringify(result.current.result)).not.toContain("Private name");
+  expect(JSON.stringify(mocks.trackEvent.mock.calls)).not.toContain(
+    "+14155550101",
+  );
+  const toastAction = mocks.toastInfo.mock.calls.find(
+    (call) => call[1]?.action?.label === "Invite them",
+  )?.[1].action.onClick;
+  expect(toastAction).toBeTypeOf("function");
+  act(() => result.current.setResultsOpen(false));
+  expect(result.current.resultsSheetProps.invitations?.candidates).toEqual([]);
+  await act(async () => {
+    toastAction();
+  });
+  expect(result.current.resultsOpen).toBe(false);
+  expect(result.current.resultsSheetProps.invitations?.active).toBe(false);
+  expect(referral).not.toHaveBeenCalled();
+  expect(share).not.toHaveBeenCalled();
+});
+
 describe("useContactSync — which source it reads", () => {
+  it("does not read a contact source until the privacy decision gate permits it", async () => {
+    mocks.contactCheckAllowed = false;
+    const { result } = setup();
+    await waitFor(() => expect(result.current.available).toBe(true));
+
+    await act(async () => {
+      await result.current.sync();
+    });
+
+    expect(mocks.requestContactCheck).toHaveBeenCalledTimes(1);
+    expect(mocks.requestGoogleToken).not.toHaveBeenCalled();
+    expect(mocks.syncSignals).not.toHaveBeenCalled();
+  });
+
   it("reads the device book and never touches Google when one exists", async () => {
     mocks.googleAvailability = "connectable";
     const { result } = setup();
@@ -176,6 +273,101 @@ describe("useContactSync — which source it reads", () => {
     expect(mocks.syncSignals.mock.calls[0][0].source).toBe("google-source");
   });
 
+  it("waits for verified phone hydration after Google consent settles", async () => {
+    mocks.permissionState = "unavailable";
+    mocks.googleAvailability = "connectable";
+    mocks.requestGoogleToken.mockResolvedValue("google-token");
+    mocks.googleSource.mockReturnValue("google-source");
+    let finishPhoneHydration: ((phone: string) => void) | null = null;
+    const resolveVerifiedAccountPhoneNumber = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          finishPhoneHydration = resolve;
+        }),
+    );
+    mocks.syncSignals.mockImplementationOnce(async (options) => {
+      await options.resolveAccountPhoneNumber?.();
+      await options.resolveIdToken?.();
+      return EMPTY_RESULT;
+    });
+
+    const { result } = setup({
+      accountPhoneNumber: null,
+      resolveVerifiedAccountPhoneNumber,
+    });
+    await waitFor(() => expect(result.current.googleFallback).toBe(true));
+
+    let syncPromise!: Promise<void>;
+    act(() => {
+      syncPromise = result.current.sync();
+    });
+    await waitFor(() =>
+      expect(resolveVerifiedAccountPhoneNumber).toHaveBeenCalledTimes(1),
+    );
+    expect(mocks.syncSignals).toHaveBeenCalledTimes(1);
+    expect(result.current.resultsOpen).toBe(true);
+    expect(result.current.resultsSheetProps.googleSync?.phase).toBe("syncing");
+    await act(async () => {
+      finishPhoneHydration?.("+919000000001");
+      await syncPromise;
+    });
+
+    expect(mocks.syncSignals).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "google-source",
+        accountPhoneNumber: null,
+        resolveAccountPhoneNumber: expect.any(Function),
+        resolveIdToken: expect.any(Function),
+      }),
+    );
+    expect(result.current.resultsOpen).toBe(true);
+  });
+
+  it("stops the pipeline after the signed-in account changes", async () => {
+    mocks.permissionState = "unavailable";
+    mocks.googleAvailability = "connectable";
+    let resolveGoogleToken: ((token: string) => void) | null = null;
+    mocks.requestGoogleToken.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveGoogleToken = resolve;
+        }),
+    );
+    mocks.googleSource.mockReturnValue("google-source");
+    mocks.syncSignals.mockImplementationOnce(async (options) => {
+      await options.resolveAccountPhoneNumber?.();
+      return EMPTY_RESULT;
+    });
+
+    const { result, rerender } = renderHook(
+      ({ userId }: { userId: string }) =>
+        useContactSync({
+          routeId: "connect",
+          getIdToken: async () => "id-token",
+          accountPhoneNumber: "+919000000001",
+          userId,
+        }),
+      { initialProps: { userId: "me" } },
+    );
+    await waitFor(() => expect(result.current.googleFallback).toBe(true));
+
+    let syncPromise!: Promise<void>;
+    act(() => {
+      syncPromise = result.current.sync();
+    });
+    await waitFor(() =>
+      expect(mocks.requestGoogleToken).toHaveBeenCalledTimes(1),
+    );
+    rerender({ userId: "someone-else" });
+    await act(async () => {
+      resolveGoogleToken?.("google-token");
+      await syncPromise;
+    });
+
+    expect(mocks.syncSignals).not.toHaveBeenCalled();
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
   it("is unavailable where there is neither", async () => {
     mocks.permissionState = "unavailable";
     mocks.googleAvailability = "unconfigured";
@@ -197,6 +389,10 @@ describe("useContactSync — which source it reads", () => {
       return Promise.resolve("google-token");
     });
     mocks.googleSource.mockReturnValue("google-source");
+    mocks.syncSignals.mockImplementationOnce(async (options) => {
+      await options.resolveIdToken?.();
+      return EMPTY_RESULT;
+    });
 
     const { result } = setup({
       getIdToken: async () => {
@@ -210,6 +406,57 @@ describe("useContactSync — which source it reads", () => {
       await result.current.sync();
     });
     expect(order).toEqual(["google", "idToken"]);
+  });
+
+  it("clears matched contact identities before a replacement account paints", async () => {
+    mocks.syncSignals.mockResolvedValueOnce({
+      ...EMPTY_RESULT,
+      matches: [
+        {
+          lookupId: "lookup_a",
+          userId: "matched_a",
+          displayName: "Local A",
+          photoUrl: null,
+          outcome: "auto_connected" as const,
+        },
+      ],
+      matchedUserIds: ["matched_a"],
+      matchedContactCount: 1,
+      autoConnectedCount: 1,
+    });
+    const { result, rerender } = renderHook(
+      ({ userId }: { userId: string }) =>
+        useContactSync({
+          routeId: "connect",
+          getIdToken: async () => "id-token",
+          accountPhoneNumber: "+919000000001",
+          userId,
+        }),
+      { initialProps: { userId: "user_a" } },
+    );
+    await waitFor(() => expect(result.current.available).toBe(true));
+
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(result.current.result?.matchedUserIds).toEqual(["matched_a"]);
+    expect(result.current.resultsOpen).toBe(true);
+
+    rerender({ userId: "user_b" });
+
+    expect(result.current.result).toBeNull();
+    expect(result.current.resultsOpen).toBe(false);
+    expect(result.current.signal).toEqual({
+      status: "idle",
+      matchedUserIds: [],
+      matchedCount: 0,
+      totalContacts: 0,
+      inviteCandidateCount: 0,
+      limited: false,
+      truncated: false,
+      error: null,
+      syncedAt: null,
+    });
   });
 });
 
@@ -278,6 +525,87 @@ describe("useContactSync — what it says when a read fails", () => {
 });
 
 describe("useContactSync — what it tells the surface", () => {
+  it("refreshes on every completed resync, including all-already-connected results", async () => {
+    mocks.syncSignals.mockResolvedValue({ ...EMPTY_RESULT, alreadyConnectedCount: 3, matchedUserIds: ["a", "b", "c"] });
+    const { result } = setup();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await act(async () => { await result.current.sync(); });
+      expect(result.current.signal.matchedCount).toBe(3);
+    }
+    expect(mocks.onGraphMutated).toHaveBeenCalledTimes(3);
+    expect(mocks.syncSignals).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains successful matches when refresh fails and retries only the display read", async () => {
+    mocks.syncSignals.mockResolvedValue({ ...EMPTY_RESULT, autoConnectedCount: 1, matchedUserIds: ["a"] });
+    mocks.onGraphMutated.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+    const { result } = setup();
+    await act(async () => { await result.current.sync(); });
+    expect(result.current.signal.status).toBe("matched");
+    expect(result.current.resultsOpen).toBe(true);
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    const retry = mocks.toastInfo.mock.calls.at(-1)?.[1]?.action;
+    expect(retry.label).toBe("Refresh connections");
+    await act(async () => { retry.onClick(); });
+    expect(mocks.onGraphMutated).toHaveBeenCalledTimes(2);
+    expect(mocks.syncSignals).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not announce an old account's completion after an awaited graph refresh", async () => {
+    let finish!: () => void;
+    mocks.onGraphMutated.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    mocks.syncSignals.mockResolvedValue({ ...EMPTY_RESULT, autoConnectedCount: 1, matchedUserIds: ["a"] });
+    const { result, rerender } = renderHook(({ userId }) => useContactSync({
+      routeId: "connect", userId, getIdToken: async () => "token",
+      accountPhoneNumber: "+919000000001", onConnectionGraphChanged: mocks.onGraphMutated,
+    }), { initialProps: { userId: "me" } });
+    let task!: Promise<void>;
+    act(() => { task = result.current.sync(); });
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    rerender({ userId: "other" });
+    await act(async () => { finish(); await task; });
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(result.current.result).toBeNull();
+  });
+
+  it("waits for a pre-mutation Location read and uses the latest search for the fresh read", async () => {
+    let finish!: () => void;
+    const prior = new Promise<void>((resolve) => { finish = resolve; });
+    let query = "old";
+    const reads: string[] = [];
+    const invalidate = vi.fn();
+    const task = reconcileContactGraph({ pendingRead: prior, isCurrent: () => true, invalidate,
+      read: async () => { reads.push(query); },
+    });
+    expect(reads).toEqual([]);
+    query = "latest";
+    finish();
+    await task;
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(reads).toEqual(["latest"]);
+    await reconcileContactGraph({ pendingRead: null, isCurrent: () => false, invalidate, read: async () => { reads.push("stale"); } });
+    expect(reads).toEqual(["latest"]);
+  });
+
+  it("coalesces refresh retries but queues a fresh read after a newer mutation", async () => {
+    let finish!: () => void;
+    const read = vi.fn().mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; })).mockResolvedValue(undefined);
+    const invalidate = vi.fn();
+    const options = { pendingRead: null, isCurrent: () => true, invalidate, read };
+    const reconcile = createContactGraphReconciler();
+    const first = reconcile("owner", options);
+    const retry = reconcile("owner", options);
+    expect(retry).toBe(first);
+    const afterMutation = reconcile("owner", options, true);
+    expect(afterMutation).not.toBe(first);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    finish();
+    await Promise.all([first, retry, afterMutation]);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledTimes(2);
+  });
+
   it("does not refresh the list when the graph did not change", async () => {
     const { result } = setup();
     await waitFor(() => expect(result.current.available).toBe(true));

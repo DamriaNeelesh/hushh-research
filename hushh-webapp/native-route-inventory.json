@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-08-27",
-  "total_routes": 119,
+  "generated_at": "2026-09-02",
+  "total_routes": 120,
   "native_required_routes": 103,
-  "excluded_routes": 16,
+  "excluded_routes": 17,
   "routes": [
     {
       "route": "/",
@@ -12,22 +12,12 @@
       "expectedRoute": "/",
       "autoReviewerLogin": false,
       "expectedAuth": "anonymous",
+      "allowedAuthStates": [
+        "anonymous",
+        "authenticated"
+      ],
       "allowedDataStates": [
         "loaded"
-      ]
-    },
-    {
-      "route": "/agent",
-      "classification": "native-required-functional",
-      "initialRoute": "/login?redirect=%2Fagent",
-      "expectedMarker": "native-route-agent",
-      "expectedRoute": "/agent",
-      "autoReviewerLogin": true,
-      "expectedAuth": "authenticated",
-      "allowedDataStates": [
-        "loaded",
-        "empty-valid",
-        "unavailable-valid"
       ]
     },
     {
@@ -636,6 +626,11 @@
       ]
     },
     {
+      "route": "/one/location/check-in/hotel",
+      "classification": "excluded-web-only",
+      "reason": "Fail-closed hotel partner route. It remains invisible until a supported stay provider exists."
+    },
+    {
       "route": "/one/location/map",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fone%2Flocation%2Fmap",
@@ -669,6 +664,20 @@
       "initialRoute": "/login?redirect=%2Fone%2Fpkm",
       "expectedMarker": "native-route-pkm",
       "expectedRoute": "/one/pkm",
+      "autoReviewerLogin": true,
+      "expectedAuth": "authenticated",
+      "allowedDataStates": [
+        "loaded",
+        "empty-valid",
+        "unavailable-valid"
+      ]
+    },
+    {
+      "route": "/one/pkm/recent",
+      "classification": "native-required-functional",
+      "initialRoute": "/login?redirect=%2Fone%2Fpkm%2Frecent",
+      "expectedMarker": "native-route-pkm-recent",
+      "expectedRoute": "/one/pkm/recent",
       "autoReviewerLogin": true,
       "expectedAuth": "authenticated",
       "allowedDataStates": [
@@ -986,18 +995,6 @@
       ]
     },
     {
-      "route": "/one/profile/security/devices",
-      "classification": "native-required-functional",
-      "initialRoute": "/login?redirect=%2Fone%2Fprofile%2Fsecurity%2Fdevices",
-      "expectedMarker": "native-route-profile",
-      "expectedRoute": "/one/profile/security/devices",
-      "autoReviewerLogin": true,
-      "expectedAuth": "authenticated",
-      "allowedDataStates": [
-        "loaded"
-      ]
-    },
-    {
       "route": "/one/profile/security/devices/authorize",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fone%2Fprofile%2Fsecurity%2Fdevices%2Fauthorize",
@@ -1205,6 +1202,11 @@
       ]
     },
     {
+      "route": "/one/puppy",
+      "classification": "excluded-web-only",
+      "reason": "Puppy One requires a loopback connection to the Mac running the local model. A phone cannot reach 127.0.0.1 on another device, and the bridge key is host remote-code-execution, so forwarding it off-machine is refused by design. Needs the outbound rendezvous before this becomes buildable."
+    },
+    {
       "route": "/one/wallet-card",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fone%2Fwallet-card",
@@ -1219,9 +1221,18 @@
       ]
     },
     {
-      "route": "/one/puppy",
-      "classification": "excluded-web-only",
-      "reason": "Puppy One requires a loopback connection to the Mac running the local model. A phone cannot reach 127.0.0.1 on another device, and the bridge key is host remote-code-execution, so forwarding it off-machine is refused by design. Needs the outbound rendezvous before this becomes buildable."
+      "route": "/one/wallet",
+      "classification": "native-required-functional",
+      "initialRoute": "/login?redirect=%2Fone%2Fwallet",
+      "expectedMarker": "native-route-one-wallet",
+      "expectedRoute": "/one/wallet",
+      "autoReviewerLogin": true,
+      "expectedAuth": "authenticated",
+      "allowedDataStates": [
+        "loaded",
+        "empty-valid",
+        "unavailable-valid"
+      ]
     },
     {
       "route": "/pkm",

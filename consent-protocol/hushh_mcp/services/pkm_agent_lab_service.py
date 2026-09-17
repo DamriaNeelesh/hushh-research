@@ -13,12 +13,15 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from hushh_mcp.consent.segment_labels import humanize_path
 from hushh_mcp.constants import GEMINI_MODEL
 from hushh_mcp.hushh_adk.manifest import ManifestLoader
+from hushh_mcp.hushh_adk.single_turn import build_single_turn_agent, run_single_turn
 from hushh_mcp.runtime_providers import (
     build_generate_content_config,
     build_managed_runtime_client,
 )
+from hushh_mcp.runtime_providers.gemini_config import resolve_fleet_model_name
 from hushh_mcp.services.domain_contracts import (
     CANONICAL_DOMAIN_REGISTRY,
     DYNAMIC_DOMAIN_CONTRACT_VERSION,
@@ -30,6 +33,9 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MEMORY_INTENT_MANIFEST_PATH = _REPO_ROOT / "hushh_mcp" / "agents" / "memory_intent" / "agent.yaml"
 _PKM_STRUCTURE_MANIFEST_PATH = _REPO_ROOT / "hushh_mcp" / "agents" / "pkm_structure" / "agent.yaml"
+_KYC_IDENTITY_PROFILE_CONTRACT_PATH = (
+    _REPO_ROOT.parent / "config" / "pkm" / "kyc-identity-profile.v1.json"
+)
 _MEMORY_MERGE_MANIFEST_PATH = _REPO_ROOT / "hushh_mcp" / "agents" / "memory_merge" / "agent.yaml"
 _MEMORY_SEGMENTATION_MANIFEST_PATH = (
     _REPO_ROOT / "hushh_mcp" / "agents" / "memory_segmentation" / "agent.yaml"
@@ -70,6 +76,9 @@ _MERGE_MODES = {
     "delete_entity",
     "no_op",
 }
+# Segments the walk invents; they were never keys the owner wrote.
+_SYNTHETIC_SEGMENTS = frozenset({"_items", "_entities"})
+
 _BLOCKED_EXTERNAL_PATH_PARTS = {
     "changes",
     "created_at",
@@ -330,6 +339,32 @@ Deletions are signaled by: forget, remove, delete, don't remember this anymore.
 Refinements are signaled by: also, still, usually, when possible, prefer, more often.
 
 Output JSON only. Follow the schema exactly. If unsure, choose confirm_first or no_op."""
+_SENSITIVE_VALUE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "card_security_code",
+        re.compile(r"\b(?:cvv|cvc|cvv2|pin)\b\s*(?:is|:|=|-)?\s*\d{3,6}\b", re.I),
+    ),
+    (
+        "credential",
+        re.compile(
+            r"\b(?:password|passwd|passphrase|api[ _-]?key|secret[ _-]?key|access[ _-]?token|"
+            r"refresh[ _-]?token|private[ _-]?key|client[ _-]?secret)\b\s*(?:is|:|=|-)\s*\S+",
+            re.I,
+        ),
+    ),
+    ("credential", re.compile(r"\b(?:sk|pk|rk)_(?:live|test|prod)_[A-Za-z0-9]{8,}\b")),
+    ("government_id", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
+    ("government_id", re.compile(r"\b\d{4}\s\d{4}\s\d{4}\b")),
+    ("government_id", re.compile(r"\bpassport\b[^\n]{0,24}\b[A-Z]{1,2}\d{6,8}\b", re.I)),
+    (
+        "bank_account",
+        re.compile(
+            r"\b(?:account|routing|iban)\s*(?:number|no\.?|#)?\s*(?:is|:|=|-)?\s*[A-Z]{0,2}\d{8,}\b",
+            re.I,
+        ),
+    ),
+)
+
 _INTERNAL_METADATA_SCOPE_TOKENS = {
     "artifact",
     "artifact_id",
@@ -398,19 +433,27 @@ _PREVIEW_CACHE_MAX_SIZE = max(
 _AGENT_CONTRACT_TIMEOUT_SECONDS = max(
     1.5,
     # Protected UAT evidence showed valid Gemini 3.5 Flash responses regularly
-    # arriving after eight seconds. Ten seconds avoids cancelling healthy tail
-    # responses and then paying for a duplicate retry.
-    float(os.getenv("PKM_AGENT_LAB_AGENT_TIMEOUT_SECONDS", "10") or "10"),
+    # arriving after eight seconds, and ten seconds was the original bound.
+    # Raised to thirty in d1af7b695 while stabilizing the Gmail and PKM setup
+    # flows: cancelling a healthy tail response costs a duplicate retry, which
+    # is strictly worse than waiting for the first one.
+    #
+    # Note the interaction with the preview budget below. At thirty seconds a
+    # second attempt cannot finish inside a forty-five second total, so the
+    # budget, not this timeout, is what actually bounds a retried stage.
+    float(os.getenv("PKM_AGENT_LAB_AGENT_TIMEOUT_SECONDS", "30") or "30"),
 )
 # One retry absorbs transient provider tail latency without introducing another
 # runtime configuration surface or extending the shared preview deadline.
 _AGENT_CONTRACT_MAX_ATTEMPTS = 2
 _PREVIEW_TOTAL_BUDGET_SECONDS = max(
     4.0,
-    # The graph is bounded but sequential after segmentation. Five additional
-    # seconds absorb one provider-tail response without making fallback the
-    # normal path for otherwise valid memory decisions.
-    float(os.getenv("PKM_AGENT_LAB_PREVIEW_BUDGET_SECONDS", "35") or "35"),
+    # The graph is bounded but sequential after segmentation. The headroom over
+    # one contract timeout absorbs a provider-tail response without making
+    # fallback the normal path for otherwise valid memory decisions. Raised
+    # from thirty-five to forty-five in d1af7b695 alongside the contract
+    # timeout above.
+    float(os.getenv("PKM_AGENT_LAB_PREVIEW_BUDGET_SECONDS", "45") or "45"),
 )
 _PREVIEW_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _PREVIEW_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
@@ -468,6 +511,41 @@ _SEGMENTATION_SCHEMA = {
         "contract_version": {"type": "INTEGER"},
     },
     "required": ["segments", "source_agent", "contract_version"],
+}
+
+_KYC_IDENTITY_FACT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "field_id": {"type": "STRING"},
+        "value": {"type": "STRING"},
+        "source_text": {"type": "STRING"},
+        "confidence": {"type": "NUMBER"},
+    },
+    "required": ["field_id", "value", "source_text", "confidence"],
+}
+
+_KYC_GENERAL_FALLBACK_FACT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "domain": {"type": "STRING"},
+        "field": {"type": "STRING"},
+        "value": {"type": "STRING"},
+        "source_text": {"type": "STRING"},
+        "confidence": {"type": "NUMBER"},
+    },
+    "required": ["domain", "field", "value", "source_text", "confidence"],
+}
+
+_KYC_IDENTITY_EXTRACTION_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "facts": {"type": "ARRAY", "items": _KYC_IDENTITY_FACT_SCHEMA},
+        "general_fallback_facts": {
+            "type": "ARRAY",
+            "items": _KYC_GENERAL_FALLBACK_FACT_SCHEMA,
+        },
+    },
+    "required": ["facts", "general_fallback_facts"],
 }
 
 _MERGE_DECISION_SCHEMA = {
@@ -544,12 +622,16 @@ _INTENT_FRAME_SCHEMA = {
     ],
 }
 
+# The only three actions the schema permits. Named once so the adoption path
+# and the schema cannot drift into disagreeing about what is valid.
+_STRUCTURE_DECISION_ACTIONS = frozenset({"match_existing_domain", "create_domain", "extend_domain"})
+
 _STRUCTURE_DECISION_SCHEMA = {
     "type": "OBJECT",
     "properties": {
         "action": {
             "type": "STRING",
-            "enum": ["match_existing_domain", "create_domain", "extend_domain"],
+            "enum": sorted(_STRUCTURE_DECISION_ACTIONS),
         },
         "target_domain": {"type": "STRING"},
         "json_paths": {"type": "ARRAY", "items": {"type": "STRING"}},
@@ -597,6 +679,24 @@ _STRUCTURE_PREVIEW_SCHEMA = {
         "validation_hints",
     ],
 }
+
+
+def _manifest_model_name(manifest: Any) -> str:
+    """The text model a manifest asks for, with the fleet alias resolved.
+
+    Real manifests own the mapping (`model_config_for_runtime`); the lightweight
+    stand-ins tests use only carry `.model`. Either way `gemini-default` lands on
+    the switched fleet model (constants.GEMINI_MODEL).
+    """
+    resolver = getattr(manifest, "model_config_for_runtime", None)
+    if callable(resolver):
+        try:
+            return str(resolver().name or "")
+        except Exception:  # noqa: BLE001 - fall back to the raw field
+            pass
+    raw = getattr(manifest, "model", None)
+    name = getattr(raw, "name", raw)
+    return resolve_fleet_model_name(name if isinstance(name, str) else None)
 
 
 class PKMAgentLabService:
@@ -731,6 +831,7 @@ class PKMAgentLabService:
         model_override: str | None,
         strict_small_model: bool,
         domain_registry_override: list[dict[str, Any]] | None,
+        memory_profile: str = "general",
     ) -> str:
         material = json.dumps(
             {
@@ -742,6 +843,7 @@ class PKMAgentLabService:
                 "model_override": model_override or "",
                 "strict_small_model": strict_small_model,
                 "domain_registry_override": domain_registry_override or [],
+                "memory_profile": memory_profile,
             },
             sort_keys=True,
             default=str,
@@ -789,7 +891,13 @@ class PKMAgentLabService:
 
     @classmethod
     def _titleize_path(cls, value: str) -> str:
-        return " ".join(part.replace("_", " ").title() for part in value.split(".") if part)
+        """Owner-facing words for a path, built from the segments AS WRITTEN.
+
+        Must be handed the raw path, never the normalized one. Once a segment
+        has been lowercased for authorization the word boundary is gone, and no
+        resolver can tell ``addressdetails`` from a single word.
+        """
+        return humanize_path(value)
 
     @classmethod
     def _infer_sensitivity(cls, path: str) -> str | None:
@@ -868,14 +976,14 @@ class PKMAgentLabService:
         *,
         message: str,
     ) -> list[dict[str, Any]]:
-        fallback = cls._fallback_segmented_messages(message)
         if not isinstance(raw, dict):
-            return fallback
+            return []
 
         items = raw.get("segments")
         if not isinstance(items, list):
-            return fallback
+            return []
 
+        normalized_message = cls._safe_excerpt(message, limit=50000).casefold()
         sanitized: list[dict[str, Any]] = []
         seen: set[str] = set()
         for item in items:
@@ -888,6 +996,11 @@ class PKMAgentLabService:
             if not source_text:
                 continue
             normalized = source_text.casefold()
+            # Segmentation may select only a direct part of the owner's text.
+            # Never let a rewritten or invented clause become a persistence
+            # candidate, even if a provider returned valid JSON.
+            if normalized not in normalized_message:
+                continue
             if normalized in seen:
                 continue
             seen.add(normalized)
@@ -899,9 +1012,7 @@ class PKMAgentLabService:
                     or "Segmented memory candidate.",
                 }
             )
-        if len(fallback) == 1 and len(sanitized) == 1:
-            return fallback
-        return sanitized or fallback
+        return sanitized
 
     @classmethod
     def _stable_entity_id(
@@ -936,6 +1047,39 @@ class PKMAgentLabService:
             seen.add(normalized)
             unique.append(normalized)
         return unique
+
+    @staticmethod
+    def _luhn_ok(digits: str) -> bool:
+        total = 0
+        for index, char in enumerate(reversed(digits)):
+            value = ord(char) - 48
+            if index % 2 == 1:
+                value *= 2
+                if value > 9:
+                    value -= 9
+            total += value
+        return total % 10 == 0
+
+    @classmethod
+    def _contains_sensitive_secret(cls, message: str) -> str | None:
+        """Name the kind of secret a passage carries, or None.
+
+        A card number, a CVV or PIN, a password or API key, a government id, or
+        a bank account never becomes a plain memory, whatever domain the model
+        proposes: the wallet and the vault's secret surfaces exist for those.
+        This runs before any agent so the passage is rejected, not redirected.
+        """
+        text = str(message or "")
+        if not text.strip():
+            return None
+        for run in re.findall(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)", text):
+            digits = re.sub(r"[ -]", "", run)
+            if 13 <= len(digits) <= 19 and cls._luhn_ok(digits):
+                return "card_number"
+        for kind, pattern in _SENSITIVE_VALUE_PATTERNS:
+            if pattern.search(text):
+                return kind
+        return None
 
     @classmethod
     def _looks_opaque_or_nonsense(cls, message: str) -> bool:
@@ -1416,6 +1560,17 @@ class PKMAgentLabService:
                 )
         return list(merged.values())
 
+    def _should_use_adk_single_turn(self, manifest: Any) -> bool:
+        """Use ADK only for full manifest objects and the managed client type."""
+        if not callable(getattr(manifest, "model_config_for_runtime", None)):
+            return False
+        try:
+            from google.genai import Client
+
+            return isinstance(self.client, Client)
+        except Exception:
+            return False
+
     async def _run_agent_contract(
         self,
         *,
@@ -1445,19 +1600,56 @@ class PKMAgentLabService:
         if self.client is None:
             record("client_unavailable", attempts=0)
             return None
+        # Real managed Gemini clients use the shared ADK single-turn operon.
+        # Test doubles and legacy manifest stand-ins retain the direct-client
+        # seam so deterministic tests never acquire credentials or network I/O.
+        if self._should_use_adk_single_turn(manifest):
+            try:
+                from google.adk.models import Gemini
+
+                adk_model = Gemini(
+                    model=model_override or _manifest_model_name(manifest) or GEMINI_MODEL,
+                    client=self.client,
+                )
+                agent = build_single_turn_agent(
+                    manifest,
+                    output_schema=response_schema,
+                    model=adk_model,
+                )
+                parsed = await run_single_turn(
+                    agent,
+                    prompt_parts=prompt,
+                    user_id="pkm-agent-lab",
+                    consent_token="managed-runtime",  # noqa: S106 - turn-local sentinel
+                    timeout_seconds=timeout_seconds,
+                )
+                value = parsed.model_dump(mode="json") if hasattr(parsed, "model_dump") else parsed
+                if isinstance(value, dict):
+                    record("success", attempts=1)
+                    return value
+                record("invalid_response", attempts=1)
+                return None
+            except Exception as error:
+                record("adk_failure", attempts=1, error_type=type(error).__name__)
+                logger.warning(
+                    "pkm.agent_contract_adk_failed agent=%s error=%s",
+                    agent_id,
+                    type(error).__name__,
+                )
+                return None
         deadline = time.perf_counter() + timeout_seconds if timeout_seconds is not None else None
         from google.genai import types as genai_types
 
-        active_model = model_override or manifest.model or GEMINI_MODEL
+        active_model = model_override or _manifest_model_name(manifest) or GEMINI_MODEL
         config = build_generate_content_config(
             genai_types,
             active_model,
             temperature=0.0,
             # These calls are deterministic schema workers inside a bounded,
             # sequential PKM graph. Gemini's default thinking can consume the
-            # shared preview deadline before the final structure contract runs.
-            # Minimal thinking preserves Gemini 3.5 Flash semantics while
-            # keeping the user-facing chain within its existing latency budget.
+            # shared preview deadline before the final structure contract runs,
+            # so every stage asks for the lowest thinking level and lets the
+            # model adapter drop or map it per the provider contract.
             thinking_config=genai_types.ThinkingConfig(
                 thinking_level=genai_types.ThinkingLevel.MINIMAL,
             ),
@@ -1465,7 +1657,8 @@ class PKMAgentLabService:
             automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
             response_schema=response_schema,
         )
-        for attempt in range(1, _AGENT_CONTRACT_MAX_ATTEMPTS + 1):
+        max_attempts = _AGENT_CONTRACT_MAX_ATTEMPTS
+        for attempt in range(1, max_attempts + 1):
             remaining_seconds = (
                 max(0.0, deadline - time.perf_counter()) if deadline is not None else None
             )
@@ -1483,7 +1676,7 @@ class PKMAgentLabService:
             if remaining_seconds is not None:
                 effective_timeout = max(
                     0.25,
-                    min(_AGENT_CONTRACT_TIMEOUT_SECONDS, remaining_seconds),
+                    min(effective_timeout, remaining_seconds),
                 )
             try:
                 response = await asyncio.wait_for(
@@ -1505,7 +1698,7 @@ class PKMAgentLabService:
                 record("invalid_response", attempts=attempt)
                 return None
             except asyncio.TimeoutError:
-                can_retry = attempt < _AGENT_CONTRACT_MAX_ATTEMPTS
+                can_retry = attempt < max_attempts
                 retry_budget_seconds = (
                     max(0.0, deadline - time.perf_counter()) if deadline is not None else None
                 )
@@ -1515,7 +1708,7 @@ class PKMAgentLabService:
                         "max_attempts=%s timeout_seconds=%s budget_remaining_seconds=%s",
                         getattr(manifest, "id", "unknown"),
                         attempt,
-                        _AGENT_CONTRACT_MAX_ATTEMPTS,
+                        max_attempts,
                         round(effective_timeout, 3),
                         round(retry_budget_seconds, 3)
                         if retry_budget_seconds is not None
@@ -1531,10 +1724,7 @@ class PKMAgentLabService:
                 record("timeout", attempts=attempt)
                 return None
             except Exception as exc:
-                can_retry = (
-                    attempt < _AGENT_CONTRACT_MAX_ATTEMPTS
-                    and self._is_retryable_provider_error(exc)
-                )
+                can_retry = attempt < max_attempts and self._is_retryable_provider_error(exc)
                 if can_retry:
                     retry_delay_seconds = self._provider_retry_delay_seconds(attempt)
                     retry_budget_seconds = (
@@ -1549,7 +1739,7 @@ class PKMAgentLabService:
                             "max_attempts=%s delay_seconds=%s error_type=%s",
                             getattr(manifest, "id", "unknown"),
                             attempt,
-                            _AGENT_CONTRACT_MAX_ATTEMPTS,
+                            max_attempts,
                             round(retry_delay_seconds, 3),
                             type(exc).__name__,
                         )
@@ -1608,17 +1798,25 @@ class PKMAgentLabService:
     def _compact_registry_choices(
         cls,
         registry_choices: list[dict[str, Any]],
-        *,
-        limit: int = 8,
     ) -> list[str]:
+        # Compact metadata, not the vocabulary: truncation makes later domains
+        # impossible to select when the prompt requires these exact keys.  The
+        # resulting list is still a model-facing allowlist, so reserved,
+        # internal, and malformed domain keys must not consume its context or
+        # invite a target the generic PKM writer will reject.
         compact: list[str] = []
         for entry in registry_choices:
-            domain_key = cls._normalize_segment(str(entry.get("domain_key") or ""))
-            if domain_key and domain_key != _GENERAL_DOMAIN_KEY:
-                compact.append(domain_key)
-            if len(compact) >= limit:
-                break
-        return compact
+            if not isinstance(entry, dict):
+                continue
+            raw_domain_key = cls._normalize_segment(str(entry.get("domain_key") or ""))
+            if not raw_domain_key or raw_domain_key == _GENERAL_DOMAIN_KEY:
+                continue
+            try:
+                domain_key = validate_dynamic_top_level_domain(raw_domain_key)
+            except ValueError:
+                continue
+            compact.append(domain_key)
+        return cls._unique_list(compact)
 
     @classmethod
     def _compact_state_summary(cls, simulated_state: dict[str, Any] | None) -> dict[str, Any]:
@@ -1653,17 +1851,20 @@ class PKMAgentLabService:
         header = (
             "You are the Memory Segmentation Agent for Hussh Kai.\n"
             "Return JSON only with segments, source_agent, contract_version.\n"
-            "Split a single natural-language prompt into 1 to 8 meaningful memory candidates.\n"
+            "Select zero to eight direct quotes that could be durable PKM memory candidates.\n"
         )
         if strict_small_model:
             return (
                 f"{header}"
                 f"Message: {message}\n"
                 "Rules:\n"
+                "- Return an empty segments array when there is no explicit durable fact, preference, routine, goal, relationship, or health constraint.\n"
+                "- Keep only direct owner-stated claims that remain useful after this conversation.\n"
+                "- Exclude greetings, introductions, filler, generic self-description, one-off plans, current moods, requests, and form/chat boilerplate.\n"
                 "- Keep each segment self-contained and short.\n"
-                "- Split only when the prompt clearly contains multiple durable or semi-durable ideas.\n"
-                "- Do not invent facts that were not stated.\n"
-                "- If the prompt is one coherent memory, return one segment only.\n"
+                "- source_text must be an exact contiguous quote from the message.\n"
+                "- Split only when the prompt clearly contains multiple independent durable ideas.\n"
+                "- Numbered or Markdown headings are boundaries: never merge across two headings, and never include the heading line in source_text.\n"
                 "- contract_version must be 1.\n"
                 'Examples: {"message":"I like to swim and prefer early breakfasts.","segments":[{"source_text":"I like to swim.","confidence":0.91,"reason":"Exercise preference."},{"source_text":"I prefer early breakfasts.","confidence":0.84,"reason":"Separate food habit."}]} '
                 '{"message":"I usually book aisle seats.","segments":[{"source_text":"I usually book aisle seats.","confidence":0.97,"reason":"Single travel preference."}]}'
@@ -1672,10 +1873,12 @@ class PKMAgentLabService:
             f"{header}"
             f"Natural language message: {message}\n"
             "Rules:\n"
-            "- Return 1 segment for a single coherent memory.\n"
-            "- Return multiple segments only when the prompt clearly contains multiple distinct memories, routines, preferences, or facts.\n"
-            "- Do not split purely stylistic repetition.\n"
-            "- Keep source_text close to the user's own wording.\n"
+            "- Return an empty segments array when there is no explicit durable fact, preference, routine, goal, relationship, or health constraint.\n"
+            "- Exclude greetings, introductions, filler, generic self-description, one-off plans, current moods, requests, and form/chat boilerplate.\n"
+            "- Return one segment for one eligible claim; return multiple segments only for independent eligible claims.\n"
+            "- Do not split stylistic repetition, explanations, or connective narrative.\n"
+            "- source_text must be an exact contiguous quote from the user's message.\n"
+            "- Numbered or Markdown section headings are boundaries: never merge candidates across two headings, and never include the heading line in source_text.\n"
             "- Never emit more than 8 segments.\n"
             "- contract_version must be 1.\n"
         )
@@ -2273,6 +2476,37 @@ class PKMAgentLabService:
         registry_choices: list[dict[str, Any]],
         current_domains: list[str],
     ) -> dict[str, Any]:
+        """Take the intent agent's frame, falling back only where it did not speak.
+
+        The block below this one adopts every field the model returned that is
+        valid for its enum, which is the right shape. What followed it was not:
+        five separate rules let `_fallback_intent_frame` -- a keyword and regex
+        classifier -- overwrite `save_class`, `intent_class` and
+        `mutation_intent` outright, and none of them consulted the model's
+        confidence, only the fallback's own.
+
+        The widest of them fired whenever the fallback scored >= 0.76 and
+        wanted no confirmation, for 11 of the 14 intent classes. Measured
+        2026-09-11 over twelve ordinary sentences, it outranked the model on
+        four: "I prefer espresso without sugar", "Remind me to renew my Costco
+        membership", "I sleep badly when I eat late" and one other. On the
+        third of those the rule files a sleep observation as `preference`
+        whatever the model concluded, which is how a health signal ends up
+        shelved beside a coffee order.
+
+        That is the first shape named in AGENTS.md principle 9: a rule that
+        DECIDES INSTEAD OF the model. So each of those rules now applies only
+        when the model did not answer -- where the fallback is the only
+        judgement that exists and is therefore correct, the exception principle
+        9 states explicitly.
+
+        A rule that WOULD have fired against a real answer is logged rather
+        than dropped in silence. The disagreement rate is the number that says
+        whether the prompt needs work, and it cannot be read off a rule that
+        wins invisibly.
+        """
+        model_answered = isinstance(raw, dict) and bool(raw)
+        suppressed: list[str] = []
         frame = deepcopy(fallback)
         if isinstance(raw, dict):
             save_class = str(raw.get("save_class") or frame["save_class"]).strip().lower()
@@ -2334,11 +2568,14 @@ class PKMAgentLabService:
         if frame["save_class"] == "ephemeral":
             frame["mutation_intent"] = "no_op"
         fallback_confidence = cls._clamp_confidence(fallback.get("confidence"), default=0.0)
-        if (
+        wide_override = (
             fallback_confidence >= 0.76
             and fallback.get("save_class") in _SAVE_CLASSES
             and not fallback.get("requires_confirmation")
-        ):
+        )
+        if wide_override and model_answered:
+            suppressed.append("fallback_confidence_override")
+        if wide_override and not model_answered:
             fallback_choices = fallback.get("candidate_domain_choices") or []
             if fallback_choices:
                 frame["candidate_domain_choices"] = deepcopy(fallback_choices)
@@ -2372,6 +2609,8 @@ class PKMAgentLabService:
             frame["requires_confirmation"] = False
             frame["confirmation_reason"] = ""
             frame["confidence"] = max(0.98, float(frame.get("confidence") or 0.0))
+        elif fallback.get("save_class") == "ambiguous" and model_answered:
+            suppressed.append("fallback_ambiguous_override")
         elif fallback.get("save_class") == "ambiguous":
             frame["save_class"] = "ambiguous"
             frame["intent_class"] = "ambiguous"
@@ -2384,6 +2623,8 @@ class PKMAgentLabService:
                 float(frame.get("confidence") or 0.0),
                 float(fallback.get("confidence") or 0.0),
             )
+        elif fallback.get("save_class") == "ephemeral" and model_answered:
+            suppressed.append("fallback_ephemeral_override")
         elif fallback.get("save_class") == "ephemeral":
             frame["save_class"] = "ephemeral"
             frame["intent_class"] = fallback.get("intent_class") or frame["intent_class"]
@@ -2399,6 +2640,24 @@ class PKMAgentLabService:
             and fallback.get("mutation_intent") in {"correct", "delete"}
             and frame.get("mutation_intent") != fallback.get("mutation_intent")
         ):
+            # DELIBERATELY NOT gated on model_answered, unlike the three rules
+            # above it. This is the one place the fallback is catching an
+            # explicit cue rather than substituting a judgement.
+            #
+            # `test_obvious_location_correction_recovers_from_model_no_op`
+            # holds the case: the model answers `ephemeral` / `ambiguous` /
+            # `no_op` to "Actually I live in New York City now." A correction
+            # dropped is the person's own record left wrong, and it is silent
+            # -- nothing tells them the update did not land. That is a
+            # data-integrity guard, which AGENTS.md principle 9 and
+            # backend-semantic-boundary.md both place outside this doctrine,
+            # the same way a security guard sits outside it.
+            #
+            # The durable fix is still the prompt: "Actually" and "No, ..."
+            # opening a sentence are corrections, and the intent agent should
+            # say so without help. When the live disagreement rate for this
+            # rule reaches zero, it can go. Until then it stays, because the
+            # failure it prevents is one-directional and unrecoverable.
             frame["save_class"] = "durable"
             frame["intent_class"] = fallback["intent_class"]
             frame["mutation_intent"] = fallback["mutation_intent"]
@@ -2411,6 +2670,14 @@ class PKMAgentLabService:
             frame["candidate_domain_choices"] = deepcopy(
                 fallback.get("candidate_domain_choices") or []
             )
+        elif (
+            fallback.get("save_class") == "durable"
+            and fallback.get("mutation_intent") == "extend"
+            and frame.get("mutation_intent") in {"create", "no_op"}
+            and not frame.get("requires_confirmation")
+            and model_answered
+        ):
+            suppressed.append("fallback_extend_override")
         elif (
             fallback.get("save_class") == "durable"
             and fallback.get("mutation_intent") == "extend"
@@ -2429,6 +2696,27 @@ class PKMAgentLabService:
                 float(frame.get("confidence") or 0.0),
                 float(fallback.get("confidence") or 0.0),
             )
+        elif (
+            fallback.get("save_class") == "durable"
+            and not fallback.get("requires_confirmation")
+            and cls._clamp_confidence(fallback.get("confidence"), default=0.0) >= 0.73
+            and (
+                frame.get("intent_class") != fallback.get("intent_class")
+                or frame.get("mutation_intent") != fallback.get("mutation_intent")
+            )
+            and model_answered
+        ):
+            # The widest rule in the method, and the clearest case of the
+            # doctrine's first shape: its trigger condition IS disagreement
+            # with the model, and it resolved that disagreement in the rule's
+            # favour every time, at a lower bar (0.73) than the confidence
+            # rule above it (0.76).
+            #
+            # Measured: "I sleep badly when I eat late." The intent agent
+            # returns `health` at 0.93 confidence; the keyword classifier says
+            # `preference` at 0.76; this rule filed it as `preference`. The
+            # model's own confidence was never part of the comparison.
+            suppressed.append("fallback_disagreement_override")
         elif (
             fallback.get("save_class") == "durable"
             and not fallback.get("requires_confirmation")
@@ -2471,6 +2759,18 @@ class PKMAgentLabService:
             frame["confirmation_reason"] = (
                 "Kai needs a quick confirmation before writing this memory into the PKM."
             )
+        if suppressed:
+            # INFO, not a hint on the frame: the frame is persisted and its
+            # shape is a schema. A rate rising here says the prompt and the
+            # keyword classifier disagree more often than they used to, which
+            # is a prompt to fix, not a rule to restore.
+            logger.info(
+                "pkm_intent_rule_suppressed rules=%s intent_class=%s save_class=%s",
+                ",".join(suppressed),
+                frame.get("intent_class"),
+                frame.get("save_class"),
+            )
+
         return frame
 
     @classmethod
@@ -2646,9 +2946,20 @@ class PKMAgentLabService:
         intent_used_fallback: bool = False,
         merge_used_fallback: bool = False,
         structure_used_fallback: bool = False,
+        intent_skipped: bool = False,
+        merge_skipped: bool = False,
+        structure_skipped: bool = False,
     ) -> dict[str, bool]:
         hints = {cls._normalize_segment(str(hint)) for hint in validation_hints if hint}
         return {
+            # Deliberately NOT folded into fallback_used. A fallback means the
+            # model answered badly or not at all; a skip means it was never
+            # consulted. Collapsing them would hide the second behind a metric
+            # that looks healthy precisely when the intelligence is absent.
+            "stage_skipped": bool(intent_skipped or merge_skipped or structure_skipped),
+            "intent_skipped": bool(intent_skipped),
+            "merge_skipped": bool(merge_skipped),
+            "structure_skipped": bool(structure_skipped),
             "fallback_used": bool(
                 fallback_used
                 or intent_used_fallback
@@ -3091,7 +3402,18 @@ class PKMAgentLabService:
         value: Any,
         path: list[str],
         paths: dict[str, dict[str, Any]],
+        display_path: list[str] | None = None,
     ) -> None:
+        """Record every path in a payload, with its owner-facing label.
+
+        ``display_path`` mirrors ``path`` segment for segment, spelled the way
+        the owner's data spells it. It is carried rather than derived because
+        ``path`` has already been through ``_normalize_segment``: this walk is
+        the only point where both forms exist at once, and therefore the only
+        place the label can be authored correctly.
+        """
+        if display_path is None:
+            display_path = list(path)
         if value is None:
             return
 
@@ -3108,7 +3430,12 @@ class PKMAgentLabService:
                 and not any(
                     part in _BLOCKED_EXTERNAL_PATH_PARTS for part in current_path.split(".")
                 ),
-                "consent_label": cls._titleize_path(current_path),
+                "consent_label": cls._titleize_path(".".join(display_path)),
+                "display_segment": (
+                    None
+                    if not display_path or display_path[-1] in _SYNTHETIC_SEGMENTS
+                    else display_path[-1]
+                ),
                 "sensitivity_label": cls._infer_sensitivity(current_path),
                 "segment_id": path[0] if path else "root",
                 "source_agent": "pkm_structure_agent",
@@ -3117,7 +3444,7 @@ class PKMAgentLabService:
         if isinstance(value, list):
             sample = next((item for item in value if item is not None), None)
             if sample is not None:
-                cls._walk_payload(sample, [*path, "_items"], paths)
+                cls._walk_payload(sample, [*path, "_items"], paths, [*display_path, "_items"])
             return
 
         if not isinstance(value, dict):
@@ -3126,7 +3453,10 @@ class PKMAgentLabService:
         for raw_key, child_value in value.items():
             normalized_key = cls._normalize_segment(str(raw_key))
             if normalized_key:
-                cls._walk_payload(child_value, [*path, normalized_key], paths)
+                # raw_key, not normalized_key: the spelling still exists here.
+                cls._walk_payload(
+                    child_value, [*path, normalized_key], paths, [*display_path, str(raw_key)]
+                )
 
     @classmethod
     def _payload_financial_signature(cls, payload: dict[str, Any]) -> bool:
@@ -3202,6 +3532,93 @@ class PKMAgentLabService:
             "source_agent": "pkm_structure_agent",
             "contract_version": DYNAMIC_DOMAIN_CONTRACT_VERSION,
         }
+
+    @classmethod
+    def _adopt_model_structure_decision(
+        cls,
+        *,
+        walk_decision: dict[str, Any],
+        raw_decision: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Let the structure agent's own decision stand where it made one.
+
+        Six of the ten fields in `_STRUCTURE_DECISION_SCHEMA["required"]` were
+        never read. The model was asked for `action`, `json_paths`,
+        `top_level_scope_paths`, `externalizable_paths`, `summary_projection`
+        and `sensitivity_labels`, it returned all six under a schema that
+        rejects a response missing any of them, and
+        `_normalize_structure_preview` then rebuilt every one of them from a
+        deterministic walk. That is the second shape named in AGENTS.md
+        principle 9: a rule that DISCARDS what the model returned. The prompt
+        cost is paid either way; only the answer is thrown out.
+
+        Two of them stay walk-derived on purpose, and this is not a hedge.
+        `candidate_payload` is mutated after the model returns -- sanitized,
+        CRUD-realigned, financially normalized, root-scope retargeted and
+        metadata-stripped -- so `json_paths` and `top_level_scope_paths` from
+        the model describe a payload that no longer exists. Adopting those
+        would not be trusting the model, it would be recording a shape nothing
+        was written in.
+
+        `externalizable_paths` is the model's to choose, intersected with what
+        actually survived those mutations. The intersection is not a second
+        opinion about sharing: the sharing guard is
+        `is_internal_manifest_path`, downstream and independent, and it still
+        runs on whatever comes out of here.
+        """
+        hints: list[str] = []
+        decision = dict(walk_decision)
+        real_paths = set(decision.get("json_paths") or [])
+        walk_leaves = list(decision.get("externalizable_paths") or [])
+
+        action = str(raw_decision.get("action") or "").strip()
+        if action in _STRUCTURE_DECISION_ACTIONS:
+            decision["action"] = action
+        elif action:
+            hints.append("structure_action_invalid")
+
+        proposed = [
+            cls._normalize_path(str(path))
+            for path in (raw_decision.get("externalizable_paths") or [])
+            if str(path or "").strip()
+        ]
+        if proposed:
+            survived = [path for path in proposed if path in real_paths]
+            if survived:
+                decision["externalizable_paths"] = survived
+                if len(survived) != len(proposed):
+                    # Some of what it chose was written somewhere else by a
+                    # later normalization step. Worth seeing: a rising rate
+                    # here means the mutations and the prompt disagree about
+                    # the shape, which is a prompt problem, not a model one.
+                    hints.append("structure_externalizable_paths_partially_stale")
+            else:
+                decision["externalizable_paths"] = walk_leaves
+                hints.append("structure_externalizable_paths_stale")
+
+        labels = raw_decision.get("sensitivity_labels")
+        if isinstance(labels, dict) and labels:
+            merged = dict(decision.get("sensitivity_labels") or {})
+            kept = 0
+            for path, label in labels.items():
+                normalized = cls._normalize_path(str(path))
+                if normalized in real_paths and isinstance(label, str) and label.strip():
+                    merged[normalized] = label.strip()
+                    kept += 1
+            decision["sensitivity_labels"] = merged
+            if not kept:
+                hints.append("structure_sensitivity_labels_stale")
+
+        projection = raw_decision.get("summary_projection")
+        if isinstance(projection, dict) and projection:
+            # The model's own projection, except the count, which is a fact
+            # about the payload rather than a judgement about it.
+            decision["summary_projection"] = {
+                **projection,
+                "path_count": len(real_paths),
+            }
+
+        return decision, hints
 
     @classmethod
     def _manifest_target_entity_scope(
@@ -3339,6 +3756,30 @@ class PKMAgentLabService:
         fallback_target_domain: str,
         simulated_state: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        secret_kind = cls._contains_sensitive_secret(message)
+        if secret_kind:
+            # Same terminal shape as the reserved-target rejection: never
+            # redirected, never owner-confirmable, and the hint tells the
+            # surface to point at the secure form instead.
+            return {
+                "candidate_payload": {},
+                "structure_decision": {
+                    "action": "reject_sensitive_secret",
+                    "target_domain": "",
+                    "json_paths": [],
+                    "top_level_scope_paths": [],
+                    "externalizable_paths": [],
+                    "summary_projection": {},
+                    "sensitivity_labels": {},
+                    "confidence": 0.0,
+                    "source_agent": "pkm_structure_agent",
+                    "contract_version": DYNAMIC_DOMAIN_CONTRACT_VERSION,
+                },
+                "write_mode": "do_not_save",
+                "primary_json_path": None,
+                "target_entity_scope": None,
+                "validation_hints": [f"sensitive_{secret_kind}_rejected"],
+            }
         raw_structure = parsed_structure or {}
         raw_decision = raw_structure.get("structure_decision")
         raw_decision = raw_decision if isinstance(raw_decision, dict) else {}
@@ -3541,6 +3982,10 @@ class PKMAgentLabService:
         ):
             validation_hints.append("possible_duplicate_memory")
 
+        # The walk over the FINAL payload. Always computed, because it is the
+        # only thing that can describe what was actually written after the
+        # mutations above, and because it is the whole decision when the model
+        # failed or was skipped.
         decision = cls._fallback_structure_decision(
             message=message,
             current_domains=current_domains,
@@ -3548,6 +3993,12 @@ class PKMAgentLabService:
             target_domain=target_domain,
             candidate_payload=candidate_payload,
         )
+        if raw_decision:
+            decision, adoption_hints = cls._adopt_model_structure_decision(
+                walk_decision=decision,
+                raw_decision=raw_decision,
+            )
+            validation_hints.extend(adoption_hints)
         decision["confidence"] = cls._clamp_confidence(
             raw_decision.get("confidence"),
             default=cls._clamp_confidence(intent_frame.get("confidence"), default=0.55),
@@ -3575,7 +4026,10 @@ class PKMAgentLabService:
 
         write_mode = str(raw_structure.get("write_mode") or "").strip().lower()
         if write_mode not in _WRITE_MODES:
-            write_mode = "can_save"
+            # A missing structure decision is not owner approval. Keep the
+            # malformed result review-only instead of synthesizing a write.
+            write_mode = "confirm_first"
+            validation_hints.append("invalid_write_mode_requires_review")
 
         if intent_frame.get("save_class") == "ephemeral":
             write_mode = "do_not_save"
@@ -4070,6 +4524,9 @@ class PKMAgentLabService:
                     intent_used_fallback=bool(preview.get("intent_used_fallback")),
                     merge_used_fallback=bool(preview.get("merge_used_fallback")),
                     structure_used_fallback=bool(preview.get("structure_used_fallback")),
+                    intent_skipped=bool(preview.get("intent_skipped")),
+                    merge_skipped=bool(preview.get("merge_skipped")),
+                    structure_skipped=bool(preview.get("structure_skipped")),
                 )
             ),
             "intent_frame": deepcopy(intent_frame),
@@ -4077,6 +4534,363 @@ class PKMAgentLabService:
             "candidate_payload": deepcopy(candidate_payload),
             "structure_decision": deepcopy(structure_decision),
             "manifest_draft": deepcopy(manifest_draft),
+        }
+
+    @staticmethod
+    def _kyc_identity_fields() -> dict[str, dict[str, Any]]:
+        """Load the shared, value-free KYC alias contract used by web and API."""
+        try:
+            payload = json.loads(_KYC_IDENTITY_PROFILE_CONTRACT_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.error("pkm.kyc_identity_contract_unavailable error=%s", type(exc).__name__)
+            return {}
+        fields = payload.get("fields") if isinstance(payload, dict) else []
+        return {
+            str(field.get("id") or "").strip(): field
+            for field in fields
+            if isinstance(field, dict)
+            and str(field.get("id") or "").strip()
+            and str(field.get("domain") or "").strip()
+            and str(field.get("path") or "").strip()
+        }
+
+    @classmethod
+    def _kyc_identity_prompt(cls, *, message: str, fields: dict[str, dict[str, Any]]) -> str:
+        allowed = [
+            {"field_id": field_id, "aliases": list(field.get("aliases") or [])}
+            for field_id, field in fields.items()
+        ]
+        return (
+            "Extract only explicit, durable KYC identity facts from the user's supplied text. "
+            "Return no inference, no summaries, no raw about-me blob, no government ID numbers, "
+            "no passwords, tokens, banking details, or unsupported fields. Each fact must use exactly "
+            "one allowed field_id, preserve a direct source_text excerpt from the user, and use a value "
+            "directly stated in that excerpt. If uncertain or conflicting, omit the fact.\n\n"
+            "If an explicit durable fact does not fit an allowed KYC field, put it in "
+            "general_fallback_facts instead. Each fallback must have one small factual value, a stable "
+            "lowercase field label, a direct source_text excerpt, and one of these domains: identity, "
+            "professional, location, health, travel, food, shopping, entertainment, social, general. "
+            "Fallback facts are review-first. Do not emit prose paragraphs, secrets, identifiers, or "
+            "anything ambiguous.\n\n"
+            f"Allowed fields: {json.dumps(allowed, ensure_ascii=False)}\n\n"
+            f"User supplied text:\n{message}"
+        )
+
+    @classmethod
+    def _set_nested_value(cls, payload: dict[str, Any], path: str, value: str) -> None:
+        cursor = payload
+        parts = [part for part in cls._normalize_path(path).split(".") if part]
+        for part in parts[:-1]:
+            nested = cursor.get(part)
+            if not isinstance(nested, dict):
+                nested = {}
+                cursor[part] = nested
+            cursor = nested
+        if parts:
+            cursor[parts[-1]] = value
+
+    @staticmethod
+    def _safe_kyc_general_domain(value: Any) -> str:
+        allowed = {
+            "identity",
+            "professional",
+            "location",
+            "health",
+            "travel",
+            "food",
+            "shopping",
+            "entertainment",
+            "social",
+            _GENERAL_DOMAIN_KEY,
+        }
+        domain = PKMAgentLabService._normalize_segment(str(value or ""))
+        return domain if domain in allowed else ""
+
+    @classmethod
+    def _safe_kyc_general_field(cls, value: Any) -> str:
+        field = cls._normalize_segment(str(value or ""))
+        if not field or field in _BLOCKED_EXTERNAL_PATH_PARTS or field in _STRUCTURAL_SCOPE_TOKENS:
+            return ""
+        return field
+
+    async def _generate_kyc_identity_preview(
+        self,
+        *,
+        user_id: str,
+        message: str,
+        current_domains: list[str],
+        model_override: str | None,
+        execution_trace: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """One constrained model pass for explicit KYC facts; no generic fan-out."""
+        fields = self._kyc_identity_fields()
+        started_at = time.perf_counter()
+        secret_kind = self._contains_sensitive_secret(message)
+        raw = (
+            None
+            if secret_kind or not fields
+            else await self._run_agent_contract(
+                manifest=self.structure_manifest,
+                prompt=self._kyc_identity_prompt(message=message, fields=fields),
+                response_schema=_KYC_IDENTITY_EXTRACTION_SCHEMA,
+                model_override=model_override,
+                timeout_seconds=_AGENT_CONTRACT_TIMEOUT_SECONDS,
+                execution_trace=execution_trace,
+            )
+        )
+        facts = (
+            raw.get("facts") if isinstance(raw, dict) and isinstance(raw.get("facts"), list) else []
+        )
+        general_fallback_facts = (
+            raw.get("general_fallback_facts")
+            if isinstance(raw, dict) and isinstance(raw.get("general_fallback_facts"), list)
+            else []
+        )
+        message_normalized = self._safe_excerpt(message, limit=50000).casefold()
+        cards: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, fact in enumerate(facts, start=1):
+            if not isinstance(fact, dict):
+                continue
+            field_id = str(fact.get("field_id") or "").strip()
+            field = fields.get(field_id)
+            value = str(fact.get("value") or "").strip()
+            source_text = str(fact.get("source_text") or "").strip()
+            if not field or not value or not source_text:
+                continue
+            # Provider output is only a proposal. It must be anchored in the
+            # exact user-entered text before becoming a PKM candidate.
+            if (
+                source_text.casefold() not in message_normalized
+                or value.casefold() not in source_text.casefold()
+            ):
+                continue
+            dedupe_key = f"{field_id}:{value.casefold()}"
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            confidence = self._clamp_confidence(fact.get("confidence"), default=0.0)
+            domain = self._normalize_segment(str(field["domain"]))
+            path = self._normalize_path(str(field["path"]))
+            candidate_payload: dict[str, Any] = {}
+            self._set_nested_value(candidate_payload, path, value)
+            intent_frame = {
+                "save_class": "durable",
+                "intent_class": "profile_fact",
+                "mutation_intent": "extend" if domain in current_domains else "create",
+                "requires_confirmation": confidence < _AUTO_SAVE_MIN_CONFIDENCE,
+                "confirmation_reason": "Review this low-confidence KYC extraction before saving."
+                if confidence < _AUTO_SAVE_MIN_CONFIDENCE
+                else "",
+                "candidate_domain_choices": [],
+                "confidence": confidence,
+            }
+            structure_decision = self._fallback_structure_decision(
+                message=source_text,
+                current_domains=current_domains,
+                intent_frame=intent_frame,
+                target_domain=domain,
+                candidate_payload=candidate_payload,
+            )
+            structure_decision["confidence"] = confidence
+            manifest_draft = self._build_manifest_from_payload(
+                user_id=user_id,
+                domain=domain,
+                payload=candidate_payload,
+                structure_decision=structure_decision,
+            )
+            preview = {
+                "routing_decision": "non_financial_or_ephemeral",
+                "intent_frame": intent_frame,
+                "merge_decision": {
+                    "merge_mode": "extend_entity" if domain in current_domains else "create_entity",
+                    "target_domain": domain,
+                    "target_entity_id": "identity_profile" if domain == "identity" else "profile",
+                },
+                "candidate_payload": candidate_payload,
+                "structure_decision": structure_decision,
+                "manifest_draft": manifest_draft,
+                "write_mode": "can_save"
+                if confidence >= _AUTO_SAVE_MIN_CONFIDENCE
+                else "confirm_first",
+                "primary_json_path": path,
+                "target_entity_scope": path.rsplit(".", 1)[0] if "." in path else path,
+                "validation_hints": ["kyc_identity_v1", "explicit_user_statement"],
+            }
+            card = self._build_preview_card(
+                card_id=f"kyc_identity_{index:02d}",
+                source_text=source_text,
+                preview=preview,
+                simulated_state=None,
+            )
+            card.update(
+                {
+                    "canonical_field_id": field_id,
+                    "confidence": confidence,
+                    "source_disposition": "explicit_user_statement",
+                    "retrieval_hints": {
+                        "domain": domain,
+                        "path": path,
+                        "aliases": list(field.get("aliases") or []),
+                        "segment_ids": list(card.get("candidate_segment_ids") or []),
+                    },
+                }
+            )
+            cards.append(card)
+        for index, fact in enumerate(general_fallback_facts, start=1):
+            if not isinstance(fact, dict):
+                continue
+            domain = self._safe_kyc_general_domain(fact.get("domain"))
+            field = self._safe_kyc_general_field(fact.get("field"))
+            value = str(fact.get("value") or "").strip()
+            source_text = str(fact.get("source_text") or "").strip()
+            if (
+                not domain
+                or not field
+                or not value
+                or len(value) > 240
+                or not source_text
+                or source_text.casefold() not in message_normalized
+                or value.casefold() not in source_text.casefold()
+                or self._contains_sensitive_secret(value)
+            ):
+                continue
+            path = f"facts.{field}" if domain == _GENERAL_DOMAIN_KEY else f"profile.{field}"
+            dedupe_key = f"{domain}:{path}:{value.casefold()}"
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            confidence = self._clamp_confidence(fact.get("confidence"), default=0.0)
+            candidate_payload: dict[str, Any] = {}
+            self._set_nested_value(candidate_payload, path, value)
+            intent_frame = {
+                "save_class": "durable",
+                "intent_class": "profile_fact",
+                "mutation_intent": "extend" if domain in current_domains else "create",
+                "requires_confirmation": True,
+                "confirmation_reason": "Review this KYC detail before saving.",
+                "candidate_domain_choices": [],
+                "confidence": confidence,
+            }
+            structure_decision = self._fallback_structure_decision(
+                message=source_text,
+                current_domains=current_domains,
+                intent_frame=intent_frame,
+                target_domain=domain,
+                candidate_payload=candidate_payload,
+            )
+            structure_decision["confidence"] = confidence
+            manifest_draft = self._build_manifest_from_payload(
+                user_id=user_id,
+                domain=domain,
+                payload=candidate_payload,
+                structure_decision=structure_decision,
+            )
+            preview = {
+                "routing_decision": "non_financial_or_ephemeral",
+                "intent_frame": intent_frame,
+                "merge_decision": {
+                    "merge_mode": "extend_entity" if domain in current_domains else "create_entity",
+                    "target_domain": domain,
+                    "target_entity_id": "profile",
+                },
+                "candidate_payload": candidate_payload,
+                "structure_decision": structure_decision,
+                "manifest_draft": manifest_draft,
+                "write_mode": "confirm_first",
+                "primary_json_path": path,
+                "target_entity_scope": path.rsplit(".", 1)[0],
+                "validation_hints": [
+                    "kyc_identity_v1",
+                    "general_pkm_fallback",
+                    "explicit_user_statement",
+                ],
+            }
+            card = self._build_preview_card(
+                card_id=f"kyc_general_{index:02d}",
+                source_text=source_text,
+                preview=preview,
+                simulated_state=None,
+            )
+            card.update(
+                {
+                    "confidence": confidence,
+                    "source_disposition": "general_pkm_fallback",
+                    "retrieval_hints": {
+                        "domain": domain,
+                        "path": path,
+                        "aliases": [field],
+                        "segment_ids": list(card.get("candidate_segment_ids") or []),
+                    },
+                }
+            )
+            cards.append(card)
+        summary = self._aggregate_preview_summary(
+            preview_cards=cards,
+            split_recommended=False,
+            total_segments_detected=len(cards),
+        )
+        context_plan = self._context_plan_from_cards(cards)
+        used_fallback = raw is None
+        empty_manifest = self._build_manifest_from_payload(
+            user_id=user_id,
+            domain="identity",
+            payload={},
+            structure_decision={
+                "action": "create_domain",
+                "target_domain": "identity",
+                "json_paths": [],
+                "top_level_scope_paths": [],
+                "externalizable_paths": [],
+                "summary_projection": {},
+                "sensitivity_labels": {},
+                "confidence": 0.0,
+                "source_agent": "pkm_structure_agent",
+                "contract_version": DYNAMIC_DOMAIN_CONTRACT_VERSION,
+            },
+        )
+        primary = cards[0] if cards else {}
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        return {
+            "agent_id": self.structure_manifest.id,
+            "agent_name": self.structure_manifest.name,
+            "model": model_override
+            or _manifest_model_name(self.structure_manifest)
+            or GEMINI_MODEL,
+            "used_fallback": used_fallback,
+            "intent_used_fallback": False,
+            "merge_used_fallback": False,
+            "structure_used_fallback": used_fallback,
+            "error": "sensitive_input_rejected"
+            if secret_kind
+            else ("kyc_identity_extraction_unavailable" if used_fallback else None),
+            "routing_decision": primary.get("routing_decision", "non_financial_or_ephemeral"),
+            "intent_frame": primary.get("intent_frame", {}),
+            "merge_decision": primary.get("merge_decision", {}),
+            "candidate_payload": primary.get("candidate_payload", {}),
+            "structure_decision": primary.get(
+                "structure_decision", empty_manifest["structure_decision"]
+            ),
+            "write_mode": primary.get("write_mode", "do_not_save"),
+            "primary_json_path": primary.get("primary_json_path"),
+            "target_entity_scope": primary.get("target_entity_scope"),
+            "validation_hints": [
+                "kyc_identity_v1",
+                *([f"sensitive_{secret_kind}_rejected"] if secret_kind else []),
+            ],
+            "manifest_draft": primary.get("manifest_draft", empty_manifest),
+            "preview_cards": cards,
+            "preview_summary": summary,
+            "performance": {
+                "total_latency_ms": elapsed_ms,
+                "stage_latencies_ms": {"kyc_identity_extraction": elapsed_ms},
+                "cards_returned": len(cards),
+                "extraction_call_count": 0 if secret_kind or not fields else 1,
+                "strategy": "single_constrained_kyc_identity_extraction",
+                "context_domains_loaded": context_plan.get("candidate_domains") or [],
+                "context_segments_loaded": context_plan.get("candidate_segment_ids") or [],
+            },
+            "context_plan": context_plan,
         }
 
     def _build_memory_intent_prompt(
@@ -4284,6 +5098,10 @@ class PKMAgentLabService:
             f"Natural language message: {message}\n"
             "Rules:\n"
             "- candidate_payload must align with target_domain and the intent frame.\n"
+            "- Choose the action that names this person's information most honestly.\n"
+            "- A domain is a SUBJECT AREA of a person's life, not a container of convenience. Before reusing one, ask whether a person would genuinely say this belongs there.\n"
+            "- create_domain is a normal, expected outcome. A person is not a fixed list of categories. If a statement is about a distinct part of who they are, name a new domain for it.\n"
+            "- Do not stretch an existing domain to absorb something it is not about. Measured: the wording this replaced produced zero new domains across ten statements and filed someone's communication style under ria, the financial-advisor domain.\n"
             "- You may propose a new safe lowercase snake_case top-level domain when no existing domain is semantically accurate.\n"
             "- Never propose protocol or internal namespaces such as vault, pkm, attr, cap, agent, runtime_secrets, kyc_connector, or kyc_workflow.\n"
             "- Every durable write is confirm_first; never rely on can_save for persistence.\n"
@@ -4303,9 +5121,9 @@ class PKMAgentLabService:
             "- Never use the domain key general.\n"
             f"{small_model_rules}"
             "Examples:\n"
-            'I gravitate toward Cantonese menus when I go out. -> {"candidate_payload":{"preferences":{"entities":{"mem_food_pref":{"entity_id":"mem_food_pref","kind":"preference","summary":"I gravitate toward Cantonese menus when I go out.","observations":["I gravitate toward Cantonese menus when I go out."],"status":"active"}}}},"structure_decision":{"action":"create_domain","target_domain":"food","json_paths":["preferences","preferences.entities","preferences.entities.mem_food_pref","preferences.entities.mem_food_pref.summary"],"top_level_scope_paths":["preferences"],"externalizable_paths":["preferences.entities.mem_food_pref.summary"],"summary_projection":{"intent_class":"preference","top_level_scope":"preferences"},"sensitivity_labels":{},"confidence":0.91,"source_agent":"pkm_structure_agent","contract_version":3},"write_mode":"confirm_first","primary_json_path":"preferences","target_entity_scope":"preferences","validation_hints":[]}\n'
-            'Circle back with my aunt this weekend. -> {"candidate_payload":{"tasks":{"entities":{"mem_social_task":{"entity_id":"mem_social_task","kind":"task_or_reminder","summary":"Circle back with my aunt this weekend.","observations":["Circle back with my aunt this weekend."],"status":"active"}}}},"structure_decision":{"action":"create_domain","target_domain":"social","json_paths":["tasks","tasks.entities","tasks.entities.mem_social_task","tasks.entities.mem_social_task.summary"],"top_level_scope_paths":["tasks"],"externalizable_paths":["tasks","tasks.entities","tasks.entities.mem_social_task","tasks.entities.mem_social_task.summary"],"summary_projection":{"intent_class":"task_or_reminder","top_level_scope":"tasks"},"sensitivity_labels":{},"confidence":0.87,"source_agent":"pkm_structure_agent","contract_version":1},"write_mode":"do_not_save","primary_json_path":"","target_entity_scope":"tasks","validation_hints":[]}\n'
-            "Remember that I prefer index funds. -> target_domain must be financial, write_mode can_save or confirm_first, and candidate_payload must use a guarded financial subtree."
+            'I gravitate toward Cantonese menus when I go out. -> {"candidate_payload":{"preferences":{"entities":{"mem_food_pref":{"entity_id":"mem_food_pref","kind":"preference","summary":"I gravitate toward Cantonese menus when I go out.","observations":["I gravitate toward Cantonese menus when I go out."],"status":"active"}}}},"structure_decision":{"action":"match_existing_domain","target_domain":"food","json_paths":["preferences","preferences.entities","preferences.entities.mem_food_pref","preferences.entities.mem_food_pref.summary"],"top_level_scope_paths":["preferences"],"externalizable_paths":["preferences.entities.mem_food_pref.summary"],"summary_projection":{"intent_class":"preference","top_level_scope":"preferences"},"sensitivity_labels":{},"confidence":0.91,"source_agent":"pkm_structure_agent","contract_version":3},"write_mode":"confirm_first","primary_json_path":"preferences","target_entity_scope":"preferences","validation_hints":[]}\n'
+            'Circle back with my aunt this weekend. -> {"candidate_payload":{"tasks":{"entities":{"mem_social_task":{"entity_id":"mem_social_task","kind":"task_or_reminder","summary":"Circle back with my aunt this weekend.","observations":["Circle back with my aunt this weekend."],"status":"active"}}}},"structure_decision":{"action":"match_existing_domain","target_domain":"social","json_paths":["tasks","tasks.entities","tasks.entities.mem_social_task","tasks.entities.mem_social_task.summary"],"top_level_scope_paths":["tasks"],"externalizable_paths":["tasks.entities.mem_social_task.summary"],"summary_projection":{"intent_class":"task_or_reminder","top_level_scope":"tasks"},"sensitivity_labels":{},"confidence":0.87,"source_agent":"pkm_structure_agent","contract_version":3},"write_mode":"do_not_save","primary_json_path":"","target_entity_scope":"tasks","validation_hints":[]}\n'
+            "Remember that I prefer index funds. -> target_domain must be financial, write_mode confirm_first, and candidate_payload must use a guarded financial subtree such as profile."
         )
 
     @classmethod
@@ -4370,6 +5188,13 @@ class PKMAgentLabService:
             execution_trace=execution_trace,
         )
         financial_guard_used_fallback = financial_guard_raw is None
+        # Whether each stage was ROUTED AROUND, as distinct from whether it ran
+        # and fell back. A skip means no model judgement exists for that stage
+        # at all, and an unobservable substitution is indistinguishable from a
+        # model answer, which is why these are never folded into fallback_used.
+        intent_skipped = False
+        merge_skipped = False
+        structure_skipped = False
         financial_guard = self._sanitize_financial_guard_decision(
             message=message,
             raw=financial_guard_raw,
@@ -4402,6 +5227,11 @@ class PKMAgentLabService:
             intent_used_fallback = False
             merge_used_fallback = False
             structure_used_fallback = False
+            # Financial-core never consults any of the three. Recorded as three
+            # skips rather than silence.
+            intent_skipped = True
+            merge_skipped = True
+            structure_skipped = True
             normalized_preview = self._build_financial_core_preview(
                 message=message,
                 current_domains=normalized_domains,
@@ -4417,6 +5247,8 @@ class PKMAgentLabService:
                     financial_guard=financial_guard,
                 )
                 intent_used_fallback = False
+                # Derived from the guard, not asked of the intent agent.
+                intent_skipped = True
             else:
                 intent_raw = await self._run_agent_contract(
                     manifest=self.memory_intent_manifest,
@@ -4451,6 +5283,7 @@ class PKMAgentLabService:
             if intent_frame.get("mutation_intent") == "no_op":
                 merge_raw = None
                 merge_used_fallback = False
+                merge_skipped = True
             else:
                 merge_raw = await self._run_agent_contract(
                     manifest=self.memory_merge_manifest,
@@ -4490,6 +5323,10 @@ class PKMAgentLabService:
             ):
                 structure_raw = None
                 structure_used_fallback = False
+                # The model was never asked. That is not the same as the model
+                # answering and needing no fallback, and until now both wrote
+                # False here, so a skipped stage reported as a successful run.
+                structure_skipped = True
             else:
                 structure_raw = await self._run_agent_contract(
                     manifest=self.structure_manifest,
@@ -4549,16 +5386,22 @@ class PKMAgentLabService:
             intent_used_fallback=intent_used_fallback,
             merge_used_fallback=merge_used_fallback,
             structure_used_fallback=structure_used_fallback,
+            intent_skipped=intent_skipped,
+            merge_skipped=merge_skipped,
+            structure_skipped=structure_skipped,
         )
 
         return {
             "agent_id": agent_manifest.id,
             "agent_name": agent_manifest.name,
-            "model": model_override or agent_manifest.model or GEMINI_MODEL,
+            "model": model_override or _manifest_model_name(agent_manifest) or GEMINI_MODEL,
             "used_fallback": used_fallback,
             "intent_used_fallback": intent_used_fallback,
             "merge_used_fallback": merge_used_fallback,
             "structure_used_fallback": structure_used_fallback,
+            "intent_skipped": intent_skipped,
+            "merge_skipped": merge_skipped,
+            "structure_skipped": structure_skipped,
             "drift_flags": drift_flags,
             "error": "; ".join(errors) or None,
             "routing_decision": financial_guard["routing_decision"],
@@ -4585,6 +5428,7 @@ class PKMAgentLabService:
         strict_small_model: bool = False,
         domain_registry_override: list[dict[str, Any]] | None = None,
         capture_execution_trace: bool = False,
+        memory_profile: str = "general",
     ) -> dict[str, Any]:
         total_started_at = time.perf_counter()
         normalized_domains = [
@@ -4599,6 +5443,7 @@ class PKMAgentLabService:
             model_override=model_override,
             strict_small_model=strict_small_model,
             domain_registry_override=domain_registry_override,
+            memory_profile=memory_profile,
         )
         if not capture_execution_trace:
             cached_preview = self._get_cached_structure_preview(preview_cache_key)
@@ -4613,6 +5458,21 @@ class PKMAgentLabService:
         async def _build_preview() -> dict[str, Any]:
             errors: list[str] = []
             execution_trace: list[dict[str, Any]] | None = [] if capture_execution_trace else None
+            if memory_profile == "kyc_identity_v1":
+                response_payload = await self._generate_kyc_identity_preview(
+                    user_id=user_id,
+                    message=message,
+                    current_domains=normalized_domains,
+                    model_override=model_override,
+                    execution_trace=execution_trace,
+                )
+                if execution_trace is not None:
+                    response_payload.setdefault("performance", {})["agent_execution"] = (
+                        execution_trace
+                    )
+                if not capture_execution_trace:
+                    self._set_cached_structure_preview(preview_cache_key, response_payload)
+                return response_payload
             preview_deadline = time.perf_counter() + _PREVIEW_TOTAL_BUDGET_SECONDS
 
             segmentation_started_at = time.perf_counter()
@@ -4755,7 +5615,7 @@ class PKMAgentLabService:
                     "agent_id": self.memory_segmentation_manifest.id,
                     "agent_name": self.memory_segmentation_manifest.name,
                     "model": model_override
-                    or self.memory_segmentation_manifest.model
+                    or _manifest_model_name(self.memory_segmentation_manifest)
                     or GEMINI_MODEL,
                     "used_fallback": True,
                     "intent_used_fallback": False,

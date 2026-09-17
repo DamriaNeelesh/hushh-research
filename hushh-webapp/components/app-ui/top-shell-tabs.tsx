@@ -47,11 +47,17 @@ export function TopShellTabs({
   const router = useRouter();
   const interactionIntents = useInteractionIntents();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  // Query tabs swap content inside one route. Route-backed workspaces (RIA)
-  // own distinct durable screens and therefore use the single full route
-  // envelope for both taps and swipes.
+  // Query tabs swap content inside one route. RIA retains durable pathname
+  // routes, but its `/ria` layout owns a persistent identity shell, so its
+  // tab switch uses the same no-envelope contextual commit as Location. The
+  // route page below that shell may change; the shell itself must not fade or
+  // translate with it.
   const transitionMode =
-    tabSet.queryParam === null ? "full" : "contextual";
+    tabSet.id === "ria"
+      ? "contextual"
+      : tabSet.queryParam === null
+        ? "full"
+        : "contextual";
   const optimisticValue = useMemo(() => {
     const activeIntent = [...interactionIntents]
       .reverse()
@@ -79,7 +85,12 @@ export function TopShellTabs({
   const tabWidth = `${100 / tabSet.tabs.length}%`;
   const tabSwipeState = useTopShellTabSwipeState(tabSet.id);
   const indicatorTransform = `translate3d(calc(var(${topShellTabSwipePositionVariable(tabSet.id)}, ${activeIndex}) * 100%), 0, 0)`;
-  const isLocationTabs = tabSet.id === "location";
+  const usesModuleSegmentedTabs =
+    tabSet.id === "location" ||
+    tabSet.id === "connect" ||
+    tabSet.id === "consent" ||
+    tabSet.id === "ria";
+  const usesCompactLabels = usesModuleSegmentedTabs && tabSet.tabs.length > 3;
   const shouldResetScrollOnSelection = tabSet.id === "finance";
 
   const textRefs = useRef<Array<HTMLSpanElement | null>>([]);
@@ -167,7 +178,7 @@ export function TopShellTabs({
     <div
       className={cn(
         "top-shell-ambient-ink relative flex h-[var(--top-tabs-h)] w-full items-center text-current",
-        isLocationTabs && "justify-center",
+        usesModuleSegmentedTabs && "justify-center",
       )}
       data-ui-role="agent-tab-bar"
       data-top-shell-tab-set={tabSet.id}
@@ -181,7 +192,7 @@ export function TopShellTabs({
         aria-label={`${tabSet.label} navigation`}
         className={cn(
           "relative flex",
-          isLocationTabs
+          usesModuleSegmentedTabs
             ? // Same edges as the cards under it, at every width.
               //
               // This carried `mx-5` on top of the frame's own
@@ -193,10 +204,19 @@ export function TopShellTabs({
               //
               // The cap is now the page column's own content width, so the two
               // cannot drift apart again. Both tokens already exist. Scoped to
-              // Location by the `isLocationTabs` branch above — the other four
-              // tab sets take the underline arm and do not move. Do NOT
-              // generalise this: the RIA workspace runs a 96rem shell, and an
-              // 880px cap would leave its strip ~600px short per side.
+              // Location, Connect, Consent, and RIA by the module branch above — the
+              // other tab sets take the underline arm and do not move.
+              //
+              // RIA joined 2026-09 (#6289's follow-up): this wrapper carries
+              // no outer width constraint of its own (see top-app-bar.tsx),
+              // so the `--app-shell-agent` cap here is the only one that
+              // applies — same as Location. RIA Picks' own content already
+              // renders at that same width (`width="agent"` on its
+              // AppPageShell), so this does not narrow anything RIA already
+              // shows wider. Verified by rendering the component directly
+              // (no authenticated route reachable locally without reviewer
+              // credentials) at desktop and mobile widths against Location
+              // side by side.
               "h-9 w-full max-w-[calc(var(--app-shell-agent)-2*var(--page-inline-gutter-standard))] rounded-[10px] bg-[color:var(--app-neutral-fill)] p-0.5"
             : "h-full w-full",
         )}
@@ -223,6 +243,7 @@ export function TopShellTabs({
               tabIndex={isActive ? 0 : -1}
               className={cn(
                 "relative z-10 flex h-full flex-1 items-center justify-center px-3 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-inset",
+                usesCompactLabels && "min-w-0 px-0.5 sm:px-3",
               )}
               onClick={() => selectIndex(index, false)}
               onKeyDown={(event) => {
@@ -249,9 +270,11 @@ export function TopShellTabs({
                 data-ui-role="agent-tab-label"
                 className={cn(
                   "ui-text-agent-tab-label relative truncate transition-colors duration-150",
-                  isLocationTabs
+                  usesCompactLabels &&
+                    "[--type-agent-tab-label-size:11px] min-[360px]:[--type-agent-tab-label-size:12px] min-[400px]:[--type-agent-tab-label-size:14px] sm:[--type-agent-tab-label-size:15px]",
+                  usesModuleSegmentedTabs
                     ? isActive
-                      ? "font-semibold text-[color:var(--app-label)]"
+                      ? "font-semibold text-[color:var(--app-accent)]"
                       : "font-medium text-[color:var(--app-secondary-label)] hover:text-[color:var(--app-label)]"
                     : isActive
                       ? "text-[color:var(--app-accent)]"
@@ -269,7 +292,7 @@ export function TopShellTabs({
             data-testid="top-shell-tab-indicator"
             className={cn(
               "pointer-events-none absolute left-0 flex justify-center motion-reduce:transition-none",
-              isLocationTabs
+              usesModuleSegmentedTabs
                 ? "inset-y-0.5 z-0"
                 : "bottom-0 z-20",
               // While the pager owns the variable -- a finger on it, or a
@@ -288,12 +311,12 @@ export function TopShellTabs({
             <span
               className={cn(
                 "transition-[width] duration-150",
-                isLocationTabs
+                usesModuleSegmentedTabs
                   ? "h-full w-[calc(100%-4px)] rounded-[8px] bg-[color:var(--app-card-surface-default-solid)] shadow-[0_1px_2px_rgba(0,0,0,0.10)]"
                   : "h-[3px] rounded-full bg-[var(--app-accent)]",
               )}
               style={{
-                width: isLocationTabs
+                width: usesModuleSegmentedTabs
                   ? undefined
                   : activeTextWidth
                     ? `${Math.max(28, activeTextWidth)}px`

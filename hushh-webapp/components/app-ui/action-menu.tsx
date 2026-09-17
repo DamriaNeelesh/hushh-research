@@ -55,16 +55,18 @@ export type ActionMenuItem = {
    *  rather than queued -- single-flight, visibly. */
   busy?: boolean;
   voiceControlId?: string;
+  voiceActionId?: string;
 };
 
 const ITEM_CLASSNAME =
-  "flex min-h-11 w-full items-center gap-3 rounded-[10px] px-3 text-[15px] font-normal leading-5 text-[color:var(--app-primary-label)] focus:bg-[color:var(--app-neutral-fill)] dark:focus:bg-[color:var(--app-neutral-fill-strong)]";
+  "flex min-h-11 w-full items-center gap-3 rounded-[10px] px-3 text-[15px] font-normal leading-5 text-[color:var(--app-primary-label)] hover:bg-[color:var(--app-neutral-fill)] hover:text-[color:var(--app-primary-label)] focus:!bg-[color:var(--app-neutral-fill)] focus:!text-[color:var(--app-primary-label)] data-[highlighted]:!bg-[color:var(--app-neutral-fill)] data-[highlighted]:!text-[color:var(--app-primary-label)] dark:hover:bg-[color:var(--app-neutral-fill-strong)] dark:focus:!bg-[color:var(--app-neutral-fill-strong)] dark:data-[highlighted]:!bg-[color:var(--app-neutral-fill-strong)] disabled:text-[color:var(--app-tertiary-label)] disabled:opacity-45 data-[disabled]:!text-[color:var(--app-tertiary-label)] data-[disabled]:opacity-45 focus:[&_svg]:!text-[color:var(--app-secondary-label)] data-[highlighted]:[&_svg]:!text-[color:var(--app-secondary-label)]";
 
 export function ActionMenu({
   label,
   title,
   items,
   triggerIcon: TriggerIcon,
+  trigger: customTrigger,
   testId,
   contentClassName,
 }: {
@@ -73,7 +75,8 @@ export function ActionMenu({
   /** The sheet's heading on a phone. Defaults to `label`. */
   title?: string;
   items: ActionMenuItem[];
-  triggerIcon: LucideIcon;
+  triggerIcon?: LucideIcon;
+  trigger?: ReactNode;
   testId?: string;
   contentClassName?: string;
 }) {
@@ -85,7 +88,7 @@ export function ActionMenu({
     if (!open) setSheetPresentation(isMobile);
   }, [isMobile, open]);
 
-  const trigger = (
+  const trigger = customTrigger ?? (
     <Button
       type="button"
       size="icon"
@@ -94,7 +97,11 @@ export function ActionMenu({
       data-testid={testId}
       className="h-11 w-11 rounded-full text-[color:var(--app-accent)] hover:bg-[color:var(--app-neutral-fill)] hover:text-[color:var(--app-accent-hover)]"
     >
-      <TriggerIcon className="h-[21px] w-[21px]" aria-hidden="true" />
+      {TriggerIcon ? (
+        <TriggerIcon className="h-[21px] w-[21px]" aria-hidden="true" />
+      ) : (
+        label
+      )}
     </Button>
   );
 
@@ -124,7 +131,9 @@ export function ActionMenu({
                     disabled={item.disabled}
                     aria-busy={item.busy || undefined}
                     data-voice-control-id={item.voiceControlId}
-                    data-testid={testId ? `${testId}-item-${item.id}` : undefined}
+                    data-testid={
+                      testId ? `${testId}-item-${item.id}` : undefined
+                    }
                     onClick={() => {
                       if (item.disabled) return;
                       setOpen(false);
@@ -186,6 +195,7 @@ export function ActionMenu({
               disabled={item.disabled}
               aria-busy={item.busy || undefined}
               data-voice-control-id={item.voiceControlId}
+              data-voice-action-id={item.voiceActionId}
               data-testid={testId ? `${testId}-item-${item.id}` : undefined}
               onSelect={(event) => {
                 if (item.disabled) {

@@ -43,7 +43,10 @@ import {
   MAP_SURFACE_CLASSNAME,
 } from "@/components/one-location/map-consent-panel-layout";
 import { MapNameLabels } from "@/components/one-location/map-name-labels";
-import { MapSelfAvatarMarker } from "@/components/one-location/map-self-avatar-marker";
+import {
+  MapSelfAvatarLegend,
+  MapSelfAvatarMarker,
+} from "@/components/one-location/map-self-avatar-marker";
 import {
   NearbyCheckInSheet,
   type NearbyCheckInPlaceFocus,
@@ -97,6 +100,7 @@ import {
   NEARBY_PRIVATE_RESUME_PARAM,
 } from "@/lib/one-location/nearby-private-navigation";
 import { OneLocationService } from "@/lib/one-location/service";
+import { OneLocationStateResource } from "@/lib/one-location/one-location-state-resource";
 import type {
   OneLocationMapMarker,
   OneLocationMapPreferences,
@@ -144,8 +148,9 @@ const NEARBY_CHECK_IN_RADIUS_METERS = 500;
  *
  * It answers "roughly this far", which is a background fact about the screen,
  * not its subject — the map underneath is what the person is reading, and the
- * two pins on it are what they are choosing between. So the boundary is a
- * hairline and the fill is barely a tint. The radius itself is unchanged:
+ * owner avatar and place pin on it are what they are choosing between. The
+ * boundary is a hairline and the fill is barely a tint. The radius itself is
+ * unchanged:
  * `NEARBY_CHECK_IN_RADIUS_METERS` still drives the circle, and the server
  * still owns the 500 m the circle stands for.
  */
@@ -537,6 +542,12 @@ export function LocationImmersiveMap({
   const demoAvailable = isLocationMapDemoAvailable();
   const nearbyCheckInAvailable = isOneLocationNearbyCheckInAvailable();
   const initialDemoMode = isLocationMapDemoEnabled(searchParams.get("demo"));
+  const cachedLocationState = auth.userId
+    ? OneLocationStateResource.readPresentation(auth.userId)
+    : null;
+  const cachedActiveShareNames = cachedLocationState
+    ? activeShareLabels(cachedLocationState.ownerGrants)
+    : null;
   const mapElement = useRef<HTMLElement | null>(null);
   const mapRef = useRef<GoogleMap | null>(null);
   const topControlsRef = useRef<HTMLElement | null>(null);
@@ -650,8 +661,12 @@ export function LocationImmersiveMap({
   // incoming markers), so it's fetched on a lighter cadence than the 5s marker
   // refresh — the map surfaces it as a "Sharing with N" status, since outgoing
   // shares carry no coordinate to plot.
-  const [activeShareCount, setActiveShareCount] = useState<number | null>(null);
-  const [activeShareNames, setActiveShareNames] = useState<string[]>([]);
+  const [activeShareCount, setActiveShareCount] = useState<number | null>(
+    cachedActiveShareNames?.length ?? null,
+  );
+  const [activeShareNames, setActiveShareNames] = useState<string[]>(
+    cachedActiveShareNames ?? [],
+  );
   /**
    * The same number, resolved and named for what it is to the reader.
    *
@@ -667,6 +682,18 @@ export function LocationImmersiveMap({
    */
   const privateShareCount = activeShareCount ?? 0;
   const privateShareCountKnown = activeShareCount !== null;
+
+  // Auth may settle one render after this retained route mounts. Hydrate the
+  // count at that boundary too, so returning to Map never paints an unknown
+  // placeholder while the same-session Location snapshot is already present.
+  useEffect(() => {
+    if (!auth.userId || demoMode) return;
+    const snapshot = OneLocationStateResource.readPresentation(auth.userId);
+    if (!snapshot) return;
+    const names = activeShareLabels(snapshot.ownerGrants);
+    setActiveShareCount(names.length);
+    setActiveShareNames(names);
+  }, [auth.userId, demoMode]);
   const [sharingPopoverOpen, setSharingPopoverOpen] = useState(false);
   /** The in-sheet twin of `sharingPopoverOpen`: the header chip's popover
    *  opens over the map, which is the wrong place to answer a question asked
@@ -1109,7 +1136,9 @@ export function LocationImmersiveMap({
   const refreshShareCount = useCallback(async () => {
     if (demoMode || !vaultOwnerToken || !auth.userId) return;
     try {
-      const state = await OneLocationService.getState(vaultOwnerToken);
+      const state = await OneLocationStateResource.load(auth.userId, () =>
+        OneLocationService.getState(vaultOwnerToken),
+      );
       if (!mountedRef.current) return;
       const names = activeShareLabels(state.ownerGrants);
       setActiveShareCount(names.length);
@@ -1543,22 +1572,19 @@ export function LocationImmersiveMap({
    * Three flags, none of which changes more than once per screen, so this does
    * not churn the marker bridge: `rendererReady` is the consent gate,
    * `cameraReported` is whether anything can be projected at all, and
-   * `isCheckInSurface` scopes this to Your Map.
+   * Both Your Map and Check-in use the same owner marker. Check-in still keeps
+   * its place pin, connector and place-color key; only the generic blue
+   * self-location pin is replaced by the owner's avatar.
    *
-   * **Check-in deliberately keeps the renderer's pin.** It is a different
-   * question — "how far am I from the place I am checking in to?" — and it
-   * answers it with two pins, a connector between them, and a colour legend in
-   * the header whose swatches are `SELF_TINT` and the place tint. Swapping one
-   * of those two pins for a photo breaks the comparison and leaves the legend's
-   * blue dot standing for nothing on the map. Extending the avatar there means
-   * redesigning that legend too, which is not this change.
+   * Check-in still answers "how far am I from the place I am checking in to?"
+   * with the place pin, connector and place-color key. Its owner key is now the
+   * avatar itself, so the legend and map agree about the owner's marker.
    *
    * Everything else about the self marker is unchanged — it stays in
    * `visibleMarkers`, so initial framing, the people tray and the search index
    * still count it.
    */
-  const selfPinDrawnAsAvatar =
-    rendererReady && cameraReported && !isCheckInSurface;
+  const selfPinDrawnAsAvatar = rendererReady && cameraReported;
 
   /** What the renderer is asked to draw: everything except the owner's own pin. */
   const rendererMarkers = useMemo(
@@ -2186,7 +2212,8 @@ export function LocationImmersiveMap({
   }, []);
 
   const locateMe = useCallback(async () => {
-    if (!vaultOwnerToken) return;
+    const activeUserId = auth.userId;
+    if (!vaultOwnerToken || !activeUserId) return;
     setBusy("locate");
     // Getting a position and telling other people about it are two different
     // jobs that used to share one catch, so a failed network call and a device
@@ -2228,6 +2255,7 @@ export function LocationImmersiveMap({
       // Ghost Mode is a control over the GENERAL audience -- people who were
       // never handed a share -- and it does not reach in here.
       const state = await OneLocationService.getState(vaultOwnerToken);
+      OneLocationStateResource.write(activeUserId, state);
       const recipientsByKey = new Map(
         state.recipients.map((recipient) => [
           `${recipient.userId}:${recipient.keyId}`,
@@ -2285,6 +2313,7 @@ export function LocationImmersiveMap({
       setBusy(null);
     }
   }, [
+    auth.userId,
     captureCurrentLocation,
     demoMode,
     focusSelfPoint,
@@ -2347,10 +2376,11 @@ export function LocationImmersiveMap({
     }
     return markers.length > 0
       ? `${markers.length} on your map`
-      : // "No one sharing yet" beside a subtitle reading "Sharing with 1" was
-        // the reported contradiction. Naming the audience resolves it without
-        // making the row any longer.
-        "No one sharing with you yet";
+      : // The subtitle that made this read as a contradiction ("Sharing with
+        // 1" under "No one sharing yet") is gone, and the row below states
+        // the incoming audience in full -- so the header stays the shorter of
+        // the two rather than printing that sentence twice on one screen.
+        "No one sharing yet";
   }, [markers.length, nearbyAttendees.length, nearbyPresenceState.presence]);
 
   // Only when it adds something the title cannot. Restating the title in
@@ -2366,7 +2396,7 @@ export function LocationImmersiveMap({
    */
   const incomingShareLabel =
     markers.length === 0
-      ? "No one sharing with you"
+      ? "No one is sharing their location"
       : markers.length === 1
         ? "1 person sharing with you"
         : `${markers.length} people sharing with you`;
@@ -2376,7 +2406,7 @@ export function LocationImmersiveMap({
   const privateShareLabel = !privateShareCountKnown
     ? "Private sharing"
     : privateShareCount === 0
-      ? "Not sharing with anyone privately"
+      ? "Not sharing with anyone"
       : privateShareCount === 1
         ? "Private sharing with 1 person"
         : `Private sharing with ${privateShareCount} people`;
@@ -2402,34 +2432,15 @@ export function LocationImmersiveMap({
   const privateShareHint = !privateShareCountKnown
     ? "Checking your active shares…"
     : privateShareCount > 0
-      ? // The lifetime, because it is the thing a person actually wonders
-        // about a share they started days ago -- and because it is now true
-        // without an asterisk: Ghost Mode no longer ends it early.
-        "Runs until you stop it or it expires"
-      : "Start one from Location to appear on their map";
+      ? // Nothing. The row expands to the names, which is what a person opens
+        // it for; a line about the lifetime of a share they can see listed
+        // was one more sentence to read past.
+        null
+      : "Start a share to appear on their map";
 
   /** Anything other than an explicit "visible" is treated as hidden, so an
    *  unrecognised value from an older server errs toward privacy. */
   const isGhostMode = preferences.presenceMode !== "foreground_private";
-
-  /**
-   * The rule, stated where it is switched.
-   *
-   * The old control said "Ghost Mode is on. Nobody sees you on their map",
-   * which was true only because Ghost was silently cancelling private shares
-   * the person had deliberately started. With that gone, the sentence has to
-   * name the audience it does not touch -- and it sits directly under the
-   * count of that audience, so the two lines are read together.
-   */
-  const ghostModeExplainer = isGhostMode
-    ? privateShareCount > 0
-      ? `Hidden from general visibility. The ${
-          privateShareCount === 1 ? "person" : `${privateShareCount} people`
-        } you share with privately still see you.`
-      : "Hidden from general visibility."
-    : privateShareCount > 0
-      ? "Not hidden from anyone. Private sharing is separate either way."
-      : "Not hidden from anyone.";
 
   /** Check-in is a separate one-time share, and this is the one place that
    *  decides whether it has a control on this sheet at all. */
@@ -2954,9 +2965,7 @@ export function LocationImmersiveMap({
               >
                 <UsersRound className="h-4 w-4 shrink-0" />
                 <span className="truncate">
-                  {nearbyPresenceState.presence
-                    ? "Checked in"
-                    : "Check in nearby"}
+                  {nearbyPresenceState.presence ? "Checked in" : "Check in"}
                 </span>
               </ShellActionSurface>
             ) : null}
@@ -2987,12 +2996,12 @@ export function LocationImmersiveMap({
         ) : null}
       </header>
       {/*
-        Two pins on one map need naming, or the owner cannot tell which is
+        Two markers on one map need naming, or the owner cannot tell which is
         "me" and which is "the place I'm checking in to" -- and those are
         routinely a street apart.
 
         This one STAYS when the sheet is open, and it is the only thing up
-        there that does. It is the sole explanation of what the blue dot is
+        there that does. It is the sole explanation of what the owner marker is
         and how far "nearby" reaches -- 500 m -- and the sheet below states
         neither. Cutting it with the other two would have tidied the screen by
         removing the only part of it that was answering a question.
@@ -3009,10 +3018,14 @@ export function LocationImmersiveMap({
         >
           {nearbySearchPoint ? (
             <span className="flex items-center gap-2">
-              <span
-                className="h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ backgroundColor: tintCss(SELF_TINT) }}
-                aria-hidden="true"
+              <MapSelfAvatarLegend
+                avatarUrl={selfAvatarUrl}
+                displayName={selfDisplayName}
+                stale={isStaleAt(
+                  nearbySearchPoint?.capturedAt,
+                  freshnessSeconds,
+                  staleClockMs,
+                )}
               />
               <span className="truncate text-foreground">You are here</span>
             </span>
@@ -3586,7 +3599,7 @@ export function LocationImmersiveMap({
                           : // The header already says no one is sharing. This
                             // line spends itself on the part the header cannot:
                             // what it takes to appear here.
-                            "Pins appear once they share with maps on."}
+                            "Pins appear when someone shares."}
                       </p>
                     ) : null}
                   </div>
@@ -3676,11 +3689,14 @@ export function LocationImmersiveMap({
                       <span className="block truncate text-sm font-medium">
                         {incomingShareLabel}
                       </span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {markers.length > 0
-                          ? "Tap to fit everyone on the map"
-                          : "Ghost Mode never hides them from you"}
-                      </span>
+                      {/* Only when it adds something the title cannot. The
+                        empty state has nothing to fit on the map, so it says
+                        nothing rather than restating the line above it. */}
+                      {markers.length > 0 ? (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          Tap to fit everyone on the map
+                        </span>
+                      ) : null}
                     </span>
                     <ChevronDown
                       className="h-4 w-4 shrink-0 -rotate-90 text-muted-foreground"
@@ -3713,9 +3729,11 @@ export function LocationImmersiveMap({
                           <span className="block truncate text-sm font-medium">
                             {privateShareLabel}
                           </span>
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {privateShareHint}
-                          </span>
+                          {privateShareHint ? (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {privateShareHint}
+                            </span>
+                          ) : null}
                         </span>
                         {privateShareCount > 0 ? (
                           <ChevronDown
@@ -3784,15 +3802,10 @@ export function LocationImmersiveMap({
                       )}
                     </span>
                     <label
-                      className="min-w-0 flex-1 cursor-pointer"
+                      className="min-w-0 flex-1 cursor-pointer text-sm font-medium"
                       htmlFor="one-location-map-ghost-toggle"
                     >
-                      <span className="block text-sm font-medium">
-                        Ghost Mode
-                      </span>
-                      <span className="block text-xs text-muted-foreground">
-                        {ghostModeExplainer}
-                      </span>
+                      Ghost Mode
                     </label>
                     <Switch
                       id="one-location-map-ghost-toggle"
@@ -3816,10 +3829,10 @@ export function LocationImmersiveMap({
               */}
                 {checkInActionAvailable || demoAvailable ? (
                   <div
-                    className={`mt-2 grid gap-2 ${
+                    className={`mt-3 flex items-center gap-3 ${
                       checkInActionAvailable && demoAvailable
-                        ? "grid-cols-2"
-                        : "grid-cols-1"
+                        ? "justify-between"
+                        : "justify-center"
                     }`}
                   >
                     {demoAvailable ? (
@@ -3840,8 +3853,8 @@ export function LocationImmersiveMap({
                     ) : null}
                     {checkInActionAvailable ? (
                       <Button
-                        className="h-11 min-w-0 rounded-2xl px-2"
-                        variant="secondary"
+                        className="h-auto min-h-11 min-w-0 px-1 py-1 text-sm font-semibold underline underline-offset-4"
+                        variant="link"
                         aria-label={
                           nearbyPresenceState.presence
                             ? `Checked in${
@@ -3849,16 +3862,15 @@ export function LocationImmersiveMap({
                                   ? `, ${nearbyPresenceState.attendees.length} nearby`
                                   : ""
                               }`
-                            : "Check in nearby"
+                            : "Want to check in?"
                         }
                         data-testid="one-location-map-nearby-check-in"
                         onClick={openNearbyCheckIn}
                       >
-                        <UsersRound className="h-4 w-4 shrink-0" />
                         <span className="truncate">
                           {nearbyPresenceState.presence
                             ? "Checked in"
-                            : "Check in nearby"}
+                            : "Want to check in?"}
                         </span>
                       </Button>
                     ) : null}

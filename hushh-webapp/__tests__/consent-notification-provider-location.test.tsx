@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => {
       value: "web",
     },
     routerPush: vi.fn(),
+    pathname: "/one/location",
     initializeFCM: vi.fn(),
     prepareFCMListeners: vi.fn(),
     getState: vi.fn(),
@@ -30,7 +31,7 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("next/navigation", () => ({
-  usePathname: () => "/settings",
+  usePathname: () => mocks.pathname,
   useRouter: () => ({ push: mocks.routerPush, replace: vi.fn() }),
   useSearchParams: () => new URLSearchParams(),
 }));
@@ -98,6 +99,9 @@ import {
   useConsentNotificationState,
 } from "@/components/consent/notification-provider";
 import { markOneLocationGrantUnwatched } from "@/lib/one-location/notifications";
+import { OneLocationStateResource } from "@/lib/one-location/one-location-state-resource";
+import type { OneLocationState } from "@/lib/one-location/types";
+import { CacheService } from "@/lib/services/cache-service";
 
 const EMPTY_LOCATION_STATE = {
   recipients: [],
@@ -158,8 +162,10 @@ function dispatchLocation(
 beforeEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
+  CacheService.getInstance().clear();
   vi.clearAllMocks();
   mocks.auth.user = mocks.user;
+  mocks.pathname = "/one/location";
   mocks.platform.native = false;
   mocks.platform.value = "web";
   mocks.prepareFCMListeners.mockResolvedValue(undefined);
@@ -201,6 +207,15 @@ describe("global One Location Feed-first notification policy", () => {
       "firebase-token",
       { requestPermission: true },
     );
+  });
+
+  it("defers full Location reconciliation until the Location workspace opens", async () => {
+    mocks.pathname = "/one/pkm";
+    renderProvider();
+
+    await waitFor(() => expect(mocks.initializeFCM).toHaveBeenCalledTimes(1));
+    await act(async () => Promise.resolve());
+    expect(mocks.getState).not.toHaveBeenCalled();
   });
 
   it("records one Feed item without popup UI for duplicate routine pushes", async () => {
@@ -490,5 +505,68 @@ describe("global One Location Feed-first notification policy", () => {
 
     expect(mocks.toast).not.toHaveBeenCalled();
     expect(mocks.startTask).not.toHaveBeenCalled();
+  });
+
+  // Without this patch, the counterpart's device only learns of a decline,
+  // withdrawal, or approval once the next full `list_state` reload lands
+  // (~10s+ on UAT) -- see mergeRequestStatus in one-location-state-resource.ts.
+  it.each([
+    { type: "location_access_denied", status: "denied" },
+    { type: "location_access_request_withdrawn", status: "cancelled" },
+    { type: "location_access_approved", status: "approved" },
+  ])(
+    "patches the cached request's status to $status on $type",
+    async ({ type, status }) => {
+      await renderReady();
+      // Seeded after mount: the provider's own reconcile-on-mount load
+      // (mocks.getState) already wrote EMPTY_LOCATION_STATE, so seeding
+      // earlier would be overwritten before the push under test fires.
+      OneLocationStateResource.write("recipient-user", {
+        ...EMPTY_LOCATION_STATE,
+        requests: [
+          {
+            id: "request-outcome-1",
+            ownerUserId: "owner-user",
+            requesterUserId: "recipient-user",
+            status: "pending",
+          },
+        ],
+      } as unknown as OneLocationState);
+
+      dispatchLocation({
+        type,
+        request_id: "request-outcome-1",
+        ...(type === "location_access_approved"
+          ? { grant_id: "grant-outcome-1" }
+          : {}),
+        owner_display_label: "Alex",
+        notification_title: "Location activity",
+        notification_body: "Location activity changed.",
+      });
+
+      expect(
+        OneLocationStateResource.peek("recipient-user")?.data.requests[0],
+      ).toMatchObject({ id: "request-outcome-1", status });
+    },
+  );
+
+  it("leaves cached state untouched when it has no row for the pushed request", async () => {
+    await renderReady();
+    OneLocationStateResource.write(
+      "recipient-user",
+      EMPTY_LOCATION_STATE as OneLocationState,
+    );
+
+    dispatchLocation({
+      type: "location_access_denied",
+      request_id: "request-unknown-1",
+      owner_display_label: "Alex",
+      notification_title: "Location activity",
+      notification_body: "Location activity changed.",
+    });
+
+    expect(
+      OneLocationStateResource.peek("recipient-user")?.data.requests,
+    ).toEqual([]);
   });
 });

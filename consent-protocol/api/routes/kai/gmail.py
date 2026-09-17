@@ -9,7 +9,7 @@ api.routes.kai.gmail.gmail_receipts -> GET /gmail/receipts/{user_id}
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
@@ -29,6 +29,11 @@ class GmailConnectStartRequest(BaseModel):
     redirect_uri: str | None = Field(default=None, max_length=2048)
     login_hint: str | None = Field(default=None, max_length=512)
     include_granted_scopes: bool = False
+    purpose: Literal["read", "send"] = "read"
+
+
+class GmailNativeConnectStartRequest(BaseModel):
+    purpose: Literal["read", "send"] = "read"
 
 
 class GmailConnectCompleteRequest(BaseModel):
@@ -36,6 +41,11 @@ class GmailConnectCompleteRequest(BaseModel):
     code: str = Field(min_length=1, max_length=512)
     state: str = Field(min_length=1, max_length=512)
     redirect_uri: str | None = Field(default=None, max_length=2048)
+
+
+class GmailNativeConnectCompleteRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=256)
+    server_auth_code: str = Field(min_length=1, max_length=2048)
 
 
 class GmailDisconnectRequest(BaseModel):
@@ -51,7 +61,7 @@ class GmailReconcileRequest(BaseModel):
 
 
 class GmailReceiptMemoryPreviewRequest(BaseModel):
-    user_id: str = Field(min_length=1, max_length=256)
+    user_id: str = Field(min_length=1, max_length=128)
     force_refresh: bool = False
 
 
@@ -165,6 +175,7 @@ async def gmail_connect_start(
             redirect_uri=payload.redirect_uri,
             login_hint=payload.login_hint,
             include_granted_scopes=payload.include_granted_scopes,
+            purpose=payload.purpose,
         )
     except Exception as exc:
         logger.exception("kai.gmail.connect_start_failed user_id=%s", payload.user_id)
@@ -186,6 +197,34 @@ async def gmail_connect_complete(
         )
     except Exception as exc:
         logger.exception("kai.gmail.connect_complete_failed user_id=%s", payload.user_id)
+        raise _to_http_exception(exc, operation="connect_complete") from exc
+
+
+@router.post("/gmail/connect/native/start")
+async def gmail_native_connect_start(
+    payload: GmailNativeConnectStartRequest | None = None,
+    firebase_uid: str = Depends(require_firebase_auth),
+):
+    try:
+        return await _service().start_native_connect(purpose=payload.purpose if payload else "read")
+    except Exception as exc:
+        logger.exception("kai.gmail.native_connect_start_failed user_id=%s", firebase_uid)
+        raise _to_http_exception(exc, operation="connect_start") from exc
+
+
+@router.post("/gmail/connect/native/complete")
+async def gmail_native_connect_complete(
+    payload: GmailNativeConnectCompleteRequest,
+    firebase_uid: str = Depends(require_firebase_auth),
+):
+    verify_user_id_match(firebase_uid, payload.user_id)
+    try:
+        return await _service().complete_native_connect(
+            user_id=payload.user_id,
+            server_auth_code=payload.server_auth_code,
+        )
+    except Exception as exc:
+        logger.exception("kai.gmail.native_connect_complete_failed user_id=%s", payload.user_id)
         raise _to_http_exception(exc, operation="connect_complete") from exc
 
 
@@ -340,6 +379,7 @@ async def gmail_receipts_memory_preview(
         return await _receipt_memory_service().build_preview(
             user_id=payload.user_id,
             force_refresh=payload.force_refresh,
+            consent_token=str(token_data.get("token") or ""),
         )
     except Exception as exc:
         logger.exception("kai.gmail.receipts_memory_preview_failed user_id=%s", payload.user_id)

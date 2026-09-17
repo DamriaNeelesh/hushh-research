@@ -21,6 +21,54 @@ final class AppUITests: XCTestCase {
         vaultUnlockSubmitted = false
     }
 
+    func testAccountNotFoundRecoveryReturnsToLogin() throws {
+        // Public recovery smoke: no reviewer fixture, credentials, or account
+        // mutation. Unit/integration tests own the trusted deletion signal.
+        let route = RouteCase(
+            name: "account-not-found-recovery",
+            initialRoute: "/login?auth_notice=account_not_found",
+            expectedMarker: "native-route-login",
+            expectedRoute: "/login",
+            expectedRoutePrefix: nil,
+            autoReviewerLogin: false,
+            expectedAuth: "anonymous",
+            allowedDataStates: ["loaded"]
+        )
+        let app = launchApp(route)
+        defer { app.terminate() }
+        // Login's component contract verifies notice emission and query cleanup.
+        // Its 3.6-second toast can expire while XCTest waits for launch idleness;
+        // this rehearsal proves the persistent recovery state and usable controls.
+        // Fresh CI simulators can spend over 50 seconds launching WebKit.
+        // Bound cold startup separately; warm recovery below keeps its 30s limit.
+        _ = try waitForSatisfiedStatus(app, route: route, timeout: 90)
+        XCTAssertTrue(app.buttons["Continue with Apple"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.staticTexts["Unable to verify setup progress. Please retry."].exists)
+        XCTAssertFalse(app.secureTextFields["Enter vault key"].exists)
+        XCTAssertFalse(app.secureTextFields["Enter your passphrase"].exists)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        _ = try waitForSatisfiedStatus(app, route: route, timeout: 30)
+        // The route marker can survive while the native privacy cover and
+        // asynchronous auth restoration are still settling after activation.
+        // Require the actual login control to become usable within a bound.
+        let loginButton = app.buttons["Continue with Apple"]
+        let resumeDeadline = Date().addingTimeInterval(15)
+        while Date() < resumeDeadline, !(loginButton.exists && loginButton.isHittable) {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertTrue(
+            loginButton.exists && loginButton.isHittable,
+            "Login must become usable after the native privacy cover releases"
+        )
+        let privacyCover = app.staticTexts["Protecting private information\u{2026}"]
+        let coverDeadline = Date().addingTimeInterval(5)
+        while Date() < coverDeadline, privacyCover.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertFalse(privacyCover.exists, "Privacy cover must release after login becomes usable")
+    }
+
     func testPublicAndAuthRoutes() throws {
         try assertRoutes([
             RouteCase(
@@ -228,9 +276,9 @@ final class AppUITests: XCTestCase {
         try assertRoutes([
             reviewerRoute(name: "consents", redirect: "/one/consent", marker: "native-route-consents"),
             reviewerRoute(
-                name: "agent",
-                redirect: "/agent",
-                marker: "native-route-agent",
+                name: "chat",
+                redirect: "/",
+                marker: "native-route-home",
                 allowedDataStates: ["loaded", "empty-valid", "unavailable-valid"]
             ),
             reviewerRoute(name: "one-kyc", redirect: "/one/kyc", marker: "native-route-one-kyc"),
@@ -974,7 +1022,11 @@ final class AppUITests: XCTestCase {
         while Date() < deadline {
             if Date().timeIntervalSince(lastUnlockAttemptAt) >= 3 {
                 _ = dismissKnownModals(app: app)
-                _ = attemptVaultPassphraseUnlock(app: app)
+                // Anonymous route checks must not read reviewer credentials or
+                // attempt a Vault unlock, even if an unexpected gate appears.
+                if route.autoReviewerLogin {
+                    _ = attemptVaultPassphraseUnlock(app: app)
+                }
                 lastUnlockAttemptAt = Date()
             }
 

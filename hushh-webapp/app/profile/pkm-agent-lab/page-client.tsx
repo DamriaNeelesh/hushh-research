@@ -29,7 +29,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { SettingsSegmentedTabs } from "@/components/profile/settings-ui";
+import { SegmentedTabs } from "@/components/profile/settings-ui";
 import { SwipeViews } from "@/lib/morphy-ux/ui/swipe-views";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -328,6 +328,7 @@ export default function PkmAgentLabPageClient() {
   const { user, loading } = useAuth();
   const { isVaultUnlocked, vaultKey, vaultOwnerToken } = useVault();
   const [hasVault, setHasVault] = useState<boolean | null>(null);
+  const [vaultCheckFailed, setVaultCheckFailed] = useState(false);
   const vaultCapability = useMemo(
     () =>
       resolveVaultCapabilityState({
@@ -344,8 +345,17 @@ export default function PkmAgentLabPageClient() {
         isVaultUnlocked,
         vaultKey,
         vaultOwnerToken,
+        authLoading: loading,
+        presenceFailed: vaultCheckFailed,
       }),
-    [hasVault, isVaultUnlocked, vaultKey, vaultOwnerToken]
+    [
+      hasVault,
+      isVaultUnlocked,
+      loading,
+      vaultCheckFailed,
+      vaultKey,
+      vaultOwnerToken,
+    ]
   );
   const environment = resolveAppEnvironment();
   const nonProdLabel = environment === "uat" ? "UAT" : "development";
@@ -403,11 +413,14 @@ export default function PkmAgentLabPageClient() {
         const nextHasVault = await VaultService.checkVault(user.uid);
         if (!cancelled) {
           setHasVault(nextHasVault);
+          setVaultCheckFailed(false);
         }
       } catch (nextError) {
         console.warn("[PkmAgentLab] Failed to check vault existence:", nextError);
         if (!cancelled) {
-          setHasVault(false);
+          // A failed read is not an absent vault. Never offer to create a
+          // second vault because the presence request temporarily failed.
+          setVaultCheckFailed(true);
         }
       }
     }
@@ -1108,7 +1121,7 @@ export default function PkmAgentLabPageClient() {
         description="See what Kai knows, manage permissions, and explore your encrypted Personal Knowledge Model."
       >
         <SurfaceInset className="space-y-4 px-4 py-4">
-          <SettingsSegmentedTabs
+          <SegmentedTabs
             value={activeTab}
             onValueChange={(v) => setActiveTab(v as typeof activeTab)}
             options={pkmAgentLabTabOptions}

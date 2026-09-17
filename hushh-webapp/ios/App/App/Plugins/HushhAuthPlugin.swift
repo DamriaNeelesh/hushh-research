@@ -15,12 +15,37 @@ import CryptoKit
  */
 @objc(HushhAuthPlugin)
 public class HushhAuthPlugin: CAPPlugin, CAPBridgedPlugin {
+    private enum TokenRefreshRejection: String {
+        case userNotFound = "auth/user-not-found"
+        case userDisabled = "auth/user-disabled"
+        case invalidUserToken = "auth/invalid-user-token"
+        case userTokenExpired = "auth/user-token-expired"
+        case networkRequestFailed = "auth/network-request-failed"
+        case internalError = "auth/internal-error"
+
+        var message: String {
+            switch self {
+            case .userNotFound:
+                return "The account no longer exists."
+            case .userDisabled:
+                return "The account has been disabled."
+            case .invalidUserToken, .userTokenExpired:
+                return "The current Firebase session is no longer valid."
+            case .networkRequestFailed:
+                return "Firebase could not be reached to validate the session."
+            case .internalError:
+                return "Firebase could not validate the current session."
+            }
+        }
+    }
     
     // MARK: - CAPBridgedPlugin Protocol
     public let identifier = "HushhAuthPlugin"
     public let jsName = "HushhAuth"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "signIn", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "connectGmail", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "connectCalendar", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "signInWithApple", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "signOut", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getIdToken", returnType: CAPPluginReturnPromise),
@@ -52,6 +77,11 @@ public class HushhAuthPlugin: CAPPlugin, CAPBridgedPlugin {
         ]
         SecItemDelete(query as CFDictionary)
         HusshIMessageSessionStore.shared.clearSilently()
+        OneVoiceInvocationCoordinator.shared.cancelPending(outcome: "sign_out")
+        OneSystemActionInvocationCoordinator.shared.cancelAll(
+            outcome: "sign_out",
+            clearEntityIndex: true
+        )
     }
 
     private func keychainSet(_ value: String, forKey key: String) {
@@ -356,6 +386,127 @@ public class HushhAuthPlugin: CAPPlugin, CAPBridgedPlugin {
             }
         }
     }
+
+    /// Requests incremental Gmail consent without changing the Firebase session.
+    /// The one-time server authorization code is returned to JavaScript only so
+    /// it can be exchanged immediately by the authenticated backend.
+    @objc func connectGmail(_ call: CAPPluginCall) {
+        guard ensureFirebaseConfigured() else {
+            call.reject("Missing GoogleService-Info.plist (Firebase not configured)")
+            return
+        }
+
+        guard let viewController = bridge?.viewController else {
+            call.reject("No view controller available")
+            return
+        }
+
+        guard let serverClientId = call.getString("serverClientId")?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !serverClientId.isEmpty else {
+            call.reject("Missing Google server client ID")
+            return
+        }
+
+        guard let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
+              let plist = NSDictionary(contentsOfFile: path),
+              let clientId = plist["CLIENT_ID"] as? String else {
+            call.reject("Missing GoogleService-Info.plist or CLIENT_ID")
+            return
+        }
+
+        let configuration = GIDConfiguration(
+            clientID: clientId,
+            serverClientID: serverClientId
+        )
+        GIDSignIn.sharedInstance.configuration = configuration
+
+        let purpose = call.getString("purpose")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "read"
+        var gmailScopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+        if purpose == "send" {
+            gmailScopes.append("https://www.googleapis.com/auth/gmail.send")
+        }
+        GIDSignIn.sharedInstance.signIn(
+            withPresenting: viewController,
+            hint: nil,
+            additionalScopes: gmailScopes
+        ) { result, error in
+            if let error = error {
+                // kGIDSignInErrorCodeCanceled is -5. Avoid surfacing the SDK
+                // error string so a normal cancellation remains a calm UI state.
+                let isCanceled = (error as NSError).code == -5
+                call.reject(
+                    isCanceled ? "Gmail connection was cancelled" : "Gmail sign-in failed: \(error.localizedDescription)",
+                    isCanceled ? "USER_CANCELLED" : nil
+                )
+                return
+            }
+
+            guard let serverAuthCode = result?.serverAuthCode,
+                  !serverAuthCode.isEmpty else {
+                call.reject("Google did not return a Gmail authorization code")
+                return
+            }
+
+            call.resolve(["serverAuthCode": serverAuthCode])
+        }
+    }
+
+    /// Requests Calendar consent through the native Google SDK. The only value
+    /// returned to JavaScript is the single-use code exchanged by the backend.
+    @objc func connectCalendar(_ call: CAPPluginCall) {
+        guard ensureFirebaseConfigured() else {
+            call.reject("Missing GoogleService-Info.plist (Firebase not configured)")
+            return
+        }
+        guard let viewController = bridge?.viewController else {
+            call.reject("No view controller available")
+            return
+        }
+        guard let serverClientId = call.getString("serverClientId")?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !serverClientId.isEmpty else {
+            call.reject("Missing Google server client ID")
+            return
+        }
+        let accessLevel = call.getString("accessLevel")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "read"
+        guard accessLevel == "read" || accessLevel == "manage" else {
+            call.reject("Unsupported Calendar access level")
+            return
+        }
+        guard let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
+              let plist = NSDictionary(contentsOfFile: path),
+              let clientId = plist["CLIENT_ID"] as? String else {
+            call.reject("Missing GoogleService-Info.plist or CLIENT_ID")
+            return
+        }
+
+        GIDSignIn.sharedInstance.configuration = GIDConfiguration(
+            clientID: clientId,
+            serverClientID: serverClientId
+        )
+        let eventScope = accessLevel == "manage"
+            ? "https://www.googleapis.com/auth/calendar.events"
+            : "https://www.googleapis.com/auth/calendar.events.readonly"
+        GIDSignIn.sharedInstance.signIn(
+            withPresenting: viewController,
+            hint: nil,
+            additionalScopes: [eventScope, "https://www.googleapis.com/auth/calendar.freebusy"]
+        ) { result, error in
+            if let error = error {
+                let isCanceled = (error as NSError).code == -5
+                call.reject(
+                    isCanceled ? "Calendar connection was cancelled" : "Calendar sign-in failed: \(error.localizedDescription)",
+                    isCanceled ? "USER_CANCELLED" : nil
+                )
+                return
+            }
+            guard let serverAuthCode = result?.serverAuthCode,
+                  !serverAuthCode.isEmpty else {
+                call.reject("Google did not return a Calendar authorization code")
+                return
+            }
+            call.resolve(["serverAuthCode": serverAuthCode])
+        }
+    }
     
     // MARK: - Sign Out
     @objc func signOut(_ call: CAPPluginCall) {
@@ -383,19 +534,61 @@ public class HushhAuthPlugin: CAPPlugin, CAPBridgedPlugin {
         keychainDelete("hushh_user_email_verified")
         keychainDelete("hushh_user_phone_number")
         HusshIMessageSessionStore.shared.clearSilently()
-        
+        OneVoiceInvocationCoordinator.shared.cancelPending(outcome: "sign_out")
+        OneSystemActionInvocationCoordinator.shared.cancelAll(
+            outcome: "sign_out",
+            clearEntityIndex: true
+        )
+        OneSystemRequestInvocationCoordinator.shared.cancelRequest()
+
         print("✅ [\(TAG)] Signed out")
         call.resolve()
     }
-    
+
     // MARK: - Get ID Token
+    private func tokenRefreshRejection(for error: Error) -> TokenRefreshRejection {
+        switch (error as NSError).code {
+        case AuthErrorCode.userNotFound.rawValue:
+            return .userNotFound
+        case AuthErrorCode.userDisabled.rawValue:
+            return .userDisabled
+        case AuthErrorCode.invalidUserToken.rawValue:
+            return .invalidUserToken
+        case AuthErrorCode.userTokenExpired.rawValue:
+            return .userTokenExpired
+        case AuthErrorCode.networkError.rawValue,
+             AuthErrorCode.webNetworkRequestFailed.rawValue:
+            return .networkRequestFailed
+        default:
+            return .internalError
+        }
+    }
+
+    private func rejectForcedTokenRefresh(_ call: CAPPluginCall, error: Error?) {
+        let rejection: TokenRefreshRejection
+        if let error = error {
+            rejection = tokenRefreshRejection(for: error)
+            // Localized SDK details are diagnostic-only; JavaScript receives a
+            // stable code and non-localized message so classification is safe.
+            print("⚠️ [\(TAG)] Firebase token refresh failed [\(rejection.rawValue)]: \(error.localizedDescription)")
+        } else {
+            rejection = .invalidUserToken
+            print("⚠️ [\(TAG)] Firebase token refresh returned no live token")
+        }
+
+        call.reject(rejection.message, rejection.rawValue)
+    }
+
     @objc func getIdToken(_ call: CAPPluginCall) {
+        let forceRefresh = call.getBool("forceRefresh") ?? false
+
         if let user = Auth.auth().currentUser {
-            // Get fresh token from Firebase
-            user.getIDToken { [weak self] token, error in
+            // Firebase owns forced-refresh authority. In that mode, a failed
+            // refresh must not be hidden by the Keychain's unexpired token.
+            user.getIDTokenResult(forcingRefresh: forceRefresh) { [weak self] result, error in
                 guard let self = self else { return }
-                
-                if let token = token {
+
+                if let token = result?.token, !token.isEmpty {
                     self.currentIdToken = token
                     self.keychainSet(token, forKey: "hushh_id_token")
                     self.publishIMessageIdentitySilently(
@@ -406,6 +599,8 @@ public class HushhAuthPlugin: CAPPlugin, CAPBridgedPlugin {
                         firebaseIDToken: token
                     )
                     call.resolve(["idToken": token])
+                } else if forceRefresh {
+                    self.rejectForcedTokenRefresh(call, error: error)
                 } else if let cached = self.freshCachedIdToken() {
                     self.publishIMessageIdentitySilently(
                         uid: user.uid,
@@ -419,6 +614,10 @@ public class HushhAuthPlugin: CAPPlugin, CAPBridgedPlugin {
                     call.resolve(["idToken": NSNull()])
                 }
             }
+        } else if forceRefresh {
+            // A forced validation request with no live Firebase principal must
+            // be terminal; returning null lets callers resurrect cached state.
+            rejectForcedTokenRefresh(call, error: nil)
         } else if let cached = freshCachedIdToken() {
             call.resolve(["idToken": cached])
         } else {

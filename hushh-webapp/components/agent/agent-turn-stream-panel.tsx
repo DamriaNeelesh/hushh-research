@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 
 import {
   AppStreamPanel,
   type AppStreamProgressItem,
 } from "@/components/app-ui/stream-progress-panel";
+import { AgentMarkdown } from "@/components/agent/agent-markdown";
 import { AgentStructuredExperienceView } from "@/components/agent/agent-structured-experience";
 import type { AgentStructuredExperience } from "@/lib/agent/agui-structured-experiences";
 import type { AgentChatToolEvent, AgentSource } from "@/lib/services/agent-chat-client";
@@ -35,12 +36,45 @@ export type AgentTurnStreamPanelProps = {
 
 const MAX_VISIBLE_SOURCES = 8;
 
+function AgentThinkingContent({
+  text,
+  isStreaming,
+}: {
+  text: string;
+  isStreaming: boolean;
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const normalizedText = text.trim();
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    // Reasoning is a live, bounded detail surface. Keep the newest step in
+    // view while it grows; the parent panel remounts closed once response
+    // text arrives, so this never competes with the answer.
+    container.scrollTop = container.scrollHeight;
+  }, [isStreaming, normalizedText]);
+
+  return (
+    <div
+      ref={scrollRef}
+      role="log"
+      aria-label="Thinking details"
+      aria-live={isStreaming ? "polite" : undefined}
+      className="max-h-44 min-h-0 overflow-y-auto overscroll-contain pr-1 text-xs leading-relaxed text-muted-foreground"
+    >
+      <AgentMarkdown text={normalizedText} className="text-xs leading-relaxed" />
+    </div>
+  );
+}
+
 const SOURCE_SUMMARIES: Record<string, { badge: string; message: string }> = {
   agent_email: { badge: "Specialist", message: "Email assistant consulted." },
   agent_location: { badge: "Specialist", message: "Location assistant consulted." },
   agent_connected_systems: { badge: "Specialist", message: "Connections assistant consulted." },
   agent_connections: { badge: "Specialist", message: "Connections assistant consulted." },
   agent_nav: { badge: "Specialist", message: "Consent assistant consulted." },
+  agent_personal_information: { badge: "Specialist", message: "Memory assistant consulted." },
   agent_kai: { badge: "Specialist", message: "Finance specialist consulted." },
   web: { badge: "Web", message: "Public web research consulted." },
 };
@@ -132,9 +166,10 @@ export function AgentTurnStreamPanel({
     [streamEvents]
   );
   const specialistItems = useMemo(() => normalizeSpecialistSources(sources), [sources]);
-  // Provider reasoning is deliberately not rendered. Consumer activity is
-  // limited to sanitized tool, memory, and specialist lifecycle facts.
-  void thinkingText;
+  // Provider reasoning is rendered again (founder directive 2026-09-02): the
+  // owner asked to see the agent think. It stays inside the activity panel,
+  // below the sanitized tool/memory/specialist lifecycle facts, so it is
+  // available without competing with the answer.
 
   return (
     <AppStreamPanel
@@ -147,6 +182,13 @@ export function AgentTurnStreamPanel({
           <AgentStructuredExperienceView experience={structuredExperience} />
         ) : null
       }
+      thinkingTitle="One is thinking"
+      thinkingContent={
+        thinkingText && thinkingText.trim() ? (
+          <AgentThinkingContent text={thinkingText} isStreaming={isStreaming} />
+        ) : null
+      }
+      thinkingClassName="bg-transparent dark:bg-transparent"
       responsePendingLabel="One is preparing your response."
       isStreaming={isStreaming}
       isError={isError}

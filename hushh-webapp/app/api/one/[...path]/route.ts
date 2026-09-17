@@ -14,6 +14,19 @@ const ONE_API_TIMEOUT_MS = resolveSlowRequestTimeoutMs(45_000, {
   developmentFloorMs: 45_000,
   overrideEnvKey: "HUSHH_ONE_API_TIMEOUT_MS",
 });
+const ONE_STREAM_TIMEOUT_MS = resolveSlowRequestTimeoutMs(285_000, {
+  developmentFloorMs: 285_000,
+  overrideEnvKey: "HUSHH_ONE_STREAM_TIMEOUT_MS",
+});
+
+function requestTimeoutMs(path: string, acceptHeader: string | null): number {
+  const acceptsEventStream =
+    acceptHeader?.toLowerCase().includes("text/event-stream") ?? false;
+  const isKnownStreamRoute = path === "agent-chat" || path.endsWith("/stream");
+  return acceptsEventStream || isKnownStreamRoute
+    ? ONE_STREAM_TIMEOUT_MS
+    : ONE_API_TIMEOUT_MS;
+}
 
 function privateResponseHeaders(upstream?: Response): Headers {
   const headers = new Headers({
@@ -60,16 +73,25 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
     if (voiceTurnIdHeader) headers.set("X-Voice-Turn-Id", voiceTurnIdHeader);
 
     let body: BodyInit | undefined;
-    if (request.method !== "GET" && request.method !== "DELETE") {
+    if (request.method !== "GET" && request.method !== "HEAD") {
       headers.set("Content-Type", contentType || "application/json");
-      body = await request.text();
+      body = (await request.text()) || undefined;
     }
+
+    // Agent chat is an SSE connection. An AbortSignal.timeout stays attached to
+    // the response body after fetch resolves, so it would cut off a valid
+    // response mid-stream even while the backend is still sending keep-alives.
+    // Let the browser disconnect signal own that stream's lifetime instead.
+    const upstreamSignal =
+      path === "agent-chat"
+        ? request.signal
+        : AbortSignal.timeout(requestTimeoutMs(path, acceptHeader));
 
     const response = await fetch(url, {
       method: request.method,
       headers,
       body,
-      signal: AbortSignal.timeout(ONE_API_TIMEOUT_MS),
+      signal: upstreamSignal,
     });
 
     // A streamed upstream must be handed through untouched. The JSON path below
@@ -94,6 +116,14 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
           "x-request-id": requestId,
         },
       });
+    }
+
+    // The active-workflow read uses 204 to mean no unfinished run. Adding a
+    // JSON body to that status throws and turns a valid empty state into 502.
+    if (response.status === 204) {
+      const headers = privateResponseHeaders(response);
+      headers.set("x-request-id", requestId);
+      return new Response(null, { status: 204, headers });
     }
 
     const data = await response.json().catch(() => ({}));
@@ -122,6 +152,13 @@ export async function GET(
 }
 
 export async function POST(
+  request: NextRequest,
+  props: { params: Promise<{ path: string[] }> }
+) {
+  return proxyRequest(request, await props.params);
+}
+
+export async function PUT(
   request: NextRequest,
   props: { params: Promise<{ path: string[] }> }
 ) {

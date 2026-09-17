@@ -6,6 +6,11 @@ import { resolveAppRouteLayout } from "@/lib/navigation/app-route-layout";
 import { ROUTES } from "@/lib/navigation/routes";
 
 describe("home shell contract", () => {
+  it("keeps the canonical root Chat command surface available", () => {
+    expect(getKaiChromeState(ROUTES.HOME).hideCommandBar).toBe(false);
+    expect(resolveAppRouteLayout(ROUTES.HOME).mode).toBe("standard");
+  });
+
   it("treats the signed-in One dashboard as a standard shell route", () => {
     expect(resolveAppRouteLayout(ROUTES.ONE_HOME).mode).toBe("standard");
     expect(resolveTopShellMetrics(ROUTES.ONE_HOME).shellVisible).toBe(true);
@@ -19,13 +24,16 @@ describe("home shell contract", () => {
   });
 
   it("keeps contextual Finance and Location tabs inside the shared top shell", () => {
-    expect(resolveTopShellMetrics(ROUTES.ONE_LOCATION).hasTabs).toBe(true);
+    // Location owns the same canonical tab registry inside its module header,
+    // rather than duplicating those tabs in the global top shell.
+    expect(resolveTopShellMetrics(ROUTES.ONE_LOCATION).hasTabs).toBe(false);
     expect(resolveTopShellMetrics(ROUTES.KAI_HOME).hasTabs).toBe(true);
     expect(resolveTopShellMetrics(ROUTES.KAI_ANALYSIS).hasTabs).toBe(true);
     expect(resolveTopShellMetrics("/one/location?action=share").hasTabs).toBe(
       false,
     );
-    expect(resolveTopShellMetrics(ROUTES.RIA_PICKS).hasTabs).toBe(true);
+    // RIA renders its route selector inside the module, like Location.
+    expect(resolveTopShellMetrics(ROUTES.RIA_PICKS).hasTabs).toBe(false);
     expect(resolveTopShellMetrics(ROUTES.PROFILE).hasTabs).toBe(false);
     expect(resolveTopShellMetrics(ROUTES.CONNECT).hasTabs).toBe(false);
   });

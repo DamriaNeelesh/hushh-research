@@ -40,7 +40,6 @@ import { AsyncActionStatus } from "@/components/system/async-action-status";
 import { CapabilityExploreCard } from "@/components/onboarding/setup/capability-explore-card";
 import { PkmSectionPreview } from "@/components/profile/pkm-section-preview";
 import { KycIdentityPreface } from "@/components/onboarding/setup/kyc-identity-preface";
-import { CapabilityVaultPrerequisite } from "@/components/vault/capability-vault-prerequisite";
 import {
   isKycIdentityPrefaceComplete,
 } from "@/lib/services/kyc-identity-profile-pkm-service";
@@ -59,7 +58,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { VaultLockGuard } from "@/components/vault/vault-lock-guard";
 import { useAuth, useRequireAuth } from "@/hooks/use-auth";
 import { isApplePrivateRelayEmail } from "@/lib/auth/private-relay";
 import {
@@ -371,17 +369,10 @@ export default function OneKycPage({
         }
         dataState={auth.user ? "loaded" : "loading"}
       />
-      <VaultLockGuard>
-        <CapabilityVaultPrerequisite
-          capabilityLabel="KYC"
-          routeKey={ROUTES.ONE_KYC}
-        >
-          <OneKycWorkspace
-            onSetupReadinessChange={onSetupReadinessChange}
-            voicePublisherRole={voicePublisherRole}
-          />
-        </CapabilityVaultPrerequisite>
-      </VaultLockGuard>
+      <OneKycWorkspace
+        onSetupReadinessChange={onSetupReadinessChange}
+        voicePublisherRole={voicePublisherRole}
+      />
     </>
   );
 }
@@ -810,7 +801,7 @@ export function OneKycWorkspace({
         });
         setConnectorReady(true);
         if (options?.syncMailbox) {
-          await OneKycService.syncRecentEmails({
+          const syncResponse = await OneKycService.syncRecentEmails({
             userId,
             vaultOwnerToken,
           }).catch((err) => {
@@ -819,7 +810,14 @@ export function OneKycWorkspace({
                 ? err.message
                 : "One could not check recent requests.",
             );
+            return null;
           });
+          if (
+            syncResponse?.reason ===
+            "automatic_response_preparation_disabled"
+          ) {
+            setAutomaticResponsePreparationEnabled(false);
+          }
         }
         const response = await OneKycService.listWorkflows({
           userId,
@@ -916,8 +914,9 @@ export function OneKycWorkspace({
   }, [auth.user, auth.userId, nextCursor, vaultOwnerToken]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (automaticResponsePreparationEnabled === null) return;
+    void load({ syncMailbox: automaticResponsePreparationEnabled });
+  }, [automaticResponsePreparationEnabled, load]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1945,6 +1944,19 @@ export function OneKycWorkspace({
                     title="Unsupported Account"
                     description="Private Relay addresses are not supported."
                   />
+                ) : automaticResponsePreparationEnabled === false ? (
+                  <SettingsRow
+                    icon={AlertTriangle}
+                    title="Request preparation is off"
+                    description="Enable it to review requests sent from one of your verified addresses to one@hushh.ai."
+                    trailing={
+                      <Button asChild size="sm" variant="outline">
+                        <a href={ROUTES.ONE_SETUP_EMAIL}>Set up email</a>
+                      </Button>
+                    }
+                    trailingInteractive
+                    stackTrailingOnMobile
+                  />
                 ) : showInitialLoading ? (
                   <SettingsRow
                     icon={Inbox}
@@ -1959,7 +1971,7 @@ export function OneKycWorkspace({
                   <SettingsRow
                     icon={Inbox}
                     title="No matched requests"
-                    description="Matched requests appear here."
+                    description="Refresh checks recent messages sent from your verified address to one@hushh.ai."
                   />
                 ) : (
                   workflows.map((workflow) => (

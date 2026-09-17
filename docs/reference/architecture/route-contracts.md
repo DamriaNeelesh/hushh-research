@@ -72,7 +72,6 @@ Keep navigation documentation aligned with `hushh-webapp/lib/navigation/routes.t
 - `/one/profile/security`
 - `/one/profile/security/vault`
 - `/one/profile/security/session`
-- `/one/profile/security/devices`
 - `/one/profile/security/devices/authorize`
 - `/one/profile/my-data`
 - `/one/profile/my-data/domain?key=<domain_key>`
@@ -97,6 +96,7 @@ use `ApiService.apiFetch` and never embed a real person reference at build time.
 - `/one/profile/receipts`
 - `/one/profile/gmail/oauth/return`
 - `/one/connect`
+  - `?reviewPerson=<exact-person-id>` opens Connect's existing scope review after an authenticated directory-bounded lookup. Loading the route sends nothing. Incoming requests open their exact Consent Center review; outgoing requests remain pending. A Location prerequisite retains its original person and task until the owner returns with Continue and current Location eligibility is checked again. Closing the review consumes this query so the same target can be reopened.
 - `/one/connect/settings`
 - `/one/consent`
 - `/one/feed`
@@ -107,9 +107,15 @@ use `ApiService.apiFetch` and never embed a real person reference at build time.
 - `/one/setup/calendar`
 - `/one/setup/[capability]`
 - `/one/calendar`
+- `/one/wallet` (Wallet, formerly Cards; naming map in `docs/reference/one/wallet.md`)
+- `/one/pkm/recent`
 - `/one/gmail`
 - `/one/email`
 - `/one/kyc`
+- `/one/location`
+- `/one/location/map`
+- `/one/location/check-in`
+- `/one/location/check-in/hotel?stay=<opaque_stay_id>` — eligibility-gated and fail-closed until a supported hotel stay provider exists
 - `/one/marketplace`
 - `/marketplace`
 - `/marketplace/ria`
@@ -172,6 +178,15 @@ returns through `/one/profile/google/oauth/return` and routes back to Calendar.
 The access manager is the One-owned `/one/consent` workspace. Legacy
 `/consents` links redirect there while preserving transient query state such as
 the selected review tab and request identifier.
+
+## Shell and navigation
+
+The standard navigation is four layers and one law, defined once in
+`docs/reference/quality/app-surface-design-system.md` under *Shell and navigation
+ownership*. The part route authors get wrong most often: **the back control is
+derived from the breadcrumb**, so a `standard` route with no breadcrumb entry has
+no back button and no native edge-back gesture. Declare the breadcrumb, or declare
+an `exemptionReason` in the route layout contract.
 
 ## Route Contract Cascade
 

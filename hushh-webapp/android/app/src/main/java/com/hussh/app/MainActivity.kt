@@ -1,14 +1,30 @@
 package com.hussh.app
 
+import com.hussh.app.plugins.HushhVoiceInvocation.HushhVoiceInvocationPlugin
 import android.net.Uri
 import android.content.pm.ApplicationInfo
+import android.content.res.AssetManager
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.widget.FrameLayout
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
+import com.getcapacitor.Bridge
 import com.getcapacitor.BridgeActivity
+import com.getcapacitor.BridgeWebViewClient
 import com.getcapacitor.WebViewListener
 import com.hussh.app.plugins.HushhAuth.HushhAuthPlugin
 import com.hussh.app.plugins.HushhConsent.HushhConsentPlugin
@@ -19,13 +35,17 @@ import com.hussh.app.plugins.HushhSync.HushhSyncPlugin
 import com.hussh.app.plugins.HushhAccount.HushhAccountPlugin
 import com.hussh.app.plugins.HushhLocation.HushhLocationPlugin
 import com.hussh.app.plugins.HushhContacts.HushhContactsPlugin
+import com.hussh.app.plugins.HushhInvitations.HushhInvitationsPlugin
 import com.hussh.app.plugins.HushhNotifications.HushhNotificationsPlugin
+import com.hussh.app.plugins.HushhSessionPrivacy.HushhSessionPrivacyPlugin
 import com.hussh.app.plugins.Kai.KaiPlugin
 import com.hussh.app.plugins.PersonalKnowledgeModel.PersonalKnowledgeModelPlugin
 import org.json.JSONObject
 import org.json.JSONTokener
 import org.json.JSONArray
 import java.io.File
+import java.io.ByteArrayInputStream
+import java.nio.charset.StandardCharsets
 
 object NativeTestModePolicy {
     @JvmStatic
@@ -37,11 +57,145 @@ object NativeTestModePolicy {
         value.orEmpty().filter { it.isLetterOrDigit() || it == '_' || it == '-' }.take(64)
 }
 
+private object AndroidPersonProfileAssetRouter {
+    private const val routePrefix = "/people/"
+    private const val nativeStaticPersonProfileRef =
+        "00000000-0000-4000-8000-000000000001"
+    private val staticAssetNames = setOf(
+        "__next._full.txt",
+        "__next._head.txt",
+        "__next._index.txt",
+        "__next._tree.txt",
+        "__next.people.\$d\$personRef.__PAGE__.txt",
+        "__next.people.\$d\$personRef.txt",
+        "__next.people.txt",
+        "index.html",
+        "index.txt",
+    )
+
+    data class AssetRequest(val personRef: String, val assetName: String)
+
+    fun requestFor(uri: Uri): AssetRequest? {
+        val path = uri.path ?: return null
+        if (!path.startsWith(routePrefix)) return null
+
+        val remainder = path.removePrefix(routePrefix)
+        if (remainder.isEmpty()) return null
+        if (remainder.endsWith(".txt") && !remainder.contains('/')) {
+            val personRef = remainder.removeSuffix(".txt")
+            return personRef.takeIf { it.isNotEmpty() }?.let {
+                AssetRequest(it, "index.txt")
+            }
+        }
+
+        val parts = remainder.split('/', limit = 2)
+        val personRef = parts.firstOrNull()?.takeIf { it.isNotEmpty() } ?: return null
+        val assetName = parts.getOrNull(1)?.ifEmpty { "index.html" } ?: "index.html"
+        if (personRef.contains('/') || assetName !in staticAssetNames) return null
+        return AssetRequest(personRef, assetName)
+    }
+
+    fun open(assets: AssetManager, request: AssetRequest): WebResourceResponse? {
+        val assetPath = "public${routePrefix}${nativeStaticPersonProfileRef}/${request.assetName}"
+        val source = try {
+            assets.open(assetPath).use { it.readBytes() }
+        } catch (_: Exception) {
+            return null
+        }
+
+        val body = String(source, StandardCharsets.UTF_8)
+            .replace(nativeStaticPersonProfileRef, request.personRef)
+            .toByteArray(StandardCharsets.UTF_8)
+        val mimeType = if (request.assetName.endsWith(".html")) {
+            "text/html"
+        } else {
+            "text/plain"
+        }
+        return WebResourceResponse(
+            mimeType,
+            "UTF-8",
+            200,
+            "OK",
+            mapOf("Cache-Control" to "no-cache"),
+            ByteArrayInputStream(body),
+        )
+    }
+}
+
+private class AndroidPersonProfileWebViewClient(
+    bridge: Bridge,
+    private val assets: AssetManager,
+) : BridgeWebViewClient(bridge) {
+    override fun shouldInterceptRequest(
+        view: WebView,
+        request: WebResourceRequest,
+    ): WebResourceResponse? {
+        val assetRequest = AndroidPersonProfileAssetRouter.requestFor(request.url)
+        return if (assetRequest != null) {
+            AndroidPersonProfileAssetRouter.open(assets, assetRequest)
+                ?: super.shouldInterceptRequest(view, request)
+        } else {
+            super.shouldInterceptRequest(view, request)
+        }
+    }
+
+    @Deprecated("Use shouldInterceptRequest(WebResourceRequest)")
+    @Suppress("DEPRECATION")
+    override fun shouldInterceptRequest(view: WebView, url: String): WebResourceResponse? {
+        val assetRequest = AndroidPersonProfileAssetRouter.requestFor(Uri.parse(url))
+        return if (assetRequest != null) {
+            AndroidPersonProfileAssetRouter.open(assets, assetRequest)
+        } else {
+            super.shouldInterceptRequest(view, url)
+        }
+    }
+}
+
 class MainActivity : BridgeActivity() {
     private val nativeTestHandler = Handler(Looper.getMainLooper())
     private var nativeTestPollRunnable: Runnable? = null
+    private var sessionPrivacyOverlay: FrameLayout? = null
+    private var sessionPrivacyShielded = false
+    private var sessionPrivacyGeneration = 0
+    private var sessionPrivacyCause = "inactive"
+    private val sessionPrivacyObservedDocuments = mutableSetOf<String>()
+    private val sessionPrivacyRetiredDocuments = mutableSetOf<String>()
+    private var sessionPrivacyRecoveryActions: LinearLayout? = null
+    private var sessionPrivacyProgress: ProgressBar? = null
+    private var sessionPrivacyTitle: TextView? = null
+    private var sessionPrivacyDetail: TextView? = null
+    private var sessionPrivacyRecoveryRunnable: Runnable? = null
+    internal var sessionPrivacyStateListener: ((SessionPrivacyState, String) -> Unit)? = null
+    private var sessionPrivacyActivityResumed = false
+    private var sessionPrivacyOwnsSecureFlag = false
+    private var sessionPrivacyAccessibilityWebView: WebView? = null
+    private var sessionPrivacyPreviousWebViewAccessibility: Int? = null
+
+    data class SessionPrivacyState(
+        val shielded: Boolean,
+        val generation: Int,
+        val cause: String,
+        val appIsActive: Boolean
+    )
+
+    data class SessionPrivacyCompletion(
+        val released: Boolean,
+        val shielded: Boolean,
+        val generation: Int,
+        val cause: String,
+        val appIsActive: Boolean
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        sessionPrivacyShielded =
+            savedInstanceState?.getBoolean(SESSION_PRIVACY_SHIELDED_KEY, false) == true
+        sessionPrivacyGeneration =
+            savedInstanceState?.getInt(SESSION_PRIVACY_GENERATION_KEY, 0)?.coerceAtLeast(0) ?: 0
+        sessionPrivacyCause = if (sessionPrivacyShielded) "background" else "inactive"
+        if (sessionPrivacyShielded && sessionPrivacyGeneration == 0) {
+            sessionPrivacyGeneration = 1
+        }
+
         Log.d("MainActivity", "Registering all native plugins...")
         
         // Register all Hushh native plugins
@@ -57,10 +211,20 @@ class MainActivity : BridgeActivity() {
         registerPlugin(HushhAccountPlugin::class.java) // Account management (deletion)
         registerPlugin(HushhLocationPlugin::class.java) // Foreground location capture
         registerPlugin(HushhContactsPlugin::class.java) // Contact matching
+        registerPlugin(HushhVoiceInvocationPlugin::class.java)
+        registerPlugin(HushhInvitationsPlugin::class.java) // User-confirmed invitations
+        registerPlugin(HushhSessionPrivacyPlugin::class.java) // Resume-time session privacy shield
         
-        Log.d("MainActivity", "All 12 plugins registered successfully")
+        Log.d("MainActivity", "All 13 plugins registered successfully")
         
         super.onCreate(savedInstanceState)
+
+        installAndroidPersonProfileRouting()
+
+        installSessionPrivacyOverlay()
+        if (sessionPrivacyShielded) {
+            showSessionPrivacyOverlay()
+        }
 
         val isDebuggableBuild =
             (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -70,10 +234,314 @@ class MainActivity : BridgeActivity() {
         }
     }
 
+    /**
+     * Mark the Activity resumed before BridgeActivity emits Capacitor's active
+     * event. JS can then query HushhSessionPrivacy and safely acknowledge the
+     * exact generation it just rendered.
+     */
+    override fun onResume() {
+        sessionPrivacyActivityResumed = true
+        if (sessionPrivacyShielded) {
+            showSessionPrivacyOverlay()
+        }
+        super.onResume()
+        publishSessionPrivacyState()
+        if (sessionPrivacyShielded) scheduleSessionPrivacyRecovery()
+    }
+
+    /**
+     * Cover the WebView before BridgeActivity/Capacitor observes the pause so
+     * Android never snapshots or reveals stale vault content while inactive.
+     */
+    override fun onPause() {
+        val wasResumed = sessionPrivacyActivityResumed
+        sessionPrivacyActivityResumed = false
+        sessionPrivacyRecoveryRunnable?.let { nativeTestHandler.removeCallbacks(it) }
+        if (wasResumed) {
+            activateSessionPrivacyShield()
+        } else if (sessionPrivacyShielded) {
+            showSessionPrivacyOverlay()
+        }
+        super.onPause()
+        publishSessionPrivacyState()
+    }
+
+    override fun onStop() {
+        sessionPrivacyActivityResumed = false
+        if (sessionPrivacyShielded) {
+            if (sessionPrivacyCause != "restart") sessionPrivacyCause = "background"
+            showSessionPrivacyOverlay()
+        }
+        super.onStop()
+        publishSessionPrivacyState()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(SESSION_PRIVACY_SHIELDED_KEY, sessionPrivacyShielded)
+        outState.putInt(SESSION_PRIVACY_GENERATION_KEY, sessionPrivacyGeneration)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onDestroy() {
+        sessionPrivacyActivityResumed = false
+        sessionPrivacyRecoveryRunnable?.let { nativeTestHandler.removeCallbacks(it) }
+        sessionPrivacyRecoveryRunnable = null
+        sessionPrivacyStateListener = null
+        restoreSessionContentAccessibility()
         nativeTestPollRunnable?.let { nativeTestHandler.removeCallbacks(it) }
         nativeTestPollRunnable = null
         super.onDestroy()
+    }
+
+    internal fun readSessionPrivacyState(): SessionPrivacyState =
+        SessionPrivacyState(
+            shielded = sessionPrivacyShielded,
+            generation = sessionPrivacyGeneration,
+            cause = sessionPrivacyCause,
+            appIsActive = sessionPrivacyActivityResumed
+        )
+
+    /**
+     * Release is deliberately fail-closed: an acknowledgement is accepted
+     * only for the currently resumed Activity and its current pause generation.
+     */
+    internal fun observeSessionPrivacyDocument(documentId: String) {
+        if (documentId.isNotBlank() && documentId !in sessionPrivacyRetiredDocuments) {
+            sessionPrivacyObservedDocuments.add(documentId)
+        }
+    }
+
+    internal fun completeSessionValidation(generation: Int, documentId: String): SessionPrivacyCompletion {
+        val released =
+            sessionPrivacyShielded &&
+                sessionPrivacyActivityResumed &&
+                documentId in sessionPrivacyObservedDocuments &&
+                documentId !in sessionPrivacyRetiredDocuments &&
+                generation == sessionPrivacyGeneration
+
+        if (released) {
+            sessionPrivacyShielded = false
+            sessionPrivacyCause = "inactive"
+            sessionPrivacyRecoveryRunnable?.let { nativeTestHandler.removeCallbacks(it) }
+            hideSessionPrivacyOverlay()
+        }
+
+        return SessionPrivacyCompletion(
+            released = released,
+            shielded = sessionPrivacyShielded,
+            generation = sessionPrivacyGeneration,
+            cause = sessionPrivacyCause,
+            appIsActive = sessionPrivacyActivityResumed
+        )
+    }
+
+    private fun publishSessionPrivacyState(action: String = "state") {
+        sessionPrivacyStateListener?.invoke(readSessionPrivacyState(), action)
+    }
+
+    private fun scheduleSessionPrivacyRecovery() {
+        sessionPrivacyRecoveryRunnable?.let { nativeTestHandler.removeCallbacks(it) }
+        sessionPrivacyProgress?.visibility = View.VISIBLE
+        sessionPrivacyTitle?.text = "Protecting private information\u2026"
+        sessionPrivacyDetail?.text = "Your private information stays hidden while the app resumes."
+        sessionPrivacyOverlay?.contentDescription = "Protecting private information. Your private information stays hidden while the app resumes."
+        val generation = sessionPrivacyGeneration
+        val work = Runnable {
+            if (sessionPrivacyShielded && generation == sessionPrivacyGeneration) {
+                sessionPrivacyProgress?.visibility = View.GONE
+                sessionPrivacyTitle?.text = "Unable to restore the private view"
+                sessionPrivacyDetail?.text = "Your private information is still hidden. Try again, or restart this session."
+                sessionPrivacyOverlay?.contentDescription = "Unable to restore the private view. Your private information is still hidden."
+                sessionPrivacyRecoveryActions?.visibility = View.VISIBLE
+            }
+        }
+        sessionPrivacyRecoveryRunnable = work
+        nativeTestHandler.postDelayed(work, 8_000)
+    }
+
+    private fun restartSessionDocument() {
+        if (!sessionPrivacyShielded) return
+        sessionPrivacyGeneration =
+            if (sessionPrivacyGeneration == Int.MAX_VALUE) 1 else sessionPrivacyGeneration + 1
+        sessionPrivacyCause = "restart"
+        sessionPrivacyRetiredDocuments.addAll(sessionPrivacyObservedDocuments)
+        sessionPrivacyObservedDocuments.clear()
+        bridge?.webView?.reload()
+        scheduleSessionPrivacyRecovery()
+    }
+
+    private fun activateSessionPrivacyShield() {
+        sessionPrivacyGeneration =
+            if (sessionPrivacyGeneration == Int.MAX_VALUE) 1 else sessionPrivacyGeneration + 1
+        sessionPrivacyShielded = true
+        showSessionPrivacyOverlay()
+    }
+
+    private fun installSessionPrivacyOverlay() {
+        if (sessionPrivacyOverlay != null || isFinishing || isDestroyed) {
+            return
+        }
+
+        val density = resources.displayMetrics.density
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+
+            addView(
+                ProgressBar(context).also { sessionPrivacyProgress = it },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+
+            addView(
+                TextView(context).apply {
+                    sessionPrivacyTitle = this
+                    text = "Protecting private information\u2026"
+                    setTextColor(Color.rgb(56, 53, 64))
+                    textSize = 17f
+                    gravity = Gravity.CENTER
+                    setPadding(0, (20 * density).toInt(), 0, 0)
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+
+            addView(
+                TextView(context).apply {
+                    sessionPrivacyDetail = this
+                    text = "Your private information stays hidden while the app resumes."
+                    setTextColor(Color.rgb(105, 101, 113))
+                    textSize = 14f
+                    gravity = Gravity.CENTER
+                    setPadding(
+                        (32 * density).toInt(),
+                        (10 * density).toInt(),
+                        (32 * density).toInt(),
+                        0
+                    )
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(248, 247, 252))
+            isClickable = true
+            isFocusable = true
+            contentDescription =
+                "Protecting private information. Your private information stays hidden while the app resumes."
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            visibility = View.GONE
+            elevation = 10_000f * density
+            addView(
+                content,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(Button(context).apply {
+                text = "Try again"
+                minHeight = (48 * density).toInt()
+                setOnClickListener { scheduleSessionPrivacyRecovery(); publishSessionPrivacyState("retry") }
+            })
+            addView(Button(context).apply {
+                text = "Restart session"
+                minHeight = (48 * density).toInt()
+                setOnClickListener { restartSessionDocument() }
+            })
+        }
+        content.addView(actions)
+        sessionPrivacyRecoveryActions = actions
+        sessionPrivacyOverlay = overlay
+
+        addContentView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+    }
+
+    private fun showSessionPrivacyOverlay() {
+        installSessionPrivacyOverlay()
+        hideSessionContentFromAccessibility()
+
+        if ((window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE) == 0) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            sessionPrivacyOwnsSecureFlag = true
+        }
+
+        sessionPrivacyOverlay?.apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            visibility = View.VISIBLE
+            bringToFront()
+        }
+    }
+
+    private fun hideSessionPrivacyOverlay() {
+        sessionPrivacyRecoveryActions?.visibility = View.GONE
+        sessionPrivacyOverlay?.apply {
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        }
+        restoreSessionContentAccessibility()
+
+        if (sessionPrivacyOwnsSecureFlag) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            sessionPrivacyOwnsSecureFlag = false
+        }
+    }
+
+    /**
+     * A visual cover is not enough for TalkBack: accessibility traversal can
+     * otherwise reach sibling WebView nodes behind an opaque overlay. Preserve
+     * the host's exact prior mode and hide all WebView descendants for as long
+     * as the native shield owns this lifecycle generation.
+     */
+    private fun hideSessionContentFromAccessibility() {
+        val webView = bridge?.webView ?: return
+        if (sessionPrivacyAccessibilityWebView !== webView) {
+            restoreSessionContentAccessibility()
+            sessionPrivacyAccessibilityWebView = webView
+            sessionPrivacyPreviousWebViewAccessibility =
+                webView.importantForAccessibility
+        } else if (sessionPrivacyPreviousWebViewAccessibility == null) {
+            sessionPrivacyPreviousWebViewAccessibility =
+                webView.importantForAccessibility
+        }
+        webView.importantForAccessibility =
+            View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+    }
+
+    private fun restoreSessionContentAccessibility() {
+        val webView = sessionPrivacyAccessibilityWebView
+        val previousMode = sessionPrivacyPreviousWebViewAccessibility
+        sessionPrivacyAccessibilityWebView = null
+        sessionPrivacyPreviousWebViewAccessibility = null
+        if (webView != null && previousMode != null) {
+            webView.importantForAccessibility = previousMode
+        }
+    }
+
+    private fun installAndroidPersonProfileRouting() {
+        val activeBridge = bridge ?: return
+        activeBridge.setWebViewClient(
+            AndroidPersonProfileWebViewClient(activeBridge, assets)
+        )
     }
 
     private fun installNativeTestBridge(config: NativeTestConfiguration) {
@@ -762,12 +1230,19 @@ class MainActivity : BridgeActivity() {
             try {
                 val report = payload.opt("uiFlowReport")
                 if (report != null && report != JSONObject.NULL) {
-                    File(filesDir, "native-ui-interaction-report.json").writeText(
-                        sanitizeUiFlowReport(report).toString(2)
-                    )
+                    val bytes = sanitizeUiFlowReport(report).toString(2).toByteArray(Charsets.UTF_8)
+                    val file = android.util.AtomicFile(File(filesDir, "native-ui-interaction-report.json"))
+                    val stream = file.startWrite()
+                    try {
+                        stream.write(bytes)
+                        file.finishWrite(stream)
+                    } catch (error: Exception) {
+                        file.failWrite(stream)
+                        throw error
+                    }
                 }
             } catch (error: Exception) {
-                Log.w("MainActivity", "Failed to write native UI report: ${error.message}")
+                Log.w("MainActivity", "Failed to publish native UI report")
             }
 
             try {
@@ -821,6 +1296,11 @@ class MainActivity : BridgeActivity() {
     }
 
     companion object {
+        private const val SESSION_PRIVACY_SHIELDED_KEY =
+            "com.hussh.app.session_privacy.shielded"
+        private const val SESSION_PRIVACY_GENERATION_KEY =
+            "com.hussh.app.session_privacy.generation"
+
         private fun normalizeRoute(value: String): String {
             val trimmed = value.trim()
             if (trimmed.isBlank() || trimmed == "/") {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { type CSSProperties, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { Dialog as DialogPrimitive } from "radix-ui";
 
@@ -45,6 +45,11 @@ type VaultUnlockDialogProps = {
 // vault callers safe: one unmount cannot restore chrome while another vault
 // sheet is still open.
 const activeVaultUnlockSurfaces = new Map<string, "standard" | "hard_gate">();
+const VAULT_HARD_GATE_EVENT = "vault-hard-gate-visibility-changed";
+
+function hasActiveHardGate(): boolean {
+  return Array.from(activeVaultUnlockSurfaces.values()).includes("hard_gate");
+}
 
 function syncVaultUnlockSurfaceDataset() {
   if (typeof document === "undefined") return;
@@ -77,18 +82,54 @@ export function VaultUnlockDialog({
   const surfaceId = useId();
   const [recoveryKeyDisclosureActive, setRecoveryKeyDisclosureActive] =
     useState(false);
+  const [suppressedByHardGate, setSuppressedByHardGate] = useState(false);
+  const onOpenChangeRef = useRef(onOpenChange);
   const effectiveDismissible =
     dismissible && !recoveryKeyDisclosureActive;
 
   useEffect(() => {
-    if (!open) return;
+    onOpenChangeRef.current = onOpenChange;
+  }, [onOpenChange]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setSuppressedByHardGate(false);
+      return;
+    }
+
+    const handleHardGateVisibility = (event: Event) => {
+      if (surfaceVariant === "hard_gate") return;
+      const visible = (event as CustomEvent<{ visible?: boolean }>).detail?.visible;
+      setSuppressedByHardGate(Boolean(visible));
+      if (visible) {
+        onOpenChangeRef.current?.(false);
+      }
+    };
 
     activeVaultUnlockSurfaces.set(surfaceId, surfaceVariant);
     syncVaultUnlockSurfaceDataset();
+    window.addEventListener(VAULT_HARD_GATE_EVENT, handleHardGateVisibility);
+
+    if (surfaceVariant === "standard" && hasActiveHardGate()) {
+      setSuppressedByHardGate(true);
+      onOpenChangeRef.current?.(false);
+    }
+
+    if (surfaceVariant === "hard_gate") {
+      window.dispatchEvent(
+        new CustomEvent(VAULT_HARD_GATE_EVENT, { detail: { visible: true } }),
+      );
+    }
 
     return () => {
+      window.removeEventListener(VAULT_HARD_GATE_EVENT, handleHardGateVisibility);
       activeVaultUnlockSurfaces.delete(surfaceId);
       syncVaultUnlockSurfaceDataset();
+      if (surfaceVariant === "hard_gate" && !hasActiveHardGate()) {
+        window.dispatchEvent(
+          new CustomEvent(VAULT_HARD_GATE_EVENT, { detail: { visible: false } }),
+        );
+      }
     };
   }, [open, surfaceId, surfaceVariant]);
 
@@ -101,6 +142,10 @@ export function VaultUnlockDialog({
   // The unlock flow is a stable upper-viewport credential layout, never a
   // bottom sheet. This prevents a native keyboard from moving the entire vault
   // surface; VaultFlow scrolls its own form content when needed.
+  if (!open || suppressedByHardGate) {
+    return null;
+  }
+
   return (
     <Dialog
       open={open}
@@ -134,13 +179,14 @@ export function VaultUnlockDialog({
           data-vault-layout="top-centered-flat"
           data-vault-dismissible={effectiveDismissible}
           style={{
+            "--vault-available-height": "min(640px, calc(100svh - max(calc(env(safe-area-inset-top, 0px) + 1.5rem), 6svh) - var(--kb-height, 0px) - 1rem))",
             position: "fixed",
             zIndex: 712,
             top: "max(calc(env(safe-area-inset-top, 0px) + 1.5rem), 6svh)",
             left: "50%",
             width: "calc(100% - 2rem)",
             maxWidth: "28rem",
-            maxHeight: "min(58svh, 640px)",
+            maxHeight: "var(--vault-available-height)",
             transform: "translateX(-50%)",
             overflow: "visible",
             background: "transparent",
@@ -148,7 +194,7 @@ export function VaultUnlockDialog({
             borderRadius: 0,
             boxShadow: "none",
             padding: 0,
-          }}
+          } as CSSProperties}
           className="outline-none focus:outline-none focus-visible:outline-none"
           onEscapeKeyDown={(event) => {
             if (!effectiveDismissible) event.preventDefault();
@@ -167,6 +213,7 @@ export function VaultUnlockDialog({
             onRecoveryKeyDisclosureChange={
               setRecoveryKeyDisclosureActive
             }
+            isHardGate={surfaceVariant === "hard_gate"}
             onSignOut={onSignOut}
           />
         </DialogPrimitive.Content>

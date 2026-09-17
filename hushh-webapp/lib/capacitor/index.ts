@@ -54,6 +54,31 @@ export interface AuthUser {
   phoneNumber?: string | null;
 }
 
+export interface HushhAuthGetIdTokenOptions {
+  /**
+   * Require Firebase to validate and mint the token again. A forced refresh
+   * must never fall back to a token cached in memory or secure storage.
+   */
+  forceRefresh?: boolean;
+}
+
+/**
+ * Stable rejection codes emitted by HushhAuth token validation on every
+ * platform. Human-readable SDK error details stay in native logs; callers
+ * make session decisions from these machine-readable values only.
+ */
+export const HUSHH_AUTH_TOKEN_ERROR_CODE = {
+  userNotFound: "auth/user-not-found",
+  userDisabled: "auth/user-disabled",
+  invalidUserToken: "auth/invalid-user-token",
+  userTokenExpired: "auth/user-token-expired",
+  networkRequestFailed: "auth/network-request-failed",
+  internalError: "auth/internal-error",
+} as const;
+
+export type HushhAuthTokenErrorCode =
+  (typeof HUSHH_AUTH_TOKEN_ERROR_CODE)[keyof typeof HUSHH_AUTH_TOKEN_ERROR_CODE];
+
 export interface HushhAuthPlugin {
   /**
    * Sign in with Google using native iOS/Android UI
@@ -63,6 +88,30 @@ export interface HushhAuthPlugin {
     idToken: string;
     accessToken: string;
     user: AuthUser;
+  }>;
+
+  /**
+   * Requests Gmail consent through the platform Google Sign-In SDK.
+   *
+   * The result is a single-use server authorization code. It is handed to the
+   * authenticated backend immediately and is never persisted by the app.
+   */
+  connectGmail(options: {
+    serverClientId: string;
+    purpose: "read" | "send";
+  }): Promise<{
+    serverAuthCode: string;
+  }>;
+
+  /**
+   * Requests Calendar consent through the platform Google Sign-In SDK.
+   * The server authorization code is exchanged only by the authenticated API.
+   */
+  connectCalendar(options: {
+    serverClientId: string;
+    accessLevel: "read" | "manage";
+  }): Promise<{
+    serverAuthCode: string;
   }>;
 
   /**
@@ -87,9 +136,12 @@ export interface HushhAuthPlugin {
   signOut(): Promise<void>;
 
   /**
-   * Get cached ID token (from memory or Keychain/Keystore)
+   * Get the current ID token. Normal reads may use memory or secure storage;
+   * forced reads require an authoritative Firebase refresh.
    */
-  getIdToken(): Promise<{ idToken: string | null }>;
+  getIdToken(
+    options?: HushhAuthGetIdTokenOptions,
+  ): Promise<{ idToken: string | null }>;
 
   /**
    * Get currently signed-in user
@@ -167,12 +219,14 @@ export interface HushhConsentPlugin {
    */
   issueVaultOwnerToken(options: {
     userId: string;
+    renewalOfToken?: string; // Prior owner grant; renewal must not bypass revocation.
     authToken?: string; // Firebase ID token (legacy name)
     idToken?: string; // Firebase ID token (preferred)
   }): Promise<{
     token: string;
     expiresAt: number;
     scope: string;
+    renewalValidated?: boolean;
   }>;
 
   /**
@@ -181,6 +235,7 @@ export interface HushhConsentPlugin {
    */
   publishIMessageSession(options: {
     userId: string;
+    sessionGeneration: number;
     vaultOwnerToken?: string;
     accessToken?: string; // Legacy alias for vaultOwnerToken.
     vaultKey?: string;
@@ -194,7 +249,7 @@ export interface HushhConsentPlugin {
   }): Promise<{ published: boolean }>;
 
   /** Clear the shared iMessage session when the vault locks or user signs out. */
-  clearIMessageSession(): Promise<{ cleared: boolean }>;
+  clearIMessageSession(): Promise<{ cleared: boolean; sessionGeneration: number }>;
 
   getPending(options: {
     userId: string;
@@ -246,6 +301,7 @@ export interface HushhConsentPlugin {
   revokeConsent(options: {
     userId: string;
     scope: string;
+    requestId?: string;
     vaultOwnerToken?: string;
   }): Promise<{ success: boolean; lockVault?: boolean }>;
 }
@@ -412,6 +468,8 @@ export interface HushhVaultPlugin {
     userId: string;
     displayName: string;
     rpId: string;
+    /** Opaque UI attempt token used only to scope cancellation. */
+    requestId?: string;
   }): Promise<{
     credentialId: string;
     prfSalt: string;
@@ -423,10 +481,21 @@ export interface HushhVaultPlugin {
     rpId: string;
     credentialId?: string;
     prfSalt: string;
+    /** Opaque UI attempt token used only to scope cancellation. */
+    requestId?: string;
   }): Promise<{
     credentialId: string;
     vaultKeyHex: string;
   }>;
+
+  /**
+   * Dismiss the active native passkey ceremony, if this request owns it.
+   * Native implementations keep their in-flight lease until the original
+   * system callback settles so a replacement sheet cannot race dismissal.
+   */
+  cancelPasskeyAuthentication(options?: {
+    requestId?: string;
+  }): Promise<{ cancelled: boolean }>;
 
   // Consents (New)
   /**
@@ -533,12 +602,23 @@ export interface HushhKeychainPlugin {
     options: KeychainSetOptions & { promptMessage: string },
   ): Promise<void>;
 
+  /** Delete the separate biometric-protected value for this key. */
+  deleteBiometric(options: KeychainDeleteOptions): Promise<void>;
+
   /**
    * Retrieve a biometric-protected value
    */
   getBiometric(
-    options: KeychainGetOptions & { promptMessage: string },
+    options: KeychainGetOptions & { promptMessage: string; requestId?: string },
   ): Promise<KeychainGetResult>;
+
+  /**
+   * Dismiss the active biometric prompt. A requestId only cancels the matching
+   * UI attempt; no active request is a successful no-op.
+   */
+  cancelBiometricAuthentication(options?: {
+    requestId?: string;
+  }): Promise<{ cancelled: boolean }>;
 }
 
 export const HushhKeychain = registerPlugin<HushhKeychainPlugin>(
@@ -847,10 +927,13 @@ export interface HushhLocationPlugin {
   stopBackgroundShare(): Promise<void>;
 }
 
-
-export const HushhLocation = registerPlugin<HushhLocationPlugin>("HushhLocation", {
-  web: () => import("./plugins/location-web").then((m) => new m.HushhLocationWeb()),
-});
+export const HushhLocation = registerPlugin<HushhLocationPlugin>(
+  "HushhLocation",
+  {
+    web: () =>
+      import("./plugins/location-web").then((m) => new m.HushhLocationWeb()),
+  },
+);
 
 // ==================== HushhContactsPlugin ====================
 // Contact-book permission and read-only contact lookup for Connect matching.
@@ -863,12 +946,7 @@ export type HushhContactsPermissionState = {
    * route forward is `openAppSettings`.
    */
   state:
-    | "granted"
-    | "limited"
-    | "denied"
-    | "prompt"
-    | "restricted"
-    | "unavailable";
+    "granted" | "limited" | "denied" | "prompt" | "restricted" | "unavailable";
 };
 
 export type HushhContactRecord = {
@@ -876,6 +954,8 @@ export type HushhContactRecord = {
   displayName?: string | null;
   phoneNumbers: string[];
   emailAddresses?: string[];
+  /** Local source provenance: invalid phone entries are not email-only cards. */
+  hasPhoneEntries?: boolean;
 };
 
 export type HushhContactsReadResult = {
@@ -918,9 +998,13 @@ export interface HushhContactsPlugin {
   readContacts(options?: { limit?: number }): Promise<HushhContactsReadResult>;
 }
 
-export const HushhContacts = registerPlugin<HushhContactsPlugin>("HushhContacts", {
-  web: () => import("./plugins/contacts-web").then((m) => new m.HushhContactsWeb()),
-});
+export const HushhContacts = registerPlugin<HushhContactsPlugin>(
+  "HushhContacts",
+  {
+    web: () =>
+      import("./plugins/contacts-web").then((m) => new m.HushhContactsWeb()),
+  },
+);
 
 // ==================== HushhPersonalKnowledgeModelPlugin ====================
 // PKM operations for dynamic domain/attribute management

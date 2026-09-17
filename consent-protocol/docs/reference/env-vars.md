@@ -35,7 +35,8 @@ What is in `.env` / GCP Secret Manager must match exactly what the code reads --
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | `hushh_mcp/runtime_settings.py` | Optional alias | Runtime compatibility alias for `FIREBASE_ADMIN_CREDENTIALS_JSON`. Prefer the canonical name for new config. |
 | `HUSHH_GENAI_AUTH_MODE` | `hushh_mcp/runtime_providers/factory.py` | Yes (hosted) | Hosted runtimes require `vertex_adc`. `developer_api_key` is an explicit local-only compatibility mode and is rejected in hosted environments. |
 | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | `hushh_mcp/runtime_providers/factory.py` | Local only | Used only when `HUSHH_GENAI_AUTH_MODE=developer_api_key`. Never mounted or used by hosted Gemini runtimes. |
-| `GOOGLE_CLOUD_PROJECT` | `hushh_mcp/runtime_providers/factory.py` | Yes (hosted) | Vertex project for workload ADC. Cloud Run supplies credentials through its service identity. |
+| `GOOGLE_CLOUD_PROJECT` | `hushh_mcp/runtime_providers/factory.py` | Yes (hosted) | Native Cloud Run/Cloud SQL project. Cloud Run supplies credentials through its service identity. Managed Vertex may use `GENAI_GOOGLE_CLOUD_PROJECT` for a separately billed, allowlisted project. |
+| `GENAI_GOOGLE_CLOUD_PROJECT` | `hushh_mcp/runtime_providers/factory.py` | No | Optional managed Vertex project override. Use only for an explicitly allowlisted cross-project Vertex target; it changes model billing/routing and does not change native Cloud Run, SQL, secrets or deployment project ownership. |
 | `GOOGLE_CLOUD_LOCATION` | `hushh_mcp/runtime_providers/factory.py` | Yes (hosted) | Primary Vertex text location. Hosted deploys use `global` because the approved text matrix includes Gemini 3.1 Flash-Lite, whose supported endpoints are `global`, `us`, and `eu`. |
 | `HUSHH_VERTEX_LOCATIONS` | `hushh_mcp/runtime_providers/factory.py` | No | Ordered, comma-separated same-model failover candidates for managed ADC calls. The approved shared set is `global,us,eu`, the supported intersection of Gemini 3.5 Flash and Gemini 3.1 Flash-Lite. BYOK is unaffected. |
 | `HUSHH_VERTEX_LOCATION_COOLDOWN_SECONDS` | `hushh_mcp/runtime_providers/factory.py` | No | Process-local cooldown after transient `429`/`500`/`503` failures. Defaults to `300`; authorization and model errors never fail over. |
@@ -50,6 +51,11 @@ What is in `.env` / GCP Secret Manager must match exactly what the code reads --
 | `ONE_EMAIL_WATCH_LABEL_IDS` | `hushh_mcp/services/one_email_kyc_service.py` | Optional | Comma-separated Gmail labels for watch registration. Default: `INBOX`. |
 | `ONE_EMAIL_WATCH_RENEW_TOKEN` | `api/routes/one/email.py` | Yes (hosted watch renewal) | Shared maintenance token required by `POST /api/one/email/watch/renew` outside local/dev/test. Send as `X-Hushh-Maintenance-Token`. |
 | `ONE_EMAIL_WATCH_RENEW_AUTH_ENABLED` | `api/routes/one/email.py` | Yes (hosted renewal) | Must be `true` in UAT/production. Defaults on outside local/dev/test, including `HUSHH_DEPLOY_ENV=uat`, but hosted deploys set it explicitly. |
+| `ACCOUNT_DELETION_CLEANUP_AUDIENCE` | `api/routes/account.py` | Yes (hosted account deletion) | Exact backend origin expected in the external cleanup scheduler's Google OIDC token. |
+| `ACCOUNT_DELETION_CLEANUP_SERVICE_ACCOUNT_EMAIL` | `api/routes/account.py` | Yes (hosted account deletion) | Exact dedicated Cloud Scheduler service-account email allowed to drain durable Firebase cleanup intents. |
+| `GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_AUTH_ENABLED` | `api/routes/one/gmail_information_requests.py` | Yes (hosted monitor) | Must be `true` in UAT/production. The endpoint is unauthenticated only in local/dev/test by default. |
+| `GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_AUDIENCE` | `api/routes/one/gmail_information_requests.py` | Yes (hosted monitor) | Expected Cloud Scheduler OIDC audience. Set to the backend origin used by the scheduler job. |
+| `GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_SERVICE_ACCOUNT_EMAIL` | `api/routes/one/gmail_information_requests.py` | Yes (hosted monitor) | Exact Cloud Scheduler OIDC service-account email allowed to invoke the background scan. |
 | `ONE_EMAIL_KYC_STRICT_CLIENT_ZK_ENABLED` | `hushh_mcp/services/one_email_kyc_service.py` | Optional | Defaults to `true`. Backend must not decrypt scoped exports or persist review draft plaintext. |
 | `ONE_EMAIL_KYC_DEFAULT_SCOPE` | `hushh_mcp/services/one_email_kyc_service.py` | Optional | Default least-privilege identity scope requested for broker KYC. Default: `attr.identity.*`. |
 | `SUPPORT_EMAIL_SERVICE_ACCOUNT_JSON` | `hushh_mcp/services/support_email_service.py` | Optional legacy override | Dedicated service account JSON for support mail. Prefer the canonical Firebase Admin credential unless an explicit exception is approved. |
@@ -62,7 +68,7 @@ What is in `.env` / GCP Secret Manager must match exactly what the code reads --
 | `GMAIL_OAUTH_CLIENT_SECRET` | `hushh_mcp/services/gmail_receipts_service.py` | Yes (Gmail sync) | Gmail OAuth client secret. Same key name across local, UAT, and production. |
 | `GMAIL_OAUTH_REDIRECT_URI` | `hushh_mcp/services/gmail_receipts_service.py` | Yes (Gmail receipts and owner-approved send) | Environment-owned Gmail OAuth callback. It must equal `APP_FRONTEND_ORIGIN + /one/profile/gmail/oauth/return`; register that exact URI in the Google OAuth client for every environment. |
 | `GMAIL_OAUTH_TOKEN_KEY` | `hushh_mcp/services/gmail_receipts_service.py` | Yes (Gmail sync) | Encryption key for persisted Gmail OAuth tokens. Same key name across local, UAT, and production. |
-| `GOOGLE_OAUTH_CLIENT_ID` | `hushh_mcp/services/google_connection_service.py` | Preferred for Google integrations | Google OAuth web-client id for Calendar, Drive, Contacts, and future Gmail migration. Falls back to `GMAIL_OAUTH_CLIENT_ID` during the compatibility transition. |
+| `GOOGLE_OAUTH_CLIENT_ID` | `hushh_mcp/services/google_connection_service.py` | Preferred for Google integrations | Google OAuth web-client id for Calendar, Contacts, and future Gmail migration. Falls back to `GMAIL_OAUTH_CLIENT_ID` during the compatibility transition. |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | `hushh_mcp/services/google_connection_service.py` | Preferred for Google integrations | Google OAuth web-client secret. Falls back to the Gmail-named secret during the compatibility transition. |
 | `GOOGLE_OAUTH_REDIRECT_URI` | `hushh_mcp/services/google_connection_service.py` | Preferred for Google integrations | Optional explicit override. If unset, Calendar derives `APP_FRONTEND_ORIGIN + /one/profile/google/oauth/return`; register that exact URI in the OAuth client. |
 | `GOOGLE_OAUTH_TOKEN_KEY` | `hushh_mcp/services/google_connection_service.py` | Preferred for Google integrations | AES-GCM key for normalized Google provider credentials and PKCE verifier envelopes. Falls back to `GMAIL_OAUTH_TOKEN_KEY` only while Gmail remains on its legacy table. |
@@ -101,8 +107,6 @@ What is in `.env` / GCP Secret Manager must match exactly what the code reads --
 | `HUSHH_PROD_PHONE_TEST_CODE` | `api/routes/account.py` | Production test only | Fixed OTP for the production synthetic phone allowlist. Store in production Secret Manager and never expose as `NEXT_PUBLIC_*`. |
 | `HUSHH_PROD_PHONE_TEST_CHALLENGE_SECRET` | `api/routes/account.py` | Production test only | Required HMAC key for production stateless phone challenge IDs; production never falls back to `APP_SIGNING_KEY` or the OTP. |
 | `ROOT_PATH` | `server.py` | No | FastAPI root path for reverse proxy. |
-| `HUSHH_GEMINI_BYOK_LIVE_ENABLED` | `hushh_mcp/one_adk/agent_tree.py` | No | Default disabled. Enables only a registry-approved Developer API Live model after an ADK UAT rehearsal; never carries a user key. |
-| `HUSHH_GEMINI_BYOK_LIVE_MODEL` | `hushh_mcp/one_adk/agent_tree.py` | No | Exact registry-approved Developer API Live model for optional BYOK voice. Unset or unsupported values fail closed to managed Gemini. |
 | `GOOGLE_GENAI_USE_VERTEXAI` | Cloud Run env | Yes (hosted) | Set `true` with `HUSHH_GENAI_AUTH_MODE=vertex_adc`; API-key fallback is prohibited. |
 | `PLAID_ENV` / `PLAID_ENVIRONMENT` | `hushh_mcp/services/plaid_portfolio_service.py` | No | Plaid environment. Defaults to `sandbox`. |
 | `PLAID_CLIENT_ID` | `hushh_mcp/services/plaid_portfolio_service.py` | If Plaid enabled | Plaid client ID. |
@@ -179,6 +183,7 @@ Kai generation behavior for import/optimize/debate is also constants-driven (not
 Maintainer-only overlay vars used by release verification, migration/reset utilities, and review flows:
 
 - `APP_REVIEW_MODE`
+- `HUSSH_GEMINI_TEXT_MODEL` (one switch for every text agent; manifests say `gemini-default`; blank = `FLEET_TEXT_MODEL_DEFAULT`; a lane may flip it only after its Vertex allowed-models policy admits the id)
 - `REVIEWER_UID`
 - `REVIEWER_VAULT_PASSPHRASE`
 
@@ -289,7 +294,7 @@ Recommended local testing:
 - `SUPPORT_EMAIL_DELEGATED_USER=one@hushh.ai`
 - `SUPPORT_EMAIL_FROM=one@hushh.ai`
 - `SUPPORT_EMAIL_TO=one@hushh.ai`
-- `SUPPORT_EMAIL_TEST_TO=kushal@hushh.ai`
+- `SUPPORT_EMAIL_TEST_TO=one@hushh.ai`
 - `SUPPORT_EMAIL_MODE=test`
 
 This path requires Workspace domain-wide delegation for client ID `109021324828349644970` with:
@@ -312,6 +317,10 @@ watch renewal schedule, strict client-side ZK env parity, and a real UAT smoke.
 Local runtime bootstrap:
 
 - `bash scripts/env/bootstrap_profiles.sh` hydrates Gmail and voice backend secrets into `consent-protocol/.env` from the selected cloud project when those secrets are available.
+- For the local profile, bootstrap also mirrors UAT's non-secret
+  `GENAI_GOOGLE_CLOUD_PROJECT` override so managed Gemini uses the same
+  separately billed Vertex project as UAT. The local ADC identity must still
+  have Vertex prediction access in that project.
 - The key names are identical across local, UAT, and production. Only the secret values differ by project.
 - Missing Gmail/voice values are warnings by default and become failures only when bootstrap is run with `--strict`.
 
@@ -328,6 +337,7 @@ Local runtime bootstrap:
 | `APP_FRONTEND_ORIGIN` | Yes | GCP Secret Manager |
 | `HUSHH_GENAI_AUTH_MODE` | No | Cloud Run env var (`vertex_adc`) |
 | `GOOGLE_CLOUD_PROJECT` | No | Cloud Run env var |
+| `GENAI_GOOGLE_CLOUD_PROJECT` | No | Cloud Run env var; explicitly allowlisted managed Vertex billing/routing project |
 | `GOOGLE_CLOUD_LOCATION` | No | Cloud Run env var |
 | `GOOGLE_MAPS_API_KEY` | Yes | GCP Secret Manager |
 | `FIREBASE_ADMIN_CREDENTIALS_JSON` | Yes | GCP Secret Manager |
@@ -340,7 +350,12 @@ Local runtime bootstrap:
 | `ONE_EMAIL_WEBHOOK_SERVICE_ACCOUNT_EMAIL` | No | Cloud Run env var |
 | `ONE_EMAIL_WEBHOOK_AUTH_ENABLED` | No | Cloud Run env var |
 | `ONE_EMAIL_WATCH_RENEW_TOKEN` | Yes | Secret Manager |
+| `ACCOUNT_DELETION_CLEANUP_AUDIENCE` | No | Cloud Run env var |
+| `ACCOUNT_DELETION_CLEANUP_SERVICE_ACCOUNT_EMAIL` | No | Cloud Run env var |
 | `ONE_EMAIL_WATCH_RENEW_AUTH_ENABLED` | No | Cloud Run env var |
+| `GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_AUTH_ENABLED` | No | Cloud Run env var |
+| `GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_AUDIENCE` | No | Cloud Run env var |
+| `GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_SERVICE_ACCOUNT_EMAIL` | No | Cloud Run env var |
 | `ONE_EMAIL_KYC_STRICT_CLIENT_ZK_ENABLED` | No | Cloud Run env var |
 | `ONE_EMAIL_KYC_DEFAULT_SCOPE` | No | Cloud Run env var |
 | `GMAIL_OAUTH_CLIENT_ID` | Yes | GCP Secret Manager |
@@ -349,7 +364,6 @@ Local runtime bootstrap:
 | `GMAIL_OAUTH_TOKEN_KEY` | Yes | GCP Secret Manager |
 | `OPENAI_API_KEY` | Yes | GCP Secret Manager |
 | `BACKEND_RUNTIME_CONFIG_JSON` | Yes | GCP Secret Manager |
-| `VOICE_RUNTIME_CONFIG_JSON` | Yes | GCP Secret Manager |
 | `HUSHH_PROD_PHONE_TEST_NUMBERS` | Production test only | GCP Secret Manager |
 | `HUSHH_PROD_PHONE_TEST_CODE` | Production test only | GCP Secret Manager |
 | `HUSHH_PROD_PHONE_TEST_CHALLENGE_SECRET` | Production test only | GCP Secret Manager |

@@ -267,6 +267,87 @@ describe("gmail-connector-store", () => {
     });
   });
 
+  it("backs off automatic status retries after a failure while allowing an explicit retry", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const userId = "user-status-cooldown";
+    vi.mocked(GmailReceiptsService.getStatus).mockRejectedValue(
+      new Error("Gmail status unavailable"),
+    );
+
+    try {
+      const { result, rerender } = renderHook(
+        ({ enabled }) =>
+          useGmailConnectorStatus({
+            userId,
+            enabled,
+            idTokenProvider: async () => "id-token",
+          }),
+        { initialProps: { enabled: true } },
+      );
+
+      await waitFor(() => {
+        expect(GmailReceiptsService.getStatus).toHaveBeenCalledTimes(1);
+        expect(result.current.statusError).toBeTruthy();
+      });
+
+      rerender({ enabled: false });
+      rerender({ enabled: true });
+      await Promise.resolve();
+
+      expect(GmailReceiptsService.getStatus).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await result.current.refreshStatus({
+          force: true,
+          reconcile: false,
+        });
+      });
+
+      expect(GmailReceiptsService.getStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      errorSpy.mockRestore();
+      clearConnectorStatus(userId);
+    }
+  });
+
+  it("uses a fresh persisted-status read when an OAuth popup closes", async () => {
+    vi.mocked(GmailReceiptsService.getStatus).mockResolvedValue({
+      configured: true,
+      connected: true,
+      status: "connected",
+      google_email: "recovered@hushh.ai",
+      scope_csv: "gmail.readonly",
+      auto_sync_enabled: true,
+      revoked: false,
+      connection_state: "connected",
+      sync_state: "idle",
+      bootstrap_state: "completed",
+      watch_status: "active",
+      needs_reauth: false,
+    } as Awaited<ReturnType<typeof GmailReceiptsService.getStatus>>);
+
+    const { result } = renderHook(() =>
+      useGmailConnectorStatus({
+        userId: "user-popup-recovery",
+        enabled: true,
+        idTokenProvider: async () => "id-token",
+      }),
+    );
+
+    await waitFor(() => expect(GmailReceiptsService.getStatus).toHaveBeenCalled());
+    vi.mocked(GmailReceiptsService.getStatus).mockClear();
+
+    await act(async () => {
+      await result.current.refreshStatus({ force: true, reconcile: false });
+    });
+
+    expect(GmailReceiptsService.getStatus).toHaveBeenCalledWith({
+      idToken: "id-token",
+      userId: "user-popup-recovery",
+    });
+    expect(GmailReceiptsService.reconcile).not.toHaveBeenCalled();
+  });
+
   it("keeps a timed-out active run in a stale running state instead of collapsing to idle", async () => {
     let nowMs = 0;
     const setTimeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((

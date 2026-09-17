@@ -29,8 +29,10 @@ from hushh_mcp.runtime_providers import (
     build_managed_runtime_client,
     build_runtime_client,
 )
+from hushh_mcp.runtime_providers.gemini_config import resolve_fleet_model_name
 from hushh_mcp.runtime_settings import get_core_security_settings
 from hushh_mcp.services.action_gateway import get_action_gateway_action
+from hushh_mcp.services.model_preference_service import resolve_text_model_name
 from hushh_mcp.types import EncryptedPayload
 from hushh_mcp.vault.encrypt import decrypt_data, encrypt_data
 from hussh_sdk import (
@@ -47,10 +49,12 @@ KAI_AGENT_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "agents" / "kai"
 ONE_AGENT_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "agents" / "one" / "agent.yaml"
 AGENT_SYSTEM_PROMPT = """You are One, the top private agent inside Hussh.
 
-You hold the relationship layer with the user, clarify intent, and delegate specialist work (finance to Kai, privacy to Nav, identity/KYC to KYC). Until a specialist surface is engaged, answer directly within the capability boundary below.
+You hold the relationship layer with the user, clarify intent, and delegate specialist work (finance, privacy, identity/KYC) to the matching specialist. Until a specialist surface is engaged, answer directly within the capability boundary below.
+
+You are One -- Agent One -- on every surface, finance included. The internal finance runtime carries an internal codename that is not a name a person reads: never write it or say it, in chat or in anything you draft for the user. Speak as One for that work.
 
 Current capability boundary:
-- Focus on markets, portfolio context, stock analysis, Kai workflows, consent/privacy surfaces, and how the Hussh app works.
+- Focus on markets, portfolio context, stock analysis, finance workflows, consent/privacy surfaces, and how the Hussh app works.
 - Use the provided PKM context when it is relevant, especially when the user asks what One knows about them or shares preferences.
 - The PKM context may contain decrypted session-only details supplied by the frontend after vault unlock. Treat it as user-authorized memory for this turn, not as exhaustive truth. Do not invent personal facts outside that context and the current conversation.
 - If PKM context is present and the user asks to show, summarize, or reason over PKM, answer from that context. Do not claim One cannot access PKM.
@@ -68,7 +72,7 @@ Decide whether the latest user message needs a frontend app function.
 
 Call exactly one function only when the user clearly asks One to do one of these:
 - start stock analysis for a ticker or public company
-- open a Hussh/Kai app surface
+- open a Hussh app surface
 - save, remember, or add durable personal context to the user's PKM
 - read a CRM record or propose a CRM create/update through Connected Systems
 - perform a destructive, account-changing, consent approval/revocation, trading, or manual-only action that must be blocked
@@ -890,7 +894,7 @@ def _agent_action_tool() -> genai_types.Tool:
             genai_types.FunctionDeclaration(
                 name="start_stock_analysis",
                 description=(
-                    "Start Kai's frontend stock analysis workflow for a requested ticker "
+                    "Start One's frontend stock analysis workflow for a requested ticker "
                     "or public company."
                 ),
                 parameters=_schema_object(
@@ -906,7 +910,7 @@ def _agent_action_tool() -> genai_types.Tool:
             ),
             genai_types.FunctionDeclaration(
                 name="open_app_surface",
-                description="Open a safe Hussh or Kai frontend surface.",
+                description="Open a safe Hussh app surface.",
                 parameters=_schema_object(
                     {
                         "surface": _schema_string(
@@ -1023,10 +1027,29 @@ class AgentChatService:
         self._client = None
         self._settings = None
         self.runtime_manifest = load_one_agent_runtime_manifest()
-        self.model = (model or self.runtime_manifest.model.name).strip()
+        # The lane default. It is the floor for a turn whose owner is unknown, never the
+        # answer for one whose owner is: this service is a process-wide singleton, so a
+        # model pinned here would outlive every person's choice until the next restart.
+        self.model = (model or resolve_fleet_model_name(self.runtime_manifest.model.name)).strip()
         if not self.model:
             raise ValueError("Agent Chat manifest must declare a runtime model")
+        self._model_pinned = bool(model)
         self._vault_key_hex = vault_key_hex
+
+    async def model_for_user(self, user_id: str | None) -> str:
+        """The model this person's turn runs on, resolved per turn.
+
+        An explicitly constructed service (tests, a pinned caller) keeps its model; every
+        other turn asks the preference chain, so a person's choice takes effect on their
+        next message rather than on the next deploy.
+        """
+        if self._model_pinned:
+            return self.model
+        try:
+            return await resolve_text_model_name(user_id)
+        except Exception:
+            logger.warning("agent_chat_model_resolution_failed user=%s", user_id, exc_info=True)
+            return self.model
 
     @property
     def settings(self):
@@ -1292,7 +1315,7 @@ class AgentChatService:
                 "title_iv": encrypted_title.iv,
                 "title_tag": encrypted_title.tag,
                 "title_algorithm": encrypted_title.algorithm,
-                "model": self.model,
+                "model": await self.model_for_user(user_id),
             },
         )
         return self._conversation_from_row((result.data or [])[0])
@@ -1489,7 +1512,7 @@ class AgentChatService:
             conversation_id=conversation.id,
             user_message_id=user_message.id,
             history=history,
-            model=self.model,
+            model=await self.model_for_user(user_id),
         )
 
     async def add_message(
@@ -1866,7 +1889,7 @@ class AgentChatService:
                 label=f"Start analysis for {ticker}",
                 execution="frontend",
                 slots={"symbol": ticker},
-                message=f"Starting Kai analysis for {ticker}.",
+                message=f"Starting analysis for {ticker}.",
             )
 
         for pattern, action_id, label in _NAVIGATION_ACTION_PATTERNS:
@@ -2037,7 +2060,7 @@ class AgentChatService:
                 f"- action_id: {action_plan.action_id}\n"
                 f"- label: {action_plan.label}\n"
                 f"- slots: {action_plan.slots}\n"
-                "Instruction: briefly acknowledge that this action is being started or opened in Kai. "
+                "Instruction: briefly acknowledge that this action is being started or opened. "
                 "Do not ask for confirmation."
             )
         elif action_plan and action_plan.execution == "blocked":
@@ -2087,7 +2110,7 @@ class AgentChatService:
                 label=f"Start analysis for {ticker}",
                 execution="frontend",
                 slots={"symbol": ticker},
-                message=f"Starting Kai analysis for {ticker}.",
+                message=f"Starting analysis for {ticker}.",
             )
 
         if name == "open_app_surface":
@@ -2188,7 +2211,9 @@ class AgentChatService:
                 action_id="pkm.add",
                 label="Add to PKM",
                 execution="frontend",
-                slots={},
+                # The model scopes what gets structured; the browser falls
+                # back to the whole turn only when this is absent.
+                slots={"source_text": memory_text[:50_000]},
                 message="Checking PKM and saving what fits.",
                 reason=reason[:160] if reason else None,
             )

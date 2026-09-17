@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { getKaiActionById, listKaiActions } from "@/lib/voice/kai-action-gateway";
+import {
+  getKaiActionById,
+  listKaiActions,
+} from "@/lib/voice/kai-action-gateway";
 import {
   firstMissingRequiredSlot,
   resolveJourneyPlan,
@@ -25,11 +28,9 @@ describe("navigation journeys", () => {
     });
   });
 
-  it("stays in lockstep with the relay's own predicate", () => {
-    // Both halves read the same generated contract. If this set ever differs
-    // from the backend's, one side offers a journey the other refuses -- so
-    // this list must be changed together with the relay's
-    // `_navigation_journey_definition`, and the same set is asserted there.
+  it("covers the authored compatibility journeys", () => {
+    // Backend and browser consume the same generated contract. This inventory
+    // catches an authored destination accidentally losing its browser escort.
     //
     // The setup entries appeared once the route resolver stopped requiring a
     // `route.` name prefix. Nothing named `route.*` opens /one/setup/location;
@@ -62,9 +63,8 @@ describe("navigation journeys", () => {
       "connect.remove_connection",
       "connect.search_people",
       "connect.send_request",
-      // Circle invitations. Accepting starts sharing with the circle's
-      // members; declining closes the invitation without sharing anything.
-      // Both resolve one invitation off the person's own pending list.
+      // Circle invitations resolve one exact pending invitation. Joining the
+      // circle does not create a Location share.
       "location.accept_circle_invite",
       // Emergency contacts. Adding resolves against people ELIGIBLE to
       // receive an SOS -- someone who has not finished Location
@@ -74,10 +74,8 @@ describe("navigation journeys", () => {
       // would let "remove Sarah" report success about somebody who was never
       // on it.
       "location.add_emergency_contact",
-      // Circles. Escorted for the same reason as everything else here: the
-      // person asks from wherever they are, and the handler that does the work
-      // only exists on Location. Adding is an invitation the other person has
-      // to accept, which is why it settles rather than reporting done.
+      // The owning circle operation adds eligible connections directly and
+      // reports each membership result; opening its screen is not settlement.
       "location.add_to_circle",
       // Per-item share management (approve/decline a request, stop or
       // re-time a named share, pick who to ask). Escorted for the same
@@ -86,6 +84,7 @@ describe("navigation journeys", () => {
       "location.approve_request",
       "location.change_share_duration",
       "location.create_circle",
+      "location.create_public_link",
       "location.decline_circle_invite",
       "location.decline_request",
       // Deleting a circle is owner-only and takes it away from every member,
@@ -99,6 +98,10 @@ describe("navigation journeys", () => {
       // absent for the same reason share_selected is: arriving and checking
       // in unattended is the thing that must not happen.
       "location.nearby_check_in",
+      // The legacy capability escorts only to the run-bound Location setup
+      // card. The command runtime itself renders that card globally and
+      // never treats this navigation as a completed setup.
+      "location.onboarding.choose_place",
       "location.pause_updates",
       "location.remove_emergency_contact",
       "location.remove_from_circle",
@@ -122,6 +125,7 @@ describe("navigation journeys", () => {
       // and automatic sharing decides whether approved people keep receiving
       // updates without you doing anything.
       "location.set_auto_share",
+      "location.set_ghost_mode",
       // A bare emergency phrase ("save me", "sos") resolves per the
       // person's own stored default -- open the screen, or go straight to
       // trigger_sos's own confirm card below. Escorted for the same reason
@@ -136,7 +140,6 @@ describe("navigation journeys", () => {
       "location.trigger_sos",
       "setup.connect_gmail",
       "setup.finish_calendar",
-      "setup.finish_connected_systems",
       "setup.finish_connections",
       "setup.finish_email",
       "setup.finish_finance",
@@ -144,7 +147,6 @@ describe("navigation journeys", () => {
       "setup.finish_location",
       "setup.finish_ria",
       "setup.skip_calendar",
-      "setup.skip_connected_systems",
       "setup.skip_email",
       "setup.skip_finance",
       "setup.skip_gmail",
@@ -164,9 +166,9 @@ describe("navigation journeys", () => {
       destinationRoute: "/one/connect",
       destinationScreen: "connect",
     });
-    expect(getKaiActionById(journey!.navigationActionId)?.execution_target.path).toBe(
-      "route",
-    );
+    expect(
+      getKaiActionById(journey!.navigationActionId)?.execution_target.path,
+    ).toBe("route");
   });
 
   it("keeps a connection request as its own confirmed journey step", () => {
@@ -262,8 +264,10 @@ describe("journey approval plans", () => {
     expect(risky.length).toBeGreaterThan(0);
 
     const preApproved = new Set(
-      listKaiActions()
-        .flatMap((action) => resolveJourneyPlan(action.action_id)?.batchableActionIds ?? []),
+      listKaiActions().flatMap(
+        (action) =>
+          resolveJourneyPlan(action.action_id)?.batchableActionIds ?? [],
+      ),
     );
 
     risky.forEach((action) => {
@@ -329,7 +333,9 @@ describe("the action that walks someone to a journey's destination", () => {
     // failure this pins, generalised.
     const escorts = listKaiActions()
       .map((entry) => resolveNavigationJourney(entry.action_id))
-      .filter((journey): journey is NonNullable<typeof journey> => journey !== null)
+      .filter(
+        (journey): journey is NonNullable<typeof journey> => journey !== null,
+      )
       .map((journey) => journey.navigationActionId);
     expect(escorts.length).toBeGreaterThan(0);
 
@@ -363,10 +369,13 @@ describe("the action that walks someone to a journey's destination", () => {
         action.execution_policy === "allow_direct",
     );
     const nameOnly = wiredDirect.filter(
-      (a) => a.action_id.startsWith("route.") && a.execution_target.path !== "route",
+      (a) =>
+        a.action_id.startsWith("route.") && a.execution_target.path !== "route",
     );
     const pathOnly = wiredDirect.filter(
-      (a) => !a.action_id.startsWith("route.") && a.execution_target.path === "route",
+      (a) =>
+        !a.action_id.startsWith("route.") &&
+        a.execution_target.path === "route",
     );
 
     expect(nameOnly.length).toBeGreaterThan(0);

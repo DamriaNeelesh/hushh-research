@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Capacitor } from "@capacitor/core";
 import { CheckCircle2, Copy, Eye, EyeOff, LockKeyhole } from "lucide-react";
 import { toast } from "sonner";
@@ -23,33 +23,33 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  AvatarBubble,
   SectionCard,
   StatusPill,
 } from "@/lib/morphy-ux/ui/surface-primitives";
+import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
+import { ConsentScopeNestedList } from "@/components/consent/consent-scope-nested-list";
+import { scopeItemsFromRequestable } from "@/lib/consent/consent-scope-items";
 import {
   PersonProfileService,
   type PublicPersonProfile,
   type ViewerPersonProfile,
+  type InformationRequestBundle,
 } from "@/lib/services/person-profile-service";
 import {
   resolvePersonRefFromProfilePathname,
   ROUTES,
 } from "@/lib/navigation/routes";
+import {
+  DEFAULT_REQUEST_DURATION_HOURS,
+  REQUEST_DURATION_OPTIONS,
+  requestDurationLabel,
+} from "@/lib/agent/action-directive-summary";
 import { useLocalOnboardingActionHandler } from "@/lib/agent/local-onboarding-actions";
+import { oneLocationErrorMessage } from "@/lib/one-location/error-message";
 import { usePublishVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
+import { VOICE_CONFIRM_DATA_KEY } from "@/lib/voice/voice-action-card";
 
 type Props = { personRef: string; initialProfile: PublicPersonProfile | null };
-
-function scopeTitle(scope: ViewerPersonProfile["requestableScopes"][number]) {
-  return scope.label || scope.domain || "Information";
-}
-
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  return (parts.length > 1 ? `${parts[0]?.[0]}${parts.at(-1)?.[0]}` : parts[0]?.slice(0, 2))
-    ?.toUpperCase() || "H";
-}
 
 export function PersonProfilePage({ personRef, initialProfile }: Props) {
   const router = useRouter();
@@ -80,6 +80,14 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
   const [selectedScopeRefs, setSelectedScopeRefs] = useState<Set<string>>(new Set());
   const [reviewOpen, setReviewOpen] = useState(false);
   const [purpose, setPurpose] = useState("");
+  const [durationHours, setDurationHours] = useState<number>(DEFAULT_REQUEST_DURATION_HOURS);
+  const [bundleDetails, setBundleDetails] = useState<Record<string, InformationRequestBundle>>({});
+  const [loadingBundleId, setLoadingBundleId] = useState<string | null>(null);
+  const searchParams = useSearchParams();
+  // /connect and the agent's discovery card land here with ?request=1: bring
+  // the requestable catalog into view instead of the identity header.
+  const requestIntent = searchParams?.get("request") === "1";
+  const availableSectionRef = useRef<HTMLElement | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [relationshipBusy, setRelationshipBusy] = useState(false);
   const [decryptedByRequest, setDecryptedByRequest] = useState<Record<string, Record<string, unknown>>>({});
@@ -129,6 +137,8 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
     setSelectedScopeRefs(new Set());
     setReviewOpen(false);
     setPurpose("");
+    setDurationHours(DEFAULT_REQUEST_DURATION_HOURS);
+    setBundleDetails({});
     setDecryptedByRequest({});
     setRevealedRequests(new Set());
   }, [resolvedPersonRef]);
@@ -139,14 +149,25 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
     setRevealedRequests(new Set());
   }, [isVaultUnlocked]);
 
-  const groupedScopes = useMemo(() => {
-    const groups = new Map<string, ViewerPersonProfile["requestableScopes"]>();
-    for (const scope of viewerProfile?.requestableScopes || []) {
-      const domain = scope.domain || "Other";
-      groups.set(domain, [...(groups.get(domain) || []), scope]);
+  useEffect(() => {
+    if (!requestIntent || !viewerProfile) return;
+    const node = availableSectionRef.current;
+    if (node && typeof node.scrollIntoView === "function") {
+      node.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-    return [...groups.entries()];
-  }, [viewerProfile]);
+  }, [requestIntent, viewerProfile]);
+
+  const allScopes = useMemo(() => viewerProfile?.requestableScopes || [], [viewerProfile]);
+
+  /**
+   * The catalogue in the one shape every scope surface reads.
+   *
+   * The adapter already existed and already took this exact payload type --
+   * `scopeItemsFromRequestable` imports `RequestablePersonScope` from this
+   * page's own service. Search, grouping and the threshold moved with it, which
+   * is why the local copies of all three are gone.
+   */
+  const scopeItems = useMemo(() => scopeItemsFromRequestable(allScopes), [allScopes]);
 
   const selectedScopes = useMemo(
     () => (viewerProfile?.requestableScopes || []).filter((scope) => selectedScopeRefs.has(scope.scopeRef)),
@@ -170,7 +191,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
         personRef: resolvedPersonRef,
         scopeRefs: selectedScopes.map((scope) => scope.scopeRef),
         purpose: purpose.trim(),
-        durationSeconds: 7 * 24 * 60 * 60,
+        durationSeconds: durationHours * 3600,
         connectorKeyId: connector.connector_key_id,
         idempotencyKey: crypto.randomUUID(),
         vaultOwnerToken,
@@ -185,9 +206,22 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
       });
       toast.success("Request sent for review");
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "Request could not be sent.");
+      toast.error(oneLocationErrorMessage(reason, "Request could not be sent. Try again."));
     } finally {
       setRequesting(false);
+    }
+  };
+
+  const loadBundleDetails = async (bundleId: string) => {
+    if (!vaultOwnerToken || bundleDetails[bundleId] || loadingBundleId) return;
+    setLoadingBundleId(bundleId);
+    try {
+      const bundle = await PersonProfileService.getInformationRequest({ bundleId, vaultOwnerToken });
+      setBundleDetails((current) => ({ ...current, [bundleId]: bundle }));
+    } catch (reason) {
+      toast.error(oneLocationErrorMessage(reason, "Request details are unavailable right now."));
+    } finally {
+      setLoadingBundleId(null);
     }
   };
 
@@ -225,7 +259,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
       );
       return true;
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "Relationship could not be updated.");
+      toast.error(oneLocationErrorMessage(reason, "Connection could not be updated. Try again."));
       return false;
     } finally {
       setRelationshipBusy(false);
@@ -248,7 +282,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
     }
     const history = viewerProfile.requestHistory.find((item) => item.requestId === requestId);
     if (!history) {
-      toast.error("The encrypted export is not available for this grant.");
+      toast.error("This shared information is not available right now.");
       return;
     }
     setDecryptingRequestId(requestId);
@@ -263,7 +297,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
         vaultOwnerToken,
       });
       const exact = exports.find((item) => item.requestId === requestId);
-      if (!exact) throw new Error("The active grant has no current encrypted export.");
+      if (!exact) throw new Error("This shared information is not available right now.");
       const payload = await OneKycClientZkService.decryptScopedExport({
         exportPackage: exact.encryptedExport,
         connector,
@@ -271,7 +305,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
       setDecryptedByRequest((current) => ({ ...current, [requestId]: payload }));
       setRevealedRequests((current) => new Set(current).add(requestId));
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "The encrypted export could not be opened.");
+      toast.error(oneLocationErrorMessage(reason, "This shared information could not be opened."));
     } finally {
       setDecryptingRequestId(null);
     }
@@ -292,7 +326,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
       });
       toast.success("Information request cancelled");
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "The information request could not be cancelled.");
+      toast.error(oneLocationErrorMessage(reason, "The request could not be cancelled. Try again."));
     } finally {
       setCancellingBundleId(null);
     }
@@ -306,13 +340,33 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
     status: (await updateRelationship("cancel")) ? "succeeded" : "failed",
     summary: "Connection request cancellation finished.",
   }), { enabled: viewerProfile?.relationship.status === "pending_outgoing" });
-  useLocalOnboardingActionHandler("people.profile.remove_connection", async () => ({
-    status: (await updateRelationship("remove")) ? "succeeded" : "failed",
-    summary: "Connection removal finished.",
-  }), { enabled: viewerProfile?.relationship.status === "connected" });
+  useLocalOnboardingActionHandler("people.profile.remove_connection", async (_slots, context) => {
+    const displayName = profile?.displayName || "this person";
+    if (!context?.directiveId && !context?.humanConfirmationToken) {
+      return {
+        status: "blocked" as const,
+        summary: `Removing your connection with ${displayName} needs a confirmation.`,
+        data: {
+          [VOICE_CONFIRM_DATA_KEY]: {
+            actionId: "people.profile.remove_connection",
+            slots: {},
+            prompt: `Remove your connection with ${displayName}?`,
+            subject: { name: displayName, detail: null },
+            consequence:
+              "Ends the connection with this person. Existing consent remains governed separately.",
+            confirmLabel: "Remove",
+          },
+        },
+      };
+    }
+    return {
+      status: (await updateRelationship("remove")) ? "succeeded" : "failed",
+      summary: "Connection removal finished.",
+    };
+  }, { enabled: viewerProfile?.relationship.status === "connected" });
   useLocalOnboardingActionHandler("people.profile.review_information_request", async () => {
     if (!selectedScopeRefs.size) {
-      return { status: "blocked", summary: "Select at least one field before reviewing the request." };
+      return { status: "blocked", summary: "Choose at least one thing before reviewing the request." };
     }
     if (!isVaultUnlocked) {
       return { status: "blocked", summary: "Unlock the vault before reviewing an information request." };
@@ -338,7 +392,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
         id: "review-information-request",
         label: "Review information request",
         actionId: "people.profile.review_information_request",
-        purpose: "Review selected fields before sending a consent request.",
+        purpose: "Review what you chose before asking for it.",
       },
     ];
     if (viewerProfile.relationship.status === "none") {
@@ -361,7 +415,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
           spokenSubject: null,
           sections: [
             { id: "shared", title: "Shared with you", summary: `${viewerProfile.grants.length} active grants` },
-            { id: "requestable", title: "Available to request", summary: `${viewerProfile.requestableScopes.length} requestable fields` },
+            { id: "requestable", title: "Available to request", summary: `${viewerProfile.requestableScopes.length} things you can ask for` },
             { id: "history", title: "Request history", summary: `${viewerProfile.requestHistory.length} request records` },
           ],
           actions: surfaceActions,
@@ -403,7 +457,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
 
   if (!profile) {
     return (
-      <AppPageShell width="reading">
+      <AppPageShell width="agent" fitContent>
         <div
           className="flex min-h-[50vh] items-center justify-center"
           data-native-route="native-route-person-profile"
@@ -417,95 +471,95 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
   }
 
   return (
-    <AppPageShell width="reading">
-      <div className="space-y-6 pb-12" data-native-route="native-route-person-profile">
-        <section className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-4">
-            <AvatarBubble
-              initials={initials(profile.displayName)}
-              size={64}
-              imageUrl={profile.photoUrl}
-            />
-            <div className="min-w-0">
-              <h1 className="truncate text-3xl font-semibold tracking-tight">
-                {profile.displayName}
-              </h1>
-              {profile.verifiedRole ? (
-                <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
-                  <CheckCircle2 className="h-4 w-4 text-[var(--app-accent)]" />
-                  {profile.verifiedRole}
-                </p>
-              ) : null}
-              {viewerProfile ? (
-                <div className="mt-2">
-                  <StatusPill tone="neutral">
-                    {viewerProfile.relationship.status === "connected"
-                      ? "Connected"
-                      : viewerProfile.relationship.status.startsWith("pending")
-                        ? "Request pending"
-                        : "Not connected"}
-                  </StatusPill>
-                </div>
-              ) : null}
+    <AppPageShell width="agent" fitContent>
+      <div className="space-y-8 sm:space-y-10 pb-28 sm:pb-36" data-native-route="native-route-person-profile">
+        <section className="flex flex-col items-center text-center py-2">
+          <ConnectionPersonAvatar
+            photoUrl={profile.photoUrl}
+            label={profile.displayName}
+            verified={Boolean(profile.verifiedRole)}
+            size="profile"
+          />
+          <h1 className="mt-3.5 text-3xl font-semibold tracking-tight">
+            {profile.displayName}
+          </h1>
+          {profile.verifiedRole ? (
+            <p className="mt-1.5 flex items-center justify-center gap-1.5 text-sm text-muted-foreground">
+              <CheckCircle2 className="h-4 w-4 text-[var(--app-accent)] shrink-0" />
+              <span>{profile.verifiedRole}</span>
+            </p>
+          ) : null}
+          {viewerProfile ? (
+            <div className="mt-2.5 flex justify-center">
+              <StatusPill tone="neutral">
+                {viewerProfile.relationship.status === "connected"
+                  ? "Connected"
+                  : viewerProfile.relationship.status.startsWith("pending")
+                    ? "Request pending"
+                    : "Not connected"}
+              </StatusPill>
             </div>
-          </div>
-          <Button
-            type="button"
-            variant="none"
-            effect="fill"
-            onClick={() => {
-              void navigator.clipboard.writeText(window.location.href);
-              toast.success("Profile link copied");
-            }}
-          >
-            <Copy className="h-4 w-4" />
-            Share profile
-          </Button>
-        </section>
-
-        {viewerProfile ? (
-          <div className="flex flex-wrap gap-2" aria-label="Relationship actions">
-            {viewerProfile.relationship.status === "none" ? (
-              <Button
-                type="button"
-                variant="blue-gradient"
-                effect="fill"
-                disabled={relationshipBusy}
-                onClick={() => void updateRelationship("connect")}
-                data-voice-control-id="person-profile-connect"
-              >
-                Connect
-              </Button>
+          ) : null}
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5" aria-label="Relationship actions">
+            {viewerProfile ? (
+              <>
+                {viewerProfile.relationship.status === "none" ? (
+                  <Button
+                    type="button"
+                    variant="blue-gradient"
+                    effect="fill"
+                    disabled={relationshipBusy}
+                    onClick={() => void updateRelationship("connect")}
+                    data-voice-control-id="person-profile-connect"
+                  >
+                    Connect
+                  </Button>
+                ) : null}
+                {viewerProfile.relationship.status === "pending_outgoing" ? (
+                  <Button
+                    type="button"
+                    variant="none"
+                    effect="fade"
+                    disabled={relationshipBusy}
+                    onClick={() => void updateRelationship("cancel")}
+                    data-voice-control-id="person-profile-cancel-connection"
+                  >
+                    Cancel request
+                  </Button>
+                ) : null}
+                {viewerProfile.relationship.status === "connected" ? (
+                  <Button
+                    type="button"
+                    variant="none"
+                    effect="fade"
+                    disabled={relationshipBusy}
+                    onClick={() => void updateRelationship("remove")}
+                    data-voice-control-id="person-profile-remove-connection"
+                  >
+                    Remove connection
+                  </Button>
+                ) : null}
+                <Button type="button" variant="none" effect="fade" data-voice-control-id="person-profile-manage-consent" onClick={() => router.push(ROUTES.CONSENTS)}>
+                  Manage access
+                </Button>
+              </>
             ) : null}
-            {viewerProfile.relationship.status === "pending_outgoing" ? (
-              <Button
-                type="button"
-                variant="none"
-                effect="fade"
-                disabled={relationshipBusy}
-                onClick={() => void updateRelationship("cancel")}
-                data-voice-control-id="person-profile-cancel-connection"
-              >
-                Cancel request
-              </Button>
-            ) : null}
-            {viewerProfile.relationship.status === "connected" ? (
-              <Button
-                type="button"
-                variant="none"
-                effect="fade"
-                disabled={relationshipBusy}
-                onClick={() => void updateRelationship("remove")}
-                data-voice-control-id="person-profile-remove-connection"
-              >
-                Remove connection
-              </Button>
-            ) : null}
-            <Button type="button" variant="none" effect="fade" data-voice-control-id="person-profile-manage-consent" onClick={() => router.push(ROUTES.CONSENTS)}>
-              Manage access
+            <Button
+              type="button"
+              variant="none"
+              effect="fade"
+              onClick={() => {
+                void navigator.clipboard.writeText(window.location.href);
+                toast.success("Profile link copied");
+              }}
+            >
+              <span className="inline-flex items-center gap-2">
+                <Copy className="h-4 w-4" />
+                <span>Share profile</span>
+              </span>
             </Button>
           </div>
-        ) : null}
+        </section>
 
         {!user && !authLoading ? (
           <SectionCard>
@@ -544,7 +598,10 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                         <LockKeyhole className="h-4 w-4 text-muted-foreground" />
                       </div>
                       {grant.requestId && revealedRequests.has(grant.requestId) && decryptedByRequest[grant.requestId] ? (
-                        <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-muted/40 p-3 text-xs">
+                        <pre
+                          className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-muted/40 p-3 text-xs"
+                          data-testid="person-profile-grant-value"
+                        >
                           {JSON.stringify(decryptedByRequest[grant.requestId], null, 2)}
                         </pre>
                       ) : (
@@ -558,6 +615,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                           variant="none"
                           effect="fade"
                           disabled={decryptingRequestId === grant.requestId}
+                          data-testid="person-profile-grant-reveal"
                           onClick={() => void revealGrant(grant.requestId)}
                         >
                           {grant.requestId && revealedRequests.has(grant.requestId) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -574,7 +632,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                             effect="fade"
                             onClick={() => {
                               void navigator.clipboard.writeText(JSON.stringify(decryptedByRequest[grant.requestId!]));
-                              toast.success("Consented information copied");
+                              toast.success("Copied.");
                             }}
                           >
                             <Copy className="h-4 w-4" />
@@ -586,62 +644,65 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                   ))}
                 </div>
               ) : (
-                <SectionCard>
-                  <p className="text-sm text-muted-foreground">
-                    No information has been shared with you yet.
-                  </p>
+                <SectionCard className="py-8 text-center">
+                  <div className="flex flex-col items-center justify-center space-y-2">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                      <LockKeyhole className="h-5 w-5" />
+                    </div>
+                    <p className="text-sm font-semibold text-foreground">
+                      No information shared yet
+                    </p>
+                    <p className="text-xs text-muted-foreground max-w-sm">
+                      Information granted by this person will appear here once shared. Values remain end-to-end encrypted until unlocked.
+                    </p>
+                  </div>
                 </SectionCard>
               )}
             </section>
 
-            <section aria-labelledby="available-to-request" className="space-y-3">
+            <section
+              aria-labelledby="available-to-request"
+              className="space-y-3"
+              ref={availableSectionRef}
+              data-testid="person-profile-available"
+            >
               <PageHeader
                 title="Available to request"
                 description="Choose only what is needed. The person reviews every request before access is granted."
               />
-              {groupedScopes.length ? (
-                <div className="space-y-4">
-                  {groupedScopes.map(([domain, scopes]) => (
-                    <SectionCard key={domain}>
-                      <h3 className="font-semibold capitalize">{domain.replaceAll("_", " ")}</h3>
-                      <div className="mt-3 divide-y divide-border/60">
-                        {scopes.map((scope) => (
-                          <button
-                            type="button"
-                            key={scope.scopeRef}
-                            className="flex w-full items-start justify-between gap-4 rounded-xl py-3 text-left outline-none transition-colors first:pt-0 last:pb-0 focus-visible:ring-2 focus-visible:ring-[var(--app-accent)]"
-                            aria-pressed={selectedScopeRefs.has(scope.scopeRef)}
-                            onClick={() => setSelectedScopeRefs((current) => {
-                              const next = new Set(current);
-                              if (next.has(scope.scopeRef)) next.delete(scope.scopeRef);
-                              else next.add(scope.scopeRef);
-                              return next;
-                            })}
-                          >
-                            <div>
-                              <p className="text-sm font-semibold">{scopeTitle(scope)}</p>
-                              {scope.description ? (
-                                <p className="mt-1 text-sm text-muted-foreground">{scope.description}</p>
-                              ) : null}
-                            </div>
-                            <StatusPill tone={selectedScopeRefs.has(scope.scopeRef) ? "ready" : "neutral"}>
-                              {selectedScopeRefs.has(scope.scopeRef) ? "Selected" : "Ask first"}
-                            </StatusPill>
-                          </button>
-                        ))}
-                      </div>
-                    </SectionCard>
-                  ))}
-                </div>
-              ) : (
-                <SectionCard>
-                  <p className="text-sm text-muted-foreground">
-                    This person has no information available to request.
-                  </p>
-                </SectionCard>
-              )}
-              {groupedScopes.length ? (
-                <div className="sticky bottom-4 flex justify-end">
+              {/*
+                One nested list, the same one the Memory route uses.
+
+                This section used to hand-roll its own search, its own domain
+                chips, its own grouping map and its own row, which meant a
+                person met a flat two-level list here and an unbounded drill-in
+                on their own Memory -- the same information, two products. The
+                catalogue is a set of `attr.<domain>.<path...>` references, so
+                it already knew how to nest; the page just threw the path away.
+              */}
+              <ConsentScopeNestedList
+                items={scopeItems}
+                rootLabel="All"
+                emptyText="This person has nothing available to ask for."
+                testIdPrefix="person-profile-scope"
+                selection={{
+                  selectedIds: selectedScopeRefs,
+                  // A branch arrives as every reference underneath it, so
+                  // "everything financial" is one gesture rather than four
+                  // folders and eleven taps.
+                  onToggleMany: (ids, select) =>
+                    setSelectedScopeRefs((current) => {
+                      const next = new Set(current);
+                      for (const id of ids) {
+                        if (select) next.add(id);
+                        else next.delete(id);
+                      }
+                      return next;
+                    }),
+                }}
+              />
+              {allScopes.length ? (
+                <div className="flex justify-end pt-1">
                   <Button
                     type="button"
                     variant="blue-gradient"
@@ -671,7 +732,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                 <SectionCard>
                   <div className="divide-y divide-border/60">
                     {viewerProfile.requestHistory.map((item) => (
-                      <div key={item.requestId} className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
+                      <div key={item.requestId} className="flex flex-wrap items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
                         <div>
                           <p className="text-sm font-semibold">{item.label}</p>
                           <p className="mt-1 text-sm text-muted-foreground">{item.purpose}</p>
@@ -684,6 +745,25 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                         <StatusPill tone={item.status === "granted" ? "ready" : "neutral"}>
                           {item.status}
                         </StatusPill>
+                        {bundleDetails[item.bundleId] ? (
+                          <p className="basis-full text-xs text-muted-foreground" data-testid="person-profile-bundle-details">
+                            {bundleDetails[item.bundleId]!.items.map((entry) => entry.label).join(", ")}
+                            {" · "}
+                            {requestDurationLabel(Math.round(bundleDetails[item.bundleId]!.durationSeconds / 3600))}
+                            {bundleDetails[item.bundleId]!.cancelled ? " · cancelled" : ""}
+                          </p>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="none"
+                            effect="fade"
+                            disabled={loadingBundleId === item.bundleId}
+                            onClick={() => void loadBundleDetails(item.bundleId)}
+                            aria-label={`Details for ${item.label}`}
+                          >
+                            {loadingBundleId === item.bundleId ? "Loading…" : "Details"}
+                          </Button>
+                        )}
                         {item.status === "pending" ? (
                           <Button
                             type="button"
@@ -713,27 +793,43 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
           <DialogHeader>
             <DialogTitle>Request information from {profile.displayName}</DialogTitle>
             <DialogDescription>
-              They will see the exact fields, purpose, sensitivity, and seven-day access duration before deciding.
+              They will see exactly what you asked for, why, and for how long.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <SectionCard title="Fields">
+            <SectionCard title="What you are asking for">
               <div className="space-y-2">
                 {selectedScopes.map((scope) => (
                   <div key={scope.scopeRef} className="flex items-center justify-between gap-3 text-sm">
-                    <span>{scopeTitle(scope)}</span>
+                    <span>{scope.label || scope.scopeRef}</span>
                     <StatusPill tone="neutral">{scope.sensitivity || "Standard"}</StatusPill>
                   </div>
                 ))}
               </div>
             </SectionCard>
             <label className="block space-y-2 text-sm font-medium">
+              Access duration
+              <select
+                className="block h-9 w-full rounded-md border border-input bg-background px-3 text-sm font-normal"
+                value={durationHours}
+                onChange={(event) => setDurationHours(Number(event.target.value))}
+                data-testid="person-profile-duration-select"
+              >
+                {REQUEST_DURATION_OPTIONS.map((option) => (
+                  <option key={option.hours} value={option.hours}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block space-y-2 text-sm font-medium">
               Purpose
               <Textarea
                 value={purpose}
                 onChange={(event) => setPurpose(event.target.value)}
                 maxLength={500}
-                placeholder="Explain why these fields are needed and how they will be used."
+                placeholder="Explain why you need these and how you will use them."
+                data-testid="person-profile-purpose"
               />
             </label>
           </div>

@@ -9,12 +9,21 @@ const source = readFileSync(
 );
 
 describe("Gmail Email Agent handoff contract", () => {
-  it("queues the intro as a normal Agent Chat transcript", () => {
-    expect(source).toContain("transcript: buildEmailAgentIntroPrompt(emailAgentIntroRecipient)");
-    expect(source).toContain("createHandoff({");
-    expect(source).toContain("agentPopover.openAgent();");
-    expect(source).not.toContain(
-      "emailDraftInstruction: buildEmailAgentIntroPrompt(emailAgentIntroRecipient)",
-    );
+  it("opens One Chat without queuing anything for it to draft", () => {
+    // The workspace used to hand One a demonstration prompt -- "explain all
+    // the features of the Gmail agent" -- so every press started a sample
+    // email about the agent itself. Opening chat now leaves the composer
+    // empty for whatever the owner actually came to write.
+    expect(source).toContain("const handleOpenOneChat = useCallback(() => {");
+    expect(source).toContain("navigateToAgentChat();");
+    expect(source).not.toContain("agentPopover");
+    expect(source).not.toContain("agentRouteWithOrigin");
+    expect(source).not.toContain("createHandoff");
+    expect(source).not.toContain("buildGmailAgentHandoffPrompt");
+  });
+
+  it("no longer promises a sample email before opening chat", () => {
+    expect(source).not.toContain("Start with a guided Gmail email");
+    expect(source).not.toContain("explaining what the Gmail agent can do");
   });
 });

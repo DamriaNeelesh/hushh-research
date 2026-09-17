@@ -204,10 +204,11 @@ describe("SavedLocationsSection", () => {
     expect(
       screen.queryByText("Encrypted in your vault."),
     ).not.toBeInTheDocument();
-    expect(screen.getByTestId("saved-location-icon-home")).toHaveAttribute(
-      "data-icon-tone",
-      "neutral-graphite",
-    );
+    const homeIcon = screen.getByTestId("saved-location-icon-home");
+    // Home uses the authored category accent; keep its white glyph paired
+    // with a colored background rather than a white foreground surface.
+    expect(homeIcon.className).toContain("bg-[color:var(--app-accent)]");
+    expect(homeIcon.className).toContain("text-white");
     expect(screen.queryByText(/12\.9763|77\.5929/)).not.toBeInTheDocument();
     expect(mocks.loadSavedLocations).toHaveBeenCalledWith({
       userId: "user-123",

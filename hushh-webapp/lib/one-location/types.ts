@@ -1,15 +1,12 @@
 export type LocationSourcePlatform =
-  | "web"
-  | "ios"
-  | "android"
-  | "native"
-  | "unknown";
+  "web" | "ios" | "android" | "native" | "unknown";
 
 export type OneLocationShareDurationMode = "timed" | "until_stopped";
 
 export type AutoApproveScope =
   | { kind: "all_contacts" }
-  | { kind: "circle"; circleId: string };
+  | { kind: "circle"; circleId: string }
+  | { kind: "circles"; circleIds: string[] };
 
 export type OneLocationAutoApprovePreference = {
   enabled: boolean;
@@ -64,6 +61,8 @@ export type OneLocationRecommendationReason = {
 export type OneLocationRecipient = {
   userId: string;
   displayName: string;
+  /** Opaque public person reference; present when this person has a request profile. */
+  publicPersonRef?: string | null;
   photoUrl?: string | null;
   maskedPhone?: string | null;
   phoneVerified: boolean;
@@ -223,9 +222,16 @@ export type OneLocationAccessRequest = {
   ownerPhotoUrl?: string | null;
   ownerMaskedPhone?: string | null;
   referredByUserId?: string | null;
-  status: "pending" | "approved" | "denied" | "cancelled" | string;
+  status: "pending" | "approved" | "denied" | "cancelled" | "expired" | string;
   message?: string | null;
   requestedAt?: string | null;
+  /**
+   * Server-owned deadline for a direct location ask. `null` is deliberate for
+   * linked referral/public-link workflows, whose parent record owns its own
+   * lifetime. `undefined` is kept for rolling-deploy compatibility with older
+   * API payloads.
+   */
+  expiresAt?: string | null;
   resolvedAt?: string | null;
   approvedGrantId?: string | null;
   /**
@@ -291,6 +297,15 @@ export type OneLocationPublicInvite = {
    * rather than wrong.
    */
   publicUrl?: string | null;
+  operationReceipt?: PublicLinkOperationReceipt;
+};
+
+export type PublicLinkOperationReceipt = {
+  operation_id: string;
+  invite_id: string;
+  expires_at: string | null;
+  status: string;
+  reused: boolean;
 };
 
 export type OneLocationPublicInviteSubmission = {
@@ -382,6 +397,8 @@ export type OneLocationCircleSummary = {
 export type OneLocationCircleMember = {
   userId: string;
   displayName: string;
+  /** Opaque public person reference; present when this person has a request profile. */
+  publicPersonRef?: string | null;
   photoUrl?: string | null;
   role: OneLocationCircleRole;
   joinedAt?: string | null;
@@ -407,11 +424,7 @@ export type OneLocationCircleMember = {
 };
 
 export type OneLocationCircleMemberRelationship =
-  | "self"
-  | "none"
-  | "pending_outgoing"
-  | "pending_incoming"
-  | "connected";
+  "self" | "none" | "pending_outgoing" | "pending_incoming" | "connected";
 
 export type OneLocationCircleDetail = OneLocationCircleSummary & {
   members: OneLocationCircleMember[];
@@ -462,12 +475,7 @@ export type OneLocationCircleEligibleConnection = {
 };
 
 export type OneLocationCircleMemberInviteStatus =
-  | "pending"
-  | "accepted"
-  | "declined"
-  | "cancelled"
-  | "expired"
-  | string;
+  "pending" | "accepted" | "declined" | "cancelled" | "expired" | string;
 
 export type OneLocationCircleMemberInvite = {
   id: string;
@@ -476,6 +484,7 @@ export type OneLocationCircleMemberInvite = {
   circleKind: OneLocationCircleKind;
   inviterUserId: string;
   inviterDisplayName: string;
+  inviterPhotoUrl?: string | null;
   inviteeUserId: string;
   inviteeDisplayName?: string | null;
   inviteePhotoUrl?: string | null;
@@ -643,10 +652,7 @@ export type OneLocationNearbyPlaceSuggestion = {
 };
 
 export type OneLocationNearbyRelationship =
-  | "none"
-  | "pending_outgoing"
-  | "pending_incoming"
-  | "connected";
+  "none" | "pending_outgoing" | "pending_incoming" | "connected";
 
 export type OneLocationNearbyAttendee = {
   /** Rotating, presence-scoped alias. A stable user id is never returned. */
@@ -657,6 +663,9 @@ export type OneLocationNearbyAttendee = {
 };
 
 export type OneLocationNearbyPresence = {
+  /** Owner-only operation locators. Older servers require an authored review. */
+  id?: string;
+  version?: number;
   status: "active";
   audience: "all_opted_in";
   /** Fixed mutual-discovery radius selected by the server contract. */
@@ -703,6 +712,18 @@ export type OneLocationPlaceRating = {
   googleReviewUrl?: string | null;
 };
 
+/** The anonymous, cross-user projection for one place.
+ *
+ *  Present only once the place has cleared the publication threshold, and the
+ *  count is always a bucket ("5+", "10+") -- an exact count beside an exact
+ *  average lets an observer recover each new rating by subtraction. */
+export type OneLocationPlaceRatingSummary = {
+  placeId: string;
+  average: number;
+  countBucket: string;
+  minimumRaters: number;
+};
+
 /** A completed visit the owner could still rate. */
 export type OneLocationRateableVisit = {
   visitId: string;
@@ -716,6 +737,8 @@ export type OneLocationRateableVisit = {
 };
 
 export type OneLocationNearbyPresenceState = {
+  operationReceipt?: { operation_id: string; presence_id: string; version: number; expires_at: string } | null;
+  checkoutReceipt?: { operation_id: string; presence_id: string | null; version: number; checked_out: true } | null;
   presence: OneLocationNearbyPresence | null;
   attendees: OneLocationNearbyAttendee[];
   checkedOut?: boolean;
@@ -780,6 +803,15 @@ export type PlainLocationPoint = {
    * Present only for Check-In shares. Encrypted together with the point.
    */
   checkIn?: CheckInSharePayload | null;
+  /**
+   * How much the coordinate was coarsened on this device before encryption.
+   * "approximate" means the point was snapped to a ~1 km grid by
+   * `lib/location/coarsen.ts`; absent or "precise" means the raw fix. The same
+   * tag is mirrored in plaintext as `envelope.metadata.precision` so the
+   * server can refuse an envelope that disagrees with the owner's stored
+   * preference (it can never see the coordinate itself).
+   */
+  precision?: "precise" | "approximate";
 };
 
 export type OneLocationEncryptedEnvelope = {
@@ -799,9 +831,7 @@ export type OneLocationEncryptedEnvelope = {
    * eligible for Your Map; direct/background shares are never promoted.
    */
   publicationContext?:
-    | "private_background"
-    | "private_foreground"
-    | "foreground_map_visible";
+    "private_background" | "private_foreground" | "foreground_map_visible";
   createdAt?: string | null;
   metadata?: Record<string, unknown>;
 };
@@ -855,7 +885,12 @@ export interface ShareTarget {
   label: string;
 }
 
-export type ClientActionType = "publish_share" | "view_envelope" | "create_public_link" | "sos_panic" | "check_in";
+export type ClientActionType =
+  | "publish_share"
+  | "view_envelope"
+  | "create_public_link"
+  | "sos_panic"
+  | "check_in";
 
 export interface ClientAction {
   id: string;

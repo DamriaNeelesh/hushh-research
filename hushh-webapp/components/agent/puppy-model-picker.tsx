@@ -12,6 +12,7 @@ import {
 import {
   assignPuppyModel,
   fetchPuppyModelOptions,
+  type PuppyModel,
   type PuppyModelOptions,
 } from "@/lib/services/puppy-one-service";
 import { cn } from "@/lib/utils";
@@ -19,7 +20,7 @@ import { cn } from "@/lib/utils";
 /**
  * Pick the model and reasoning effort Puppy One answers with.
  *
- * Two behaviours here exist to stop the control from lying about the runtime:
+ * Three behaviours here exist to stop the control from lying about the runtime:
  *
  *   - Hermes writes the assignment to config, which only NEW sessions read. So
  *     applying a model ends the current session rather than leaving the label
@@ -27,6 +28,12 @@ import { cn } from "@/lib/utils";
  *   - Cloud providers are shown and labelled, not hidden. Puppy One's whole
  *     claim is that the work stays on this machine, and a picker that quietly
  *     omitted the alternatives could not show what choosing one gives up.
+ *   - Only models that EXIST are offered. The route's gateway already drops
+ *     unauthenticated providers and deduplicates ids, so none of that is
+ *     re-derived here; the list is rendered as given. What is defended below is
+ *     rendering itself -- a repeated id must not collide on a React key, and a
+ *     provider that arrived carrying no models must not draw an empty heading,
+ *     which is the dead row the owner was scrolling past in the first place.
  */
 
 type PickerPayload = PuppyModelOptions;
@@ -55,6 +62,7 @@ export function PuppyModelPicker({
     provider: string;
     model: string;
     message: string;
+    onDevice: boolean;
   } | null>(null);
   const [error, setError] = useState("");
 
@@ -72,7 +80,22 @@ export function PuppyModelPicker({
   }, [open, payload, load]);
 
   const apply = useCallback(
-    async (provider: string, model: string, confirmExpensive: boolean) => {
+    async (
+      provider: string,
+      model: string,
+      confirmExpensive: boolean,
+      /**
+       * The GATEWAY's own answer for this provider, as rendered in the row.
+       *
+       * Not the POST response's `onDevice`: that route has no provider list to
+       * look the answer up in and decides from a hardcoded three-name set, so
+       * a gateway-reported local provider with any other slug is labelled "on
+       * this machine" in the row and then told, in writing, that it runs off
+       * it. The label the person read and the sentence the transcript writes
+       * now come from one source.
+       */
+      providerOnDevice: boolean,
+    ) => {
       setApplying(`${provider}:${model}`);
       setError("");
       try {
@@ -88,6 +111,7 @@ export function PuppyModelPicker({
           setConfirm({
             provider,
             model,
+            onDevice: providerOnDevice,
             message: result.confirmMessage ?? "This model bills per token.",
           });
           return;
@@ -101,7 +125,7 @@ export function PuppyModelPicker({
         onApplied({
           provider,
           model,
-          onDevice: Boolean(result.onDevice),
+          onDevice: providerOnDevice,
           reasoningEffort: effort,
         });
         setPayload((prior) =>
@@ -116,6 +140,11 @@ export function PuppyModelPicker({
 
   const current = payload?.current;
   const label = current?.model ? shortModelName(current.model) : "model";
+  // A heading with nothing under it is exactly the dead row this change exists
+  // to remove, so a provider that arrives with no models is not drawn at all.
+  const groups = (payload?.providers ?? []).filter(
+    (provider) => Array.isArray(provider.models) && provider.models.length > 0,
+  );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -149,8 +178,8 @@ export function PuppyModelPicker({
             <p className="px-3 py-4 text-[11px] text-muted-foreground">
               Puppy One is not answering on this machine.
             </p>
-          ) : payload?.providers.length ? (
-            payload.providers.map((provider) => (
+          ) : groups.length ? (
+            groups.map((provider) => (
               <div key={provider.id} className="px-1 py-1">
                 <p className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                   {provider.onDevice ? (
@@ -163,17 +192,28 @@ export function PuppyModelPicker({
                     {provider.onDevice ? "on this machine" : "leaves this machine"}
                   </span>
                 </p>
-                {provider.models.map((model) => {
+                {provider.models.map((model, index) => {
                   const busy = applying === `${provider.id}:${model.id}`;
                   const selected =
                     current?.model === model.id &&
                     current?.provider === provider.id;
                   return (
                     <button
-                      key={`${provider.id}:${model.id}`}
+                      // The position is in the key because the id alone is not
+                      // guaranteed unique HERE: the gateway deduplicates, and a
+                      // payload that did not would otherwise collide on the key
+                      // and drop a row. Both entries render; neither throws.
+                      key={`${provider.id}:${model.id}:${index}`}
                       type="button"
                       disabled={Boolean(applying)}
-                      onClick={() => void apply(provider.id, model.id, false)}
+                      onClick={() =>
+                        void apply(
+                          provider.id,
+                          model.id,
+                          false,
+                          provider.onDevice,
+                        )
+                      }
                       className={cn(
                         "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors",
                         "hover:bg-muted disabled:opacity-60",
@@ -187,7 +227,10 @@ export function PuppyModelPicker({
                       ) : (
                         <span className="size-3 shrink-0" />
                       )}
-                      <span className="truncate">{shortModelName(model.id)}</span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {shortModelName(model.id)}
+                      </span>
+                      <ModelBuild model={model} />
                     </button>
                   );
                 })}
@@ -237,7 +280,12 @@ export function PuppyModelPicker({
                 size="sm"
                 className="h-7 text-[11px]"
                 onClick={() =>
-                  void apply(confirm.provider, confirm.model, true)
+                  void apply(
+                    confirm.provider,
+                    confirm.model,
+                    true,
+                    confirm.onDevice,
+                  )
                 }
               >
                 Use it anyway
@@ -261,6 +309,51 @@ export function PuppyModelPicker({
         ) : null}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * What this model actually is, at the right edge of its row.
+ *
+ * The variant is the answer to the owner's question -- MLX and GGUF are two
+ * different runtimes for the same weights, and which one a row is decides
+ * whether it runs well on this machine -- so it is the only part styled as a
+ * chip. Quantization sits beside it as plain text and the loaded dot is a dot,
+ * because three chips on one 320px row would make the model name, the thing
+ * being chosen, the least legible part of it.
+ *
+ * Each part renders only when the gateway reported it. A null variant means
+ * unknown, not an error, and unknown renders nothing: no chip, no placeholder,
+ * no guess.
+ */
+function ModelBuild({ model }: { model: PuppyModel }) {
+  // Only the loaded state earns a mark. "not-loaded" is the ordinary case and
+  // needs no ink, and a state this build does not recognise is not mapped onto
+  // either one.
+  const loaded = model.state === "loaded";
+  if (!model.variant && !model.quantization && !loaded) return null;
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      {model.variant ? (
+        <span className="rounded-sm border border-border/70 px-1 py-px text-[9px] font-medium uppercase leading-[1.4] tracking-wide text-muted-foreground">
+          {model.variant}
+        </span>
+      ) : null}
+      {model.quantization ? (
+        <span className="text-[10px] leading-none text-muted-foreground">
+          {model.quantization}
+        </span>
+      ) : null}
+      {loaded ? (
+        <span className="flex items-center" title="Already loaded in memory">
+          <span
+            className="size-1.5 rounded-full bg-[color:var(--app-accent-deep)]"
+            aria-hidden
+          />
+          <span className="sr-only">already loaded in memory</span>
+        </span>
+      ) : null}
+    </span>
   );
 }
 

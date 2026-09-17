@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -21,6 +22,10 @@ from sqlalchemy.engine import Connection
 
 from hushh_mcp.services.contact_sync_contract import (
     CONTACT_SYNC_CONSENT_CONTRACT_VERSION,
+    CONTACT_SYNC_MATCH_POLICY_VERSION,
+    CONTACT_SYNC_POLICY_LOCK_NAMESPACE,
+    CONTACT_SYNC_PREFERENCE_DEFAULT,
+    CONTACT_SYNC_PREFERENCE_ENABLED,
 )
 
 ORIGIN_DIRECT_REQUEST = "direct_request"
@@ -35,7 +40,7 @@ ORIGIN_LEGACY_INVITE = "legacy_invite"
 ORIGIN_IMPORT = "import"
 ORIGIN_CONTACT_SYNC = "contact_sync"
 
-_GRAPH_MUTATION_LOCK_NAMESPACE = 171
+_GRAPH_MUTATION_LOCK_NAMESPACE = CONTACT_SYNC_POLICY_LOCK_NAMESPACE
 
 ORIGIN_KINDS = frozenset(
     {
@@ -377,6 +382,7 @@ class ConnectionGraphService:
         *,
         requester_user_id: str,
         activations: Iterable[dict[str, Any]],
+        sync_started_at: datetime | None = None,
     ) -> list[str]:
         """Activate a contact-sync batch with four bounded set-based writes.
 
@@ -394,6 +400,7 @@ class ConnectionGraphService:
             raise ValueError("Contact-sync activation requires a requester.")
 
         normalized: dict[str, str] = {}
+        reconnect_episodes: dict[str, datetime | None] = {}
         for activation in activations:
             target = str(activation.get("target_user_id") or "").strip()
             metadata = activation.get("origin_metadata") or {}
@@ -402,7 +409,11 @@ class ConnectionGraphService:
                 not target
                 or target == requester
                 or authorization
-                not in {"verified_phone_contact_match", "existing_connection_match"}
+                not in {
+                    "verified_phone_contact_match",
+                    "verified_phone_directory_match",
+                    "existing_connection_match",
+                }
             ):
                 raise ValueError("Invalid contact-sync activation.")
             safe_metadata: dict[str, Any] = {"authorization": authorization}
@@ -426,6 +437,31 @@ class ConnectionGraphService:
                         "targetConsentContractVersion": contract_version,
                     }
                 )
+            elif authorization == "verified_phone_directory_match":
+                match_policy_version = str(metadata.get("matchPolicyVersion") or "").strip()
+                preference_state = str(metadata.get("targetPreferenceState") or "").strip()
+                if (
+                    match_policy_version != CONTACT_SYNC_MATCH_POLICY_VERSION
+                    or preference_state
+                    not in {CONTACT_SYNC_PREFERENCE_DEFAULT, CONTACT_SYNC_PREFERENCE_ENABLED}
+                ):
+                    raise ValueError("Invalid contact-sync directory policy evidence.")
+                safe_metadata.update(
+                    {
+                        "matchPolicyVersion": match_policy_version,
+                        "targetPreferenceState": preference_state,
+                    }
+                )
+            episode = activation.get("reconnect_revoked_at")
+            if episode is not None and (
+                authorization != "verified_phone_directory_match"
+                or not isinstance(episode, datetime)
+                or episode.tzinfo is None
+                or sync_started_at is None
+                or episode >= sync_started_at
+            ):
+                raise ValueError("Invalid contact-sync reconnection episode.")
+            reconnect_episodes[target] = episode
             normalized[target] = json.dumps(safe_metadata, sort_keys=True, separators=(",", ":"))
         if not normalized:
             return []
@@ -436,14 +472,18 @@ class ConnectionGraphService:
             "requester_user_id": requester,
             "target_user_ids": targets,
             "origin_metadata_values": metadata_values,
+            "reconnect_episodes": [reconnect_episodes[target] for target in targets],
+            "sync_started_at": sync_started_at,
         }
 
         connection_result = conn.execute(
             text(
                 """
                 WITH activation AS (
-                  SELECT target_user_id
-                  FROM UNNEST(CAST(:target_user_ids AS TEXT[])) AS row(target_user_id)
+                  SELECT target_user_id, reconnect_revoked_at
+                  FROM UNNEST(
+                    CAST(:target_user_ids AS TEXT[]), CAST(:reconnect_episodes AS TIMESTAMPTZ[])
+                  ) AS row(target_user_id, reconnect_revoked_at)
                 )
                 INSERT INTO connections (
                   user_a_id, user_b_id, status, source,
@@ -458,8 +498,24 @@ class ConnectionGraphService:
                   LEAST(:requester_user_id, target_user_id),
                   GREATEST(:requester_user_id, target_user_id)
                 ON CONFLICT (user_a_id, user_b_id) DO UPDATE SET
-                  status = 'active', updated_at = NOW(), revoked_at = NULL
+                  status = 'active', updated_at = NOW(), revoked_at = NULL,
+                  revoked_by_side = NULL, revoked_by_at = NULL
                 WHERE connections.status = 'active'
+                  OR (
+                    connections.status = 'revoked'
+                    AND connections.revoked_by_side = CASE
+                      WHEN connections.user_a_id = :requester_user_id THEN 'a'
+                      WHEN connections.user_b_id = :requester_user_id THEN 'b' END
+                    AND connections.revoked_by_at = connections.revoked_at
+                    AND connections.revoked_at < CAST(:sync_started_at AS TIMESTAMPTZ)
+                    AND EXISTS (
+                      SELECT 1 FROM activation
+                      WHERE activation.target_user_id = CASE
+                        WHEN connections.user_a_id = :requester_user_id THEN connections.user_b_id
+                        ELSE connections.user_a_id END
+                        AND activation.reconnect_revoked_at = connections.revoked_at
+                    )
+                  )
                 RETURNING CASE
                   WHEN connections.user_a_id = :requester_user_id
                   THEN connections.user_b_id
@@ -930,6 +986,7 @@ def activate_contact_sync_connections_bulk(
     *,
     requester_user_id: str,
     activations: Iterable[dict[str, Any]],
+    sync_started_at: datetime | None = None,
 ) -> list[str]:
     """Module-level batch seam for the Connections contact-sync transaction."""
 
@@ -937,6 +994,7 @@ def activate_contact_sync_connections_bulk(
         conn,
         requester_user_id=requester_user_id,
         activations=activations,
+        sync_started_at=sync_started_at,
     )
 
 

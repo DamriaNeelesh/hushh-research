@@ -17,7 +17,10 @@ vi.mock("next/navigation", () => ({
 
 function renderPhoneVerificationFlow(options?: {
   startRejects?: boolean;
+  codePresentation?: "onboarding";
+  phonePresentation?: "compact";
   confirmVerification?: ReturnType<typeof vi.fn>;
+  currentPhoneNumber?: string | null;
 }) {
   const startVerification = options?.startRejects
     ? vi.fn().mockRejectedValue(new Error("provider unavailable"))
@@ -27,19 +30,27 @@ function renderPhoneVerificationFlow(options?: {
     vi.fn().mockResolvedValue({ uid: "user_1" });
   const onCompleted = vi.fn();
 
-  render(
+  const flow = (currentPhoneNumber?: string | null) => (
     <PhoneVerificationFlow
       mode="link"
+      codePresentation={options?.codePresentation}
+      phonePresentation={options?.phonePresentation}
+      currentPhoneNumber={currentPhoneNumber}
       startVerification={startVerification}
       confirmVerification={confirmVerification}
       onCompleted={onCompleted}
-    />,
+    />
   );
+
+  const view = render(flow(options?.currentPhoneNumber));
 
   return {
     startVerification,
     confirmVerification,
     onCompleted,
+    // Republishes the flow with a new auth-context phone value, the way
+    // register-phone/page.tsx does when useAuth().phoneNumber settles.
+    rerenderWithPhone: (next?: string | null) => view.rerender(flow(next)),
   };
 }
 
@@ -51,25 +62,29 @@ async function reachCodeStep(startVerification: ReturnType<typeof vi.fn>) {
   return screen.findByRole("textbox", { name: "One-time code" });
 }
 
-async function selectIndiaOnce() {
+async function selectCountryOnce(countryName: string, countryLabel: string) {
   const countryInput = screen.getByRole("combobox", {
     name: "Country code",
   }) as HTMLInputElement;
 
   fireEvent.focus(countryInput);
 
-  const indiaOption = await screen.findByText("India");
-  const indiaItem = (indiaOption.closest("[data-slot='combobox-item']") ??
-    indiaOption) as Element;
+  const countryOption = await screen.findByText(countryName);
+  const countryItem = (countryOption.closest("[data-slot='combobox-item']") ??
+    countryOption) as Element;
 
-  fireEvent.pointerDown(indiaItem);
-  fireEvent.click(indiaItem);
+  fireEvent.pointerDown(countryItem);
+  fireEvent.click(countryItem);
 
   await waitFor(() => {
-    expect(countryInput.value).toBe("India (+91)");
+    expect(countryInput.value).toBe(countryLabel);
   });
 
   return countryInput;
+}
+
+async function selectIndiaOnce() {
+  return selectCountryOnce("India", "India (+91)");
 }
 
 describe("PhoneVerificationFlow country selector", () => {
@@ -123,10 +138,62 @@ describe("PhoneVerificationFlow country selector", () => {
     expect(await screen.findByText("No country codes found.")).toBeTruthy();
   });
 
+  it.each([
+    ["United States", "US", "+1", "🇺🇸"],
+    ["United Kingdom", "GB", "+44", "🇬🇧"],
+    ["India", "IN", "+91", "🇮🇳"],
+    ["Angola", "AO", "+244", "🇦🇴"],
+    ["Brazil", "BR", "+55", "🇧🇷"],
+  ])("keeps compact country selection synchronized for %s", async (name, iso, code, flag) => {
+    renderPhoneVerificationFlow({ phonePresentation: "compact" });
+    const phone = screen.getByRole("textbox", { name: "Phone number" });
+    fireEvent.change(phone, { target: { value: "12345" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Country code:/ }));
+    const search = await screen.findByRole("searchbox", { name: "Search countries" });
+    fireEvent.change(search, { target: { value: name } });
+    fireEvent.click(screen.getByRole("button", { name: `${name} (${code})`, exact: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("button", { name: `Country code: ${name} (${code})` })).toBeTruthy();
+    expect(document.querySelector(`[data-country-flag="${iso}"]`)?.textContent).toBe(flag);
+    expect((phone as HTMLInputElement).value).toBe("12345");
+  });
+
+  it("cancels the compact picker without changing the selected country", async () => {
+    renderPhoneVerificationFlow({ phonePresentation: "compact" });
+    const trigger = screen.getByRole("button", { name: /^Country code:/ });
+    const before = trigger.getAttribute("aria-label");
+    fireEvent.click(trigger);
+    fireEvent.change(await screen.findByRole("searchbox"), { target: { value: "Brazil" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(trigger.getAttribute("aria-label")).toBe(before);
+  });
+
   it("shows India immediately after the first country selection", async () => {
     renderPhoneVerificationFlow();
 
     await selectIndiaOnce();
+  });
+
+  it("keeps the flag, country name, and dialing code synchronized", async () => {
+    renderPhoneVerificationFlow();
+
+    const countries = [
+      { name: "United States", label: "United States (+1)", flag: "🇺🇸" },
+      { name: "United Kingdom", label: "United Kingdom (+44)", flag: "🇬🇧" },
+      { name: "India", label: "India (+91)", flag: "🇮🇳" },
+      { name: "Angola", label: "Angola (+244)", flag: "🇦🇴" },
+      { name: "Brazil", label: "Brazil (+55)", flag: "🇧🇷" },
+    ];
+
+    for (const [index, country] of countries.entries()) {
+      const countryInput = await selectCountryOnce(country.name, country.label);
+      expect(countryInput.value).toBe(country.label);
+      expect(screen.getByText(country.flag)).toBeTruthy();
+      if (index > 0) {
+        expect(screen.queryByText(countries[index - 1]!.flag)).toBeNull();
+      }
+    }
   });
 
   it("publishes bounded country options and restores the phone surface after close", async () => {
@@ -456,5 +523,146 @@ describe("PhoneVerificationFlow country selector", () => {
     expect(startVerification).toHaveBeenCalledTimes(1);
 
     resolveConfirm({ uid: "user_1" });
+  });
+});
+
+describe("the OTP screen survives a late auth-context update", () => {
+  async function sendCode(
+    handle: ReturnType<typeof renderPhoneVerificationFlow>,
+  ) {
+    const phoneInput = screen.getByRole("textbox", { name: "Phone number" });
+    fireEvent.change(phoneInput, { target: { value: "6505550101" } });
+    fireEvent.submit(phoneInput.closest("form")!);
+    await waitFor(() =>
+      expect(handle.startVerification).toHaveBeenCalledWith("+16505550101", {
+        resendCode: false,
+      }),
+    );
+    return screen.findByRole("textbox", { name: "One-time code" });
+  }
+
+  it("keeps the person on the OTP screen when the backend phone number lands after the code was sent", async () => {
+    // /register-phone always mounts with phoneNumber === null, which is the
+    // exact condition that makes the auth context resolve the verified number
+    // from the backend. That read can settle AFTER the code is sent.
+    const handle = renderPhoneVerificationFlow({ currentPhoneNumber: null });
+    const codeInput = await sendCode(handle);
+    fireEvent.change(codeInput, { target: { value: "1234" } });
+
+    handle.rerenderWithPhone("+16505550101");
+
+    // The sent code is the only thing that matters now. A late identity read
+    // must not take away the one screen that can consume it.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("textbox", { name: "One-time code" }),
+      ).not.toBeNull();
+    });
+    expect(
+      screen.getByRole("textbox", { name: "One-time code" }),
+    ).toHaveValue("1234");
+  });
+
+  it("keeps the person on the OTP screen when the context settles from undefined to null", async () => {
+    const handle = renderPhoneVerificationFlow({ currentPhoneNumber: undefined });
+    await sendCode(handle);
+
+    handle.rerenderWithPhone(null);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("textbox", { name: "One-time code" }),
+      ).not.toBeNull();
+    });
+  });
+
+  it("still re-seeds the form from a changed number before any code is sent", async () => {
+    // The reset must keep working where it is meant to: no code is
+    // outstanding, so a new owner number should still take effect.
+    const handle = renderPhoneVerificationFlow({ currentPhoneNumber: null });
+    expect(
+      screen.getByRole("textbox", { name: "Phone number" }),
+    ).not.toBeNull();
+
+    handle.rerenderWithPhone("+16505550101");
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("textbox", { name: "Phone number" }),
+      ).toBeNull();
+    });
+  });
+});
+
+describe("the country picker starts on the person's own country", () => {
+  const realLanguage = navigator.language;
+
+  function setBrowserLocale(tag: string) {
+    Object.defineProperty(navigator, "language", {
+      value: tag,
+      configurable: true,
+    });
+  }
+
+  afterEach(() => {
+    setBrowserLocale(realLanguage);
+  });
+
+  it("selects India for a browser reporting en-IN", async () => {
+    // The founder tests from India. This defaulted to "United States (+1)",
+    // so a real Indian mobile was sent as +1<10 digits> -- a different number
+    // entirely. The code went nowhere and the test-number allowlist, which
+    // matches on the full E.164 string, could never match.
+    setBrowserLocale("en-IN");
+    renderPhoneVerificationFlow({ currentPhoneNumber: null });
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue(/India/i)).not.toBeNull();
+    });
+  });
+
+  it("leaves the United States selected for a US browser", async () => {
+    setBrowserLocale("en-US");
+    renderPhoneVerificationFlow({ currentPhoneNumber: null });
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue(/United States/i)).not.toBeNull();
+    });
+  });
+
+  it("keeps the country implied by an existing number over the browser locale", async () => {
+    // A person whose account already carries a US number must not have it
+    // silently re-pointed at India just because the browser says en-IN.
+    setBrowserLocale("en-IN");
+    renderPhoneVerificationFlow({ currentPhoneNumber: "+16505550101" });
+
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue(/India/i)).toBeNull();
+    });
+  });
+});
+
+
+describe("onboarding code presentation", () => {
+  it("keeps resend and change-number actions connected to the existing flow", async () => {
+    const { startVerification } = renderPhoneVerificationFlow({ codePresentation: "onboarding" });
+    await reachCodeStep(startVerification);
+    const resend = screen.getByRole("button", { name: "Resend code" });
+    expect(resend.closest("p")?.textContent).toContain("To confirm your account");
+    fireEvent.click(resend);
+    await waitFor(() => expect(startVerification).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "Use a Different number" }));
+    expect(await screen.findByRole("textbox", { name: "Phone number" })).toBeTruthy();
+  });
+  it("marks a rejected code and clears its error when corrected", async () => {
+    const confirmVerification = vi.fn().mockRejectedValue(Object.assign(new Error("Wrong code"), { code: "auth/invalid-verification-code" }));
+    const { startVerification } = renderPhoneVerificationFlow({ codePresentation: "onboarding", confirmVerification });
+    const input = await reachCodeStep(startVerification);
+    fireEvent.change(input, { target: { value: "123456" } });
+    fireEvent.submit(input.closest("form")!);
+    expect(await screen.findByText("That code isn't right. Check it and try again.")).toBeTruthy();
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    fireEvent.change(input, { target: { value: "12345" } });
+    expect(input.getAttribute("aria-invalid")).toBe("false");
   });
 });

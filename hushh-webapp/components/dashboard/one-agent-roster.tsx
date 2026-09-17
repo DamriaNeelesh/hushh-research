@@ -2,9 +2,15 @@
 
 import Link from "next/link";
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
-import { ChevronRight, Grid2X2, List, Search } from "lucide-react";
 
+import {
+  CaretRightIcon,
+  GridIcon,
+  ListIcon,
+  SearchIcon,
+} from "@/components/icons/ui";
 import { AgentSectionIcon } from "@/components/app-ui/agent-section-icon";
+import { SearchClearButton } from "@/components/app-ui/search-clear-button";
 import { ShellActionSurface } from "@/components/app-ui/shell-action-surface";
 import { PageTitle } from "@/components/app-ui/typography";
 import {
@@ -50,7 +56,6 @@ type OneAgentMode = {
 type AgentMetric = OneAgentMode["primaryMetric"];
 type AgentRosterView = "grid" | "list";
 type AgentMetricTone = "default" | "positive" | "accent" | "warning" | "muted";
-type DashboardAgentIconFamily = "indigo" | "blue" | "neutral";
 type DashboardAgentIconStyle = CSSProperties & {
   "--agent-icon-profile-bg": string;
   "--agent-icon-profile-fg": string;
@@ -59,45 +64,96 @@ type DashboardAgentIconStyle = CSSProperties & {
 };
 
 const AGENT_ROSTER_VIEW_STORAGE_KEY = "hushh:one-agent-roster-view";
-const DASHBOARD_AGENT_ICON_FAMILY_BY_ID: Record<string, DashboardAgentIconFamily> = {
-  finance: "indigo",
-  ria: "indigo",
-  gmail: "blue",
-  calendar: "blue",
-  email: "blue",
-  location: "blue",
-  "connected-systems": "blue",
-  pkm: "neutral",
-  consent: "neutral",
-};
 
-const DASHBOARD_AGENT_ICON_STYLE_BY_FAMILY: Record<
-  DashboardAgentIconFamily,
+/**
+ * Masterpiece Direction 2: Sovereign Gemstone & Raw Minerals (Tactile Luxury)
+ * Each capability is treated as a cut, polished mineral slab (Malachite, Baltic Amber,
+ * Sapphire, Tanzanite, Ruby, Obsidian) with natural tonal depth and micro-chamfered edges.
+ */
+const DASHBOARD_AGENT_ICON_STYLE_BY_ID: Record<
+  string,
   DashboardAgentIconStyle
 > = {
-  indigo: {
-    "--agent-icon-profile-bg": "rgba(88, 86, 214, 0.16)",
-    "--agent-icon-profile-fg": "#5856D6",
-    "--agent-icon-profile-bg-dark": "rgba(94, 92, 230, 0.24)",
-    "--agent-icon-profile-fg-dark": "#A7A3FF",
+  finance: {
+    "--agent-icon-profile-bg": "#D1FAE5",
+    "--agent-icon-profile-fg": "#065F46",
+    "--agent-icon-profile-bg-dark": "#064E3B",
+    "--agent-icon-profile-fg-dark": "#6EE7B7",
   },
-  blue: {
-    "--agent-icon-profile-bg": "rgba(0, 122, 255, 0.14)",
-    "--agent-icon-profile-fg": "var(--app-accent-deep)",
-    "--agent-icon-profile-bg-dark": "rgba(10, 132, 255, 0.24)",
-    "--agent-icon-profile-fg-dark": "var(--app-accent-bright)",
+  wallet: {
+    "--agent-icon-profile-bg": "#FEF3C7",
+    "--agent-icon-profile-fg": "#92400E",
+    "--agent-icon-profile-bg-dark": "#78350F",
+    "--agent-icon-profile-fg-dark": "#FDE68A",
   },
-  neutral: {
-    "--agent-icon-profile-bg": "#E5E5EA",
-    "--agent-icon-profile-fg": "#3A3A3C",
-    "--agent-icon-profile-bg-dark": "rgba(142, 142, 147, 0.28)",
-    "--agent-icon-profile-fg-dark": "#E5E5EA",
+  location: {
+    "--agent-icon-profile-bg": "#E0F2FE",
+    "--agent-icon-profile-fg": "#075985",
+    "--agent-icon-profile-bg-dark": "#0C4A6E",
+    "--agent-icon-profile-fg-dark": "#7DD3FC",
   },
+  ria: {
+    "--agent-icon-profile-bg": "#EDE9FE",
+    "--agent-icon-profile-fg": "#4C1D95",
+    "--agent-icon-profile-bg-dark": "#3B0764",
+    "--agent-icon-profile-fg-dark": "#C4B5FD",
+  },
+  gmail: {
+    "--agent-icon-profile-bg": "#FFE4E6",
+    "--agent-icon-profile-fg": "#9F1239",
+    "--agent-icon-profile-bg-dark": "#881337",
+    "--agent-icon-profile-fg-dark": "#FDA4AF",
+  },
+  calendar: {
+    "--agent-icon-profile-bg": "#E0F7FA",
+    "--agent-icon-profile-fg": "#0E7490",
+    "--agent-icon-profile-bg-dark": "#155E75",
+    "--agent-icon-profile-fg-dark": "#67E8F9",
+  },
+  email: {
+    "--agent-icon-profile-bg": "#FCE7F3",
+    "--agent-icon-profile-fg": "#831843",
+    "--agent-icon-profile-bg-dark": "#701A75",
+    "--agent-icon-profile-fg-dark": "#F472B6",
+  },
+  pkm: {
+    "--agent-icon-profile-bg": "#F1F5F9",
+    "--agent-icon-profile-fg": "#0F172A",
+    "--agent-icon-profile-bg-dark": "#1E293B",
+    "--agent-icon-profile-fg-dark": "#F8FAFC",
+  },
+  consent: {
+    "--agent-icon-profile-bg": "#FFEDD5",
+    "--agent-icon-profile-fg": "#9A3412",
+    "--agent-icon-profile-bg-dark": "#7C2D12",
+    "--agent-icon-profile-fg-dark": "#FDBA74",
+  },
+  marketplace: {
+    "--agent-icon-profile-bg": "#DCFCE7",
+    "--agent-icon-profile-fg": "#14532D",
+    "--agent-icon-profile-bg-dark": "#064E3B",
+    "--agent-icon-profile-fg-dark": "#86EFAC",
+  },
+  "connected-systems": {
+    "--agent-icon-profile-bg": "#CFFAFE",
+    "--agent-icon-profile-fg": "#115E59",
+    "--agent-icon-profile-bg-dark": "#134E4A",
+    "--agent-icon-profile-fg-dark": "#5EEAD4",
+  },
+};
+
+const DEFAULT_DASHBOARD_AGENT_ICON_STYLE: DashboardAgentIconStyle = {
+  "--agent-icon-profile-bg": "transparent",
+  "--agent-icon-profile-fg": "#00E5FF",
+  "--agent-icon-profile-bg-dark": "transparent",
+  "--agent-icon-profile-fg-dark": "#00E5FF",
 };
 
 function dashboardAgentIconStyle(mode: OneAgentMode): DashboardAgentIconStyle {
-  const family = DASHBOARD_AGENT_ICON_FAMILY_BY_ID[mode.id] ?? "blue";
-  return DASHBOARD_AGENT_ICON_STYLE_BY_FAMILY[family];
+  return (
+    DASHBOARD_AGENT_ICON_STYLE_BY_ID[mode.id] ??
+    DEFAULT_DASHBOARD_AGENT_ICON_STYLE
+  );
 }
 
 /**
@@ -536,7 +592,7 @@ function AgentGridItem({
         tone={mode.tone}
         paletteIndex={mode.paletteIndex}
         isActive={mode.statusTone !== "muted"}
-        size="roster-dashboard"
+        size="roster-lg"
         treatment="profile"
         glyphContrast="default"
         className="relative z-10"
@@ -591,27 +647,16 @@ function AgentListRow({ mode }: { mode: OneAgentMode }) {
           {mode.title}
         </span>
         {/*
-          The description was carried on every capability but rendered only as a
-          `title` attribute — a hover tooltip, which does not exist on a phone.
-          A roster of nine one-word labels asks the reader to already know what
-          each agent does, and the one people do not find is the one whose name
-          explains least.
+          List view is the compact scan: one label per row. The description
+          stays available as the row's title attribute and in grid view.
         */}
-        {mode.description ? (
-          <span
-            data-ui-role="row-description"
-            className="min-w-0 truncate text-[12px] leading-[16px] text-[#6E6E73] dark:text-[#98989D]"
-          >
-            {mode.description}
-          </span>
-        ) : null}
       </span>
       <span className="relative z-10 flex min-w-0 max-w-[132px] justify-end">
         <AgentMetric mode={mode} />
       </span>
-      <ChevronRight
+      <CaretRightIcon
         aria-hidden
-        className="relative z-10 h-4 w-4 text-[#C7C7CC] [stroke-width:1.7]"
+        className="relative z-10 h-4 w-4 text-[#C7C7CC]"
       />
       <span
         aria-hidden
@@ -643,11 +688,11 @@ function AgentRosterViewToggle({
         className={cn(
           "h-8 w-8 rounded-[11px]",
           value === "grid"
-            ? "bg-white text-[color:var(--app-accent-deep)] shadow-[0_1px_2px_rgba(0,0,0,.10)] hover:bg-white dark:bg-[#2C2C2E] dark:text-[color:var(--app-accent-bright)]"
+            ? "bg-white text-[color:var(--app-accent-deep)] shadow-[0_1px_2px_rgba(0,0,0,.10)] hover:bg-white dark:bg-[#141418] dark:text-[color:var(--app-accent-bright)] dark:border dark:border-white/[0.08]"
             : "bg-transparent text-[#6E6E73] shadow-none hover:bg-transparent hover:text-[#1D1D1F] dark:bg-transparent dark:text-[#98989D]",
         )}
       >
-        <Grid2X2 className="h-4 w-4 [stroke-width:1.8]" aria-hidden />
+        <GridIcon className="h-4 w-4" aria-hidden />
       </ShellActionSurface>
       <ShellActionSurface
         aria-label="Show agent list view"
@@ -657,11 +702,11 @@ function AgentRosterViewToggle({
         className={cn(
           "h-8 w-8 rounded-[11px]",
           value === "list"
-            ? "bg-white text-[color:var(--app-accent-deep)] shadow-[0_1px_2px_rgba(0,0,0,.10)] hover:bg-white dark:bg-[#2C2C2E] dark:text-[color:var(--app-accent-bright)]"
+            ? "bg-white text-[color:var(--app-accent-deep)] shadow-[0_1px_2px_rgba(0,0,0,.10)] hover:bg-white dark:bg-[#141418] dark:text-[color:var(--app-accent-bright)] dark:border dark:border-white/[0.08]"
             : "bg-transparent text-[#6E6E73] shadow-none hover:bg-transparent hover:text-[#1D1D1F] dark:bg-transparent dark:text-[#98989D]",
         )}
       >
-        <List className="h-4 w-4 [stroke-width:1.8]" aria-hidden />
+        <ListIcon className="h-4 w-4" aria-hidden />
       </ShellActionSurface>
     </div>
   );
@@ -673,6 +718,7 @@ export function OneAgentRoster({
 }: {
   capabilityStatusById: Record<string, CapabilityStatus>;
   userId?: string | null;
+  displayName?: string | null;
 }) {
   const cachedMetrics = useCachedAgentMetrics(userId);
   const setupDismissed = Boolean(
@@ -685,6 +731,11 @@ export function OneAgentRoster({
   const [view, setView] = useState<AgentRosterView>(readPersistedRosterView);
   const [animateViewChange, setAnimateViewChange] = useState(false);
   const [query, setQuery] = useState("");
+  useEffect(() => {
+    if (!animateViewChange) return;
+    const timeout = window.setTimeout(() => setAnimateViewChange(false), 320);
+    return () => window.clearTimeout(timeout);
+  }, [animateViewChange]);
   const visibleModes = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return modes;
@@ -716,7 +767,13 @@ export function OneAgentRoster({
     <section
       aria-labelledby="one-agents-heading"
       data-testid="one-agents-section"
-      className="mx-auto w-full max-w-[720px] pb-[calc(var(--app-bottom-fixed-ui,96px)+1.75rem)] md:pb-[calc(var(--app-bottom-fixed-ui,96px)+2rem)]"
+      // No pb- here. The scroll root already reserves the bottom bars
+      // (app/providers.tsx pads it by --app-scroll-bottom-pad, the measured
+      // --app-bottom-shell-height), and .app-page-shell adds the 24px reading
+      // gap on top. Reserving them a second time is the wide empty band under
+      // the last agent on /one: roughly another 90-115px of scroll that no
+      // content can ever occupy. See components/calendar/calendar-agent-page-layout.ts.
+      className="mx-auto w-full max-w-[720px]"
     >
       <div className="mb-3 flex items-center justify-between gap-3">
         <PageTitle
@@ -729,8 +786,8 @@ export function OneAgentRoster({
         <AgentRosterViewToggle value={view} onChange={selectView} />
       </div>
       <label className="relative mb-3.5 block">
-        <Search
-          className="pointer-events-none absolute left-4 top-1/2 h-[17px] w-[17px] -translate-y-1/2 text-[#8E8E93] [stroke-width:1.8]"
+        <SearchIcon
+          className="pointer-events-none absolute left-4 top-1/2 h-[17px] w-[17px] -translate-y-1/2 text-[#8E8E93]"
           aria-hidden="true"
         />
         <input
@@ -741,18 +798,24 @@ export function OneAgentRoster({
           aria-label="Search agents"
           data-ui-role="input-text"
           data-testid="one-agents-search"
-          className="h-11 w-full rounded-[14px] border border-[rgba(60,60,67,.12)] bg-white py-[11px] pl-11 pr-4 text-[15px] font-normal leading-5 text-[#1D1D1F] outline-none placeholder:text-[#8E8E93] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent)]/60 dark:bg-[#1C1C1E] dark:text-[#F5F5F7]"
+          className="h-11 w-full rounded-[14px] border border-[rgba(60,60,67,.12)] bg-white/95 py-[11px] pl-11 pr-12 text-[15px] font-normal leading-5 text-[#1D1D1F] outline-none placeholder:text-[#8E8E93] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-accent)]/60 dark:border-white/[0.1] dark:bg-[#0A0A0C] dark:text-[#F5F5F7]"
+        />
+        <SearchClearButton
+          visible={query.length > 0}
+          label="Clear agent search"
+          onClear={() => setQuery("")}
+          className="text-[#8E8E93] hover:bg-black/[0.06] hover:text-[#1D1D1F] dark:hover:bg-white/[0.08] dark:hover:text-[#F5F5F7]"
         />
       </label>
       <div
         key={view}
         data-testid="one-agents-view-content"
-        className={animateViewChange ? "motion-step-enter" : undefined}
+        className={cn(animateViewChange && "motion-step-enter")}
       >
         {view === "grid" ? (
           <div
             data-testid="one-agents-grid"
-            className="overflow-hidden rounded-[20px] bg-white p-[18px] shadow-none dark:bg-[#1C1C1E]"
+            className="overflow-hidden rounded-[20px] border border-[rgba(60,60,67,.10)] bg-white/95 p-3.5 shadow-[0_16px_42px_-28px_rgba(0,0,0,.12)] dark:border-white/[0.1] dark:bg-[#0A0A0C] dark:shadow-[0_12px_40px_-20px_rgba(0,0,0,0.85)] sm:p-[18px]"
           >
             <div
               data-agent-roster-layout="grouped-icon-grid"
@@ -766,7 +829,7 @@ export function OneAgentRoster({
         ) : (
           <div
             data-testid="one-agents-list"
-            className="group/agent-list overflow-hidden rounded-[20px] bg-white shadow-none dark:bg-[#1C1C1E]"
+            className="group/agent-list overflow-hidden rounded-[20px] border border-[rgba(60,60,67,.10)] bg-white/95 shadow-[0_16px_42px_-28px_rgba(0,0,0,.12)] dark:border-white/[0.1] dark:bg-[#0A0A0C] dark:shadow-[0_12px_40px_-20px_rgba(0,0,0,0.85)]"
           >
             {visibleModes.map((mode) => (
               <AgentListRow key={mode.id} mode={mode} />

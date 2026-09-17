@@ -97,6 +97,14 @@ class MyViewController: CAPBridgeViewController, WKScriptMessageHandler {
     
     override func viewDidLoad() {
         super.viewDidLoad()
+
+        // A fresh process starts unshielded. After an inactive transition this
+        // host keeps the native cover above the WebView until the resumed
+        // document explicitly acknowledges that it is ready to be shown.
+        HushhSessionPrivacyShield.shared.attach(to: view)
+        HushhSessionPrivacyShield.shared.reloadDocument = { [weak self] in
+            self?.webView?.reload()
+        }
         
         // Disable bounce effect for stable scrolling (fixes iOS layout bounce)
         if let webView = self.webView {
@@ -142,8 +150,11 @@ class MyViewController: CAPBridgeViewController, WKScriptMessageHandler {
         bridge?.registerPluginInstance(HushhNotificationsPlugin())
         bridge?.registerPluginInstance(HushhLocationPlugin())
         bridge?.registerPluginInstance(HushhContactsPlugin())
+        bridge?.registerPluginInstance(HushhInvitationsPlugin())
+        bridge?.registerPluginInstance(HushhVoiceInvocationPlugin())
+        bridge?.registerPluginInstance(HushhSessionPrivacyPlugin())
         
-        print("✅ [MyViewController] All 12 plugins registered successfully:")
+        print("✅ [MyViewController] All 15 plugins registered successfully:")
         print("   - HushhAuth (Google Sign-In)")
         print("   - HushhVault (Encryption + Cloud DB)")
         print("   - HushhConsent (Token Management)")
@@ -156,6 +167,8 @@ class MyViewController: CAPBridgeViewController, WKScriptMessageHandler {
         print("   - HushhNotifications (Push Token Registration)")
         print("   - HushhLocation (Foreground Location)")
         print("   - HushhContacts (Contact Matching)")
+        print("   - HushhVoiceInvocation (Siri voice + generated action handoff)")
+        print("   - HushhSessionPrivacy (resume privacy shield)")
         
         // Verify plugins are actually accessible by the bridge
         verifyPluginRegistration()
@@ -177,7 +190,10 @@ class MyViewController: CAPBridgeViewController, WKScriptMessageHandler {
             "HushhAccount",
             "HushhNotifications",
             "HushhLocation",
-            "HushhContacts"
+            "HushhContacts",
+            "HushhInvitations",
+            "HushhVoiceInvocation",
+            "HushhSessionPrivacy"
         ]
         
         for name in pluginNames {
