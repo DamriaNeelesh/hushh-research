@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowLeft, ExternalLink, GraduationCap, Linkedin, User } from "lucide-react";
+import { ArrowLeft, ExternalLink, Globe, GraduationCap, Linkedin, User } from "lucide-react";
 import {
   AppPageShell,
   AppPageHeaderRegion,
@@ -24,6 +24,11 @@ const FOUNDER_LINKS = [
     label: "@manish_sainani on X",
     href: "https://x.com/manish_sainani",
     icon: ExternalLink,
+  },
+  {
+    label: "Wikidata (Q141478333)",
+    href: "https://www.wikidata.org/wiki/Q141478333",
+    icon: Globe,
   },
 ];
 
