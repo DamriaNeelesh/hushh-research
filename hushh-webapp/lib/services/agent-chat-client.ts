@@ -2,6 +2,10 @@ import { ApiService } from "@/lib/services/api-service";
 import { projectCustomConnectorTurnConfigurations, type CustomConnectorConfiguration } from "@/lib/connections/custom-connector-configuration";
 import { nativeStreamFetch } from "@/lib/services/native-sse-fetch";
 import { parseConnectorReadReceipt, type ConnectorReadExperience } from "@/lib/agent/connector-read-receipt";
+import {
+  parseDriveBatchProgressActivity,
+  type DriveBatchProgress,
+} from "@/lib/agent/drive-batch-progress";
 import { HttpAgent, type AgentSubscriber, type Tool } from "@ag-ui/client";
 import { applyPatch, type Operation } from "fast-json-patch";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
@@ -110,6 +114,8 @@ export type AgentChatStreamHandlers = {
   onSources?: (sources: AgentSource[]) => void;
   /** The optional id is the AG-UI activity/tool identity for transport dedupe. */
   onStructuredExperience?: (experience: AgentStructuredExperience, eventId?: string) => void;
+  /** Owner-only count progress from a server AG-UI activity; never inferred from time. */
+  onDriveBatchProgress?: (progress: DriveBatchProgress, eventId?: string) => void;
   onSpecialistDirective?: (directive: SpecialistDirectiveEvent) => void;
   /**
    * The server's id for this turn's answer (the ADK event id), from the run's
@@ -827,9 +833,11 @@ export async function streamAgentChat(input: {
         const payload = toolPayload(event.toolCallId, toolName);
         payload.execution = "server";
         const source = toolName === "ask_email_agent" ? "Mail" : "Drive";
-        const statusChecked = toolName === "inspect_selected_drive_files" && parseRecord(event.content)?.status === "ok";
-        payload.message = statusChecked
-          ? "Drive status checked."
+        const isStatusCheck = toolName === "inspect_selected_drive_files";
+        payload.message = isStatusCheck
+          ? parseRecord(event.content)?.status === "ok"
+            ? "Drive status checked."
+            : "Drive status could not be checked."
           : readExperience?.status === "ok"
             ? readExperience.connector === "drive" && readExperience.metadataOnly
               ? "Drive search finished."
@@ -940,6 +948,10 @@ export async function streamAgentChat(input: {
       }
     },
     onActivitySnapshotEvent: ({ event }) => {
+      const progress = parseDriveBatchProgressActivity(event.activityType, event.content);
+      if (progress) {
+        handlers.onDriveBatchProgress?.(progress, String(event.messageId || "").trim() || undefined);
+      }
       const experience = parseAgentActivityExperience(
         event.activityType,
         event.content,
@@ -963,6 +975,13 @@ export async function streamAgentChat(input: {
           // Do not emit a stale structured card when this delta is malformed.
           return;
         }
+      }
+      const progress = parseDriveBatchProgressActivity(
+        activityMessage?.activityType || event.activityType,
+        content,
+      );
+      if (progress) {
+        handlers.onDriveBatchProgress?.(progress, String(event.messageId || "").trim() || undefined);
       }
       const experience = parseAgentActivityExperience(
         activityMessage?.activityType || event.activityType,

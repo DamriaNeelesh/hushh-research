@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
   AppStreamPanel,
@@ -12,6 +12,12 @@ import type {
   AgentStructuredExperience,
   AgentStructuredExperienceWithPresentation,
 } from "@/lib/agent/agui-structured-experiences";
+import {
+  driveBatchProgressPercent,
+  type DriveBatchProgress,
+  type DriveCompilationUiState,
+} from "@/lib/agent/drive-batch-progress";
+import { driveOwnerCompileKey, type DriveOwnerCompileWindow } from "@/lib/agent/connector-read-receipt";
 import type { AgentChatToolEvent, AgentSource } from "@/lib/services/agent-chat-client";
 import type { WorkspaceConnectorProvider } from "@/lib/agent/connector-read-receipt";
 import { ConnectorBrandMark, connectorBrandFor, type ConnectorBrand } from "@/components/agent/connector-brand-mark";
@@ -30,6 +36,8 @@ export type AgentVisibleStreamEvent = {
   /** Opaque owner connector id on a restored step, resolved to the owner's name from the vault. */
   connectorId?: string;
   createdAtMs: number;
+  durationMs?: number;
+  batchProgress?: DriveBatchProgress;
 };
 
 /** Only app-owned tool identities map to a product mark; provider text never does. */
@@ -61,6 +69,9 @@ export type AgentTurnStreamPanelProps = {
   }>;
   onOpenConnections?: (provider: WorkspaceConnectorProvider, trigger: HTMLButtonElement) => void;
   onInformationRequestSubmitted?: (activityId: string, receipt: InformationRequestSubmissionReceipt) => Promise<void>;
+  onCompileDriveNotes?: (query: string, window: DriveOwnerCompileWindow) => void;
+  onDownloadDriveNotes?: () => void;
+  driveCompilation?: DriveCompilationUiState;
 };
 
 const MAX_VISIBLE_SOURCES = 8;
@@ -164,6 +175,53 @@ export function agentToolEventToVisibleStreamEvent(
   };
 }
 
+function unreadableNote(count: number): string {
+  return count > 0
+    ? ` ${count} ${count === 1 ? "file" : "files"} could not be read or processed.`
+    : "";
+}
+
+export function driveBatchProgressToVisibleStreamEvent(
+  progress: DriveBatchProgress,
+  eventId?: string,
+  nowMs = Date.now(),
+): AgentVisibleStreamEvent {
+  const message = (() => {
+    switch (progress.phase) {
+      case "searching":
+        return "Finding matching Drive files.";
+      case "fetching":
+        return progress.total === 0
+          ? "Reading matching Drive files."
+          : `Checked ${progress.completed} of ${progress.total} files.${unreadableNote(progress.failed)}`;
+      case "summarizing":
+        return `Summarized ${progress.completed} of ${progress.total} readable files.${unreadableNote(progress.failed)}`;
+      case "finalizing":
+        return "Putting the checked notes into a Markdown file.";
+      case "complete":
+        return `Document batch complete.${unreadableNote(progress.failed)}`;
+      case "partial":
+        return `Document batch finished with some files unavailable.${unreadableNote(progress.failed)}`;
+      case "error":
+        return `Document batch stopped before completion.${unreadableNote(progress.failed)}`;
+    }
+  })();
+  return {
+    id: `drive-batch-progress:${eventId || "current"}`,
+    label: "Google Drive",
+    message,
+    status: progress.phase === "error"
+      ? "error"
+      : progress.phase === "partial"
+        ? "blocked"
+        : progress.phase === "complete"
+          ? "done"
+          : "running",
+    createdAtMs: nowMs,
+    batchProgress: progress,
+  };
+}
+
 export function AgentTurnStreamPanel({
   streamEvents,
   thinkingSummary = "",
@@ -178,7 +236,36 @@ export function AgentTurnStreamPanel({
   structuredExperiences = [],
   onOpenConnections,
   onInformationRequestSubmitted,
+  onCompileDriveNotes,
+  onDownloadDriveNotes,
+  driveCompilation,
 }: AgentTurnStreamPanelProps) {
+  const turnStartedAt = useRef<number | null>(null);
+  const [firstTextMs, setFirstTextMs] = useState<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+  const [timingPhase, setTimingPhase] = useState<"idle" | "running" | "done">("idle");
+  useEffect(() => {
+    if (isStreaming && timingPhase !== "running") {
+      turnStartedAt.current = performance.now();
+      setFirstTextMs(null);
+      setElapsedMs(0);
+      setTimingPhase("running");
+    } else if (!isStreaming && timingPhase === "running") {
+      if (turnStartedAt.current !== null)
+        setElapsedMs(Math.max(0, performance.now() - turnStartedAt.current));
+      setTimingPhase("done");
+    }
+    if (!isStreaming) return;
+    const timer = window.setInterval(() => {
+      if (turnStartedAt.current !== null)
+        setElapsedMs(Math.max(0, performance.now() - turnStartedAt.current));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isStreaming, timingPhase]);
+  useEffect(() => {
+    if (firstTextMs === null && responseText.trim() && turnStartedAt.current !== null)
+      setFirstTextMs(Math.max(0, performance.now() - turnStartedAt.current));
+  }, [firstTextMs, responseText]);
   const progressItems = useMemo<AppStreamProgressItem[]>(
     () =>
       streamEvents.map((event) => ({
@@ -188,10 +275,17 @@ export function AgentTurnStreamPanel({
         status: event.status,
         tag: event.tag,
         ...(event.brand ? { mark: <ConnectorBrandMark brand={event.brand} size="sm" /> } : {}),
+        durationMs: event.durationMs,
       })),
     [streamEvents]
   );
   const specialistItems = useMemo(() => normalizeSpecialistSources(sources), [sources]);
+  const currentBatchProgress = [...streamEvents].reverse().find((event) =>
+    event.status === "running" && event.batchProgress,
+  )?.batchProgress;
+  // The owner starts a compilation from a completed chat turn. Keep its meter
+  // active while the separate authenticated Drive stream is running.
+  const batchIsStreaming = isStreaming || driveCompilation?.status === "running";
   const preparingPrivateMemory = streamEvents.some(
     (event) =>
       event.id === PRIVATE_MEMORY_PREPARATION_EVENT_ID &&
@@ -211,6 +305,19 @@ export function AgentTurnStreamPanel({
     <AppStreamPanel
       title="One activity"
       progressItems={[...progressItems, ...specialistItems]}
+      progressValue={batchIsStreaming && currentBatchProgress
+        ? driveBatchProgressPercent(currentBatchProgress)
+        : null}
+      progressIndeterminate={Boolean(
+        batchIsStreaming && currentBatchProgress &&
+        (currentBatchProgress.phase === "searching" ||
+          (currentBatchProgress.phase === "fetching" && currentBatchProgress.total === 0) ||
+          currentBatchProgress.phase === "summarizing" ||
+          currentBatchProgress.phase === "finalizing"),
+      )}
+      statusMessage={elapsedMs === null || (isStreaming ? timingPhase !== "running" : timingPhase !== "done") ? undefined : isStreaming
+        ? `Working for ${Math.floor(elapsedMs / 1000)}s`
+        : `${isError ? "Stopped" : "Response complete"} in ${(elapsedMs / 1000).toFixed(1)}s${firstTextMs === null ? "" : ` · first text in ${(firstTextMs / 1000).toFixed(1)}s`}`}
       responseText={responseText}
       response={response}
       thinkingTitle="Thinking summary"
@@ -224,20 +331,30 @@ export function AgentTurnStreamPanel({
       structuredContent={
         experienceItems.length > 0 ? (
           <div className="space-y-3">
-            {experienceItems.map(({ id, experience }) => (
-              <AgentStructuredExperienceView
+            {experienceItems.map(({ id, experience }) => {
+              const scopedCompilation = experience.type === "one.connector_read.v1" &&
+                experience.connector === "drive" && experience.ownerCompileQuery &&
+                experience.ownerCompileWindow && driveCompilation?.sourceKey ===
+                  driveOwnerCompileKey(experience.ownerCompileQuery, experience.ownerCompileWindow)
+                ? driveCompilation : undefined;
+              return <AgentStructuredExperienceView
                 key={id}
                 experience={experience}
                 onOpenConnections={onOpenConnections}
                 onInformationRequestSubmitted={onInformationRequestSubmitted
                   ? (receipt) => onInformationRequestSubmitted(id, receipt) : undefined}
-              />
-            ))}
+                onCompileDriveNotes={onCompileDriveNotes}
+                onDownloadDriveNotes={scopedCompilation ? onDownloadDriveNotes : undefined}
+                driveCompilation={scopedCompilation}
+              />;
+            })}
           </div>
         ) : null
       }
       responsePendingLabel={
-        preparingPrivateMemory ? undefined : "One is preparing your response."
+        preparingPrivateMemory || currentBatchProgress
+          ? undefined
+          : "One is preparing your response."
       }
       isStreaming={isStreaming}
       isError={isError}

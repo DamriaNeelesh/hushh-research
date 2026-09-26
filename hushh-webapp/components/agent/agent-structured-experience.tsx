@@ -18,6 +18,8 @@ import {
   ConnectorReadReceipt,
   WorkspaceConnectorSetupCard,
 } from "@/components/agent/connector-read-receipt";
+import type { DriveCompilationUiState } from "@/lib/agent/drive-batch-progress";
+import type { DriveOwnerCompileWindow } from "@/lib/agent/connector-read-receipt";
 import { DocumentRequestButton } from "@/components/consent/document-request-button";
 import { DriveOwnerShareCard } from "@/components/consent/drive-owner-share-card";
 import { DriveCircleShareCard } from "@/components/consent/drive-circle-share-card";
@@ -66,15 +68,23 @@ export function AgentStructuredExperienceView({
   experience,
   onOpenConnections,
   onInformationRequestSubmitted,
+  onCompileDriveNotes,
+  onDownloadDriveNotes,
+  driveCompilation,
 }: {
   experience: AgentStructuredExperience;
   onOpenConnections?: (provider: WorkspaceConnectorProvider, trigger: HTMLButtonElement) => void;
   onInformationRequestSubmitted?: (receipt: InformationRequestSubmissionReceipt) => Promise<void>;
+  onCompileDriveNotes?: (query: string, window: DriveOwnerCompileWindow) => void;
+  onDownloadDriveNotes?: () => void;
+  driveCompilation?: DriveCompilationUiState;
 }) {
   const selectPerson = useContext(AgentPersonSelectionContext);
   switch (experience.type) {
     case "one.connector_read.v1":
-      return <ConnectorReadReceipt experience={experience} onOpenConnections={onOpenConnections} />;
+      return <ConnectorReadReceipt experience={experience} onOpenConnections={onOpenConnections}
+        onCompileDriveNotes={onCompileDriveNotes} onDownloadDriveNotes={onDownloadDriveNotes}
+        driveCompilation={driveCompilation} />;
     case "one.workspace_connector_setup.v1":
       return <WorkspaceConnectorSetupCard experience={experience} onOpenConnections={onOpenConnections} />;
     case "one.person_selection.v1":
@@ -108,7 +118,7 @@ export function AgentStructuredExperienceView({
       return experience.audience === "trusted_circle" || !experience.personRef || !experience.personName
         ? <ExperienceShell experienceType={experience.type} label="Drive sharing"
             title="Share Drive files with your Trusted circle"
-            summary="Find the files, check who gets them, then share." icon={<FileCheck2 className="size-5" />}>
+            summary="" icon={<FileCheck2 className="size-5" />}>
             <DriveCircleShareCard clientRequestId={experience.clientRequestId}
               filesRequest={experience.filesRequest} />
           </ExperienceShell>
@@ -160,7 +170,7 @@ function ExperienceShell({
         <div className="min-w-0 flex-1">
           <p className="ui-text-section-label text-accent-strong">{label}</p>
           <h3 className="mt-1 text-base font-semibold tracking-[-0.015em] text-foreground">{title}</h3>
-          <p className="mt-1 text-sm leading-5 text-muted-foreground">{summary}</p>
+          {summary ? <p className="mt-1 text-sm leading-5 text-muted-foreground">{summary}</p> : null}
         </div>
       </header>
       <div className="bg-background/72 px-4 py-4 backdrop-blur-xl sm:px-5">{children}</div>

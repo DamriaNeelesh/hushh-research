@@ -84,7 +84,9 @@ import {
   AgentTurnStreamPanel,
   PRIVATE_MEMORY_PREPARATION_EVENT_ID,
   agentToolEventToVisibleStreamEvent,
+  driveBatchProgressToVisibleStreamEvent,
 } from "@/components/agent/agent-turn-stream-panel";
+import { driveOwnerCompileKey } from "@/lib/agent/connector-read-receipt";
 import type { AgentChatToolEvent } from "@/lib/services/agent-chat-client";
 
 function makeToolEvent(overrides: Partial<AgentChatToolEvent> = {}): AgentChatToolEvent {
@@ -143,7 +145,10 @@ describe("AgentTurnStreamPanel", () => {
     expect(screen.queryByText("Mail 1")).not.toBeInTheDocument();
   });
   it("renders tool progress without leaking raw action payloads", () => {
-    const event = agentToolEventToVisibleStreamEvent("waiting", makeToolEvent(), 1_700_000);
+    const event = {
+      ...agentToolEventToVisibleStreamEvent("result", makeToolEvent(), 1_700_000),
+      durationMs: 1300,
+    };
 
     render(
       <AgentTurnStreamPanel
@@ -156,9 +161,31 @@ describe("AgentTurnStreamPanel", () => {
     expect(screen.getByText("Activity")).toBeInTheDocument();
     expect(screen.getByText("Open workspace")).toBeInTheDocument();
     expect(screen.getByText("Opening the right workspace.")).toBeInTheDocument();
+    expect(screen.getByText("1.3s").getAttribute("data-operation-timing")).toBe("done");
     expect(screen.queryByText("route.private.internal")).not.toBeInTheDocument();
     expect(screen.queryByText("hidden")).not.toBeInTheDocument();
     expect(screen.queryByText("Preparing response")).not.toBeInTheDocument();
+  });
+
+  it("shows time to first text and total response time without request content in timing tags", async () => {
+    let now = 1000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const { rerender } = render(<AgentTurnStreamPanel streamEvents={[]} responseText="" isStreaming />);
+    now = 1800;
+    rerender(<AgentTurnStreamPanel streamEvents={[]} responseText="A private answer" isStreaming />);
+    now = 3000;
+    rerender(<AgentTurnStreamPanel streamEvents={[]} responseText="A private answer" isStreaming={false} />);
+    expect(await screen.findByText("Response complete in 2.0s · first text in 0.8s")).toBeInTheDocument();
+    expect(screen.queryByText(/A private answer.*time/)).not.toBeInTheDocument();
+    now = 5000;
+    rerender(<AgentTurnStreamPanel streamEvents={[]} responseText="" isStreaming />);
+    expect(screen.queryByText("Response complete in 2.0s · first text in 0.8s")).not.toBeInTheDocument();
+    now = 5400;
+    rerender(<AgentTurnStreamPanel streamEvents={[]} responseText="Another answer" isStreaming />);
+    now = 6000;
+    rerender(<AgentTurnStreamPanel streamEvents={[]} responseText="Another answer" isStreaming={false} />);
+    expect(await screen.findByText("Response complete in 1.0s · first text in 0.4s")).toBeInTheDocument();
+    clock.mockRestore();
   });
 
   it("uses the originating call for a parked directive so one tool stays one activity", () => {
@@ -223,6 +250,145 @@ describe("AgentTurnStreamPanel", () => {
     );
     expect(screen.getByText("Private memory ready.")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("One is preparing your response.");
+  });
+
+  it("shows only reported Drive file counts and advances the meter from actual checks", () => {
+    const first = driveBatchProgressToVisibleStreamEvent(
+      { phase: "fetching", completed: 1, total: 30, failed: 0 }, "activity-1", 1_700_001,
+    );
+    const { rerender } = render(
+      <AgentTurnStreamPanel streamEvents={[first]} responseText="" isStreaming />,
+    );
+
+    expect(screen.getByText("Checked 1 of 30 files.")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", String(100 / 30));
+    expect(screen.queryByText("One is preparing your response.")).not.toBeInTheDocument();
+
+    const second = driveBatchProgressToVisibleStreamEvent(
+      { phase: "fetching", completed: 2, total: 30, failed: 1 }, "activity-1", 1_700_002,
+    );
+    expect(second.id).toBe(first.id);
+    rerender(<AgentTurnStreamPanel streamEvents={[second]} responseText="" isStreaming />);
+    expect(screen.getByText("Checked 2 of 30 files. 1 file could not be read or processed.")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", String(200 / 30));
+    expect(screen.queryByText("Checked 1 of 30 files.")).not.toBeInTheDocument();
+  });
+
+  it("does not show a made-up percentage before the server knows the batch size", () => {
+    const searching = driveBatchProgressToVisibleStreamEvent(
+      { phase: "searching", completed: 0, total: 0, failed: 0 }, "activity-1", 1_700_001,
+    );
+    const { rerender } = render(
+      <AgentTurnStreamPanel streamEvents={[searching]} responseText="" isStreaming />,
+    );
+    expect(screen.getByText("Finding matching Drive files.")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+
+    const finished = driveBatchProgressToVisibleStreamEvent(
+      { phase: "partial", completed: 29, total: 30, failed: 1 }, "activity-1", 1_700_002,
+    );
+    rerender(<AgentTurnStreamPanel streamEvents={[finished]} responseText="The available notes are below." isStreaming={false} />);
+    expect(screen.getByText(/Document batch finished with some files unavailable/)).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("keeps real progress visible when owner compilation runs after the chat turn", () => {
+    const searching = driveBatchProgressToVisibleStreamEvent(
+      { phase: "searching", completed: 0, total: 0, failed: 0 }, "owner-compile", 1_700_001,
+    );
+    const { container, rerender } = render(
+      <AgentTurnStreamPanel streamEvents={[searching]} responseText="Drive matches found."
+        isStreaming={false} driveCompilation={{ status: "running" }} />,
+    );
+    expect(container.querySelector(".animate-pulse")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+
+    const fetching = driveBatchProgressToVisibleStreamEvent(
+      { phase: "fetching", completed: 0, total: 0, failed: 0 }, "owner-compile", 1_700_002,
+    );
+    rerender(<AgentTurnStreamPanel streamEvents={[fetching]} responseText="Drive matches found."
+      isStreaming={false} driveCompilation={{ status: "running" }} />);
+    expect(container.querySelector(".animate-pulse")).toBeInTheDocument();
+
+    const checked = driveBatchProgressToVisibleStreamEvent(
+      { phase: "fetching", completed: 1, total: 30, failed: 0 }, "owner-compile", 1_700_003,
+    );
+    rerender(<AgentTurnStreamPanel streamEvents={[checked]} responseText="Drive matches found."
+      isStreaming={false} driveCompilation={{ status: "running" }} />);
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", String(100 / 30));
+  });
+
+  it("offers compilation only for an owner-authorized metadata receipt", () => {
+    const onCompileDriveNotes = vi.fn();
+    const onDownloadDriveNotes = vi.fn();
+    const experience = {
+      type: "one.connector_read.v1" as const, connector: "drive" as const,
+      status: "ok" as const, sourceRefs: [], metadataOnly: true, truncated: false,
+      ownerCompileAvailable: true, ownerCompileQuery: "share all last 30 days standup notes",
+      ownerCompileWindow: { start_date: "2026-08-27", end_date: "2026-09-25",
+        timezone: "Asia/Kolkata" },
+    };
+    const { rerender } = render(<AgentTurnStreamPanel streamEvents={[]} responseText=""
+      isStreaming={false} structuredExperience={experience}
+      onCompileDriveNotes={onCompileDriveNotes} onDownloadDriveNotes={onDownloadDriveNotes} />);
+    fireEvent.click(screen.getByRole("button", { name: "Compile original notes" }));
+    expect(onCompileDriveNotes).toHaveBeenCalledWith(
+      experience.ownerCompileQuery, experience.ownerCompileWindow,
+    );
+    expect(screen.queryByRole("list", { name: "Document sources" })).not.toBeInTheDocument();
+
+    rerender(<AgentTurnStreamPanel streamEvents={[]} responseText="" isStreaming={false}
+      structuredExperience={experience} onCompileDriveNotes={onCompileDriveNotes}
+      onDownloadDriveNotes={onDownloadDriveNotes}
+      driveCompilation={{ status: "partial", matched: 30, included: 29, failed: 1,
+        sourceKey: driveOwnerCompileKey(experience.ownerCompileQuery, experience.ownerCompileWindow) }} />);
+    expect(screen.getByText(/Compiled 29 of 30 matching files/)).toBeInTheDocument();
+    expect(screen.getByText(/Some notes were unavailable or omitted/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Download Markdown notes" }));
+    expect(onDownloadDriveNotes).toHaveBeenCalledOnce();
+
+    rerender(<AgentTurnStreamPanel streamEvents={[]} responseText="" isStreaming={false}
+      structuredExperience={{ ...experience, ownerCompileAvailable: false }}
+      onCompileDriveNotes={onCompileDriveNotes} />);
+    expect(screen.queryByRole("button", { name: "Compile original notes" })).not.toBeInTheDocument();
+
+    rerender(<AgentTurnStreamPanel streamEvents={[]} responseText="" isStreaming={false}
+      structuredExperience={{ ...experience, ownerCompileWindow: undefined }}
+      onCompileDriveNotes={onCompileDriveNotes} />);
+    expect(screen.queryByRole("button", { name: "Compile original notes" })).not.toBeInTheDocument();
+  });
+
+  it("sends each listing button's own validated query and window", () => {
+    const onCompileDriveNotes = vi.fn();
+    const first = {
+      type: "one.connector_read.v1" as const, connector: "drive" as const,
+      status: "ok" as const, sourceRefs: [], metadataOnly: true, truncated: false,
+      ownerCompileAvailable: true, ownerCompileQuery: "all last 30 days standup notes",
+      ownerCompileWindow: { start_date: "2026-08-27", end_date: "2026-09-25",
+        timezone: "Asia/Kolkata" },
+    };
+    const second = {
+      ...first, ownerCompileQuery: "all last 7 days planning notes",
+      ownerCompileWindow: { start_date: "2026-09-19", end_date: "2026-09-25",
+        timezone: "Asia/Kolkata" },
+    };
+    const { rerender } = render(<AgentTurnStreamPanel streamEvents={[]} responseText="" isStreaming={false}
+      structuredExperiences={[{ id: "first", experience: first }, { id: "second", experience: second }]}
+      onCompileDriveNotes={onCompileDriveNotes} />);
+    const buttons = screen.getAllByRole("button", { name: "Compile original notes" });
+    fireEvent.click(buttons[0]!);
+    fireEvent.click(buttons[1]!);
+    expect(onCompileDriveNotes.mock.calls).toEqual([
+      [first.ownerCompileQuery, first.ownerCompileWindow],
+      [second.ownerCompileQuery, second.ownerCompileWindow],
+    ]);
+    rerender(<AgentTurnStreamPanel streamEvents={[]} responseText="" isStreaming={false}
+      structuredExperiences={[{ id: "first", experience: first }, { id: "second", experience: second }]}
+      onCompileDriveNotes={onCompileDriveNotes} onDownloadDriveNotes={vi.fn()}
+      driveCompilation={{ status: "ready", matched: 30, included: 30, failed: 0,
+        sourceKey: driveOwnerCompileKey(first.ownerCompileQuery, first.ownerCompileWindow) }} />);
+    expect(screen.getAllByRole("button", { name: "Download Markdown notes" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Compile original notes" })).toHaveLength(1);
   });
 
   it("never renders legacy reasoning during a turn or after the answer arrives", () => {

@@ -4710,7 +4710,7 @@
       "surface_map_present": true,
       "route_contract_present": true,
       "evidence": {
-        "cache_service": false,
+        "cache_service": true,
         "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
@@ -6287,5 +6287,5 @@
       ]
     }
   ],
-  "content_sha256": "24004821cc839dfd514f8387ea99061acb017626b0286ec9cf3bb276b3aaee71"
+  "content_sha256": "1b0ccdf5e70749b4870222f335e7cd23a6e788f3c1eee78e0f8732e140438220"
 }

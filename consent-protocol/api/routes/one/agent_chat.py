@@ -23,7 +23,6 @@ from starlette.concurrency import run_in_threadpool
 from api.middleware import require_vault_owner_token
 from api.middlewares.chat_key import CHAT_KEY_REQUIRED_DETAIL, require_vault_owner_chat_key
 from api.routes.one.agent_context import sanitize_agent_context
-from api.routes.one.command_proposals import router as command_proposals_router
 from api.utils.firebase_auth import verify_firebase_bearer
 from hushh_mcp.one_adk.agent_tree import (
     ONE_APP_NAME,
@@ -1475,6 +1474,3 @@ async def search_actions_endpoint(
         "total": len(results),
         "results": results,
     }
-
-
-router.include_router(command_proposals_router)
