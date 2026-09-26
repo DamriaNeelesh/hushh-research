@@ -52,7 +52,8 @@ def test_every_delete_targets_only_unmarked_chat_rows() -> None:
         "one_adk_sessions",
     }
     for _table, where in deletes:
-        assert f"NOT LIKE '{MARKER}%'" in where
+        assert re.search(r"substr\((?:\w\.)?\w+_ciphertext, 1, 14\) <> 'hussh-chat-v1:'", where)
+    assert len(MARKER) == 14
     assert "one_capability_runs" not in sql.split("Not touched:")[0]
     assert "DELETE FROM one_capability_runs" not in sql
     assert "person-key rows changed" in sql  # post-condition self-guard

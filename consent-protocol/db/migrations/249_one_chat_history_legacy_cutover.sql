@@ -13,7 +13,8 @@
 -- This runs on every deploy lane in replay mode, and the deploy that ships the
 -- person-key code IS the cutover. It is therefore idempotent and self-guarded:
 --   * it deletes ONLY rows whose ciphertext lacks the marker, tested in SQL on
---     the ciphertext column itself;
+--     the first 14 characters of the ciphertext column itself (substr reads only
+--     the start of a TOASTed value, so the scan stays cheap as history grows);
 --   * it never deletes a conversation that still holds a person-key message
 --     (that delete would cascade into a row this must keep);
 --   * it counts person-key rows before and after and RAISEs, rolling the whole
@@ -62,18 +63,18 @@ BEGIN
     IN SHARE ROW EXCLUSIVE MODE;
 
   SELECT COUNT(*) INTO person_sessions_before
-  FROM one_adk_sessions WHERE payload_ciphertext LIKE 'hussh-chat-v1:%';
+  FROM one_adk_sessions WHERE substr(payload_ciphertext, 1, 14) = 'hussh-chat-v1:';
   SELECT COUNT(*) INTO person_conversations_before
-  FROM agent_chat_conversations WHERE title_ciphertext LIKE 'hussh-chat-v1:%';
+  FROM agent_chat_conversations WHERE substr(title_ciphertext, 1, 14) = 'hussh-chat-v1:';
   SELECT COUNT(*) INTO person_messages_before
-  FROM agent_chat_messages WHERE content_ciphertext LIKE 'hussh-chat-v1:%';
+  FROM agent_chat_messages WHERE substr(content_ciphertext, 1, 14) = 'hussh-chat-v1:';
 
   DELETE FROM agent_chat_messages
-  WHERE content_ciphertext NOT LIKE 'hussh-chat-v1:%';
+  WHERE substr(content_ciphertext, 1, 14) <> 'hussh-chat-v1:';
 
   SELECT COUNT(*) INTO kept_conversations
   FROM agent_chat_conversations AS c
-  WHERE (c.title_ciphertext IS NULL OR c.title_ciphertext NOT LIKE 'hussh-chat-v1:%')
+  WHERE (c.title_ciphertext IS NULL OR substr(c.title_ciphertext, 1, 14) <> 'hussh-chat-v1:')
     AND EXISTS (SELECT 1 FROM agent_chat_messages AS m WHERE m.conversation_id = c.id);
   IF kept_conversations > 0 THEN
     RAISE NOTICE
@@ -82,19 +83,19 @@ BEGIN
   END IF;
 
   DELETE FROM agent_chat_conversations AS c
-  WHERE (c.title_ciphertext IS NULL OR c.title_ciphertext NOT LIKE 'hussh-chat-v1:%')
+  WHERE (c.title_ciphertext IS NULL OR substr(c.title_ciphertext, 1, 14) <> 'hussh-chat-v1:')
     AND NOT EXISTS (SELECT 1 FROM agent_chat_messages AS m WHERE m.conversation_id = c.id);
 
   -- One chat sessions and command checkpoints (app_name 'one.location.commands.v1').
   DELETE FROM one_adk_sessions
-  WHERE payload_ciphertext NOT LIKE 'hussh-chat-v1:%';
+  WHERE substr(payload_ciphertext, 1, 14) <> 'hussh-chat-v1:';
 
   SELECT COUNT(*) INTO person_sessions_after
-  FROM one_adk_sessions WHERE payload_ciphertext LIKE 'hussh-chat-v1:%';
+  FROM one_adk_sessions WHERE substr(payload_ciphertext, 1, 14) = 'hussh-chat-v1:';
   SELECT COUNT(*) INTO person_conversations_after
-  FROM agent_chat_conversations WHERE title_ciphertext LIKE 'hussh-chat-v1:%';
+  FROM agent_chat_conversations WHERE substr(title_ciphertext, 1, 14) = 'hussh-chat-v1:';
   SELECT COUNT(*) INTO person_messages_after
-  FROM agent_chat_messages WHERE content_ciphertext LIKE 'hussh-chat-v1:%';
+  FROM agent_chat_messages WHERE substr(content_ciphertext, 1, 14) = 'hussh-chat-v1:';
 
   IF person_sessions_after <> person_sessions_before
      OR person_conversations_after <> person_conversations_before
