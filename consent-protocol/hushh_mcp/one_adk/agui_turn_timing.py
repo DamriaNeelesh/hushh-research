@@ -48,7 +48,10 @@ from hushh_mcp.one_adk.output_privacy import (
     public_event,
 )
 from hushh_mcp.services.chat_key import (
+    CHAT_KEY_ERROR_MESSAGES,
     CHAT_KEY_ERRORS,
+    CHAT_KEY_RECOVERY_MESSAGE,
+    CHAT_KEY_REQUIRED_CODE,
     current_chat_key_markers,
     retain_request_chat_key,
 )
@@ -56,8 +59,8 @@ from hushh_mcp.services.chat_key import (
 logger = logging.getLogger(__name__)
 
 CHAT_KEY_RUN_ERROR = RunErrorEvent(
-    message="Refresh the app, unlock your vault, then try again.",
-    code="CHAT_KEY_REQUIRED",
+    message=CHAT_KEY_RECOVERY_MESSAGE,
+    code=CHAT_KEY_REQUIRED_CODE,
 )
 
 
@@ -428,6 +431,13 @@ class TimedADKAgent(ADKAgent):
                 aclosing(super().run(input)) as run,
             ):
                 async for event in run:
+                    if (
+                        getattr(event, "type", None) == EventType.RUN_ERROR
+                        and getattr(event, "message", None) in CHAT_KEY_ERROR_MESSAGES
+                    ):
+                        # ag_ui_adk stringifies a background failure into a generic
+                        # run error; keep a chat-key refusal recognisable.
+                        event = CHAT_KEY_RUN_ERROR
                     events = confirmations.project(event) if self.head == HEAD_ONE else [event]
                     for event in events:
                         if self.head == HEAD_ONE:

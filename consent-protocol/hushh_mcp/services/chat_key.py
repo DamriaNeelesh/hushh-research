@@ -67,6 +67,24 @@ class LegacyChatCiphertextError(LookupError):
 
 CHAT_KEY_ERRORS: tuple[type[Exception], ...] = (ChatKeyUnavailableError, ChatKeyMismatchError)
 
+_KEY_REQUIRED = "Unlock your vault to open chat history."
+_KEY_MISMATCH = "Chat history did not open with this vault."
+_KEY_MALFORMED = "Chat key is malformed."
+_KEY_OWNER_MISSING = "Chat key owner is missing."
+_KEY_OTHER_OWNER = "Chat key belongs to another session."
+# What a person sees when a request reaches the server without a usable chat key.
+# The current app refuses locally while the vault is locked, so this is an app
+# build or tab from before chat keys: an installed native build needs an update,
+# a web tab a refresh.
+CHAT_KEY_RECOVERY_MESSAGE = "Update or refresh the app, then unlock your vault and try again."
+CHAT_KEY_REQUIRED_CODE = "CHAT_KEY_REQUIRED"
+
+# Every message a chat-key error carries. Libraries that stringify an exception
+# into a stream error (ag_ui_adk) are mapped back to the chat-key refusal by these.
+CHAT_KEY_ERROR_MESSAGES = frozenset(
+    {_KEY_REQUIRED, _KEY_MISMATCH, _KEY_MALFORMED, _KEY_OWNER_MISSING, _KEY_OTHER_OWNER}
+)
+
 
 class RequestChatKey:
     """One request's key, shared by every task that copied the request context.
@@ -81,7 +99,7 @@ class RequestChatKey:
 
     def __init__(self, key: bytes, *, max_seconds: float = MAX_BINDING_SECONDS) -> None:
         if len(key) != 32:
-            raise ChatKeyUnavailableError("Chat key is malformed.")
+            raise ChatKeyUnavailableError(_KEY_MALFORMED)
         self._key: bytes | None = key
         self._owner: str | None = None
         self._references = 1
@@ -101,12 +119,12 @@ class RequestChatKey:
         clean = str(owner_id or "").strip()
         with self._lock:
             if not clean:
-                raise ChatKeyUnavailableError("Chat key owner is missing.")
+                raise ChatKeyUnavailableError(_KEY_OWNER_MISSING)
             if self._owner is None:
                 self._owner = clean
             elif self._owner != clean:
                 self._key = None
-                raise ChatKeyUnavailableError("Chat key belongs to another session.")
+                raise ChatKeyUnavailableError(_KEY_OTHER_OWNER)
 
     def retain(self) -> bool:
         with self._lock:
@@ -150,7 +168,7 @@ _request_key: ContextVar[RequestChatKey | None] = ContextVar("hussh_request_chat
 def parse_chat_key_header(value: str) -> bytes:
     match = _WIRE.fullmatch(str(value or "").strip())
     if match is None:
-        raise ChatKeyUnavailableError("Chat key is malformed.")
+        raise ChatKeyUnavailableError(_KEY_MALFORMED)
     return bytes.fromhex(match.group(1))
 
 
@@ -214,7 +232,7 @@ class RequestChatKeyProvider:
         holder = _request_key.get()
         key = holder.key_for(str(owner_id or "")) if holder is not None else None
         if key is None:
-            raise ChatKeyUnavailableError("Unlock your vault to open chat history.")
+            raise ChatKeyUnavailableError(_KEY_REQUIRED)
         return key
 
 
@@ -271,8 +289,11 @@ class ChatCipher:
             raise LegacyChatCiphertextError("Chat record predates person-key sealing.")
         iv = row.get(f"{prefix}_iv")
         tag = row.get(f"{prefix}_tag")
-        if not ciphertext or not iv or not tag:
+        if not ciphertext:
             return ""
+        if not iv or not tag:
+            # A marked record without its nonce or tag is damaged, never empty.
+            raise ChatKeyMismatchError(_KEY_MISMATCH)
         key = self._key(owner_id)
         try:
             body = base64.b64decode(str(ciphertext)[len(CHAT_CIPHERTEXT_PREFIX) :], validate=True)
@@ -280,13 +301,16 @@ class ChatCipher:
             mac = base64.b64decode(str(tag), validate=True)
             return AESGCM(key).decrypt(nonce, body + mac, aad.encode("utf-8")).decode("utf-8")
         except (InvalidTag, ValueError):
-            raise ChatKeyMismatchError("Chat history did not open with this vault.") from None
+            raise ChatKeyMismatchError(_KEY_MISMATCH) from None
 
 
 __all__ = [
     "CHAT_CIPHERTEXT_LIKE",
     "CHAT_CIPHERTEXT_PREFIX",
     "CHAT_KEY_ERRORS",
+    "CHAT_KEY_ERROR_MESSAGES",
+    "CHAT_KEY_RECOVERY_MESSAGE",
+    "CHAT_KEY_REQUIRED_CODE",
     "CHAT_KEY_HEADER",
     "CHAT_KEY_LABEL",
     "ChatCipher",

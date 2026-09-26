@@ -608,3 +608,95 @@ async def test_agent_run_ends_with_an_error_rather_than_stream_the_key(monkeypat
             events.append(event)
     assert [getattr(event, "code", None) for event in events] == ["CHAT_KEY_REQUIRED"]
     assert all(PERSON_KEY.hex() not in event.model_dump_json() for event in events)
+
+
+# ── Review follow-ups ─────────────────────────────────────────────────────────
+
+
+def test_chat_key_middleware_is_the_outermost_application_middleware() -> None:
+    from api.middlewares.chat_key import ChatKeyMiddleware
+    from server import app
+
+    # Anything registered after it would sit outside and could read the header.
+    assert app.user_middleware[0].cls is ChatKeyMiddleware
+
+
+def test_a_marked_record_missing_its_nonce_or_tag_is_refused_not_empty() -> None:
+    from hushh_mcp.services.chat_key import ChatCipher, ChatKeyMismatchError
+    from tests.helpers.chat_keys import bound_request_chat_key
+
+    with bound_request_chat_key("owner-1", PERSON_KEY):
+        sealed = ChatCipher().seal("x", owner_id="owner-1", aad="a")
+        with pytest.raises(ChatKeyMismatchError):
+            ChatCipher().open(
+                {"content_ciphertext": sealed.ciphertext, "content_iv": sealed.iv},
+                "content",
+                owner_id="owner-1",
+                aad="a",
+            )
+
+
+@pytest.mark.parametrize("module_name", ["information_chat", "location_chat", "email_chat"])
+def test_specialist_chat_routes_refuse_with_the_chat_key_error(module_name: str) -> None:
+    import importlib
+
+    module = importlib.import_module(f"api.routes.one.{module_name}")
+    source = Path(module.__file__).read_text()
+    assert "except CHAT_KEY_ERRORS:" in source
+    assert source.index("except CHAT_KEY_ERRORS:") < source.index("except Exception:")
+
+
+async def test_stream_maps_a_stringified_key_error_to_the_recovery_message(monkeypatch) -> None:
+    from ag_ui.core import RunErrorEvent
+    from ag_ui_adk import ADKAgent
+
+    from hushh_mcp.one_adk.agui_turn_timing import HEAD_ONE, TimedADKAgent
+    from hushh_mcp.services.chat_key import (
+        CHAT_KEY_RECOVERY_MESSAGE,
+        CHAT_KEY_REQUIRED_CODE,
+    )
+    from tests.test_agui_turn_timing import _input
+
+    async def failing_background_run(self, input):  # noqa: ANN001
+        # What ag_ui_adk emits when its background task raises the key error.
+        yield RunErrorEvent(
+            message="Chat history did not open with this vault.",
+            code="BACKGROUND_EXECUTION_ERROR",
+        )
+
+    monkeypatch.setattr(ADKAgent, "run", failing_background_run)
+    agent = TimedADKAgent.__new__(TimedADKAgent)
+    agent.head = HEAD_ONE
+    monkeypatch.setattr(agent, "_release_execution", AsyncMock(), raising=False)
+    events = [event async for event in agent.run(_input())]
+    errors = [event for event in events if getattr(event, "code", None)]
+    assert [(event.code, event.message) for event in errors] == [
+        (CHAT_KEY_REQUIRED_CODE, CHAT_KEY_RECOVERY_MESSAGE)
+    ]
+
+
+def test_only_the_chat_stores_touch_chat_ciphertext_columns() -> None:
+    """Migration 249 replays on every deploy and deletes any unmarked chat row.
+
+    A new writer that bypassed ChatCipher would therefore be wiped silently on the
+    next deploy. Keep every write to these columns inside the three chat stores.
+    """
+    import re as _re
+
+    allowed = {
+        "hushh_mcp/one_adk/encrypted_session_service.py",
+        "hushh_mcp/services/agent_chat_service.py",
+        "hushh_mcp/services/command_checkpoints.py",
+    }
+    tables = _re.compile(r"one_adk_sessions|agent_chat_messages|agent_chat_conversations")
+    columns = _re.compile(r"\b(payload|content|title|metadata)_ciphertext\b")
+    offenders = []
+    for folder in ("hushh_mcp", "api", "mcp_modules", "scripts"):
+        for path in (ROOT / folder).rglob("*.py"):
+            relative = path.relative_to(ROOT).as_posix()
+            if relative in allowed:
+                continue
+            source = path.read_text(errors="ignore")
+            if tables.search(source) and columns.search(source):
+                offenders.append(relative)
+    assert offenders == []
