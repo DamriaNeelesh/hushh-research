@@ -438,3 +438,8 @@ tests/one_adk/test_mcp_oauth_connection.py
 # Returning to a chat restores its Activity rows and connect card from the turn's
 # own encrypted events, projecting only tool ids, outcome enums and opaque ids.
 tests/routes/test_agent_chat_turn_restore.py
+# One chat history is sealed with the person's chat key (derived in the browser
+# from the unlocked vault key, held for one request): refusal without it, owner
+# binding, legacy platform-key rows invisible, every reader, and no key in logs
+# or on the AG-UI stream. Includes the negative control against the platform key.
+tests/test_chat_history_byok.py

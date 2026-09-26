@@ -32,9 +32,14 @@ from hushh_mcp.runtime_providers import (
 from hushh_mcp.runtime_providers.gemini_config import resolve_fleet_model_name
 from hushh_mcp.runtime_settings import get_core_security_settings
 from hushh_mcp.services.action_gateway import get_action_gateway_action
+from hushh_mcp.services.chat_key import (
+    CHAT_CIPHERTEXT_LIKE,
+    CHAT_KEY_ERRORS,
+    ChatCipher,
+    chat_aad,
+)
 from hushh_mcp.services.model_preference_service import resolve_text_model_name
 from hushh_mcp.types import EncryptedPayload
-from hushh_mcp.vault.encrypt import decrypt_data, encrypt_data
 from hussh_sdk import (
     ModelConfig,
     PKMCredentialResolver,
@@ -1014,14 +1019,19 @@ def _agent_action_tool() -> genai_types.Tool:
 
 
 class AgentChatService:
-    """Owns Agent chat LLM streaming and backend-decryptable encrypted history."""
+    """Owns Agent chat LLM streaming and person-key encrypted history.
+
+    Titles and messages are sealed with the owner's chat key (``ChatCipher``); a
+    request without that key cannot read or write them. Rows sealed with the
+    platform key before that cutover are filtered out in SQL and never opened.
+    """
 
     def __init__(
         self,
         *,
         db: Any | None = None,
         model: str | None = None,
-        vault_key_hex: str | None = None,
+        cipher: ChatCipher | None = None,
     ):
         self._db = db
         self._client = None
@@ -1034,7 +1044,7 @@ class AgentChatService:
         if not self.model:
             raise ValueError("Agent Chat manifest must declare a runtime model")
         self._model_pinned = bool(model)
-        self._vault_key_hex = vault_key_hex
+        self._cipher = cipher or ChatCipher()
 
     async def model_for_user(self, user_id: str | None) -> str:
         """The model this person's turn runs on, resolved per turn.
@@ -1056,10 +1066,6 @@ class AgentChatService:
         if self._settings is None:
             self._settings = get_core_security_settings()
         return self._settings
-
-    @property
-    def vault_key_hex(self) -> str:
-        return self._vault_key_hex or self.settings.vault_data_key
 
     @property
     def db(self):
@@ -1234,23 +1240,29 @@ class AgentChatService:
     async def _execute_raw(self, sql: str, params: dict[str, Any] | None = None):
         return await asyncio.to_thread(self.db.execute_raw, sql, params or {})
 
-    def _encrypt_text(self, text: str) -> EncryptedPayload:
-        return encrypt_data(str(text or ""), self.vault_key_hex)
-
-    def _decrypt_text(self, row: dict[str, Any], prefix: str) -> str:
-        ciphertext = str(row.get(f"{prefix}_ciphertext") or "")
-        iv = str(row.get(f"{prefix}_iv") or "")
-        tag = str(row.get(f"{prefix}_tag") or "")
-        if not ciphertext or not iv or not tag:
-            return ""
-        payload = EncryptedPayload(
-            ciphertext=ciphertext,
-            iv=iv,
-            tag=tag,
-            encoding="base64",
-            algorithm="aes-256-gcm",
+    def _seal_title(self, title: str, *, user_id: str, conversation_id: str) -> EncryptedPayload:
+        return self._cipher.seal(
+            str(title or ""),
+            owner_id=user_id,
+            aad=chat_aad("agent_chat_conversations", "title", conversation_id),
         )
-        return decrypt_data(payload, self.vault_key_hex)
+
+    def _seal_message(
+        self, text: str, *, user_id: str, message_id: str, column: str = "content"
+    ) -> EncryptedPayload:
+        return self._cipher.seal(
+            str(text or ""),
+            owner_id=user_id,
+            aad=chat_aad("agent_chat_messages", column, message_id),
+        )
+
+    def _open(self, row: dict[str, Any], prefix: str, *, table: str) -> str:
+        return self._cipher.open(
+            row,
+            prefix,
+            owner_id=str(row.get("user_id") or ""),
+            aad=chat_aad(table, prefix, str(row.get("id") or "")),
+        )
 
     async def get_conversation(
         self,
@@ -1265,15 +1277,17 @@ class AgentChatService:
             SELECT *
             FROM agent_chat_conversations
             WHERE id = :conversation_id AND user_id = :user_id
+              AND title_ciphertext LIKE :chat_marker
             LIMIT 1
             """
         else:
             sql = """
             SELECT *
             FROM agent_chat_conversations
-            WHERE id = :conversation_id
+            WHERE id = :conversation_id AND title_ciphertext LIKE :chat_marker
             LIMIT 1
             """
+        params["chat_marker"] = CHAT_CIPHERTEXT_LIKE
         result = await self._execute_raw(
             sql,
             params,
@@ -1285,7 +1299,9 @@ class AgentChatService:
 
     async def create_conversation(self, user_id: str, first_message: str) -> AgentChatConversation:
         conversation_id = str(uuid4())
-        encrypted_title = self._encrypt_text(_trim_title(first_message))
+        encrypted_title = self._seal_title(
+            _trim_title(first_message), user_id=user_id, conversation_id=conversation_id
+        )
         result = await self._execute_raw(
             """
             INSERT INTO agent_chat_conversations (
@@ -1327,7 +1343,9 @@ class AgentChatService:
         user_id: str,
         title: str,
     ) -> AgentChatConversation | None:
-        encrypted_title = self._encrypt_text(_trim_title(title))
+        encrypted_title = self._seal_title(
+            _trim_title(title), user_id=user_id, conversation_id=conversation_id
+        )
         result = await self._execute_raw(
             """
             UPDATE agent_chat_conversations
@@ -1338,11 +1356,13 @@ class AgentChatService:
               title_algorithm = :title_algorithm,
               updated_at = now()
             WHERE id = :conversation_id AND user_id = :user_id
+              AND title_ciphertext LIKE :chat_marker
             RETURNING *
             """,
             {
                 "conversation_id": conversation_id,
                 "user_id": user_id,
+                "chat_marker": CHAT_CIPHERTEXT_LIKE,
                 "title_ciphertext": encrypted_title.ciphertext,
                 "title_iv": encrypted_title.iv,
                 "title_tag": encrypted_title.tag,
@@ -1394,8 +1414,10 @@ class AgentChatService:
         # deliberately excludes the newly inserted current message.
         created_conversation_id = str(uuid4())
         user_message_id = str(uuid4())
-        encrypted_title = self._encrypt_text(_trim_title(message))
-        encrypted_message = self._encrypt_text(message)
+        encrypted_title = self._seal_title(
+            _trim_title(message), user_id=user_id, conversation_id=created_conversation_id
+        )
+        encrypted_message = self._seal_message(message, user_id=user_id, message_id=user_message_id)
         result = await self._execute_raw(
             """
             WITH requested AS MATERIALIZED (
@@ -1404,6 +1426,7 @@ class AgentChatService:
               WHERE :requested_conversation_id IS NOT NULL
                 AND id = CAST(:requested_conversation_id AS UUID)
                 AND user_id = :user_id
+                AND title_ciphertext LIKE :chat_marker
               LIMIT 1
               FOR UPDATE
             ),
@@ -1430,6 +1453,7 @@ class AgentChatService:
               FROM agent_chat_messages AS messages
               JOIN selected ON selected.id = messages.conversation_id
               WHERE messages.user_id = :user_id
+                AND messages.content_ciphertext LIKE :chat_marker
               ORDER BY messages.created_at DESC
               LIMIT 20
             ),
@@ -1474,6 +1498,7 @@ class AgentChatService:
             """,
             {
                 "requested_conversation_id": conversation_id,
+                "chat_marker": CHAT_CIPHERTEXT_LIKE,
                 "created_conversation_id": created_conversation_id,
                 "user_message_id": user_message_id,
                 "user_id": user_id,
@@ -1528,9 +1553,13 @@ class AgentChatService:
         metadata: dict | None = None,
     ) -> AgentChatMessage:
         message_id = str(uuid4())
-        encrypted = self._encrypt_text(content)
+        encrypted = self._seal_message(content, user_id=user_id, message_id=message_id)
         encrypted_metadata = (
-            self._encrypt_text(json.dumps(metadata)) if metadata is not None else None
+            self._seal_message(
+                json.dumps(metadata), user_id=user_id, message_id=message_id, column="metadata"
+            )
+            if metadata is not None
+            else None
         )
         result = await self._execute_raw(
             """
@@ -1552,9 +1581,9 @@ class AgentChatService:
               metadata_algorithm,
               completed_at
             )
-            VALUES (
+            SELECT
               :id,
-              :conversation_id,
+              conversations.id,
               :user_id,
               :role,
               :status,
@@ -1569,7 +1598,10 @@ class AgentChatService:
               :metadata_tag,
               :metadata_algorithm,
               now()
-            )
+            FROM agent_chat_conversations AS conversations
+            WHERE conversations.id = CAST(:conversation_id AS UUID)
+              AND conversations.user_id = :user_id
+              AND conversations.title_ciphertext LIKE :chat_marker
             RETURNING *
             """,
             {
@@ -1590,8 +1622,12 @@ class AgentChatService:
                 "metadata_iv": encrypted_metadata.iv if encrypted_metadata else None,
                 "metadata_tag": encrypted_metadata.tag if encrypted_metadata else None,
                 "metadata_algorithm": encrypted_metadata.algorithm if encrypted_metadata else None,
+                "chat_marker": CHAT_CIPHERTEXT_LIKE,
             },
         )
+        if not result.data:
+            # The conversation is not this owner's current (person-key) thread.
+            raise LookupError("Agent chat conversation is unavailable.")
         await self._execute_raw(
             """
             UPDATE agent_chat_conversations
@@ -1625,6 +1661,7 @@ class AgentChatService:
               SELECT *
               FROM agent_chat_messages
               WHERE conversation_id = :conversation_id AND user_id = :user_id
+                AND content_ciphertext LIKE :chat_marker
               ORDER BY created_at DESC
               LIMIT :limit
             ) recent
@@ -1634,6 +1671,7 @@ class AgentChatService:
                 "conversation_id": conversation_id,
                 "user_id": user_id,
                 "limit": safe_limit,
+                "chat_marker": CHAT_CIPHERTEXT_LIKE,
             },
         )
         return [self._message_from_row(row) for row in result.data or []]
@@ -1649,13 +1687,14 @@ class AgentChatService:
             """
             SELECT *
             FROM agent_chat_conversations
-            WHERE user_id = :user_id
+            WHERE user_id = :user_id AND title_ciphertext LIKE :chat_marker
             ORDER BY updated_at DESC
             LIMIT :limit
             """,
             {
                 "user_id": user_id,
                 "limit": safe_limit,
+                "chat_marker": CHAT_CIPHERTEXT_LIKE,
             },
         )
         return [self._conversation_from_row(row) for row in result.data or []]
@@ -2235,11 +2274,9 @@ class AgentChatService:
         return "".join(parts)
 
     def _conversation_from_row(self, row: dict[str, Any]) -> AgentChatConversation:
-        try:
-            title = self._decrypt_text(row, "title")
-        except Exception:
-            logger.warning("agent_chat.title_decrypt_failed conversation_id=%s", row.get("id"))
-            title = "Agent conversation"
+        # A missing or wrong chat key refuses the read. It is never replaced with
+        # a placeholder title that would look like real history.
+        title = self._open(row, "title", table="agent_chat_conversations")
         return AgentChatConversation(
             id=str(row.get("id") or ""),
             user_id=str(row.get("user_id") or ""),
@@ -2253,17 +2290,15 @@ class AgentChatService:
         )
 
     def _message_from_row(self, row: dict[str, Any]) -> AgentChatMessage:
-        try:
-            content = self._decrypt_text(row, "content")
-        except Exception:
-            logger.warning("agent_chat.message_decrypt_failed message_id=%s", row.get("id"))
-            content = ""
+        content = self._open(row, "content", table="agent_chat_messages")
         metadata: dict | None = None
         if row.get("metadata_ciphertext"):
             try:
-                raw = self._decrypt_text(row, "metadata")
+                raw = self._open(row, "metadata", table="agent_chat_messages")
                 parsed = json.loads(raw) if raw else None
                 metadata = parsed if isinstance(parsed, dict) else None
+            except CHAT_KEY_ERRORS:
+                raise
             except Exception:
                 logger.warning("agent_chat.metadata_decrypt_failed message_id=%s", row.get("id"))
                 metadata = None
