@@ -443,7 +443,7 @@ export function AgentHistorySidebar({
           // through the drawer on iOS while Chromium's blur hid it on web.
           isMobileMode
             ? "rounded-r-[28px] border-r border-black/[0.06] bg-background shadow-[18px_0_42px_rgba(0,0,0,0.25)] dark:border-white/[0.08]"
-            : "border-r border-black/[0.06] bg-background/90 backdrop-blur-2xl dark:border-white/[0.08]",
+            : "border-r border-black/[0.06] bg-[color:var(--app-settings-canvas)] dark:border-white/[0.08] dark:bg-[color:var(--app-settings-canvas)]",
           collapsed && !isMobileMode ? "w-16" : "w-72",
           className
         )}
