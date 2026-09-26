@@ -451,7 +451,21 @@ export function parseRestoredTurnActivity(descriptor: unknown): RestoredActivity
   });
 }
 
+const CHAT_KEY_REFUSAL_MESSAGES: Record<string, string> = {
+  CHAT_KEY_REQUIRED: "Unlock your vault, then try again. If this keeps happening, update or refresh the app.",
+  CHAT_KEY_INVALID: "Unlock your vault, then try again. If this keeps happening, update or refresh the app.",
+  CHAT_KEY_MISMATCH: "Your chat history did not open with this vault. Unlock your vault again, then try again.",
+  CHAT_CONVERSATION_RETIRED: "This conversation is no longer available. Start a new chat.",
+};
+
 export function formatAgentChatErrorMessage(message: string, code?: string): string {
+  // Chat history is sealed with a key derived from the vault. These refusals are
+  // recoverable, so say how; the raw server text is never shown.
+  const chatKeyCode = code && code in CHAT_KEY_REFUSAL_MESSAGES
+    ? code
+    : Object.keys(CHAT_KEY_REFUSAL_MESSAGES).find((candidate) => message.includes(candidate));
+  const chatKeyRefusal = chatKeyCode ? CHAT_KEY_REFUSAL_MESSAGES[chatKeyCode] : undefined;
+  if (chatKeyRefusal) return chatKeyRefusal;
   if (code === "AGENT_RUNTIME_CREDENTIAL_MISSING") {
     return "One needs your Gemini key. Add it in Connections settings, or switch to Hussh managed Gemini.";
   }
@@ -1084,7 +1098,7 @@ export async function streamAgentChat(input: {
         finishTerminalRun();
         return;
       }
-      failure = new Error(formatAgentChatErrorMessage(event.message || ""));
+      failure = new Error(formatAgentChatErrorMessage(event.message || "", event.code || undefined));
       handlers.onError?.(failure.message);
       finishTerminalRun();
     },
@@ -1162,7 +1176,7 @@ export async function streamAgentIntro(input: {
     },
     onRunFinishedEvent: () => handlers.onComplete?.({ conversationId: threadId }),
     onRunErrorEvent: ({ event }) => {
-      failure = new Error(formatAgentChatErrorMessage(event.message || ""));
+      failure = new Error(formatAgentChatErrorMessage(event.message || "", event.code || undefined));
       handlers.onError?.(failure.message);
     },
     onRunFailed: ({ error }) => {

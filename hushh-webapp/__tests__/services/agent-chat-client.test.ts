@@ -105,6 +105,14 @@ describe("One chat key transport", () => {
     expect(mockTransport.runAgent).not.toHaveBeenCalled();
   });
 
+  it("turns a chat-key refusal into recoverable copy, never raw server text", () => {
+    expect(formatAgentChatErrorMessage("anything", "CHAT_KEY_REQUIRED")).toMatch(/^Unlock your vault, then try again/);
+    expect(formatAgentChatErrorMessage('HTTP 403: {"detail":{"code":"CHAT_KEY_REQUIRED"}}'))
+      .toMatch(/update or refresh the app/);
+    expect(formatAgentChatErrorMessage("x", "CHAT_KEY_MISMATCH")).toMatch(/did not open with this vault/);
+    expect(formatAgentChatErrorMessage("x", "CHAT_CONVERSATION_RETIRED")).toMatch(/Start a new chat/);
+  });
+
   it("sends the chat key when recording a submitted request into history", async () => {
     vi.mocked(ApiService.apiFetch).mockResolvedValueOnce(new Response("{}", { status: 200 }));
     await recordAgentChatInformationRequest({ vaultKey: TEST_VAULT_KEY,
