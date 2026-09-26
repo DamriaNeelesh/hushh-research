@@ -2025,6 +2025,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     tokenExpiresAt,
     getVaultOwnerToken,
   } = useVault();
+  // Chat history is sealed with a key derived from this; read it at call time so
+  // history requests never capture a stale (or locked) vault.
+  const vaultKeyRef = useRef<string | null>(vaultKey);
+  vaultKeyRef.current = vaultKey;
   const {
     activePersona,
     primaryNavPersona,
@@ -3761,7 +3765,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       const stored = selectedId === snapshot.latestConversationId && snapshot.latestMessages.length > 0
         ? snapshot.latestMessages
         : await loadAgentChatConversationHistory({
-            userId: user.uid, conversationId: selectedId, vaultOwnerToken,
+            userId: user.uid, conversationId: selectedId, vaultOwnerToken, vaultKey: vaultKeyRef.current ?? "",
           });
       if (cancelled || restoreEpoch !== historyRestoreEpochRef.current) return;
       const restored = storedMessagesToAgentMessages(stored);
@@ -3786,6 +3790,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         const next = await warmAgentChatHistoryCache({
           userId: user.uid,
           vaultOwnerToken,
+          vaultKey: vaultKeyRef.current ?? "",
           force: cached ? !cached.isFresh : false,
         });
         await applySnapshot(next);
@@ -3854,6 +3859,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         userId: user.uid,
         conversationId: nextConversationId,
         vaultOwnerToken: token,
+        vaultKey: vaultKeyRef.current ?? "",
       });
       if (!isCurrent()) return;
       const restored = storedMessagesToAgentMessages(history);
@@ -4041,6 +4047,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         const next = await warmAgentChatHistoryCache({
           userId: user.uid,
           vaultOwnerToken: token,
+          vaultKey: vaultKeyRef.current ?? "",
           force,
         });
         setConversations(next.conversations);
@@ -4125,6 +4132,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           conversationId: targetConversationId,
           title,
           vaultOwnerToken: token,
+          vaultKey: vaultKeyRef.current ?? "",
         });
         setConversations((current) =>
           current.map((conversation) =>
@@ -4171,6 +4179,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         void warmAgentChatHistoryCache({
           userId: user.uid,
           vaultOwnerToken: token,
+          vaultKey: vaultKeyRef.current ?? "",
           force: true,
         }).catch(() => undefined);
       } catch {
@@ -5079,6 +5088,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         message: text,
         conversationId: conversationIdRef.current,
         vaultOwnerToken: token,
+        vaultKey: vaultKeyRef.current ?? "",
         loadConnectorConfigurations: async () => {
           if (!vaultKey) throw new Error("Unlock your vault to use connectors.");
           return (await loadCustomConnectorSnapshot({ userId, vaultKey, vaultOwnerToken: token }, true)).configurations;
@@ -5419,6 +5429,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           `The requested action ${result.status}.`,
         conversationId: conversationIdRef.current,
         vaultOwnerToken: token,
+        vaultKey: vaultKeyRef.current ?? "",
         loadConnectorConfigurations: async () => {
           if (!vaultKey) throw new Error("Unlock your vault to use connectors.");
           return (await loadCustomConnectorSnapshot({ userId, vaultKey, vaultOwnerToken: token }, true)).configurations;
@@ -6715,6 +6726,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                             bundleId: receipt.bundleId,
                             idempotencyKey: receipt.idempotencyKey,
                             vaultOwnerToken: ownerToken,
+                            vaultKey: vaultKeyRef.current ?? "",
                           });
                           if (review.type !== "one.information_request_review.v1"
                             || review.subjectRef !== receipt.subjectRef) {

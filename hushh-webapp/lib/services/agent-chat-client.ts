@@ -9,6 +9,7 @@ import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary"
 import { parseMcpCallReview, type McpCallApproval, type McpCallReviewReference } from "@/lib/agent/mcp-call-review";
 import { snapshotValidatedAuthSessionOwner, isValidatedAuthSessionOwnerCurrent } from "@/lib/auth/session-owner";
 import { snapshotVaultSessionEpoch, isVaultSessionEpochCurrent } from "@/lib/vault/session-epoch";
+import { oneChatKeyHeaders } from "@/lib/vault/one-chat-key";
 import {
   parseAgentActivityExperience,
   parseAgentToolResultExperience,
@@ -88,6 +89,8 @@ export type AgentChatStreamHandlers = {
   onMcpReview?: (review: {
     reference: McpCallReviewReference;
     conversationId: string;
+    /** Derived chat key header value; the review reads this owner's sealed conversation. */
+    chatKey: string;
     isCurrent: () => boolean;
     loadConfiguration?: () => Promise<CustomConnectorConfiguration | undefined>;
     resume: (approval: McpCallApproval | null, signal?: AbortSignal) => Promise<void>;
@@ -516,6 +519,8 @@ export async function streamAgentChat(input: {
   message: string;
   conversationId?: string | null;
   vaultOwnerToken: string;
+  /** Unlocked vault key. Only the chat key derived from it is sent. */
+  vaultKey: string;
   loadConnectorConfigurations?: () => Promise<CustomConnectorConfiguration[]>;
   pkmContext?: string;
   personSelectionHandle?: string;
@@ -583,10 +588,14 @@ export async function streamAgentChat(input: {
       metadata: { actionId },
     }];
   });
+  // Chat history is sealed with a key derived from the vault key; the server
+  // refuses the turn without it and holds it for this request only.
+  const chatKeyHeaders = await oneChatKeyHeaders(input.vaultKey);
+  const chatKey = Object.values(chatKeyHeaders)[0] ?? "";
   const agent = new HttpAgent({
     url: "/api/one/agent-chat",
     threadId,
-    headers: { Authorization: `Bearer ${input.vaultOwnerToken}` },
+    headers: { Authorization: `Bearer ${input.vaultOwnerToken}`, ...chatKeyHeaders },
     initialMessages: [{ id: crypto.randomUUID(), role: "user", content: input.message }],
     fetch: (_url, init) => nativeStreamFetch("/api/one/agent-chat", init),
   });
@@ -1006,6 +1015,7 @@ export async function streamAgentChat(input: {
           handlers.onMcpReview?.({
             reference,
             conversationId: threadId,
+            chatKey,
             isCurrent: mcpSessionCurrent,
             loadConfiguration: input.loadConnectorConfigurations ? async () => {
               const projection = await connectorProjection();
@@ -1178,6 +1188,7 @@ export async function streamAgentIntro(input: {
 export async function listAgentChatConversations(input: {
   userId: string;
   vaultOwnerToken: string;
+  vaultKey: string;
   limit?: number;
 }): Promise<AgentChatConversation[]> {
   const response = await ApiService.listAgentChatConversations(input);
@@ -1191,6 +1202,7 @@ export async function listAgentChatConversations(input: {
 export async function getAgentChatHistory(input: {
   conversationId: string;
   vaultOwnerToken: string;
+  vaultKey: string;
   limit?: number;
 }): Promise<AgentChatMessage[]> {
   const response = await ApiService.getAgentChatHistory(input);
@@ -1250,12 +1262,16 @@ export async function recordAgentChatInformationRequest(input: {
   bundleId: string;
   idempotencyKey: string;
   vaultOwnerToken: string;
+  vaultKey: string;
 }): Promise<AgentStructuredExperience> {
   const response = await ApiService.apiFetch(
     `/api/one/agent-chat/history/${encodeURIComponent(input.conversationId)}/information-requests`,
     {
       method: "POST",
-      headers: { Authorization: `Bearer ${input.vaultOwnerToken}` },
+      headers: {
+        Authorization: `Bearer ${input.vaultOwnerToken}`,
+        ...(await oneChatKeyHeaders(input.vaultKey)),
+      },
       body: JSON.stringify({
         source_activity_id: input.sourceActivityId,
         bundle_id: input.bundleId,
@@ -1331,6 +1347,7 @@ export async function renameAgentChatConversation(input: {
   conversationId: string;
   title: string;
   vaultOwnerToken: string;
+  vaultKey: string;
 }): Promise<AgentChatConversation> {
   const response = await ApiService.renameAgentChatConversation(input);
   if (!response.ok) {
