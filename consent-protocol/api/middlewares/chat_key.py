@@ -25,7 +25,10 @@ from hushh_mcp.services.chat_key import (
 )
 
 _HEADER_BYTES = CHAT_KEY_HEADER.encode("latin-1")
-CHAT_KEY_REQUIRED_DETAIL = "Unlock your vault to open chat history."
+# Only an out-of-date client (a tab or app build from before chat keys) reaches
+# the server without one: the current app refuses locally while the vault is
+# locked. So the message says how to recover from both.
+CHAT_KEY_REQUIRED_DETAIL = "Refresh the app, unlock your vault, then try again."
 CHAT_KEY_MISMATCH_DETAIL = "Your chat history did not open with this vault. Unlock again."
 _MALFORMED_DETAIL = "Chat key is invalid. Unlock your vault and try again."
 

@@ -56,7 +56,7 @@ from hushh_mcp.services.chat_key import (
 logger = logging.getLogger(__name__)
 
 CHAT_KEY_RUN_ERROR = RunErrorEvent(
-    message="Unlock your vault to continue this chat.",
+    message="Refresh the app, unlock your vault, then try again.",
     code="CHAT_KEY_REQUIRED",
 )
 
