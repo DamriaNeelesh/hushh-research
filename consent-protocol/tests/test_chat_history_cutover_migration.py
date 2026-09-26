@@ -1,9 +1,11 @@
-"""The chat-history BYOK cutover migration is parked, gated, and deletes only legacy rows.
+"""Migration 249 (chat-history BYOK cutover) deletes only platform-key chat rows.
 
-Static checks always run. The executable checks run when
+It runs on every deploy lane (the deploy that ships the person-key code is the
+cutover), so it must be idempotent and must never touch a person-key row. Static
+checks always run. The executable checks run when
 ``CHAT_CUTOVER_TEST_DATABASE_URL`` points at a THROWAWAY Postgres holding the real
-schema (for example a schema-only dump restored locally). Every scenario runs in a
-transaction that is rolled back.
+schema (for example a schema-only dump restored locally) plus synthetic rows.
+Every scenario runs in a transaction that is rolled back.
 """
 
 from __future__ import annotations
@@ -18,33 +20,32 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PARKED = ROOT / "db/migrations/parked/913_one_chat_history_legacy_cutover.sql"
+MIGRATION = ROOT / "db/migrations/249_one_chat_history_legacy_cutover.sql"
+ROLLBACK = ROOT / "db/migrations/rollback/249_one_chat_history_legacy_cutover.rollback.sql"
 MANIFEST = ROOT / "db/release_migration_manifest.json"
 MARKER = "hussh-chat-v1:"
 
 
 def _sql() -> str:
-    return PARKED.read_text()
+    return MIGRATION.read_text()
 
 
-def test_cutover_is_parked_and_never_in_the_release_manifest() -> None:
-    assert PARKED.exists()
-    assert not (ROOT / "db/migrations" / PARKED.name).exists()
-    manifest = MANIFEST.read_text()
-    assert "chat_history_legacy_cutover" not in manifest
-    parsed = json.loads(manifest)
-    listed = set(parsed.get("ordered_migrations", []))
-    for overlay in parsed.get("environment_overlays", {}).values():
-        listed.update(overlay)
-    listed.update(parsed.get("rollback_migrations", {}))
-    assert not any("cutover" in name and "chat" in name for name in listed)
+def test_cutover_is_registered_with_a_documented_rollback() -> None:
+    from hushh_mcp.services.chat_key import CHAT_CIPHERTEXT_PREFIX
+
+    assert CHAT_CIPHERTEXT_PREFIX == MARKER  # the SQL tests the same marker the code writes
+    manifest = json.loads(MANIFEST.read_text())
+    assert MIGRATION.name in manifest["ordered_migrations"]
+    assert manifest["rollback_migrations"][MIGRATION.name] == f"rollback/{ROLLBACK.name}"
+    assert ROLLBACK.exists() and "DELETE FROM" not in ROLLBACK.read_text().upper()
+    for contract in ("prod_core_schema", "uat_integrated_schema", "dev_minimum_schema"):
+        data = json.loads((ROOT / f"db/contracts/{contract}.json").read_text())
+        assert data["expected_migration_version"] >= 249
 
 
-def test_cutover_is_gated_and_every_delete_targets_only_unmarked_rows() -> None:
+def test_every_delete_targets_only_unmarked_chat_rows() -> None:
     sql = _sql()
-    assert "current_setting('hussh.chat_history_cutover', true)" in sql
-    assert "IF approved <> 'approved' THEN" in sql
-    deletes = re.findall(r"DELETE FROM\s+(\w+)\s+WHERE([^;]+);", sql)
+    deletes = re.findall(r"DELETE FROM\s+(\w+)(?:\s+AS\s+\w+)?\s+WHERE([^;]+);", sql)
     assert {table for table, _ in deletes} == {
         "agent_chat_messages",
         "agent_chat_conversations",
@@ -52,8 +53,10 @@ def test_cutover_is_gated_and_every_delete_targets_only_unmarked_rows() -> None:
     }
     for _table, where in deletes:
         assert f"NOT LIKE '{MARKER}%'" in where
-    assert "one_capability_runs" not in {table for table, _ in deletes}
-    assert "DROP " not in sql.upper().replace("DROP CONSTRAINT", "")
+    assert "one_capability_runs" not in sql.split("Not touched:")[0]
+    assert "DELETE FROM one_capability_runs" not in sql
+    assert "person-key rows changed" in sql  # post-condition self-guard
+    assert "DROP " not in sql.upper()
 
 
 # ── Executable proof against a throwaway database ─────────────────────────────
@@ -74,11 +77,12 @@ def conn() -> Iterator:
         connection.close()
 
 
-def _run(conn, *, approved: bool) -> None:  # noqa: ANN001
+def _run(conn) -> None:  # noqa: ANN001
+    """Execute the migration body inside the test's own (rolled back) transaction."""
+    body = _sql().replace("\nBEGIN;\n", "\n").replace("\nCOMMIT;\n", "\n")
+    assert "BEGIN;" not in body and "COMMIT;" not in body
     with conn.cursor() as cursor:
-        if approved:
-            cursor.execute("SET LOCAL hussh.chat_history_cutover = 'approved'")
-        cursor.execute(_sql())
+        cursor.execute(body)
 
 
 def _seed(conn, *, stale_legacy: bool = True) -> dict:  # noqa: ANN001
@@ -165,15 +169,7 @@ def _counts(conn, owner: str) -> dict:  # noqa: ANN001
 
 
 @needs_db
-def test_without_approval_nothing_is_deleted(conn) -> None:  # noqa: ANN001
-    ids = _seed(conn)
-    before = _counts(conn, ids["owner"])
-    _run(conn, approved=False)
-    assert _counts(conn, ids["owner"]) == before
-
-
-@needs_db
-def test_approved_cutover_deletes_only_legacy_rows_and_is_idempotent(conn) -> None:  # noqa: ANN001
+def test_cutover_deletes_only_platform_key_rows_and_is_idempotent(conn) -> None:  # noqa: ANN001
     ids = _seed(conn)
     assert _counts(conn, ids["owner"]) == {
         "new_sessions": 1,
@@ -183,7 +179,7 @@ def test_approved_cutover_deletes_only_legacy_rows_and_is_idempotent(conn) -> No
         "feedback": 2,
         "runs": 1,
     }
-    _run(conn, approved=True)
+    _run(conn)
     after = {
         "new_sessions": 1,
         "legacy_sessions": 0,
@@ -193,43 +189,55 @@ def test_approved_cutover_deletes_only_legacy_rows_and_is_idempotent(conn) -> No
         "runs": 1,
     }
     assert _counts(conn, ids["owner"]) == after
-    _run(conn, approved=True)
+    _run(conn)  # replay on the next deploy is a no-op
     assert _counts(conn, ids["owner"]) == after
 
 
 @needs_db
-def test_person_key_message_under_a_legacy_conversation_refuses(conn) -> None:  # noqa: ANN001
-    psycopg2 = pytest.importorskip("psycopg2")
+def test_rows_written_moments_ago_by_old_code_are_still_removed(conn) -> None:  # noqa: ANN001
+    ids = _seed(conn, stale_legacy=False)
+    _run(conn)
+    counts = _counts(conn, ids["owner"])
+    assert counts["legacy_sessions"] == 0 and counts["new_sessions"] == 1
+
+
+@needs_db
+def test_a_legacy_conversation_holding_a_person_key_message_is_kept(conn) -> None:  # noqa: ANN001
     ids = _seed(conn)
     with conn.cursor() as cursor:
         cursor.execute(
             """INSERT INTO agent_chat_messages
-               (id, conversation_id, user_id, role, content_ciphertext, content_iv, content_tag,
-                created_at)
-               VALUES (%s, %s, %s, 'user', %s, 'iv', 'tag', NOW() - INTERVAL '2 hours')""",
+               (id, conversation_id, user_id, role, content_ciphertext, content_iv, content_tag)
+               VALUES (%s, %s, %s, 'user', %s, 'iv', 'tag')""",
             (str(uuid.uuid4()), ids["legacy_conversation"], ids["owner"], MARKER + "eA"),
         )
-    with pytest.raises(psycopg2.Error, match="person-key message"):
-        _run(conn, approved=True)
+    _run(conn)
+    counts = _counts(conn, ids["owner"])
+    # Both conversations stay (one only because it holds a person-key message);
+    # both person-key messages stay; the legacy message is gone.
+    assert counts["conversations"] == 2
+    assert counts["messages"] == 2
 
 
 @needs_db
-def test_recent_legacy_writes_refuse_until_the_old_code_is_gone(conn) -> None:  # noqa: ANN001
-    psycopg2 = pytest.importorskip("psycopg2")
-    _seed(conn, stale_legacy=False)
-    with pytest.raises(psycopg2.Error, match="last 15 minutes"):
-        _run(conn, approved=True)
-
-
-@needs_db
-def test_live_legacy_command_checkpoint_refuses(conn) -> None:  # noqa: ANN001
+def test_self_guard_rolls_back_if_any_person_key_row_would_go(conn) -> None:  # noqa: ANN001
     psycopg2 = pytest.importorskip("psycopg2")
     ids = _seed(conn)
     with conn.cursor() as cursor:
+        # Simulate an ungoverned cascade the repository does not know about.
         cursor.execute(
-            """UPDATE one_adk_sessions SET command_status = 'ready'
-               WHERE user_id = %s AND app_name = 'one.location.commands.v1'""",
-            (ids["owner"],),
+            """CREATE FUNCTION pg_temp.chat_cutover_rogue() RETURNS trigger
+               LANGUAGE plpgsql AS $$
+               BEGIN
+                 DELETE FROM one_adk_sessions
+                 WHERE user_id = OLD.user_id AND payload_ciphertext LIKE 'hussh-chat-v1:%';
+                 RETURN OLD;
+               END $$"""
         )
-    with pytest.raises(psycopg2.Error, match="command checkpoint"):
-        _run(conn, approved=True)
+        cursor.execute(
+            """CREATE TRIGGER chat_cutover_rogue AFTER DELETE ON agent_chat_messages
+               FOR EACH ROW EXECUTE FUNCTION pg_temp.chat_cutover_rogue()"""
+        )
+    with pytest.raises(psycopg2.Error, match="person-key rows changed"):
+        _run(conn)
+    assert ids["owner"]

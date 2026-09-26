@@ -443,7 +443,7 @@ tests/routes/test_agent_chat_turn_restore.py
 # binding, legacy platform-key rows invisible, every reader, and no key in logs
 # or on the AG-UI stream. Includes the negative control against the platform key.
 tests/test_chat_history_byok.py
-# The chat-history BYOK cutover migration stays parked (never in the release
-# manifest), is gated on an explicit approval setting, and deletes only rows
-# without the person-key marker; executable against a throwaway real-schema DB.
+# Migration 249 (chat-history BYOK cutover) deletes only rows without the
+# person-key marker, keeps every person-key row (self-guarded), and is a no-op on
+# replay; executable against a throwaway real-schema DB.
 tests/test_chat_history_cutover_migration.py
