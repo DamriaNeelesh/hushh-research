@@ -1404,7 +1404,7 @@ function OwnerConnectorsPanel({
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col bg-background text-foreground"
+      className="flex h-full min-h-0 flex-col bg-[color:var(--app-card-surface-default-solid)] text-foreground"
       data-connections-panel
       data-surface={surface}
     >
