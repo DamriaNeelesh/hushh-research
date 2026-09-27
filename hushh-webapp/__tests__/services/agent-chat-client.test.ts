@@ -305,6 +305,45 @@ describe("AG-UI Agent One client", () => {
       .not.toContain("PRIVATE_FILENAME.pdf");
   });
 
+  it("names every roster step and its header phrase instead of a generic Agent step", async () => {
+    // Measured 2026-09-27: Calendar, web search, memory and specialist calls
+    // all rendered as "Agent step · Completing a step for your request."
+    const onToolStart = vi.fn();
+    const onToolWaiting = vi.fn();
+    const tools = ["calendar_events", "google_search", "ask_memory_agent", "finance", "ask_email_agent", "list_app_actions"];
+    mockTransport.emitEvents = (subscriber) => {
+      for (const name of tools) {
+        subscriber.onToolCallStartEvent({ event: { toolCallId: `call-${name}`, toolCallName: name } });
+      }
+      // "lets connect to google drive": the product is named once the provider
+      // argument arrives; a provider outside the fixed enum never labels a row.
+      for (const provider of ["drive", "https://evil.test"]) {
+        subscriber.onToolCallStartEvent({ event: { toolCallId: provider, toolCallName: "discover_workspace_tools" } });
+        subscriber.onToolCallEndEvent({ event: { toolCallId: provider },
+          toolCallName: "discover_workspace_tools", toolCallArgs: { provider } });
+      }
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Plan my day",
+      vaultOwnerToken: "fixture", handlers: { onToolStart, onToolWaiting } });
+    expect(onToolStart.mock.calls.map(([event]) => [event.label, event.activity])).toEqual([
+      ["Google Calendar", "Reading your Calendar"],
+      ["Web search", "Searching the web"],
+      ["Your memory", "Checking your memory"],
+      ["Finance", "Checking your finances"],
+      ["Gmail", "Checking your Gmail"],
+      ["App actions", "Looking up actions"],
+      ["Connector access", "Checking connector access"],
+      ["Connector access", "Checking connector access"],
+    ]);
+    expect(onToolWaiting.mock.calls.map(([event]) => [event.label, event.activity])).toEqual([
+      ["Google Drive", "Checking Google Drive access"],
+      ["Connector access", "Checking connector access"],
+    ]);
+    expect(JSON.stringify(onToolWaiting.mock.calls.map(([event]) => [event.label, event.message, event.activity])))
+      .not.toContain("evil");
+    mockTransport.emitEvents = null;
+  });
+
   it("shows selected Drive status activity without exposing private filenames", async () => {
     const onToolResult = vi.fn();
     const onToolWaiting = vi.fn();
