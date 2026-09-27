@@ -17,7 +17,13 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AgentMemoryCaptureStatus } from "@/components/agent/agent-memory-capture-status";
 import { aggregateAgentPkmCaptures, createAgentPkmCaptureGuard, describeAgentPkmCapture, isAgentPkmProcessingReady, type AgentPkmCaptureStatus } from "@/lib/agent/agent-pkm-capture-runtime";
-import { AgentPersonSelectionContext, type InformationRequestSubmissionReceipt } from "@/components/agent/agent-structured-experience";
+import {
+  AgentConsentContinuationContext,
+  AgentPersonSelectionContext,
+  type AgentConsentContinuationHandler,
+  type InformationRequestSubmissionReceipt,
+} from "@/components/agent/agent-structured-experience";
+import { prepareConsentContinuation, watchSentInformationRequest } from "@/lib/agent/consent-continuation";
 import {
   Check,
   ChevronDown,
@@ -180,6 +186,13 @@ import {
   clearAgentChatHistoryCache,
 } from "@/lib/agent/agent-chat-history-cache";
 import { rememberInAppChat, selectedInAppChat } from "@/lib/agent/in-app-chat-selection";
+import {
+  AGENT_TURN_DETACH_REASON,
+  isAgentTurnWatched,
+  subscribeAgentTurnSettled,
+  subscribeOpenAgentConversation,
+  waitForWatchedAgentTurn,
+} from "@/lib/agent/agent-chat-turn-watch";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
 import { usePersonaState } from "@/lib/persona/persona-context";
 import { isRiaAdvisoryAccessReady } from "@/lib/ria/ria-profile-view-model";
@@ -201,6 +214,7 @@ import {
   renameAgentChatConversation,
   streamAgentChat,
   streamAgentIntro,
+  type AgentChatConsentContinuation,
   type AgentChatConversation,
   type AgentChatMessage as StoredAgentChatMessage,
   type AgentChatToolEvent,
@@ -2480,6 +2494,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const historyRestoreEpochRef = useRef(0);
   const skipInitialHistoryLoadRef = useRef(false);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
+  const reattachRestoreRef = useRef<Promise<void> | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   const operationQueueRef = useRef(
     new SerialAgentOperationQueue<QueuedWorkspaceOperation>(),
@@ -2536,9 +2551,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const rootChatReady = useRootChatDeferredReady();
   const tokenIsFresh = !tokenExpiresAt || Date.now() < tokenExpiresAt;
   const agentVoiceEnabled = isAgentCommandEnabled();
-  const abortAgentTurnWork = useCallback(() => {
+  const abortAgentTurnWork = useCallback((reason?: string) => {
     setPendingMcpReviews([]);
-    streamAbortControllerRef.current?.abort();
+    streamAbortControllerRef.current?.abort(reason);
     streamAbortControllerRef.current = null;
     for (const controller of pkmAbortControllersRef.current) {
       controller.abort();
@@ -3207,7 +3222,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
 
   useEffect(() => {
     return () => {
-      abortAgentTurnWork();
+      // Leaving the chat stops reading; the server keeps the turn and the
+      // app-shell turn watch reattaches (or says "One replied") later.
+      abortAgentTurnWork(AGENT_TURN_DETACH_REASON);
     };
   }, [abortAgentTurnWork]);
 
@@ -4054,27 +4071,58 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (cancelled || restoreEpoch !== historyRestoreEpochRef.current) return;
       setConversations(snapshot.conversations);
       const selectedId = selectedInAppChat(user.uid);
-      if (!selectedId || !snapshot.conversations.some((item) => item.id === selectedId)) {
+      // A first turn the person left may not be in a cached list yet; its
+      // history load below is still owner-checked by the server.
+      if (
+        !selectedId ||
+        (!snapshot.conversations.some((item) => item.id === selectedId) &&
+          !isAgentTurnWatched(user.uid, selectedId))
+      ) {
         updateConversationId(null, false);
         setMessages((current) =>
           mergePendingConsentMessages([createGreetingMessage()], current),
         );
         return;
       }
-      const stored = selectedId === snapshot.latestConversationId && snapshot.latestMessages.length > 0
+      // A turn the person left is still running server-side: read fresh
+      // history rather than the cache, and show it as in progress.
+      const reattaching = isAgentTurnWatched(user.uid, selectedId);
+      const loadSelected = () => loadAgentChatConversationHistory({
+        userId: user.uid, conversationId: selectedId, vaultOwnerToken, vaultKey: vaultKeyRef.current ?? "",
+        force: reattaching,
+      });
+      let stored = !reattaching && selectedId === snapshot.latestConversationId && snapshot.latestMessages.length > 0
         ? snapshot.latestMessages
-        : await loadAgentChatConversationHistory({
-            userId: user.uid, conversationId: selectedId, vaultOwnerToken, vaultKey: vaultKeyRef.current ?? "",
-          });
+        : await loadSelected();
+      // It may have settled while that read was in flight; read the answer.
+      if (reattaching && !isAgentTurnWatched(user.uid, selectedId)) stored = await loadSelected();
       if (cancelled || restoreEpoch !== historyRestoreEpochRef.current) return;
       const restored = storedMessagesToAgentMessages(stored);
+      const stillRunning = isAgentTurnWatched(user.uid, selectedId);
       updateConversationId(selectedId, false);
       setMessages((current) =>
         mergePendingConsentMessages(
-          restored.length > 0 ? restored : [createGreetingMessage()],
+          restored.length > 0
+            ? [
+                ...restored,
+                ...(stillRunning
+                  ? [{
+                      id: `reattach-${selectedId}`,
+                      role: "assistant" as const,
+                      text: "",
+                      timestamp: formatNow(),
+                      status: "streaming" as const,
+                    }]
+                  : []),
+              ]
+            : [createGreetingMessage()],
           current,
         ),
       );
+      if (stillRunning) {
+        setIsChatLoading(true);
+        setIsStreaming(true);
+      }
     };
 
     const loadRecentConversation = async () => {
@@ -4388,6 +4436,34 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       restoreConversationMessages,
     ],
   );
+
+  // A turn this chat stopped reading has written its answer: show it in place.
+  useEffect(() => {
+    return subscribeAgentTurnSettled((turn) => {
+      if (turn.ownerId !== user?.uid || turn.conversationId !== conversationIdRef.current) return;
+      const token = getVaultOwnerToken();
+      setIsChatLoading(false);
+      setIsStreaming(false);
+      if (!token) {
+        setMessages((current) => current.filter((message) => message.id !== `reattach-${turn.conversationId}`));
+        return;
+      }
+      // A prompt queued meanwhile starts only after this reload lands.
+      reattachRestoreRef.current = restoreConversationMessages(
+        turn.conversationId,
+        token,
+        () => conversationIdRef.current === turn.conversationId,
+      ).catch(() => undefined);
+    });
+  }, [getVaultOwnerToken, restoreConversationMessages, user?.uid]);
+
+  // "Open" on a One replied notice, or a push tap, while this chat is mounted.
+  useEffect(() => {
+    return subscribeOpenAgentConversation(({ ownerId, conversationId: requestedId }) => {
+      if (ownerId !== user?.uid) return;
+      void handleSelectConversation(requestedId);
+    });
+  }, [handleSelectConversation, user?.uid]);
 
   const handleCreateNewPuppyChat = puppyHistory.create;
   const handleSelectPuppyConversation = puppyHistory.select;
@@ -5611,6 +5687,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           },
         },
       });
+      if (streamResult.detached) {
+        // The app stopped reading (native background); the server keeps the
+        // turn. The bubble stays in progress until the turn watch reports the
+        // written answer and the settled-turn effect reloads it.
+        flushAssistantDelta();
+        if (streamResult.conversationId) updateConversationId(streamResult.conversationId);
+        // Left before the server's turn was running: nothing to reattach to.
+        if (!isAgentTurnWatched(userId, streamResult.conversationId)) finishCanceledTurn();
+        return;
+      }
       if (streamAbortController.signal.aborted) {
         finishCanceledTurn();
         return;
@@ -5710,7 +5796,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
    * reusing the same SSE handlers so One's confirmation renders as a regular
    * assistant response. Used by the specialist directive card's confirm/cancel.
    */
-  const sendDelegateResult = async (result: DelegateResult) => {
+  const sendDelegateResult = (result: DelegateResult) =>
+    sendFollowUpTurn(result.detail || result.display || `The requested action ${result.status}.`);
+
+  /**
+   * A follow-up turn with no typed prompt: a specialist's result, or the
+   * other person's answer to an information request sent from this chat.
+   */
+  const sendFollowUpTurn = async (
+    message: string,
+    extra: { consentContinuation?: AgentChatConsentContinuation } = {},
+  ) => {
     if (!hasChatAccess || !user?.uid) return;
     const userId = user.uid;
     const token = getVaultOwnerToken();
@@ -5768,10 +5864,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     try {
       const streamResult = await streamAgentChat({
         userId,
-        message:
-          result.detail ||
-          result.display ||
-          `The requested action ${result.status}.`,
+        message,
+        ...(extra.consentContinuation ? { consentContinuation: extra.consentContinuation } : {}),
         conversationId: conversationIdRef.current,
         vaultOwnerToken: token,
         vaultKey: vaultKeyRef.current ?? "",
@@ -5852,6 +5946,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (streamResult.conversationId) {
         updateConversationId(streamResult.conversationId);
       }
+      if (streamResult.detached) return; // settled-turn effect reloads the answer
       updateMessage(assistantMessageId, (message) => {
         if (message.status === "error") return message;
         return {
@@ -6135,6 +6230,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       prompt,
       run: async () => {
         if (hasChatAccess) {
+          // One is still finishing a turn the app left: queue behind it and its
+          // reload rather than start a second run in the same conversation.
+          await waitForWatchedAgentTurn(user?.uid, conversationIdRef.current);
+          await reattachRestoreRef.current;
           await runAgentTurn(operation.prompt?.text ?? "", {
             source: "typed",
             personSelectionHandle,
@@ -6276,6 +6375,36 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       failedText: "The Gmail change could not be completed.",
       run: () => runGmailMailboxDirective(directive.directive, auth),
     });
+  };
+
+  // The other person answered a request this chat sent: show the outcome as a
+  // status chip at the end of that turn, then let One answer from it.
+  const continueWithConsentOutcome: AgentConsentContinuationHandler["continueWithOutcome"] = async (input) => {
+    const token = getVaultOwnerToken();
+    const key = vaultKeyRef.current;
+    if (!hasChatAccess || !user?.uid || !token || !key) return false;
+    const prepared = await prepareConsentContinuation({
+      userId: user.uid,
+      vaultKey: key,
+      vaultOwnerToken: token,
+      ...input,
+    });
+    if (!prepared) return false;
+    appendMessage({
+      id: `msg-${crypto.randomUUID()}-consent-outcome`,
+      role: "user",
+      text: prepared.message,
+      timestamp: formatNow(),
+      status: "done",
+      kind: "selection",
+    });
+    enqueueWorkspaceOperation({
+      id: `consent-${input.bundleId}`,
+      run: async () => {
+        await sendFollowUpTurn(prepared.message, { consentContinuation: prepared.continuation });
+      },
+    });
+    return true;
   };
 
   const enqueueDelegateResult = (result: DelegateResult) => {
@@ -6744,6 +6873,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       <AgentPersonSelectionContext.Provider value={hasChatAccess && !isStreaming
         ? (handle, name, sourceTool) => enqueuePrompt(personSelectionPrompt(sourceTool, name), handle)
         : null}>
+      <AgentConsentContinuationContext.Provider value={hasChatAccess
+        ? { conversationId, continueWithOutcome: continueWithConsentOutcome }
+        : null}>
       <div
         className={cn(
           "relative flex min-h-0 flex-1",
@@ -7156,6 +7288,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           toast.error("Request sent, but Chat history could not be saved.");
                           return;
                         }
+                        // Sent from this chat, now: watch for the answer even if
+                        // the person leaves before the card's first status read.
+                        watchSentInformationRequest({
+                          ownerId: ownerUid,
+                          bundleId: receipt.bundleId,
+                          conversationId: threadId,
+                          subjectRef: receipt.subjectRef,
+                          personName: "",
+                        });
                         try {
                           const review = await recordAgentChatInformationRequest({
                             conversationId: threadId,
@@ -8533,6 +8674,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onSuccess={() => setVaultDialogOpen(false)}
         />
       ) : null}
+      </AgentConsentContinuationContext.Provider>
       </AgentPersonSelectionContext.Provider>
     </div>
   );

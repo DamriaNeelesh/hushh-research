@@ -7,6 +7,7 @@ import {
   type DriveBatchProgress,
 } from "@/lib/agent/drive-batch-progress";
 import { HttpAgent, type AgentSubscriber, type Tool } from "@ag-ui/client";
+import { Capacitor } from "@capacitor/core";
 import { applyPatch, type Operation } from "fast-json-patch";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
 import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary";
@@ -21,6 +22,11 @@ import {
   oneChatKeyHeaders,
   routeChatKeyRefusal,
 } from "@/lib/vault/one-chat-key";
+import {
+  AGENT_TURN_DETACH_REASON,
+  registerAttachedAgentTurn,
+  watchDetachedAgentTurn,
+} from "@/lib/agent/agent-chat-turn-watch";
 import {
   parseAgentActivityExperience,
   parseAgentToolResultExperience,
@@ -871,6 +877,12 @@ async function sendWithChatKey(send: () => Promise<Response>): Promise<Response>
   return response;
 }
 
+export type AgentChatConsentContinuation = {
+  bundleId: string;
+  outcome: "granted" | "denied" | "expired";
+  sharedInformation?: string;
+};
+
 /**
  * The person's unsent mail draft as it is on screen, so a follow-up turn can
  * revise it. It grants nothing: One can only open a replacement review card,
@@ -899,6 +911,12 @@ export async function streamAgentChat(input: {
   personSelectionHandle?: string;
   /** Opaque owner-selected KYC workflow; Gmail content stays server-side. */
   gmailInformationRequestWorkflowId?: string;
+  /**
+   * The follow-up turn after another person answered this person's request.
+   * `sharedInformation` is what this device decrypted from the approved export;
+   * the server admits it only for an approved grant and keeps it for this turn.
+   */
+  consentContinuation?: AgentChatConsentContinuation;
   /** One saved Drive result, checked against the current owner and live Drive before use. */
   driveSearchSelection?: { jobId: string; position: number };
   pendingEmailDraft?: PendingEmailDraftContext | null;
@@ -910,6 +928,11 @@ export async function streamAgentChat(input: {
   model: string | null;
   text: string;
   interrupted: boolean;
+  /**
+   * The app stopped reading while the server kept the turn running. The answer
+   * is sealed into history when it settles; the turn watch reattaches to it.
+   */
+  detached: boolean;
 }> {
   const timezone = resolveBrowserTimeZone();
   const threadId = input.conversationId || crypto.randomUUID();
@@ -994,6 +1017,13 @@ export async function streamAgentChat(input: {
   let failure: Error | null = null;
   let interrupted = false;
   let intentionallyStoppedAtConfirmation = false;
+  // Server events seen, and whether one was terminal. The bridge starts the
+  // turn's own task only after RUN_STARTED, so a second event proves a turn is
+  // running server-side and will outlive this stream.
+  let serverEvents = 0;
+  let serverTerminal = false;
+  let detached = false;
+  const startedAtMs = Date.now();
   let settleTerminalRun: (() => void) | null = null;
   const terminalRun = new Promise<void>((resolve) => {
     settleTerminalRun = resolve;
@@ -1093,6 +1123,8 @@ export async function streamAgentChat(input: {
   const subscriber: AgentSubscriber = {
     ...publicOutputSubscriber,
     onEvent: ({ event }) => {
+      serverEvents += 1;
+      if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") serverTerminal = true;
       if (event.type === "REASONING_MESSAGE_CONTENT") {
         const delta = (event as { delta?: unknown }).delta;
         const metadata = (event as { metadata?: unknown }).metadata;
@@ -1524,7 +1556,9 @@ export async function streamAgentChat(input: {
       finishTerminalRun();
     },
     onRunFailed: ({ error }) => {
-      if (intentionallyStoppedAtConfirmation) {
+      // Our own abort of a detached stream is not a failure of the turn, which
+      // is still running server-side.
+      if (intentionallyStoppedAtConfirmation || detached) {
         finishTerminalRun();
         return;
       }
@@ -1538,10 +1572,22 @@ export async function streamAgentChat(input: {
     },
   };
   const abort = () => {
+    // A detach reason means the caller stopped reading (it left the chat); the
+    // server keeps the turn. Any other abort is the caller cancelling.
+    if (input.signal?.reason === AGENT_TURN_DETACH_REASON) detached = true;
     agent.abortRun();
     finishTerminalRun();
   };
   input.signal?.addEventListener("abort", abort, { once: true });
+  const unregisterAttached = registerAttachedAgentTurn({
+    ownerId: input.userId,
+    conversationId: threadId,
+    detach: () => {
+      detached = true;
+      agent.abortRun();
+      finishTerminalRun();
+    },
+  });
   try {
     await agent.runAgent({
       tools,
@@ -1556,18 +1602,31 @@ export async function streamAgentChat(input: {
         ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
         ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
         screenContext: input.screenContext,
+        ...(input.consentContinuation ? { consentContinuation: input.consentContinuation } : {}),
+        // Only the native app asks the server for a "One replied" push when it
+        // stops reading; a web tab's closed stream must not wake a phone.
+        notifyOnDetach: Capacitor.isNativePlatform(),
       },
     }, subscriber);
     await terminalRun;
   } catch (error) {
     // AG-UI reports a failed request to the subscriber, then rejects with the
-    // raw "HTTP 403: {...}" error. The typed, owner-safe failure wins.
-    if (!failure) throw error;
+    // raw "HTTP 403: {...}" error. The typed, owner-safe failure wins (thrown
+    // below). Aborting our own read of a detached turn may also reject the run;
+    // the turn itself is still running server-side and is reported as detached.
+    if (!failure && !detached) throw error;
   } finally {
     input.signal?.removeEventListener("abort", abort);
+    unregisterAttached();
   }
-  if (failure) throw failure;
-  return { conversationId: threadId, model: null, text, interrupted };
+  const leftTurn = detached && !serverTerminal && !intentionallyStoppedAtConfirmation;
+  // Watch only a turn the server had started (more than RUN_STARTED seen); a
+  // detach before that has nothing to reattach to.
+  if (leftTurn && serverEvents > 1) {
+    watchDetachedAgentTurn({ ownerId: input.userId, conversationId: threadId, startedAtMs });
+  }
+  if (failure && !leftTurn) throw failure;
+  return { conversationId: threadId, model: null, text, interrupted, detached: leftTurn };
 }
 
 /**
@@ -1699,6 +1758,72 @@ export async function getAgentChatHistory(input: {
           }
         : message.metadata,
     }));
+}
+
+/**
+ * Where a turn the app stopped reading stands. The server keeps it running and
+ * writes its answer into history; ``pending`` stays true until it settles.
+ * Returns only these two flags, so no message text leaves this function.
+ */
+export async function getAgentChatTurnState(input: {
+  conversationId: string;
+  vaultOwnerToken: string;
+  vaultKey: string;
+}): Promise<{ pending: boolean; answered: boolean }> {
+  const response = await ApiService.getAgentChatHistory({ ...input, limit: 1 });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const payload = (await response.json()) as {
+    messages?: Array<{ role?: unknown }>;
+    turn?: { pending?: unknown };
+  };
+  const pending = payload.turn?.pending === true;
+  const last = Array.isArray(payload.messages) ? payload.messages[payload.messages.length - 1] : undefined;
+  return { pending, answered: !pending && last?.role === "assistant" };
+}
+
+/**
+ * Requests this conversation already continued after their answer, keyed by
+ * bundle id. Identifiers and outcome words only; no message text is read.
+ */
+export async function getAgentChatConsentOutcomes(input: {
+  conversationId: string;
+  vaultOwnerToken: string;
+  vaultKey: string;
+}): Promise<Record<string, string>> {
+  const response = await sendWithChatKey(() => ApiService.getAgentChatHistory({ ...input, limit: 1 }));
+  if (!response.ok) throw new Error(await readError(response));
+  const payload = (await response.json()) as { consentOutcomes?: unknown };
+  const outcomes = payload.consentOutcomes;
+  if (!outcomes || typeof outcomes !== "object" || Array.isArray(outcomes)) return {};
+  return Object.fromEntries(
+    Object.entries(outcomes as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+/** The person's own conversation that sent this request (sealed history, after unlock). */
+export async function findInformationRequestConversation(input: {
+  bundleId: string;
+  vaultOwnerToken: string;
+  vaultKey: string;
+}): Promise<string | null> {
+  const response = await sendWithChatKey(async () => ApiService.apiFetch(
+    `/api/one/agent-chat/information-requests/${encodeURIComponent(input.bundleId)}/conversation`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.vaultOwnerToken}`,
+        ...(await oneChatKeyHeaders(input.vaultKey)),
+      },
+    },
+  ));
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await readError(response));
+  const payload = (await response.json()) as { conversationId?: unknown };
+  return typeof payload.conversationId === "string" ? payload.conversationId : null;
 }
 
 /** Record only a request locator; the Chat owner derives the history card from its ledger. */
