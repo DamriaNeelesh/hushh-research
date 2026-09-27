@@ -17,6 +17,7 @@ import logging
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -68,6 +69,10 @@ _SAFE_OUTCOMES = frozenset(
     }
 )
 
+# Set by the caller that owns one write (``GoogleDriveRestTransport.write_tool``);
+# flipped here the moment a mutation leaves for Google. Per request, never shared.
+MUTATION_SENT: ContextVar[dict[str, bool] | None] = ContextVar("drive_mutation_sent", default=None)
+
 FileKind = Literal["document", "spreadsheet", "folder"]
 ContentFormat = Literal["markdown", "text", "csv"]
 
@@ -75,9 +80,14 @@ ContentFormat = Literal["markdown", "text", "csv"]
 class DriveWriteError(DriveReadError):
     """Only authored codes cross this boundary; ``outcome_unknown`` is never retried."""
 
-    def __init__(self, code: str, *, outcome_unknown: bool = False):
+    def __init__(
+        self, code: str, *, outcome_unknown: bool = False, provider_answered: bool = False
+    ):
         super().__init__(code)
         self.outcome_unknown = outcome_unknown
+        # Google answered with a definite refusal (401, 403/404/410, other 4xx):
+        # the change was not applied, so this is not an unknown outcome.
+        self.provider_answered = provider_answered
 
 
 @dataclass(frozen=True)
@@ -169,7 +179,7 @@ def _multipart(metadata: dict[str, Any], content: str, content_mime: str) -> tup
     body = (
         (
             f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
-            f"{json.dumps(metadata)}\r\n"
+            f"{json.dumps(metadata, ensure_ascii=False)}\r\n"
             f"--{boundary}\r\nContent-Type: {content_mime}; charset=UTF-8\r\n\r\n"
         ).encode()
         + content.encode("utf-8")
@@ -271,8 +281,9 @@ class GoogleDriveWriteAdapter:
         body: dict[str, Any] = {}
         if name is not None:
             body["name"] = file_name(name)
-        if parent is not None:
-            body["parents"] = [file_id(parent)]
+        # Always name the parent. Without one, Drive puts the copy beside its
+        # source, which may be a shared folder, and that would share the copy.
+        body["parents"] = [file_id(parent) if parent is not None else "root"]
         return _project_file(
             await self._send(
                 "copy",
@@ -450,12 +461,15 @@ class GoogleDriveWriteAdapter:
                     ) as client,
                 ):
                     dispatched = True
+                    sent = MUTATION_SENT.get()
+                    if mutation and sent is not None:
+                        sent["sent"] = True
                     async with client.stream(method, url, **kwargs) as response:
                         status = response.status_code
                         if status == 401:
-                            raise DriveWriteError("reconnect_required")
+                            raise DriveWriteError("reconnect_required", provider_answered=True)
                         if status in (403, 404, 410):
-                            raise DriveWriteError("source_unavailable")
+                            raise DriveWriteError("source_unavailable", provider_answered=True)
                         if mutation and (
                             status >= 500 or status in (408, 429) or 300 <= status < 400
                         ):
@@ -464,7 +478,8 @@ class GoogleDriveWriteAdapter:
                             raise DriveWriteError("provider_unavailable")
                         if status != 200:
                             raise DriveWriteError(
-                                "write_rejected" if mutation else "provider_response_invalid"
+                                "write_rejected" if mutation else "provider_response_invalid",
+                                provider_answered=True,
                             )
                         if (
                             response.headers.get("Content-Encoding", "identity").lower()

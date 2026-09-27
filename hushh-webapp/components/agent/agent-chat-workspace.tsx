@@ -213,6 +213,7 @@ import {
 import { runConnectedSystemDirective } from "@/lib/agent/connected-system-directive-runtime";
 import {
   DRIVE_REVIEW_DELEGATE,
+  driveReviewDetails,
   getDriveReviewDirectiveFromToolResult,
   runDriveReviewDirective,
 } from "@/lib/agent/drive-review-directive-runtime";
@@ -5368,6 +5369,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               setPendingSpecialistDirective(calendarDirective);
             }
             const driveReview = getDriveReviewDirectiveFromToolResult(
+              toolEvent.raw?.toolName,
               toolEvent.raw?.result,
             );
             if (driveReview) {
@@ -7611,6 +7613,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 ) : pendingSpecialistDirective.delegateAgentId ===
                   DRIVE_REVIEW_DELEGATE ? (
                   <SpecialistDirectiveCard
+                    details={driveReviewDetails(
+                      pendingSpecialistDirective.directive.payload as Record<
+                        string,
+                        unknown
+                      >,
+                    )}
                     summary={String(
                       (
                         pendingSpecialistDirective.directive.payload as Record<

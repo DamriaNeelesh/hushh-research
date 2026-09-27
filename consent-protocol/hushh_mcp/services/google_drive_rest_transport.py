@@ -34,6 +34,7 @@ from hushh_mcp.services.google_drive_mcp_service import _search_metadata
 from hushh_mcp.services.google_drive_write_adapter import (
     MAX_COMMENT_CHARS,
     MAX_CONTENT_BYTES,
+    MUTATION_SENT,
     DriveWriteError,
     GoogleDriveWriteAdapter,
     bounded_text,
@@ -197,16 +198,42 @@ class GoogleDriveRestTransport:
         return await self._fenced(user_id, tool_name, arguments, _OPERATIONS, _MAX_ARGUMENT_BYTES)
 
     async def write_tool(
-        self, *, user_id: str, tool_name: str, arguments: dict[str, Any]
+        self,
+        *,
+        user_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        expected_generation: int | None = None,
     ) -> ExternalMcpToolResult:
         """One owner write through the same live-grant fence as every read.
 
         Callers own review: sharing and trashing reach here only from the
-        reviewed-proposal executor, never from a model tool call.
+        reviewed-proposal executor, never from a model tool call, and pass the
+        connection generation the owner reviewed under. Once the request has
+        left for Google, any failure is an unknown outcome, never a plain
+        error, so nothing downstream retries it into a duplicate.
         """
-        return await self._fenced(
-            user_id, tool_name, arguments, _WRITE_OPERATIONS, _MAX_WRITE_ARGUMENT_BYTES
-        )
+        sent = {"sent": False}
+        marker = MUTATION_SENT.set(sent)
+        try:
+            return await self._fenced(
+                user_id,
+                tool_name,
+                arguments,
+                _WRITE_OPERATIONS,
+                _MAX_WRITE_ARGUMENT_BYTES,
+                expected_generation=expected_generation,
+            )
+        except DriveWriteError as error:
+            if sent["sent"] and not error.outcome_unknown and not error.provider_answered:
+                raise DriveWriteError("write_outcome_unknown", outcome_unknown=True) from None
+            raise
+        except Exception:
+            if sent["sent"]:
+                raise DriveWriteError("write_outcome_unknown", outcome_unknown=True) from None
+            raise
+        finally:
+            MUTATION_SENT.reset(marker)
 
     async def _fenced(
         self,
@@ -215,13 +242,18 @@ class GoogleDriveRestTransport:
         arguments: dict[str, Any],
         operations: dict[str, str],
         max_bytes: int,
+        *,
+        expected_generation: int | None = None,
     ) -> ExternalMcpToolResult:
         if not user_id or not isinstance(tool_name, str) or tool_name not in operations:
             raise DriveOAuthError("connector_unavailable", status_code=403)
         if not isinstance(arguments, dict):
             raise DriveOAuthError("invalid_argument", status_code=400)
         try:
-            if len(json.dumps(arguments, allow_nan=False).encode("utf-8")) > max_bytes:
+            if (
+                len(json.dumps(arguments, allow_nan=False, ensure_ascii=False).encode("utf-8"))
+                > max_bytes
+            ):
                 raise ValueError("oversized")
         except (TypeError, ValueError, RecursionError):
             raise DriveOAuthError("invalid_argument", status_code=400) from None
@@ -236,6 +268,9 @@ class GoogleDriveRestTransport:
             or row["verified_policy_hash"] != LIVE_POLICY_HASH
         ):
             raise DriveOAuthError("reconnect_required", status_code=401)
+        if expected_generation is not None and row["connection_generation"] != expected_generation:
+            # Reviewed under another Drive connection: refuse before sending.
+            raise DriveOAuthError("connection_changed", status_code=409)
         # One method per operation. A new operation is one entry in its table
         # plus its method; these owner, grant and generation checks wrap every
         # entry without change.

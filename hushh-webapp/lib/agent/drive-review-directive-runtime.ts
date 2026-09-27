@@ -38,10 +38,70 @@ function reviewPayload(value: unknown): DriveReviewPayload | null {
   return payload as DriveReviewPayload;
 }
 
+// Only these server tools issue a Drive review. Any other tool's result, even
+// one that copies this shape, never opens the card.
+const DRIVE_REVIEW_TOOLS = new Set([
+  "propose_drive_file_share",
+  "propose_drive_file_trash",
+]);
+const ROLE_LABELS: Record<string, string> = {
+  reader: "Viewer",
+  commenter: "Commenter",
+  writer: "Editor",
+};
+const TITLE_LIMIT = 80;
+
+function cardText(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const text = value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/["“”„‟«»‹›]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return fallback;
+  return text.length <= TITLE_LIMIT
+    ? text
+    : `${text.slice(0, TITLE_LIMIT - 1).trimEnd()}…`;
+}
+
+/**
+ * The exact terms the owner is approving, one labelled line each, taken from
+ * the server-validated arguments rather than the model-facing summary sentence.
+ */
+export function driveReviewDetails(
+  payload: Record<string, unknown>,
+): { label: string; value: string }[] {
+  const reviewed = reviewPayload(payload);
+  if (!reviewed) return [];
+  const file = (payload.file ?? {}) as Record<string, unknown>;
+  const lines = [
+    {
+      label: file.isFolder === true ? "Folder (and everything in it)" : "File",
+      value: cardText(file.title, "this file"),
+    },
+  ];
+  if (reviewed.action === "share") {
+    const args = reviewed.arguments;
+    lines.push({ label: "Share with", value: String(args.email ?? "") });
+    lines.push({
+      label: "Access",
+      value: ROLE_LABELS[String(args.role)] ?? "Viewer",
+    });
+    lines.push({
+      label: "Google email",
+      value: args.notify === false ? "Not sent" : "Sent to them",
+    });
+  }
+  return lines;
+}
+
 /** The Drive share/trash review card for a proposal tool result, if it is one. */
 export function getDriveReviewDirectiveFromToolResult(
+  toolName: unknown,
   rawResult: unknown,
 ): SpecialistDirectiveEvent | null {
+  if (typeof toolName !== "string" || !DRIVE_REVIEW_TOOLS.has(toolName))
+    return null;
   let parsed: unknown = rawResult;
   if (typeof rawResult === "string") {
     try {
@@ -52,9 +112,9 @@ export function getDriveReviewDirectiveFromToolResult(
   }
   if (!parsed || typeof parsed !== "object") return null;
   const directive = (parsed as Record<string, unknown>).directive as
-    | Record<string, unknown>
-    | undefined;
-  if (!directive || directive.delegateAgentId !== DRIVE_REVIEW_DELEGATE) return null;
+    Record<string, unknown> | undefined;
+  if (!directive || directive.delegateAgentId !== DRIVE_REVIEW_DELEGATE)
+    return null;
   const payload = reviewPayload(directive.payload);
   if (!payload) return null;
   return {
@@ -65,7 +125,10 @@ export function getDriveReviewDirectiveFromToolResult(
   };
 }
 
-async function errorMessage(response: Response, fallback: string): Promise<string> {
+async function errorMessage(
+  response: Response,
+  fallback: string,
+): Promise<string> {
   const body = (await response.json().catch(() => null)) as {
     detail?: { message?: string } | string;
   } | null;
@@ -85,25 +148,33 @@ export async function runDriveReviewDirective(
 ): Promise<{ detail: string }> {
   const payload = reviewPayload(directive.payload);
   if (!payload) throw new Error("Drive confirmation is invalid.");
-  const response = await ApiService.apiFetch("/api/one/drive/reviewed-actions/execute", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${vaultOwnerToken}`,
-      "Content-Type": "application/json",
+  const response = await ApiService.apiFetch(
+    "/api/one/drive/reviewed-actions/execute",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${vaultOwnerToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        conversation_id: payload.conversationId,
+        directive_id: payload.directiveId,
+        action: payload.action,
+        arguments: payload.arguments,
+        confirmed: true,
+      }),
     },
-    body: JSON.stringify({
-      user_id: userId,
-      conversation_id: payload.conversationId,
-      directive_id: payload.directiveId,
-      action: payload.action,
-      arguments: payload.arguments,
-      confirmed: true,
-    }),
-  });
+  );
   if (!response.ok) {
-    throw new Error(await errorMessage(response, "Unable to apply the Drive change."));
+    throw new Error(
+      await errorMessage(response, "Unable to apply the Drive change."),
+    );
   }
   return {
-    detail: payload.action === "share" ? "Shared in Google Drive." : "Moved to trash in Google Drive.",
+    detail:
+      payload.action === "share"
+        ? "Shared in Google Drive."
+        : "Moved to trash in Google Drive.",
   };
 }

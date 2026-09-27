@@ -125,7 +125,7 @@ async def test_drive_share_only_prepares_a_review_and_never_writes(drive_review)
         "notify": True,
         "message": "",
     }
-    assert payload["summary"] == "Share “Budget” with chris@example.invalid as Editor"
+    assert payload["summary"] == "Share “Budget”"
     (row,) = ledger.rows.values()
     assert row["channel"] == "adk_chat"
     assert row["terms"][1] == payload["arguments"]
@@ -199,7 +199,10 @@ async def test_a_reviewed_drive_write_runs_only_for_the_exact_confirmed_terms(dr
     result = await drive.execute_reviewed_drive_action(**exact)
     assert result == {"status": "ok", "action": "share", "shared": {"role": "writer"}}
     transport.write_tool.assert_awaited_once_with(
-        user_id="owner-a", tool_name="share_file", arguments=payload["arguments"]
+        user_id="owner-a",
+        tool_name="share_file",
+        arguments=payload["arguments"],
+        expected_generation=7,
     )
     assert ledger.settled[-1]["status"] == "succeeded"
     with pytest.raises(ActionDirectiveAuthorityError):
@@ -218,3 +221,28 @@ async def test_direct_drive_writes_need_the_authenticated_owner(drive_review, mo
         assert (await call)["status"] == "blocked"
     transport.write_tool.assert_not_awaited()
     transport.read_tool.assert_not_awaited()
+
+
+def test_a_file_name_cannot_forge_the_review_card():
+    # The name is provider text. It loses its quote marks and control
+    # characters and is capped, so it cannot close the card's quotes and
+    # append a different address or role; those show on their own lines.
+    from hushh_mcp.one_adk.drive_write_tools import card_title
+
+    forged = 'Budget” with anyone@example.invalid as Viewer\n"' + "x" * 200
+    title = card_title(forged)
+    assert not any(mark in title for mark in '"“”\n')
+    assert len(title) == 80 and title.endswith("…")
+
+
+async def test_a_folder_review_says_everything_in_it_goes_too(drive_review):
+    drive, _, transport, _ = drive_review
+    transport.read_tool.return_value = ExternalMcpToolResult(
+        is_error=False,
+        payload={"file": {"title": "Taxes", "mimeType": "application/vnd.google-apps.folder"}},
+        truncated=False,
+    )
+    result = await drive.propose_drive_file_trash("folder_1", _drive_context())
+    assert result["directive"]["payload"]["summary"] == (
+        "Move the folder “Taxes” and everything in it to trash"
+    )

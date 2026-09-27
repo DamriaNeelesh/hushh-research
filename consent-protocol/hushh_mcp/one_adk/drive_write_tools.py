@@ -35,6 +35,7 @@ from hushh_mcp.services.google_drive_rest_transport import (
     GoogleDriveRestTransport,
 )
 from hushh_mcp.services.google_drive_write_adapter import (
+    FOLDER_MIME,
     MAX_SHARE_MESSAGE_CHARS,
     SHARE_ROLES,
     DriveWriteError,
@@ -52,7 +53,6 @@ REVIEWED_ACTIONS: dict[str, tuple[str, str]] = {
     "trash": ("connector.drive.trash_file", "trash_file"),
 }
 _CONTEXT_REVISION = "drive-review:v1"
-_ROLE_LABELS = {"reader": "Viewer", "commenter": "Commenter", "writer": "Editor"}
 _direct_audit = get_audit_logger("hushh_mcp.audit.drive_direct_write")
 
 
@@ -69,6 +69,26 @@ async def _owner(tool_context: ToolContext) -> str | None:
     if owner is None or not connector_feature_enabled("google_drive_live", owner):
         return None
     return owner
+
+
+_TITLE_LIMIT = 80
+# Quote marks a file name could use to close ours and forge the rest of a card.
+_QUOTES = str.maketrans("", "", '"“”„‟«»‹›')
+
+
+def card_title(value: object) -> str:
+    """A Drive file name as review-card text: no quotes or control characters, <= 80 chars.
+
+    The address and role are never read from here; the card shows them on their
+    own lines from the validated arguments.
+    """
+    if not isinstance(value, str):
+        return "this file"
+    text = " ".join("".join(" " if ord(ch) < 32 or ord(ch) == 127 else ch for ch in value).split())
+    text = text.translate(_QUOTES).strip()
+    if not text:
+        return "this file"
+    return text if len(text) <= _TITLE_LIMIT else text[: _TITLE_LIMIT - 1].rstrip() + "…"
 
 
 def _owner_ref(owner: str) -> str:
@@ -336,14 +356,14 @@ async def _propose(
         return {"status": "blocked", "message": "The Drive session changed. Try again."}
     file = facts.payload.get("file") if isinstance(facts.payload, dict) else None
     file = file if isinstance(file, dict) else {}
-    title = str(file.get("title") or "this file")
+    title = card_title(file.get("title"))
+    folder = file.get("mimeType") == FOLDER_MIME
+    target = f"the folder “{title}” and everything in it" if folder else f"“{title}”"
     if action == "share":
-        summary = f"Share “{title}” with {exact['email']} as {_ROLE_LABELS[exact['role']]}" + (
-            "" if exact["notify"] else " without an email notification"
-        )
+        summary = f"Share {target}"
         confirm_label = "Share"
     else:
-        summary = f"Move “{title}” to trash"
+        summary = f"Move {target} to trash"
         confirm_label = "Move to trash"
     directive = {
         "kind": "action",
@@ -356,6 +376,7 @@ async def _propose(
             "arguments": exact,
             "file": {
                 "title": title,
+                "isFolder": folder,
                 "mimeType": file.get("mimeType"),
                 "viewUrl": file.get("viewUrl"),
             },
@@ -431,7 +452,10 @@ async def execute_reviewed_drive_action(
     reason = "error"
     try:
         result = await (transport or _transport()).write_tool(
-            user_id=owner_id, tool_name=review.tool_name, arguments=review.arguments
+            user_id=owner_id,
+            tool_name=review.tool_name,
+            arguments=review.arguments,
+            expected_generation=review.connection_generation,
         )
         status, reason = "succeeded", "ok"
         return {"status": "ok", "action": action, **result.payload}

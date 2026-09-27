@@ -589,3 +589,39 @@ async def test_writes_keep_the_live_grant_fence(monkeypatch):
     with pytest.raises(DriveWriteError) as raised:
         await changed.write_tool(user_id="owner", tool_name="add_comment", arguments=arguments)
     assert raised.value.outcome_unknown is True
+
+
+async def test_a_reviewed_write_under_another_connection_is_refused_before_sending(monkeypatch):
+    share = AsyncMock(side_effect=AssertionError("drive written"))
+    drive = transport(monkeypatch=monkeypatch)
+    drive.writer = SimpleNamespace(share=share)
+    arguments = {"fileId": FILE_ID, "email": "a@example.invalid", "role": "reader"}
+    with pytest.raises(DriveOAuthError, match="connection_changed"):
+        await drive.write_tool(
+            user_id="owner", tool_name="share_file", arguments=arguments, expected_generation=6
+        )
+    share.assert_not_awaited()
+
+
+async def test_any_failure_after_a_write_was_sent_is_an_unknown_outcome(monkeypatch):
+    # A failure after the request left (here the post-write connection read)
+    # must not read as a plain error the model might retry into a duplicate.
+    # A failure before anything was sent stays an ordinary refusal.
+    from hushh_mcp.services import google_drive_write_adapter as writes
+
+    async def sent_comment(**_):
+        writes.MUTATION_SENT.get()["sent"] = True
+        return {"commentId": "c1", "createdTime": None}
+
+    drive = transport(monkeypatch=monkeypatch)
+    drive.writer = SimpleNamespace(comment=sent_comment)
+    drive._oauth.lifecycle.read.side_effect = RuntimeError("database unavailable")
+    arguments = {"fileId": FILE_ID, "text": "Looks good"}
+    with pytest.raises(writes.DriveWriteError) as raised:
+        await drive.write_tool(user_id="owner", tool_name="add_comment", arguments=arguments)
+    assert raised.value.outcome_unknown is True
+
+    unsent = transport(monkeypatch=monkeypatch)
+    unsent.writer = SimpleNamespace(comment=AsyncMock(side_effect=RuntimeError("before send")))
+    with pytest.raises(RuntimeError, match="before send"):
+        await unsent.write_tool(user_id="owner", tool_name="add_comment", arguments=arguments)

@@ -111,3 +111,18 @@ async def test_markdown_becomes_a_google_doc_through_one_multipart_upload(monkey
     body = request.content.decode()
     assert json.dumps({"name": "Plan", "mimeType": writes.DOCUMENT_MIME}) in body
     assert "Content-Type: text/markdown; charset=UTF-8\r\n\r\n# Plan\n- one" in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent,expected", [(None, "root"), ("private_folder", "private_folder")])
+async def test_a_copy_always_names_its_parent(monkeypatch, parent, expected):
+    # Without a parent Drive files the copy beside its source, which may be a
+    # shared folder: that would share the copy with no review.
+    requests = install(
+        monkeypatch,
+        lambda _: response(payload={"id": "copy_1", "name": "Plan", "mimeType": "text/plain"}),
+    )
+    await writes.GoogleDriveWriteAdapter().copy(
+        access_token=TOKEN, source=FILE_ID, name=None, parent=parent
+    )
+    assert json.loads(requests[0].content)["parents"] == [expected]
