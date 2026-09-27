@@ -640,6 +640,16 @@ const SERVER_TOOL_PRESENTATION: Record<
     message: "Checking the current time.",
     activity: "Checking the time",
   },
+  get_my_location: {
+    label: "Location",
+    message: "Using your approximate location for this answer.",
+    activity: "Checking your location",
+  },
+  get_weather: {
+    label: "Weather",
+    message: "Checking the weather near you.",
+    activity: "Checking the weather",
+  },
   // ADK's own confirmation step for a reviewed connector call. Live only:
   // history restores the reviewed call's row, never this envelope.
   adk_request_confirmation: {
