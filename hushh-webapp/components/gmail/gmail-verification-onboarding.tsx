@@ -229,7 +229,7 @@ export function GmailVerificationOnboarding({
               effect="fade"
               onClick={() => void copyPrompt()}
               aria-label="Copy prompt to clipboard"
-              className="min-h-11 px-0 text-[15px] font-medium !text-[color:var(--app-accent)]"
+              className="min-h-11 px-0 text-[13px] font-medium !text-[color:var(--app-accent)]"
             >
               <Copy aria-hidden="true" className="mr-2 size-5 shrink-0" />
               {copied ? "Copied" : "Copy AI prompt"}

@@ -652,7 +652,7 @@ describe("ProfileReceiptsPage", () => {
     render(<ProfileReceiptsPage initialWorkspace="receipts" />);
 
     expect(
-      await screen.findByText(/does not scan KYC requests here/i),
+      await screen.findByText(/One organizes your email receipts into a shopping summary/i),
     ).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Explore receipts" }));
     expect(await screen.findByText(/No receipts yet/i)).toBeVisible();
@@ -1679,8 +1679,9 @@ describe("ProfileReceiptsPage", () => {
     expect((await screen.findAllByText("Stored Shop")).length).toBeGreaterThan(
       0,
     );
-    // Disconnect lives on the Mail overview tab since #7105/#7106.
+    // Disconnect is available through Manage on the Mail overview.
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    fireEvent.click(screen.getByRole("button", { name: /^manage$/i }));
     fireEvent.click(
       await screen.findByRole("button", { name: /^disconnect mail$/i }),
     );
