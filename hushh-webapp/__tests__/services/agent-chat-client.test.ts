@@ -84,6 +84,9 @@ import {
   detachAttachedAgentTurns,
   isAgentTurnWatched,
   listWatchedAgentTurns,
+  settleWatchedAgentTurn,
+  waitForWatchedAgentTurn,
+  watchDetachedAgentTurn,
 } from "@/lib/agent/agent-chat-turn-watch";
 
 const TEST_VAULT_KEY = "0f".repeat(32);
@@ -1137,6 +1140,23 @@ describe("a turn the app stops reading keeps running server-side", () => {
     }
   });
 
+  it("holds a new prompt until the left turn settles, and never hangs on a cleared watch", async () => {
+    const conversationId = "thread-still-running";
+    watchDetachedAgentTurn({ ownerId: "user-1", conversationId, startedAtMs: Date.now() });
+    let released = false;
+    const waiting = waitForWatchedAgentTurn("user-1", conversationId).then(() => { released = true; });
+    await Promise.resolve();
+    expect(released).toBe(false); // a second run would share the conversation
+    settleWatchedAgentTurn("user-1", conversationId, true);
+    await waiting;
+    expect(released).toBe(true);
+
+    watchDetachedAgentTurn({ ownerId: "user-1", conversationId, startedAtMs: Date.now() });
+    const signedOut = waitForWatchedAgentTurn("user-1", conversationId);
+    clearWatchedAgentTurns();
+    await expect(signedOut).resolves.toBeUndefined();
+  });
+
   it("does not watch a turn the server never started", async () => {
     mockTransport.emitEvents = (subscriber) => {
       subscriber.onEvent?.({ event: { type: "RUN_STARTED" } });
@@ -1144,7 +1164,8 @@ describe("a turn the app stops reading keeps running server-side", () => {
     };
     const result = await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "Hello",
       conversationId: "thread-unstarted", vaultOwnerToken: "owner-token" });
-    expect(result.detached).toBe(false);
+    // Reported as detached (not as an empty answer), but there is nothing to reattach to.
+    expect(result.detached).toBe(true);
     expect(isAgentTurnWatched("user-1", "thread-unstarted")).toBe(false);
   });
 });

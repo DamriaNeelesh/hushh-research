@@ -184,6 +184,7 @@ import {
   isAgentTurnWatched,
   subscribeAgentTurnSettled,
   subscribeOpenAgentConversation,
+  waitForWatchedAgentTurn,
 } from "@/lib/agent/agent-chat-turn-watch";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
 import { usePersonaState } from "@/lib/persona/persona-context";
@@ -2414,6 +2415,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const historyRestoreEpochRef = useRef(0);
   const skipInitialHistoryLoadRef = useRef(false);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
+  const reattachRestoreRef = useRef<Promise<void> | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   const operationQueueRef = useRef(
     new SerialAgentOperationQueue<QueuedWorkspaceOperation>(),
@@ -3974,7 +3976,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (cancelled || restoreEpoch !== historyRestoreEpochRef.current) return;
       setConversations(snapshot.conversations);
       const selectedId = selectedInAppChat(user.uid);
-      if (!selectedId || !snapshot.conversations.some((item) => item.id === selectedId)) {
+      // A first turn the person left may not be in a cached list yet; its
+      // history load below is still owner-checked by the server.
+      if (
+        !selectedId ||
+        (!snapshot.conversations.some((item) => item.id === selectedId) &&
+          !isAgentTurnWatched(user.uid, selectedId))
+      ) {
         updateConversationId(null, false);
         setMessages((current) =>
           mergePendingConsentMessages([createGreetingMessage()], current),
@@ -4338,8 +4346,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       const token = getVaultOwnerToken();
       setIsChatLoading(false);
       setIsStreaming(false);
-      if (!token) return;
-      void restoreConversationMessages(
+      if (!token) {
+        setMessages((current) => current.filter((message) => message.id !== `reattach-${turn.conversationId}`));
+        return;
+      }
+      // A prompt queued meanwhile starts only after this reload lands.
+      reattachRestoreRef.current = restoreConversationMessages(
         turn.conversationId,
         token,
         () => conversationIdRef.current === turn.conversationId,
@@ -5575,6 +5587,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         // written answer and the settled-turn effect reloads it.
         flushAssistantDelta();
         if (streamResult.conversationId) updateConversationId(streamResult.conversationId);
+        // Left before the server's turn was running: nothing to reattach to.
+        if (!isAgentTurnWatched(userId, streamResult.conversationId)) finishCanceledTurn();
         return;
       }
       if (streamAbortController.signal.aborted) {
@@ -6075,6 +6089,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       prompt,
       run: async () => {
         if (hasChatAccess) {
+          // One is still finishing a turn the app left: queue behind it and its
+          // reload rather than start a second run in the same conversation.
+          await waitForWatchedAgentTurn(user?.uid, conversationIdRef.current);
+          await reattachRestoreRef.current;
           await runAgentTurn(operation.prompt?.text ?? "", {
             source: "typed",
             personSelectionHandle,

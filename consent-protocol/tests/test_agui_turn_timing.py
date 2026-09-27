@@ -577,7 +577,7 @@ DETACHED_ANSWER = "the answer written after the client left"
 CHAT_KEY = bytes.fromhex("3c" * 32)
 
 
-def _slow_answer_agent():
+def _slow_answer_agent(delay: float = 0.2):
     from google.adk.agents import BaseAgent
     from google.adk.events import Event
     from google.genai import types
@@ -590,7 +590,7 @@ def _slow_answer_agent():
                 partial=True,
                 content=types.Content(role="model", parts=[types.Part(text="working")]),
             )
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(delay)
             yield Event(
                 author=self.name,
                 invocation_id=ctx.invocation_id,
@@ -600,12 +600,12 @@ def _slow_answer_agent():
     return SlowAnswer(name="one")
 
 
-def _bridge_agent(hook):
+def _bridge_agent(hook, delay: float = 0.2):
     from google.adk.sessions import InMemorySessionService
 
     store = InMemorySessionService()
     agent = TimedADKAgent(
-        adk_agent=_slow_answer_agent(),
+        adk_agent=_slow_answer_agent(delay),
         app_name="one_detach_probe",
         user_id_extractor=lambda _input: USER_ID,
         session_service=store,
@@ -629,6 +629,7 @@ async def _leave_mid_turn(stream) -> None:
 def _owner_input() -> RunAgentInput:
     run = _input()
     run.state = {"hussh:user_id": USER_ID}
+    run.forwarded_props = {"notifyOnDetach": True}  # the native app asks for the push
     return run
 
 
@@ -725,8 +726,31 @@ def test_only_authenticated_one_turns_are_watched_for_a_detached_notice():
     agent.detached_turn_hook = hook
     run = _owner_input()
     assert agent._detach_watch(run) is not None
+    # A web tab does not ask for it: its closed stream must not wake a phone.
+    web = _owner_input()
+    web.forwarded_props = {}
+    assert agent._detach_watch(web) is None
     run.state = {"hussh:user_id": "anonymous:abc"}
     assert agent._detach_watch(run) is None
     intro = _agent(HEAD_INTRO)
     intro.detached_turn_hook = hook
     assert intro._detach_watch(_owner_input()) is None
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_leaves_after_the_run_settled_is_still_notified():
+    settled: asyncio.Queue = asyncio.Queue()
+
+    async def hook(owner_id: str, conversation_id: str) -> None:
+        await settled.put((owner_id, conversation_id))
+
+    # The run finishes at once, while its answer still waits in the bridge's
+    # queue for a reader that then leaves without taking it.
+    agent, _store = _bridge_agent(hook, delay=0.0)
+    stream = agent.run(_owner_input())
+    assert (await anext(stream)).type == "RUN_STARTED"
+    await anext(stream)
+    await asyncio.sleep(0.3)
+    await stream.aclose()
+
+    assert await asyncio.wait_for(settled.get(), timeout=10) == (USER_ID, THREAD_ID)

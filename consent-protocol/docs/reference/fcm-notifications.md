@@ -85,8 +85,12 @@ a turn settles with something to open, the server sends one bare wake-up:
 | Platforms | iOS and Android tokens only; a web token is skipped |
 | Body tap | `/?conversation=<id>`; the chat selects it after unlock through its owner-checked history load. `deep_link` is ignored |
 
-It is sent only when the stream had already closed before the turn settled; a
-client still reading receives the answer live. Inside the open app the chat
+It is sent only when the stream had already closed before the turn settled
+(a client still reading receives the answer live), and only for turns whose
+client asked for it with `forwardedProps.notifyOnDetach` — the native app. A
+web tab's closed stream never wakes the person's phone. Bridge bookkeeping
+events (`state_update_*`) are not read as a turn, so a review pause counts as
+settled and earns the push. Inside the open app the chat
 shows its own "One replied" notice (see `AgentChatTurnNotifier`), and nothing
 while the person is looking at that conversation.
 

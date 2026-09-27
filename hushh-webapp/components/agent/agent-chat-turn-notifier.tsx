@@ -31,6 +31,7 @@ import {
   detachAttachedAgentTurns,
   isAgentConversationId,
   listWatchedAgentTurns,
+  markWatchedAgentTurnForeground,
   requestOpenAgentConversation,
   setAgentTurnAppBackgrounded,
   settleWatchedAgentTurn,
@@ -50,6 +51,10 @@ export const ONE_REPLY_NOTICE_DESCRIPTION = "Your answer is ready.";
 export const AGENT_CONVERSATION_QUERY = "conversation";
 
 const POLL_INTERVAL_MS = 2_500;
+// Each status read decrypts the conversation server-side; slow down once a
+// turn has run past the first half minute.
+const SLOW_POLL_AFTER_MS = 30_000;
+const SLOW_POLL_INTERVAL_MS = 6_000;
 
 function appIsActive(): boolean {
   return appInteractionCoordinator.getLifecycleSnapshot().state === "active";
@@ -154,25 +159,34 @@ export function AgentChatTurnNotifier(): null {
       return undefined;
     }
     const inFlight = new Set<string>();
+    const lastReadAt = new Map<string, number>();
     const poll = () => {
       if (!appIsActive()) return;
       const token = getVaultOwnerToken();
       if (!token) return;
       for (const turn of listWatchedAgentTurns()) {
         if (turn.ownerId !== ownerId || inFlight.has(turn.conversationId)) continue;
-        if (Date.now() - turn.startedAtMs > AGENT_TURN_WATCH_WINDOW_MS) {
+        const elapsed = Date.now() - turn.startedAtMs;
+        const interval = elapsed > SLOW_POLL_AFTER_MS ? SLOW_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+        if (Date.now() - (lastReadAt.get(turn.conversationId) ?? 0) < interval - 100) continue;
+        if (elapsed > AGENT_TURN_WATCH_WINDOW_MS) {
           dispatchAgentChatHistoryInvalidated(ownerId);
           settleWatchedAgentTurn(ownerId, turn.conversationId, false);
           continue;
         }
         inFlight.add(turn.conversationId);
+        lastReadAt.set(turn.conversationId, Date.now());
         void getAgentChatTurnState({
           conversationId: turn.conversationId,
           vaultOwnerToken: token,
           vaultKey,
         })
           .then((state) => {
-            if (state.pending || ownerRef.current !== ownerId) return;
+            if (ownerRef.current !== ownerId) return;
+            if (state.pending) {
+              markWatchedAgentTurnForeground(ownerId, turn.conversationId);
+              return;
+            }
             // The next history read must see the written answer, not the cache.
             dispatchAgentChatHistoryInvalidated(ownerId);
             settleWatchedAgentTurn(ownerId, turn.conversationId, state.answered);

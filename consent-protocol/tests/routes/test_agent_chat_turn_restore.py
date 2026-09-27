@@ -363,3 +363,29 @@ async def test_no_push_when_the_detached_turn_has_nothing_to_open(monkeypatch) -
     assert (
         await _detached_notice(monkeypatch, [_text("user-event", USER_PROMPT, author="user")]) == []
     )
+
+
+def _bridge_state_write() -> Event:
+    # What ag_ui_adk appends after a review pause: bookkeeping, not a turn.
+    return Event(invocation_id="state_update_1760000000", author="user")
+
+
+def _review_pause() -> Event:
+    event = _call("call-review", "adk_request_confirmation")
+    event.long_running_tool_ids = {"call-review"}
+    return event
+
+
+@pytest.mark.asyncio
+async def test_bridge_state_writes_after_a_turn_do_not_read_as_a_new_turn(monkeypatch) -> None:
+    from hushh_mcp.one_adk.turn_completion import newest_turn_answered
+
+    started = _text("user-event", USER_PROMPT, author="user")
+    answered = [started, _text("answer-event", ANSWER), _bridge_state_write()]
+    assert (await _history(monkeypatch, answered))["turn"] == {"pending": False}
+    assert newest_turn_answered(answered)
+
+    paused = [started, _review_pause(), _bridge_state_write()]
+    assert (await _history(monkeypatch, paused))["turn"] == {"pending": False}
+    # A review waiting on the person is something to open: it earns the push.
+    assert len(await _detached_notice(monkeypatch, paused)) == 1

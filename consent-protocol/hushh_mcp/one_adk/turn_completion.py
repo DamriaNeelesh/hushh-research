@@ -24,12 +24,14 @@ from collections.abc import Sequence
 from typing import Any
 
 from hushh_mcp.branding import PRODUCT_NAME
+from hushh_mcp.services.chat_key import MAX_BINDING_SECONDS
 
 logger = logging.getLogger(__name__)
 
-# Longer than the route's 200 s execution bound: after this a turn that never
-# wrote a final event is treated as over, so a client never waits forever.
-PENDING_WINDOW_SECONDS = 240.0
+# A detached run is bounded by the chat key it holds (``MAX_BINDING_SECONDS``),
+# not by the route's 200 s stream bound, which only an attached reader enforces.
+# After this a turn that never wrote a final event is over; nobody waits forever.
+PENDING_WINDOW_SECONDS: float = float(MAX_BINDING_SECONDS)
 
 ONE_REPLY_NOTIFICATION_TYPE = "one_reply"
 ONE_REPLY_TITLE = PRODUCT_NAME
@@ -41,11 +43,24 @@ ONE_REPLY_PLATFORMS = frozenset({"ios", "android"})
 _PUSH_TIMEOUT_SECONDS = 10.0
 
 
+def _is_turn_event(event: Any) -> bool:
+    """False for the bridge's own session-state writes.
+
+    After a turn pauses on a review (and on some resumes) the AG-UI bridge
+    persists bookkeeping through ``update_session_state``, which appends a
+    content-less event under a synthetic ``state_update_*`` invocation. Those
+    events belong to no turn and must not be read as the newest one.
+    """
+    content = getattr(event, "content", None)
+    return bool(content is not None and getattr(content, "parts", None))
+
+
 def _newest_turn(events: Sequence[Any]) -> list[Any]:
-    if not events:
+    turn_events = [event for event in events if _is_turn_event(event)]
+    if not turn_events:
         return []
-    invocation = getattr(events[-1], "invocation_id", None)
-    return [event for event in events if getattr(event, "invocation_id", None) == invocation]
+    invocation = getattr(turn_events[-1], "invocation_id", None)
+    return [event for event in turn_events if getattr(event, "invocation_id", None) == invocation]
 
 
 def _is_final(event: Any) -> bool:

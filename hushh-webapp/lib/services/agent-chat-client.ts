@@ -7,6 +7,7 @@ import {
   type DriveBatchProgress,
 } from "@/lib/agent/drive-batch-progress";
 import { HttpAgent, type AgentSubscriber, type Tool } from "@ag-ui/client";
+import { Capacitor } from "@capacitor/core";
 import { applyPatch, type Operation } from "fast-json-patch";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
 import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary";
@@ -1180,6 +1181,9 @@ export async function streamAgentChat(input: {
         personSelectionHandle: input.personSelectionHandle,
         gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
         screenContext: input.screenContext,
+        // Only the native app asks the server for a "One replied" push when it
+        // stops reading; a web tab's closed stream must not wake a phone.
+        notifyOnDetach: Capacitor.isNativePlatform(),
       },
     }, subscriber);
     await terminalRun;
@@ -1191,12 +1195,14 @@ export async function streamAgentChat(input: {
     input.signal?.removeEventListener("abort", abort);
     unregisterAttached();
   }
-  const leftRunningTurn = detached && !serverTerminal && !intentionallyStoppedAtConfirmation && serverEvents > 1;
-  if (leftRunningTurn) {
+  const leftTurn = detached && !serverTerminal && !intentionallyStoppedAtConfirmation;
+  // Watch only a turn the server had started (more than RUN_STARTED seen); a
+  // detach before that has nothing to reattach to.
+  if (leftTurn && serverEvents > 1) {
     watchDetachedAgentTurn({ ownerId: input.userId, conversationId: threadId, startedAtMs });
   }
-  if (failure && !leftRunningTurn) throw failure;
-  return { conversationId: threadId, model: null, text, interrupted, detached: leftRunningTurn };
+  if (failure && !leftTurn) throw failure;
+  return { conversationId: threadId, model: null, text, interrupted, detached: leftTurn };
 }
 
 /**

@@ -12,8 +12,8 @@
 /** Abort reason for a stream the app stops reading while the turn continues. */
 export const AGENT_TURN_DETACH_REASON = "hussh:agent-turn-detached";
 
-/** Longer than the server's execution bound; a watch never outlives its turn. */
-export const AGENT_TURN_WATCH_WINDOW_MS = 240_000;
+/** The server's bound on a detached turn (its chat key's 300 s ceiling), plus a margin. */
+export const AGENT_TURN_WATCH_WINDOW_MS = 310_000;
 
 const CONVERSATION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/;
 
@@ -101,6 +101,16 @@ export function setAgentTurnAppBackgrounded(backgrounded: boolean): void {
   for (const turn of watched.values()) turn.backgroundedSinceDetach = true;
 }
 
+/**
+ * The turn was seen still running while the app is in the foreground, so it
+ * will settle where a push shows no banner: the in-app notice owns it again.
+ */
+export function markWatchedAgentTurnForeground(ownerId: string, conversationId: string): void {
+  if (appBackgrounded) return;
+  const turn = watched.get(keyOf(ownerId, conversationId));
+  if (turn) turn.backgroundedSinceDetach = false;
+}
+
 export function settleWatchedAgentTurn(ownerId: string, conversationId: string, answered: boolean): void {
   const key = keyOf(ownerId, conversationId);
   const turn = watched.get(key);
@@ -133,6 +143,26 @@ export function subscribeAgentTurnSettled(listener: (turn: AgentTurnSettled) => 
   return () => {
     settledListeners.delete(listener);
   };
+}
+
+/**
+ * Resolves once no watched turn is running in this conversation (it settled, or
+ * its watch was cleared). A new prompt waits on this so two runs never share a
+ * conversation at once.
+ */
+export function waitForWatchedAgentTurn(
+  ownerId: string | null | undefined,
+  conversationId: string | null | undefined,
+): Promise<void> {
+  if (!isAgentTurnWatched(ownerId, conversationId)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const check = () => {
+      if (isAgentTurnWatched(ownerId, conversationId)) return;
+      unsubscribeWatch();
+      resolve();
+    };
+    const unsubscribeWatch = subscribeWatchedAgentTurns(check);
+  });
 }
 
 /** Ask the mounted chat to open a conversation (a notice's Open, a push tap). */
