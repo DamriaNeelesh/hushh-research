@@ -9,7 +9,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContextType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MessageCircle } from "@/components/icons";
+import { AlertCircle } from "@/components/icons";
 import type {
   OneLocationCircleDetail,
   OneLocationCircleMember,
@@ -268,12 +268,12 @@ describe("circle discovery actions", () => {
     expect(mocks.sms).not.toHaveBeenCalled();
   });
 
-  it("uses a recognizable speech bubble icon for SMS", () => {
+  it("uses a recognizable alert icon for SMS", () => {
     render(ui());
     const icon = screen.getByTestId("circle-starter-sms").querySelector("[data-circle-icon-style='duotone']");
     expect(icon).toBeTruthy();
     const expected = document.createElement("div");
-    expected.innerHTML = renderToStaticMarkup(<MessageCircle weight="duotone" />);
+    expected.innerHTML = renderToStaticMarkup(<AlertCircle weight="duotone" />);
     expect(icon?.querySelector("path:last-child")?.getAttribute("d")).toBe(
       expected.querySelector("path:last-child")?.getAttribute("d"),
     );

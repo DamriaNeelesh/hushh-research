@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import {
+  AlertCircle,
   ArrowRight,
   Briefcase,
   Check,
   FinanceAgentIcon,
   Heart,
   MapPin,
-  MessageCircle,
   Plus,
   ShieldCheck,
   TrendingUp,
@@ -35,7 +35,7 @@ const STARTER_ICONS = {
   investor: TrendingUp,
   business: Briefcase,
   location: MapPin,
-  sms: MessageCircle,
+  sms: AlertCircle,
 };
 
 // Match the home palette and its duotone icon language. The emergency siren
