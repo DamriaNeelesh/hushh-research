@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Mail, MailCheck, RefreshCw } from "@/components/icons";
+import { Loader2, MailCheck, RefreshCw } from "@/components/icons";
 
 import { SurfaceInset } from "@/components/app-ui/surfaces";
 import { AdaptiveDetailSurface } from "@/components/app-ui/settings-ui";
@@ -1101,8 +1101,8 @@ export default function GmailInformationRequestsSection({
   ) : (
     <Button
       type="button"
-      size="sm"
-      className="min-h-11 w-full sm:w-auto"
+      size="prominent"
+      className="w-full justify-center"
       variant="blue-gradient"
       disabled={updating || loading || scanningInbox}
       onClick={() => {
@@ -1115,21 +1115,21 @@ export default function GmailInformationRequestsSection({
     >
       {updating ? (
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-      ) : (
-        <Mail className="mr-2 h-4 w-4" />
-      )}
+      ) : null}
       {vaultKey && vaultOwnerToken
         ? "Start monitoring"
         : "Unlock to start"}
     </Button>
   );
   return (
-    <SurfaceInset className="space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5">
-      <div className="flex items-start justify-between gap-3">
+    <SurfaceInset className="space-y-4 !border-0 !bg-transparent !p-0 text-sm !shadow-none">
+      <div className={enabled ? "flex items-start justify-between gap-3" : "mx-auto max-w-md pt-8 text-center"}>
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold tracking-tight text-foreground">KYC requests</h2>
+          <h2 className={enabled ? "text-lg font-semibold tracking-tight text-foreground" : "text-2xl font-semibold tracking-tight text-foreground"}>KYC requests</h2>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            Review requests and approve every reply before it sends.
+            {enabled
+              ? "Review requests and approve every reply before it sends."
+              : "One checks emails for KYC requests. You approve before sending."}
           </p>
         </div>
         {enabled ? (
@@ -1175,19 +1175,9 @@ export default function GmailInformationRequestsSection({
           </div>
         </div>
       ) : (
-        <div className="flex flex-col gap-3 rounded-[var(--app-card-radius-sm)] border border-border/60 bg-background/60 px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <Mail className="h-4 w-4" aria-hidden="true" />
-            </div>
-            <div>
-              <p className="font-medium text-foreground">Find KYC requests in Gmail</p>
-              <p className="text-xs leading-5 text-muted-foreground">
-                Nothing is shared without your approval.
-              </p>
-            </div>
-          </div>
-          <div className="w-full sm:w-auto">{monitoringActions}</div>
+        <div className="mx-auto flex w-full max-w-xs flex-col items-center gap-4 pb-8 pt-2">
+          {monitoringActions}
+          <p className="text-sm text-muted-foreground">Stop anytime.</p>
         </div>
       )}
 

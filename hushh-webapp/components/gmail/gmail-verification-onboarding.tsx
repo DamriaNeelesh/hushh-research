@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, ShieldCheck } from "@/components/icons";
+import { Check, Copy, KycAgentIcon, ShieldCheck } from "@/components/icons";
 import { toast } from "sonner";
+import Link from "next/link";
+import { ROUTES } from "@/lib/navigation/routes";
 
 import { SurfaceInset } from "@/components/app-ui/surfaces";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -40,6 +42,7 @@ export function GmailVerificationOnboarding({
   children: ReactNode;
 }) {
   const [profileReady, setProfileReady] = useState(false);
+  const [profileStatus, setProfileStatus] = useState<"unknown" | "saved" | "failed">("unknown");
   const [checking, setChecking] = useState(true);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -48,6 +51,7 @@ export function GmailVerificationOnboarding({
   useEffect(() => {
     setChecking(true);
     setProfileReady(false);
+    setProfileStatus("unknown");
     if (!userId || !vaultKey || !vaultOwnerToken) {
       setChecking(false);
       return;
@@ -69,6 +73,7 @@ export function GmailVerificationOnboarding({
         const profile = snapshot?.data?.identity_profile;
         if (!cancelled && hasCompletedKycIdentityIntake(profile)) {
           setProfileReady(true);
+          setProfileStatus("saved");
         }
       })
       .catch(() => {
@@ -124,6 +129,7 @@ export function GmailVerificationOnboarding({
     void saveTask
       .then((result) => {
         if (!result.success) {
+          setProfileStatus("failed");
           console.error("[PKM_INGEST] kyc_background_save_failed", {
             source: "kyc_identity_onboarding",
             error_code: "save_incomplete",
@@ -133,9 +139,11 @@ export function GmailVerificationOnboarding({
           );
           return;
         }
+        setProfileStatus("saved");
         toast.success(result.message || "KYC details saved privately.");
       })
       .catch(() => {
+        setProfileStatus("failed");
         console.error("[PKM_INGEST] kyc_background_save_failed", {
           source: "kyc_identity_onboarding",
           error_code: "background_task_rejected",
@@ -173,7 +181,25 @@ export function GmailVerificationOnboarding({
       </SurfaceInset>
     );
   }
-  if (profileReady || deferred) return <>{children}</>;
+  if (profileReady || deferred) return (
+    <>
+      <div className="flex items-center justify-between gap-3 border-y border-[color:var(--app-separator)] py-4">
+        <div className="space-y-1">
+          <h2 className="text-[17px] font-semibold text-foreground">KYC profile</h2>
+          <p aria-live="polite" className={profileStatus === "saved" && !saving
+            ? "flex items-center gap-1.5 text-sm text-[color:var(--app-success-deep)] dark:text-[color:var(--app-success-bright)]"
+            : "text-sm text-muted-foreground"}>
+            {profileStatus === "saved" && !saving ? <Check aria-hidden="true" className="size-4" /> : null}
+            {saving ? "Saving…" : profileStatus === "saved" ? "Saved" : profileStatus === "failed" ? "Not saved" : deferred ? "Skipped for now" : "Review in Memory"}
+          </p>
+        </div>
+        <Button asChild variant="none" effect="fade" className="min-h-11 shrink-0 px-2 text-sm font-normal !text-[color:var(--app-accent)]">
+          <Link href={ROUTES.PKM}>Edit in Memory</Link>
+        </Button>
+      </div>
+      {children}
+    </>
+  );
 
   if (!vaultKey || !vaultOwnerToken) {
     return (
@@ -200,96 +226,72 @@ export function GmailVerificationOnboarding({
   }
 
   return (
-    <SurfaceInset className="space-y-4 px-4 py-5 sm:px-5">
-      <div className="space-y-1">
-        <h2 className="text-base font-semibold text-foreground">
+    <section className="mx-auto w-full max-w-md space-y-4 border-t border-[color:var(--app-separator)] pt-6">
+      <div className="flex flex-col items-center text-center">
+        <div aria-hidden="true" className="mb-4 flex size-16 items-center justify-center rounded-[20px] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)]">
+          <KycAgentIcon color="currentColor" className="size-9" />
+        </div>
+        <h2 className="text-2xl font-semibold tracking-tight text-foreground">
           Build your KYC profile
         </h2>
-        <p className="text-xs text-muted-foreground">
+        <p className="mt-2 max-w-xs text-[15px] leading-[22px] text-muted-foreground">
           Paste your profile details to automate future KYC responses.
         </p>
       </div>
       <Textarea
         value={details}
         onChange={(event) => onDetailsChange(event.target.value)}
-        placeholder="Paste your KYC details here…"
-        className="min-h-32 resize-y text-sm border-primary/40 ring-1 ring-primary/20 bg-background/80"
+        placeholder="Paste your profile details here…"
+        className="min-h-32 resize-y border-[color:var(--app-separator)] bg-[color:var(--app-primary-surface)] text-base shadow-none"
         aria-label="KYC details"
         disabled={saving}
       />
-      <div className="rounded-xl border border-border/60 bg-background/60 p-3.5 space-y-3">
-        <p className="text-xs font-semibold text-foreground">
-          Import from another AI
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Copy this prompt into ChatGPT or Claude, then paste the output above.
-        </p>
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => void copyPrompt()}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              void copyPrompt();
-            }
-          }}
-          aria-label="Copy prompt to clipboard"
-          className="group relative flex cursor-pointer flex-col gap-2.5 rounded-xl border border-dashed border-border/80 bg-background p-4 transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <div className="flex items-center justify-between gap-3">
-            <span className="inline-flex items-center rounded-md bg-indigo-500/10 px-2 py-0.5 text-[11px] font-bold tracking-wider text-indigo-600 dark:bg-indigo-400/15 dark:text-indigo-400">
-              PROMPT
-            </span>
-            <div className="flex items-center gap-2">
-              {copied ? (
-                <span
-                  aria-live="polite"
-                  className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400 animate-in fade-in duration-200"
-                >
-                  ✓ Copied!
-                </span>
-              ) : null}
-              <Button
-                type="button"
-                size="icon"
-                variant="none"
-                tabIndex={-1}
-                aria-hidden="true"
-                className="h-8 w-8 shrink-0 text-muted-foreground group-hover:text-foreground"
-              >
-                {copied ? (
-                  <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                ) : (
-                  <Copy className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
+      <div className="flex items-start gap-2.5">
+        <Copy aria-hidden="true" className="mt-2.5 size-5 shrink-0 text-[color:var(--app-accent)]" />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2">
+            <Button
+              type="button"
+              variant="none"
+              effect="fade"
+              onClick={() => void copyPrompt()}
+              aria-label="Copy prompt to clipboard"
+              className="min-h-11 px-0 text-[15px] font-medium !text-[color:var(--app-accent)]"
+            >
+              {copied ? "Copied" : "Copy AI prompt"}
+            </Button>
+            <span className="text-xs text-muted-foreground">· Optional</span>
           </div>
-          <p className="font-mono text-xs leading-relaxed text-foreground/90 select-all">
-            {EXTERNAL_AGENT_PROMPT}
+          <p className="text-xs leading-5 text-muted-foreground">
+            Use in your AI app. Then paste the reply here.
           </p>
+          <details className="mt-1 text-xs text-muted-foreground">
+            <summary className="cursor-pointer py-2">View prompt</summary>
+            <p className="select-all pb-2 leading-5">{EXTERNAL_AGENT_PROMPT}</p>
+          </details>
         </div>
       </div>
-      <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+      <div className="flex flex-col items-center gap-1">
         <Button
           type="button"
+          size="prominent"
           onClick={save}
           disabled={saving || !details.trim()}
-          className="w-full sm:w-auto h-10 font-semibold rounded-full justify-center px-6"
+          className="w-full justify-center"
         >
           {saving ? "Saving…" : "Save KYC profile"}
         </Button>
         <Button
           type="button"
-          variant="muted"
+          variant="none"
+          effect="fade"
           onClick={() => onDeferredChange(true)}
           disabled={saving}
-          className="w-full sm:w-auto h-10 font-medium rounded-full justify-center px-6"
+          className="min-h-11 px-4 text-[15px] font-normal !text-[color:var(--app-accent)]"
         >
-          Skip
+          Skip for now
         </Button>
       </div>
-    </SurfaceInset>
+    </section>
   );
 }

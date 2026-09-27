@@ -1935,7 +1935,7 @@ export default function GmailReceiptsPage({
                 aria-expanded={showMailManagement}
                 aria-controls="mail-management-panel"
                 onClick={() => setShowMailManagement((open) => !open)}
-                className="min-h-11 px-2 text-sm text-primary"
+                className="min-h-11 px-2 text-[17px] font-normal !text-[color:var(--app-accent)]"
               >
                 {showMailManagement ? "Done" : "Manage"}
               </Button>
@@ -2155,9 +2155,9 @@ export default function GmailReceiptsPage({
           <div className="min-h-[340px] w-full space-y-4 transition-opacity duration-150 animate-in fade-in">
             {isConnected && workspace === "overview" ? (
             <section className="mx-auto flex w-full max-w-md flex-col items-center px-4 py-10 text-center sm:py-12">
-              <div aria-hidden="true" className="relative mb-5 flex h-20 w-20 items-center justify-center rounded-3xl bg-primary/10 text-primary">
+              <div aria-hidden="true" className="relative mb-5 flex h-20 w-20 items-center justify-center rounded-[22px] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)]">
                 <Mail className="h-10 w-10" />
-                <PenLine className="absolute bottom-4 right-3 h-5 w-5 bg-background rounded" />
+                <PenLine className="absolute bottom-4 right-3 h-5 w-5 rounded bg-[color:var(--app-accent-surface)]" />
               </div>
               <h2 className="text-2xl font-semibold tracking-tight text-foreground">Draft with One</h2>
               <p className="mt-2 max-w-xs text-base leading-relaxed text-muted-foreground">
@@ -2166,7 +2166,8 @@ export default function GmailReceiptsPage({
               <AskOneButton
                 onClick={handleOpenOneChat}
                 showIcon={false}
-                className="mt-6 h-12 w-full max-w-xs justify-center text-base font-semibold sm:w-full"
+                size="prominent"
+                className="mt-6 w-full max-w-xs justify-center sm:w-full"
               >
                 Chat with One
               </AskOneButton>
