@@ -163,9 +163,11 @@ BEGIN
     END IF;
 
     IF feed_type IS NOT NULL THEN
-      -- Background syncs can run repeatedly; at most one success and one
-      -- failure per UTC day, while each owner-started run gets its own row.
-      dedupe_key := CASE WHEN NEW.sync_mode = 'manual' THEN NEW.run_id
+      -- Every run that actually imports new receipts must create its own
+      -- Feed event. Otherwise a later same-day import is silently lost after
+      -- the first run is read. Repeated background failures remain daily.
+      dedupe_key := CASE WHEN feed_type <> 'mail_sync_failed' THEN NEW.run_id
+        WHEN NEW.sync_mode = 'manual' THEN NEW.run_id
         ELSE 'mail-sync:' || TO_CHAR(
           COALESCE(NEW.completed_at, NEW.updated_at) AT TIME ZONE 'UTC',
           'YYYY-MM-DD'

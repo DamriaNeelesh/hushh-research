@@ -852,7 +852,7 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
         domainLabel: "Mail",
         label: "Information request detected",
         description: "Review a new request in Mail before sharing anything.",
-        href: ROUTES.GMAIL,
+        href: `${ROUTES.GMAIL}?workspace=kyc`,
       };
     case "mail_receipts_imported":
       return {
@@ -860,7 +860,7 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
         domainLabel: "Mail",
         label: "New receipts found",
         description: "Your Mail receipts are ready to review.",
-        href: ROUTES.GMAIL,
+        href: `${ROUTES.GMAIL}?workspace=receipts`,
       };
     case "mail_sync_completed":
       return {
@@ -868,15 +868,15 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
         domainLabel: "Mail",
         label: "Mail is up to date",
         description: "Your manual sync finished without new receipts.",
-        href: ROUTES.GMAIL,
+        href: `${ROUTES.GMAIL}?workspace=receipts`,
       };
     case "mail_sync_failed":
       return {
         icon: Mail,
         domainLabel: "Mail",
-        label: "Mail sync needs attention",
-        description: "Open Mail to check your receipt sync.",
-        href: ROUTES.GMAIL,
+        label: "Mail sync interrupted",
+        description: "Open Mail for the current status; One may retry automatically.",
+        href: `${ROUTES.GMAIL}?workspace=receipts`,
       };
     case "mail_message_sent":
     case "mail_message_failed":
@@ -896,7 +896,7 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
             : item.event_type === "mail_message_failed"
               ? "Open Mail to review what happened."
               : "Check Mail before trying again; delivery may have succeeded.",
-        href: ROUTES.GMAIL,
+        href: `${ROUTES.GMAIL}?workspace=kyc`,
       };
     // Connection events use the same person-first layout: title is the other
     // person's name, subtitle is the action. Name comes from `counterpart_label`

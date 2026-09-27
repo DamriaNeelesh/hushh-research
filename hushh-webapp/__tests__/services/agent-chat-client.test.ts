@@ -1,10 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockTransport = vi.hoisted(() => ({
   runAgent: vi.fn(),
   outcome: "success" as "success" | "interrupt",
   emitEvents: null as null | ((subscriber: Record<string, (input: any) => void>) => void),
   aborted: false,
+  // Mirrors @ag-ui/client 0.0.59 on a non-2xx response (measured): the
+  // subscriber sees onRunFailed, then runAgent rejects with the raw error.
+  failWith: null as null | Error,
 }));
 
 vi.mock("@ag-ui/client", () => ({
@@ -15,6 +18,11 @@ vi.mock("@ag-ui/client", () => ({
     }
     async runAgent(parameters: unknown, subscriber: Record<string, (input: any) => void>) {
       mockTransport.runAgent(parameters, this.config);
+      if (mockTransport.failWith) {
+        const error = mockTransport.failWith;
+        subscriber.onRunFailed?.({ error });
+        throw error;
+      }
       subscriber.onRunStartedEvent?.({ event: { type: "RUN_STARTED" } });
       if (mockTransport.emitEvents) {
         mockTransport.emitEvents(subscriber);
@@ -69,6 +77,7 @@ vi.mock("@/lib/services/api-service", () => ({
 import {
   formatAgentChatErrorMessage,
   getAgentChatHistory,
+  listAgentChatConversations,
   recordAgentChatInformationRequest,
   streamAgentChat,
   streamAgentIntro,
@@ -78,6 +87,7 @@ import {
 import { ApiService } from "@/lib/services/api-service";
 import { publishValidatedAuthSessionOwner } from "@/lib/auth/session-owner";
 import { advanceVaultSessionEpoch } from "@/lib/vault/session-epoch";
+import { ChatKeyRefusalError, noteChatKeyAccepted } from "@/lib/vault/one-chat-key";
 
 const TEST_VAULT_KEY = "0f".repeat(32);
 const TEST_CHAT_KEY = "hck1.0a3419cafc7896f9384d95ec76704bb30b272e913e80702075270f69a2feae8b";
@@ -103,6 +113,89 @@ describe("One chat key transport", () => {
     await expect(streamAgentChat({ vaultKey: "", userId: "user-1", message: "Hello", vaultOwnerToken: "owner-token" }))
       .rejects.toThrow("Unlock your vault");
     expect(mockTransport.runAgent).not.toHaveBeenCalled();
+  });
+
+  describe("refusal lifecycle (UAT 2026-09-27: 51 refusals, no unlock prompt, no recovery)", () => {
+    const lockRequests: string[] = [];
+    const onLock = (event: Event) => lockRequests.push(String((event as CustomEvent).detail?.reason));
+    const refusal = (code: string) => Object.assign(
+      new Error(`HTTP 403: {"detail":{"message":"Update or refresh the app","code":"${code}"}}`),
+      { status: 403, payload: { detail: { message: "Update or refresh the app", code } } },
+    );
+    const turn = (handlers?: AgentChatStreamHandlers) => streamAgentChat({
+      vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "Hello", vaultOwnerToken: "owner-token", handlers,
+    });
+
+    beforeEach(() => {
+      publishValidatedAuthSessionOwner("user-1");
+      noteChatKeyAccepted();
+      lockRequests.length = 0;
+      mockTransport.runAgent.mockClear();
+      window.addEventListener("vault-lock-requested", onLock);
+    });
+    afterEach(() => {
+      mockTransport.failWith = null;
+      window.removeEventListener("vault-lock-requested", onLock);
+    });
+
+    it("routes a token without a vault key to unlock and sends nothing", async () => {
+      await expect(streamAgentChat({ vaultKey: "", userId: "user-1", message: "Hello", vaultOwnerToken: "owner-token" }))
+        .rejects.toMatchObject({ code: "CHAT_KEY_REQUIRED", recovery: "unlock" });
+      expect(mockTransport.runAgent).not.toHaveBeenCalled();
+      expect(lockRequests).toEqual(["CHAT_KEY_REFUSED"]);
+    });
+
+    it("maps a CHAT_KEY_REQUIRED 403 to one unlock, never raw server text", async () => {
+      mockTransport.failWith = refusal("CHAT_KEY_REQUIRED");
+      const shown: string[] = [];
+      const error = await turn({ onError: (message) => shown.push(message) }).catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(ChatKeyRefusalError);
+      expect(error).toMatchObject({ code: "CHAT_KEY_REQUIRED", recovery: "unlock" });
+      expect(error.message).toMatch(/^Unlock your vault to continue/);
+      expect(error.message).not.toMatch(/HTTP 403|detail|couldn't complete/);
+      expect(shown).toEqual([error.message]);
+      expect(lockRequests).toEqual(["CHAT_KEY_REFUSED"]);
+      expect(mockTransport.runAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it("never locks twice: a refusal after the fresh unlock says how to continue instead", async () => {
+      mockTransport.failWith = refusal("CHAT_KEY_REQUIRED");
+      await turn().catch(() => undefined);
+      mockTransport.failWith = refusal("CHAT_KEY_MISMATCH");
+      const again = await turn().catch((caught) => caught);
+
+      expect(again).toMatchObject({ code: "CHAT_KEY_MISMATCH", recovery: "exhausted" });
+      expect(again.message).toMatch(/Start a new chat/);
+      expect(lockRequests).toEqual(["CHAT_KEY_REFUSED"]);
+
+      // Once the server accepts the key again, a later refusal may lock again.
+      mockTransport.failWith = null;
+      await turn();
+      mockTransport.failWith = refusal("CHAT_KEY_MISMATCH");
+      await expect(turn()).rejects.toMatchObject({ recovery: "unlock" });
+      expect(lockRequests).toEqual(["CHAT_KEY_REFUSED", "CHAT_KEY_REFUSED"]);
+    });
+
+    it("refuses history once per call with no retry, and a late refusal never locks a newer session", async () => {
+      const refused = () => new Response(JSON.stringify({ detail: { code: "CHAT_KEY_REQUIRED" } }), {
+        status: 403, headers: { "content-type": "application/json" },
+      });
+      vi.mocked(ApiService.listAgentChatConversations).mockReset().mockImplementation(async () => {
+        advanceVaultSessionEpoch();
+        return refused();
+      });
+      await expect(listAgentChatConversations({ userId: "user-1", vaultOwnerToken: "t", vaultKey: TEST_VAULT_KEY }))
+        .rejects.toMatchObject({ code: "CHAT_KEY_REQUIRED", recovery: "stale" });
+      expect(ApiService.listAgentChatConversations).toHaveBeenCalledTimes(1);
+      expect(lockRequests).toEqual([]);
+
+      vi.mocked(ApiService.listAgentChatConversations).mockReset().mockResolvedValue(refused());
+      await expect(listAgentChatConversations({ userId: "user-1", vaultOwnerToken: "t", vaultKey: TEST_VAULT_KEY }))
+        .rejects.toMatchObject({ recovery: "unlock" });
+      expect(ApiService.listAgentChatConversations).toHaveBeenCalledTimes(1);
+      expect(lockRequests).toEqual(["CHAT_KEY_REFUSED"]);
+    });
   });
 
   it("turns a chat-key refusal into recoverable copy, never raw server text", () => {
@@ -305,6 +398,45 @@ describe("AG-UI Agent One client", () => {
       .not.toContain("PRIVATE_FILENAME.pdf");
   });
 
+  it("names every roster step and its header phrase instead of a generic Agent step", async () => {
+    // Measured 2026-09-27: Calendar, web search, memory and specialist calls
+    // all rendered as "Agent step · Completing a step for your request."
+    const onToolStart = vi.fn();
+    const onToolWaiting = vi.fn();
+    const tools = ["calendar_events", "google_search", "ask_memory_agent", "finance", "ask_email_agent", "list_app_actions"];
+    mockTransport.emitEvents = (subscriber) => {
+      for (const name of tools) {
+        subscriber.onToolCallStartEvent({ event: { toolCallId: `call-${name}`, toolCallName: name } });
+      }
+      // "lets connect to google drive": the product is named once the provider
+      // argument arrives; a provider outside the fixed enum never labels a row.
+      for (const provider of ["drive", "https://evil.test"]) {
+        subscriber.onToolCallStartEvent({ event: { toolCallId: provider, toolCallName: "discover_workspace_tools" } });
+        subscriber.onToolCallEndEvent({ event: { toolCallId: provider },
+          toolCallName: "discover_workspace_tools", toolCallArgs: { provider } });
+      }
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Plan my day",
+      vaultOwnerToken: "fixture", handlers: { onToolStart, onToolWaiting } });
+    expect(onToolStart.mock.calls.map(([event]) => [event.label, event.activity])).toEqual([
+      ["Google Calendar", "Reading your Calendar"],
+      ["Web search", "Searching the web"],
+      ["Your memory", "Checking your memory"],
+      ["Finance", "Checking your finances"],
+      ["Gmail", "Checking your Gmail"],
+      ["App actions", "Looking up actions"],
+      ["Connector access", "Checking connector access"],
+      ["Connector access", "Checking connector access"],
+    ]);
+    expect(onToolWaiting.mock.calls.map(([event]) => [event.label, event.activity])).toEqual([
+      ["Google Drive", "Checking Google Drive access"],
+      ["Connector access", "Checking connector access"],
+    ]);
+    expect(JSON.stringify(onToolWaiting.mock.calls.map(([event]) => [event.label, event.message, event.activity])))
+      .not.toContain("evil");
+    mockTransport.emitEvents = null;
+  });
+
   it("shows selected Drive status activity without exposing private filenames", async () => {
     const onToolResult = vi.fn();
     const onToolWaiting = vi.fn();
@@ -458,6 +590,35 @@ describe("AG-UI Agent One client", () => {
     expect(messages[0].metadata?.connectorRead).toMatchObject({ type: "one.connector_read.v1", status: "ok" });
     expect(messages[1].metadata?.connectorRead).toBeNull();
     expect(JSON.stringify(messages)).not.toContain("PRIVATE");
+  });
+
+  it("forwards a workspace Drive continuation without retaining its query or files in diagnostics", async () => {
+    const onStructuredExperience = vi.fn();
+    const onToolResult = vi.fn();
+    const onToolWaiting = vi.fn();
+    const onSpecialistDirective = vi.fn();
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onToolCallStartEvent({ event: { toolCallId: "drive-list", toolCallName: "read_workspace_tool" } });
+      subscriber.onToolCallEndEvent({ event: { toolCallId: "drive-list" }, toolCallName: "read_workspace_tool",
+        toolCallArgs: { provider: "drive", query: "PRIVATE_QUERY" } });
+      subscriber.onToolCallResultEvent({ event: { toolCallId: "drive-list", content: JSON.stringify({
+        provider: "drive", status: "ok", files: [{ name: "PRIVATE_FILE" }], structured: {
+          schema_version: "specialist_read.v1", connector: "drive", status: "ok", sources: [],
+          truncated: true, metadata_only: true,
+          background_search_available: true, background_search_query: "PRIVATE_QUERY",
+        }, directive: { action_id: "route.profile", slots: {}, execution: "frontend" },
+      }) } });
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Find documents", vaultOwnerToken: "fixture",
+      handlers: { onStructuredExperience, onToolResult, onToolWaiting, onSpecialistDirective } });
+    expect(onStructuredExperience).toHaveBeenCalledWith(expect.objectContaining({
+      type: "one.connector_read.v1", connector: "drive", backgroundSearchAvailable: true,
+      backgroundSearchQuery: "PRIVATE_QUERY",
+    }), "drive-list");
+    expect(onToolResult.mock.calls[0][0].message).toBe("Drive search finished.");
+    expect(JSON.stringify(onToolResult.mock.calls)).not.toContain("PRIVATE");
+    expect(JSON.stringify(onToolWaiting.mock.calls)).not.toContain("PRIVATE");
+    expect(onSpecialistDirective).not.toHaveBeenCalled();
   });
 
   it("keeps the turn Activity descriptor on assistant history only", async () => {

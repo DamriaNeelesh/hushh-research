@@ -21,7 +21,11 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from api.middleware import require_vault_owner_token
-from api.middlewares.chat_key import CHAT_KEY_REQUIRED_DETAIL, require_vault_owner_chat_key
+from api.middlewares.chat_key import (
+    CHAT_KEY_REQUIRED_DETAIL,
+    log_chat_key_refusal,
+    require_vault_owner_chat_key,
+)
 from api.routes.one.agent_context import sanitize_agent_context
 from api.utils.firebase_auth import verify_firebase_bearer
 from hushh_mcp.one_adk.agent_tree import (
@@ -46,7 +50,8 @@ from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION
 from hushh_mcp.one_adk.external_read_projection import redacted_read_receipt
 from hushh_mcp.one_adk.mcp_call_approval import STATE_MCP_APPROVAL, admit_resume_receipt
 from hushh_mcp.one_adk.mcp_turn_scope import STATE_MCP_CONFIGURATION, admit_turn_configurations
-from hushh_mcp.one_adk.request_secrets import store_request_secret
+from hushh_mcp.one_adk.request_secrets import consume_request_secret, store_request_secret
+from hushh_mcp.one_adk.turn_location import STATE_TURN_LOCATION, admit_turn_location
 from hushh_mcp.one_adk.workspace_mcp_tools import WORKSPACE_CHAT_ADMISSION_STATE
 from hushh_mcp.services.action_directive_ledger import ActionDirectiveAuthorityError
 from hushh_mcp.services.action_gateway import get_action_gateway_action, list_action_gateway_actions
@@ -117,6 +122,7 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
         # Durable history is sealed with the owner's chat key. Refuse before any
         # stream starts rather than failing mid-turn or reading without it.
         if not request_has_chat_key(user_id):
+            log_chat_key_refusal(request, "CHAT_KEY_REQUIRED", owner_id=user_id)
             raise HTTPException(
                 status_code=403,
                 detail={"message": CHAT_KEY_REQUIRED_DETAIL, "code": "CHAT_KEY_REQUIRED"},
@@ -182,8 +188,15 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
         raise HTTPException(
             status_code=403, detail="Connector configuration is unavailable. Unlock and try again."
         ) from None
+    # The device sends a coarse position only when the person already granted
+    # location; pre-vault turns never keep it.
+    turn_location = admit_turn_location(forwarded)
+    if not (token and user_id):
+        consume_request_secret(turn_location)
+        turn_location = ""
     return {
         STATE_EXECUTION_SURFACE: "typed_chat",
+        STATE_TURN_LOCATION: turn_location,
         STATE_MCP_CONFIGURATION: mcp_configuration,
         STATE_MCP_APPROVAL: mcp_approval,
         WORKSPACE_CHAT_ADMISSION_STATE: bool(token and user_id),
@@ -906,6 +919,13 @@ def _safe_workspace_connector_setup_descriptor(
 # App-owned tool identities the browser already labels in the live Activity
 # panel. Anything else (sub-agent transfers, confirmation plumbing) is not a
 # step the owner saw by name, so it is not restored.
+# Every tool on One's roster, so a reopened turn keeps the Activity rows it
+# showed live. Each row is this name plus outcome enums; the browser labels it
+# from its own table (SERVER_TOOL_PRESENTATION in
+# hushh-webapp/lib/services/agent-chat-client.ts), which carries exactly these
+# keys. A roster tool missing from either side rendered as "Agent step" live
+# and vanished on reload; tests/routes/test_agent_chat_turn_restore.py holds
+# both sides to the roster.
 _ACTIVITY_TOOLS = frozenset(
     {
         "discover_person_information",
@@ -921,6 +941,53 @@ _ACTIVITY_TOOLS = frozenset(
         "ask_connected_systems_agent",
         "ask_consent_agent",
         "list_pending_connection_requests",
+        "google_search",
+        "finance",
+        "wallet",
+        "ask_memory_agent",
+        "read_my_pkm_domain_summary",
+        "add_to_pkm",
+        "read_my_profile_status",
+        "ask_location_agent",
+        "list_my_location_circles",
+        "get_location_circle_members",
+        "list_my_location_shares",
+        "list_location_shared_with_me",
+        "list_pending_location_requests",
+        "list_my_outgoing_location_requests",
+        "list_information_shared_with_me",
+        "list_active_grants",
+        "list_my_outgoing_information_requests",
+        "propose_document_request",
+        "list_available_models",
+        "set_preferred_model",
+        "calendar_summary",
+        "calendar_events",
+        "calendar_availability",
+        "calendar_free_slots",
+        "propose_calendar_event",
+        "propose_calendar_reschedule",
+        "propose_calendar_cancellation",
+        "open_gmail_email_draft",
+        "open_gmail_information_request_reply",
+        "propose_gmail_mailbox_change",
+        "propose_drive_share",
+        "propose_drive_file_share",
+        "propose_drive_file_trash",
+        "create_drive_file",
+        "copy_drive_file",
+        "move_drive_file",
+        "comment_on_drive_file",
+        "open_screen",
+        "run_app_action",
+        "propose_app_action",
+        "report_no_app_action",
+        "list_app_actions",
+        "start_app_goal",
+        "continue_app_goal",
+        "resolve_onboarding_goal",
+        "get_current_time",
+        "get_my_location",
     }
 )
 _MCP_ACTIVITY_TOOL = re.compile(r"^mcp_[0-9a-f]{40}$")

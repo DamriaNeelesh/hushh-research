@@ -844,6 +844,17 @@
     {
       "data_class": "personal_encrypted",
       "exact_tables": [
+        "drive_owner_search_jobs",
+        "drive_owner_search_results"
+      ],
+      "id": "drive_owner_search",
+      "lifecycle_status": "customer0",
+      "owner": "backend-runtime-governance",
+      "primary_access_path": "Owner-confirmed search create/status/results/stop; existing Drive worker claims bounded metadata-only page slices. Owner+client idempotency, one active job per owner, keyed result deduplication and lease CAS. No document indexing or sharing authority."
+    },
+    {
+      "data_class": "personal_encrypted",
+      "exact_tables": [
         "drive_owner_shares"
       ],
       "id": "drive_owner_shares",
@@ -5691,9 +5702,9 @@
   "source_sha256": {
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
     "action_gateway": "f64403d3031e97fd519101bf242c5072cc94d592a44197277cb1870324990160",
-    "agent_registry": "e9bd55d281182755e677ea7486dd8a8374eb6de215750f61fb78a1c36b5f81c3",
+    "agent_registry": "b052806c33090cb1b58fb1b4add01c39ac4bb296baa0713a90b08a482b648560",
     "cache_manifest": "b8edb41e819d68f3de0c40ec9b971f214069786fe4d869ade00b24668c3b7b7e",
-    "data_plane": "5a4c8717b0c6d140ba12f8a71934e4c0b5a61932e837c9c0eef4fb334cdb1c67",
+    "data_plane": "985345cfa5a19f908e2e06f74415076544c392eb879f92607d950193898fcbee",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "62a54d78776db967dd224f16d8ec9ae31f6cccb9a5f58e83c0b97a9d8a241dea",
     "route_index": "9c1d1649ac1b6118de6e394b09e596372feda71e6e52ee739cee07ea34bce5aa",
@@ -5712,6 +5723,6 @@
     "one_specialist_tools": 6,
     "physical_routes": 140,
     "semantic_routes": 14,
-    "table_families": 74
+    "table_families": 75
   }
 }

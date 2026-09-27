@@ -222,7 +222,8 @@
     "248_adk_chat_action_authority.sql",
     "249_one_chat_history_legacy_cutover.sql",
     "250_gmail_mailbox_action_proposals.sql",
-    "251_calendar_mail_feed_projection.sql"
+    "251_drive_owner_search_jobs.sql",
+    "252_calendar_mail_feed_projection.sql"
   ],
   "environment_overlays": {
     "uat": [
@@ -371,7 +372,7 @@
       "224_setup_capability_declined_ids.sql",
       "237_gmail_personal_information_request_incremental_backfill.sql",
       "238_gmail_personal_information_request_classifier_policy_version.sql",
-      "251_calendar_mail_feed_projection.sql"
+      "252_calendar_mail_feed_projection.sql"
     ],
     "pkm": [
       "030_pkm_cutover.sql",
@@ -426,7 +427,7 @@
     ]
   },
   "rollback_migrations": {
-    "251_calendar_mail_feed_projection.sql": "rollback/251_calendar_mail_feed_projection.rollback.sql",
+    "252_calendar_mail_feed_projection.sql": "rollback/252_calendar_mail_feed_projection.rollback.sql",
     "249_one_chat_history_legacy_cutover.sql": "rollback/249_one_chat_history_legacy_cutover.rollback.sql",
     "250_gmail_mailbox_action_proposals.sql": "rollback/250_gmail_mailbox_action_proposals.rollback.sql",
     "238_gmail_personal_information_request_classifier_policy_version.sql": "rollback/238_gmail_personal_information_request_classifier_policy_version.rollback.sql",
@@ -460,6 +461,7 @@
     "245_drive_owner_shares.sql": "rollback/245_drive_owner_shares.rollback.sql",
     "246_drive_feed_projection.sql": "rollback/246_drive_feed_projection.rollback.sql",
     "247_private_mcp_registration.sql": "rollback/247_private_mcp_registration.rollback.sql",
-    "248_adk_chat_action_authority.sql": "rollback/248_adk_chat_action_authority.rollback.sql"
+    "248_adk_chat_action_authority.sql": "rollback/248_adk_chat_action_authority.rollback.sql",
+    "251_drive_owner_search_jobs.sql": "rollback/251_drive_owner_search_jobs.rollback.sql"
   }
 }
