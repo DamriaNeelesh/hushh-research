@@ -12,7 +12,6 @@ import {
   Plus,
   ShieldCheck,
   TrendingUp,
-  UserPlus,
 } from "@/components/icons";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
 import { Button } from "@/lib/morphy-ux/button";
