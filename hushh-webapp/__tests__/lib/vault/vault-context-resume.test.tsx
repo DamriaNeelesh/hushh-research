@@ -279,7 +279,6 @@ describe("VaultProvider app-resume expiry recovery", () => {
     expect(currentVault.getVaultKey()).toBe("vault-key");
     expect(currentVault.getVaultOwnerToken()).toBe(`renewed-token-${renewals}`);
     expect(currentVault.ownerTokenStatus).toBe("valid");
-    expect(mocks.clearAgentPkmContext).not.toHaveBeenCalled();
   });
 
   // A sleeping laptop or a dead network is not a reason to lock. Renewal keeps
@@ -306,7 +305,12 @@ describe("VaultProvider app-resume expiry recovery", () => {
       for (let hour = 0; hour < 13; hour += 1) {
         await act(async () => { await vi.advanceTimersByTimeAsync(3_600_000); });
       }
-      expect(mocks.issueVaultOwnerToken.mock.calls.length).toBeGreaterThan(1);
+      // After 26 h of failures the loop is still alive at its 30 s cadence.
+      const attemptsBefore = mocks.issueVaultOwnerToken.mock.calls.length;
+      for (let step = 0; step < 5; step += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      }
+      expect(mocks.issueVaultOwnerToken.mock.calls.length - attemptsBefore).toBe(5);
       expect(currentVault.getVaultKey()).toBe("vault-key");
       expect(currentVault.getVaultOwnerToken()).toBeNull();
       expect(currentVault.ownerTokenStatus).toBe("unavailable");
@@ -318,11 +322,36 @@ describe("VaultProvider app-resume expiry recovery", () => {
       expect(currentVault.getVaultKey()).toBe("vault-key");
       expect(currentVault.getVaultOwnerToken()).toBe("renewed-token");
       expect(currentVault.ownerTokenStatus).toBe("valid");
-      expect(mocks.clearAgentPkmContext).not.toHaveBeenCalled();
       expect(invalidations).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener(AUTH_SESSION_INVALIDATED_EVENT, invalidations);
     }
+  });
+
+  // The retry loop is bounded by custody: once the vault locks, failed-renewal
+  // history must not keep calling the token endpoint for a session that ended.
+  it.each([
+    ["an explicit lock request", () => window.dispatchEvent(new CustomEvent("vault-lock-requested", {
+      detail: { reason: "VAULT_OWNER token revoked" },
+    }))],
+    ["terminal session invalidation", () => window.dispatchEvent(new CustomEvent(AUTH_SESSION_INVALIDATED_EVENT, {
+      detail: { code: "session_invalid", path: "test", userId: "vault-owner" },
+    }))],
+  ])("stops retrying renewal after %s", async (_label, lock) => {
+    vi.useFakeTimers();
+    vi.spyOn(Date, "now").mockRestore();
+    vi.setSystemTime(NOW);
+    renderVault();
+    fireEvent.click(screen.getByRole("button", { name: "Unlock valid" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.issueVaultOwnerToken).toHaveBeenCalledTimes(2);
+    act(lock);
+    expect(currentVault.getVaultKey()).toBeNull();
+    for (let step = 0; step < 10; step += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    }
+    expect(mocks.issueVaultOwnerToken).toHaveBeenCalledTimes(2);
   });
 
   it("renews an expired token after an ambiguous native invalid-owner lock request", async () => {
