@@ -1,7 +1,6 @@
 # Reviewer Rehearsal Preflight
 
-Run this gate before opening Chromium. A browser assertion is not evidence when
-the local runtime cannot mint the canonical reviewer session or the application
+Run this gate before opening Chromium. A browser assertion is not evidence when the local runtime cannot mint the canonical reviewer session or the application
 can mutate a shared fixture while it is being observed.
 
 ## Required conditions
@@ -66,9 +65,7 @@ case below the application was fine and the harness was being driven wrong.
 | `That passphrase did not match` against a deployed environment | Reviewer wrapper drift: the Secret Manager passphrase no longer authenticates that account's wrapper. `REVIEWER_VAULT_PASSPHRASE` rotates often, so "latest" is not automatically the live one. | Run the reconciliation audit above. Do NOT write a passphrase into an env file, and do NOT re-key a shared fixture without explicit operator authority. |
 | The harness never signs in, or asserts against a signed-out shell | Wrong origin variable. These scripts read `REVIEWER_APP_ORIGIN`. `HUSHH_APP_ORIGIN` belongs to the separate `hushh-webapp/scripts/testing/verify-signed-in-routes.mjs` harness. | Set `REVIEWER_APP_ORIGIN`. |
 | Review mode looks enabled but the session never mints | The backend was not restarted after `reviewer_mode.sh enable`, so it is still serving the pre-toggle configuration. | Restart the backend, then re-run the preflight. |
-| A same-session rehearsal suddenly shows the vault challenge or a turn never settles mid-run | A source edit in the served worktree made Next dev do a full reload, which drops the memory-only vault key. | Do not edit files under `hushh-webapp/` while a live rehearsal runs; re-run from the start. |
-| A backend started with `--reload` dies with `APP_SIGNING_KEY must be set` | A test wrapper moved `.env` aside while the reloader restarted the app in the same worktree. | Run the rehearsal backend with `--no-reload`, or never move `.env` while it runs. |
-| A chat status chip (for example `Consent approved`) is never found | Chips render as `data-testid="selection-chip"`, not as a `data-message-role="user"` bubble. | Select the chip by test id; order it against `[data-message-role]` in document order. |
+| A live run loses the vault mid-flow, or a chat chip such as `Consent approved` is never found | A source edit in the served worktree made Next dev fully reload (dropping the memory-only key); chips render as `data-testid="selection-chip"`, not `data-message-role` bubbles. | Never edit `hushh-webapp/` during a live run; select chips by test id in document order with `[data-message-role]`. |
 | A selector that works locally finds nothing on a deployed origin | The rehearsal was hand-rolled with raw Playwright and coupled to one element id (for example `#unlock-passphrase`). | Use the shared harness. It owns unlock, continuity, and navigation; hand-rolled scripts silently drift from it. |
 
 The rule underneath all of these: **do not hand-roll a reviewer Playwright
