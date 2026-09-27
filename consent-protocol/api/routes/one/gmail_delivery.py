@@ -258,9 +258,10 @@ async def gmail_mailbox_execute(
     """Apply the exact reviewed mailbox change the owner confirmed in chat."""
     owner = _owner_user_id(firebase_uid=firebase_uid, token_data=token_data)
     try:
-        return await get_gmail_mailbox_actions().execute(
+        result: dict[str, Any] = await get_gmail_mailbox_actions().execute(
             user_id=owner, proposal_id=payload.proposal_id
         )
+        return result
     except Exception as exc:
         logger.warning("one.gmail_mailbox.execute_failed error=%s", type(exc).__name__)
         raise _as_http_error(exc) from None
