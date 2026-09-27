@@ -236,17 +236,24 @@ export function AppStreamPanel({
   );
   const showProgressMeter =
     progressIndeterminate || (typeof progressValue === "number" && Number.isFinite(progressValue));
+  // Activity is open while the turn runs. A finished turn keeps it one tap
+  // away, collapsed, unless a step still waits on the person or failed. A
+  // restored turn mounts finished, so it reads exactly like the live one did
+  // after it completed.
+  const activityNeedsAttention = progressItems.some((item) =>
+    item.status === "waiting" || item.status === "blocked" || item.status === "error");
+  const activityOpen = isStreaming || activityNeedsAttention;
 
   return (
     <section
-      className={cn(
-        "w-full max-w-none rounded-[var(--app-card-radius-compact)] border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-3.5",
-
-        className
-      )}
+      // No card of its own. The answer is the same plain prose whether the
+      // turn used tools or not, live or reopened; only the collapsible
+      // Activity carries a surface. A tinted, shadowed card around the answer
+      // read as a shaded box that disappeared after a reload.
+      className={cn("w-full max-w-none", className)}
       aria-label={title}
     >
-      <div className="space-y-4">
+      <div className="space-y-3">
         {opportunities ? <div>{opportunities}</div> : null}
 
         {showProgressMeter || statusMessage || progressItems.length > 0 ? (
@@ -265,10 +272,11 @@ export function AppStreamPanel({
             ) : null}
             {progressItems.length > 0 ? (
               <AppStreamSection
+                key={activityOpen ? "activity-open" : "activity-collapsed"}
                 title="Activity"
                 items={progressItems}
                 count={progressItems.length}
-                defaultOpen
+                defaultOpen={activityOpen}
               />
             ) : null}
           </div>

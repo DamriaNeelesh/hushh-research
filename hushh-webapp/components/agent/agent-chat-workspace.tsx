@@ -17,7 +17,13 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AgentMemoryCaptureStatus } from "@/components/agent/agent-memory-capture-status";
 import { aggregateAgentPkmCaptures, createAgentPkmCaptureGuard, describeAgentPkmCapture, isAgentPkmProcessingReady, type AgentPkmCaptureStatus } from "@/lib/agent/agent-pkm-capture-runtime";
-import { AgentPersonSelectionContext, type InformationRequestSubmissionReceipt } from "@/components/agent/agent-structured-experience";
+import {
+  AgentConsentContinuationContext,
+  AgentPersonSelectionContext,
+  type AgentConsentContinuationHandler,
+  type InformationRequestSubmissionReceipt,
+} from "@/components/agent/agent-structured-experience";
+import { prepareConsentContinuation, watchSentInformationRequest } from "@/lib/agent/consent-continuation";
 import {
   Check,
   ChevronDown,
@@ -114,13 +120,13 @@ import {
 } from "@/components/agent/specialist-directive-card";
 import { copyTextToClipboard } from "@/components/agent/chat-markdown-link";
 import { AgentMarkdown } from "@/components/agent/agent-markdown";
-import { appendThinkingSummary } from "@/lib/agent/thinking-summary";
 import { SelectionChip } from "@/components/agent/selection-chip";
 import { PuppyOneSurface } from "@/components/agent/puppy-one-surface";
 import {
   AgentTurnStreamPanel,
   PRIVATE_MEMORY_PREPARATION_EVENT_ID,
   isRoutineReadinessTool,
+  connectorBrandForTool,
   driveBatchProgressToVisibleStreamEvent,
   agentToolEventToVisibleStreamEvent,
   type AgentVisibleStreamEvent,
@@ -172,6 +178,7 @@ import {
   subscribeAgentPkmAutoSavePolicyInvalidation,
   type AgentPkmAutoSavePolicy,
 } from "@/lib/agent/agent-pkm-auto-save-policy";
+import { isChatKeyRefusal } from "@/lib/vault/one-chat-key";
 import {
   loadAgentChatConversationHistory,
   peekAgentChatHistoryCache,
@@ -179,6 +186,13 @@ import {
   clearAgentChatHistoryCache,
 } from "@/lib/agent/agent-chat-history-cache";
 import { rememberInAppChat, selectedInAppChat } from "@/lib/agent/in-app-chat-selection";
+import {
+  AGENT_TURN_DETACH_REASON,
+  isAgentTurnWatched,
+  subscribeAgentTurnSettled,
+  subscribeOpenAgentConversation,
+  waitForWatchedAgentTurn,
+} from "@/lib/agent/agent-chat-turn-watch";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
 import { usePersonaState } from "@/lib/persona/persona-context";
 import { isRiaAdvisoryAccessReady } from "@/lib/ria/ria-profile-view-model";
@@ -200,9 +214,11 @@ import {
   renameAgentChatConversation,
   streamAgentChat,
   streamAgentIntro,
+  type AgentChatConsentContinuation,
   type AgentChatConversation,
   type AgentChatMessage as StoredAgentChatMessage,
   type AgentChatToolEvent,
+  type PendingEmailDraftContext,
   type SpecialistDirectiveEvent,
   type AgentSource,
   getAgentChatFeedback,
@@ -243,6 +259,9 @@ import {
   type PendingConsent,
 } from "@/lib/consent/use-consent-actions";
 import { useOneLocationConsentActions } from "@/lib/consent/use-one-location-consent-actions";
+import { DriveBackgroundSearches, type SelectedDriveSearchFile } from "@/components/agent/drive-background-search";
+import { clearGeneratedDriveSearchDraft, DEFAULT_DRIVE_SEARCH_DRAFT } from "@/lib/agent/drive-search-draft";
+import { isVaultSessionEpochCurrent, snapshotVaultSessionEpoch } from "@/lib/vault/session-epoch";
 import { useVault } from "@/lib/vault/vault-context";
 import { loadCustomConnectorSnapshot } from "@/lib/connections/custom-connector-configuration";
 import {
@@ -329,8 +348,6 @@ type AgentMessage = {
   renderAsPlainAssistantMessage?: boolean;
   specialistDirective?: SpecialistDirectiveEvent | null;
   streamEvents?: AgentVisibleStreamEvent[];
-  /** Transient provider summary for this turn; excluded from stored history. */
-  thinkingSummary?: string;
   sources?: AgentSource[];
   structuredExperience?: AgentStructuredExperience | null;
   structuredExperiences?: AgentStructuredExperienceEntry[];
@@ -464,6 +481,7 @@ type AgentRunTurnOptions = {
   source: AgentTurnSource;
   personSelectionHandle?: string;
   gmailInformationRequestWorkflowId?: string;
+  driveSearchSelection?: { jobId: string; position: number };
   kycInformationSaveConfirmed?: boolean;
   appendUserMessage?: boolean;
   replaceAssistantMessageId?: string | null;
@@ -575,6 +593,28 @@ export function getGmailEmailDraftPayload(
           : null,
       }
     : null;
+}
+
+/**
+ * The draft card as the person sees it, for the next chat turn. A source-bound
+ * reply shows its server-derived envelope, so that is what One is told too.
+ */
+export function buildPendingEmailDraftContext(
+  draft: EmailDraft | null,
+  sourceBoundEnvelope: { to: string; subject: string } | null,
+  sourceBound: boolean,
+): PendingEmailDraftContext | null {
+  if (!draft) return null;
+  const context: PendingEmailDraftContext = {
+    to: (sourceBound ? sourceBoundEnvelope?.to ?? "" : draft.to).trim(),
+    cc: sourceBound ? "" : draft.cc.trim(),
+    bcc: sourceBound ? "" : draft.bcc.trim(),
+    subject: (sourceBound ? sourceBoundEnvelope?.subject ?? "" : draft.subject).trim(),
+    body: draft.body.trim(),
+    sourceBound,
+  };
+  if (!sourceBound && draft.driveFileId) context.driveFileId = draft.driveFileId;
+  return context.body || context.to || context.subject ? context : null;
 }
 
 export function getGmailInformationRequestReplyPayload(
@@ -1654,7 +1694,6 @@ function AgentBubble({
   const hasStreamContent =
     isStreaming ||
     streamEvents.length > 0 ||
-    Boolean(message.thinkingSummary) ||
     Boolean(message.sources?.length) ||
     structuredExperiences.length > 0;
   const shouldRenderStreamPanel =
@@ -1745,7 +1784,6 @@ function AgentBubble({
           ) : shouldRenderStreamPanel ? (
             <AgentTurnStreamPanel
               streamEvents={streamEvents}
-              thinkingSummary={message.thinkingSummary}
               sources={message.sources}
               structuredExperience={message.structuredExperience}
               structuredExperiences={structuredExperiences}
@@ -1964,17 +2002,21 @@ export function storedMessageToAgentMessage(
   });
   // The same Activity rows the owner saw live, rebuilt from app-owned labels.
   const streamEvents: AgentVisibleStreamEvent[] = message.role === "assistant"
-    ? parseRestoredTurnActivity(message.metadata?.turnActivity).map((step) => ({
+    ? parseRestoredTurnActivity(message.metadata?.turnActivity).map((step) => {
+      // The same product mark the live row carried, from the same rule.
+      const brand = connectorBrandForTool(step.toolName, step.provider) ?? step.provider;
+      return {
         id: step.id,
         label: step.label,
         message: step.message,
         status: step.status,
         ...(step.tag ? { tag: step.tag } : {}),
-        ...(step.provider ? { brand: step.provider } : {}),
+        ...(brand ? { brand } : {}),
         ...(step.connectorId ? { connectorId: step.connectorId } : {}),
         ...(isRoutineReadinessTool(step.toolName) ? { routine: true as const } : {}),
         createdAtMs: createdAt?.getTime() ?? 0,
-      }))
+      };
+    })
     : [];
   // Do not resurrect a duplicate through the legacy descriptor, or leave an
   // empty thinking bubble. Prose and all distinct cards retain source order.
@@ -2059,12 +2101,25 @@ function ChatAgentSubtitle({ text }: { text: string }) {
   </p>;
 }
 
-function activeToolStatus(label: string): string {
-  if (label === "Connected tool") return "Using a connected tool";
-  if (label === "Connector access") return "Checking connector access";
-  if (label === "Connected systems") return "Checking connected systems";
-  if (label === "Agent step") return "Working on your request";
-  return `Using ${label}`;
+export type ActiveToolCall = { id: string; label: string; activity?: string };
+
+export const IDLE_AGENT_SUBTITLE = "Your private agent";
+
+/**
+ * The line under the agent's name. While a turn runs it names what One is
+ * doing right now ("Checking Gmail…"), from the same app-owned table that
+ * labels the Activity rows; the newest running call wins. With nothing in
+ * flight it falls back to the turn status, then to the idle subtitle.
+ */
+export function chatHeaderSubtitle(input: {
+  isPuppySurface: boolean;
+  activeToolCalls: readonly ActiveToolCall[];
+  statusText: string | null;
+}): string {
+  if (input.isPuppySurface) return "Separate conversation";
+  const current = input.activeToolCalls.at(-1);
+  if (current) return `${current.activity || current.label}…`;
+  return input.statusText || IDLE_AGENT_SUBTITLE;
 }
 
 export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
@@ -2092,6 +2147,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     tokenExpiresAt,
     getVaultOwnerToken,
   } = useVault();
+  const vaultSessionEpoch = snapshotVaultSessionEpoch();
   // Chat history is sealed with a key derived from this; read it at call time so
   // history requests never capture a stale (or locked) vault.
   const vaultKeyRef = useRef<string | null>(vaultKey);
@@ -2189,6 +2245,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   }, []);
 
   const [input, setInput] = useState("");
+  // A selected search result is session-only; chat receives its opaque reference
+  // separately from the human prompt and rechecks it against live Drive.
+  const [pendingDriveSearchSelection, setPendingDriveSearchSelection] = useState<
+    (SelectedDriveSearchFile & { ownerUid: string; vaultEpoch: number }) | null
+  >(null);
+  const pendingDriveSearchSelectionRef = useRef<typeof pendingDriveSearchSelection>(null);
+  const generatedDriveSearchDraftRef = useRef(false);
   const [longPromptAttachment, setLongPromptAttachment] =
     useState<PendingTextAttachment | null>(null);
   // Which model runs this person's agent. The catalog is served, so a new
@@ -2201,6 +2264,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   >(null);
   const [editingQueuedPromptText, setEditingQueuedPromptText] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const activeDriveSearchSelection = pendingDriveSearchSelection &&
+    pendingDriveSearchSelection.ownerUid === user?.uid && isVaultUnlocked &&
+    isVaultSessionEpochCurrent(pendingDriveSearchSelection.vaultEpoch)
+      ? pendingDriveSearchSelection : null;
+  useEffect(() => {
+    pendingDriveSearchSelectionRef.current = null;
+    setPendingDriveSearchSelection(null);
+    const generated = generatedDriveSearchDraftRef.current;
+    generatedDriveSearchDraftRef.current = false;
+    if (generated) setInput(current => clearGeneratedDriveSearchDraft(current, generated));
+  }, [conversationId, user?.uid, isVaultUnlocked, vaultSessionEpoch]);
   // Ratings for this conversation, keyed by message id. Durable, so a reload
   // and a conversation switch both keep what the person said about an answer.
   const [messageRatings, setMessageRatings] = useState<
@@ -2231,7 +2305,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   );
   const consumedHandoffIdRef = useRef<string | null>(null);
   const [isChatLoading, setIsChatLoading] = useState(false);
-  const [activeToolCalls, setActiveToolCalls] = useState<Array<{ id: string; label: string }>>([]);
+  const [activeToolCalls, setActiveToolCalls] = useState<ActiveToolCall[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<ConnectionsDrawerMode>("chats");
@@ -2267,6 +2341,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     state: Awaited<ReturnType<typeof takeDriveChatRecovery>>;
   } | null>(null);
   const currentDraftRef = useRef({ input, attachment: longPromptAttachment });
+  const pendingChatKeyRetryRef = useRef<{ text: string; options: AgentRunTurnOptions } | null>(null);
   currentDraftRef.current = { input, attachment: longPromptAttachment };
   const recoveryUiRef = useRef({
     conversationId, composerExpanded, drawerOpen: isHistoryDrawerOpen, drawerMode,
@@ -2328,6 +2403,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const [gmailKycEmailDraftEnvelope, setGmailKycEmailDraftEnvelope] = useState<
     { to: string; subject: string } | null
   >(null);
+  // The open draft card's current value, read when a chat turn actually runs
+  // so a follow-up ("add Priya to cc") revises what is on screen right now.
+  // Refs, not state: a keystroke in the card must not re-render the workspace.
+  const emailDraftCardValueRef = useRef<EmailDraft | null>(null);
+  const pendingEmailDraftFrameRef = useRef<{
+    sourceBound: boolean;
+    envelope: { to: string; subject: string } | null;
+  } | null>(null);
+  const handleEmailDraftChange = useCallback((draft: EmailDraft) => {
+    emailDraftCardValueRef.current = draft;
+  }, []);
   const runAgentTurnRef = useRef<(
     text: string,
     options: AgentRunTurnOptions,
@@ -2408,6 +2494,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const historyRestoreEpochRef = useRef(0);
   const skipInitialHistoryLoadRef = useRef(false);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
+  const reattachRestoreRef = useRef<Promise<void> | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   const operationQueueRef = useRef(
     new SerialAgentOperationQueue<QueuedWorkspaceOperation>(),
@@ -2464,9 +2551,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const rootChatReady = useRootChatDeferredReady();
   const tokenIsFresh = !tokenExpiresAt || Date.now() < tokenExpiresAt;
   const agentVoiceEnabled = isAgentCommandEnabled();
-  const abortAgentTurnWork = useCallback(() => {
+  const abortAgentTurnWork = useCallback((reason?: string) => {
     setPendingMcpReviews([]);
-    streamAbortControllerRef.current?.abort();
+    streamAbortControllerRef.current?.abort(reason);
     streamAbortControllerRef.current = null;
     for (const controller of pkmAbortControllersRef.current) {
       controller.abort();
@@ -2764,7 +2851,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     !recoveryInspectionPending &&
     !isVoiceConnecting &&
     !voiceActive &&
-    !emailDraftOpen &&
+    // A pending mail draft keeps the composer open: follow-ups revise it, and
+    // sending still happens only from the card's own Send control.
     // Do not trim a potentially very large expanded attachment on every
     // keystroke. The submit path performs the authoritative empty check.
     (input.length > 0 || longPromptAttachment !== null);
@@ -3134,7 +3222,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
 
   useEffect(() => {
     return () => {
-      abortAgentTurnWork();
+      // Leaving the chat stops reading; the server keeps the turn and the
+      // app-shell turn watch reattaches (or says "One replied") later.
+      abortAgentTurnWork(AGENT_TURN_DETACH_REASON);
     };
   }, [abortAgentTurnWork]);
 
@@ -3240,6 +3330,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   ]);
 
   const handleCreateNewChat = useCallback(() => {
+    pendingDriveSearchSelectionRef.current = null;
+    setPendingDriveSearchSelection(null);
+    generatedDriveSearchDraftRef.current = false;
     abortAgentTurnWork();
     clearTranscriptProgrammaticScroll();
     transcriptUserScrollRef.current = false;
@@ -3338,6 +3431,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       active = false;
     };
   }, [emailDraftOpen, gmailKycEmailDraftWorkflowId, loadGmailInformationRequestPreview]);
+
+  useEffect(() => {
+    if (!emailDraftOpen) {
+      pendingEmailDraftFrameRef.current = null;
+      emailDraftCardValueRef.current = null;
+      return;
+    }
+    pendingEmailDraftFrameRef.current = {
+      sourceBound: Boolean(gmailKycEmailDraftWorkflowId),
+      envelope: gmailKycEmailDraftEnvelope,
+    };
+  }, [emailDraftOpen, gmailKycEmailDraftEnvelope, gmailKycEmailDraftWorkflowId]);
 
   const handleEmailSendStarted = (draft: EmailDraft): string => {
     const id = `email-delivery-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -3600,7 +3705,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       // workflow id; authenticated agent-chat ingress re-fetches the actual
       // selected Gmail message as one-turn source context for One.
       void runAgentTurnRef.current(
-        "Reply to the selected Gmail email with appropriate details from my PKM.",
+        "Reply to the selected Gmail email with appropriate details from my memory.",
         {
           source: "typed",
           gmailInformationRequestWorkflowId: gmailInformationRequest.workflow_id,
@@ -3966,27 +4071,58 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (cancelled || restoreEpoch !== historyRestoreEpochRef.current) return;
       setConversations(snapshot.conversations);
       const selectedId = selectedInAppChat(user.uid);
-      if (!selectedId || !snapshot.conversations.some((item) => item.id === selectedId)) {
+      // A first turn the person left may not be in a cached list yet; its
+      // history load below is still owner-checked by the server.
+      if (
+        !selectedId ||
+        (!snapshot.conversations.some((item) => item.id === selectedId) &&
+          !isAgentTurnWatched(user.uid, selectedId))
+      ) {
         updateConversationId(null, false);
         setMessages((current) =>
           mergePendingConsentMessages([createGreetingMessage()], current),
         );
         return;
       }
-      const stored = selectedId === snapshot.latestConversationId && snapshot.latestMessages.length > 0
+      // A turn the person left is still running server-side: read fresh
+      // history rather than the cache, and show it as in progress.
+      const reattaching = isAgentTurnWatched(user.uid, selectedId);
+      const loadSelected = () => loadAgentChatConversationHistory({
+        userId: user.uid, conversationId: selectedId, vaultOwnerToken, vaultKey: vaultKeyRef.current ?? "",
+        force: reattaching,
+      });
+      let stored = !reattaching && selectedId === snapshot.latestConversationId && snapshot.latestMessages.length > 0
         ? snapshot.latestMessages
-        : await loadAgentChatConversationHistory({
-            userId: user.uid, conversationId: selectedId, vaultOwnerToken, vaultKey: vaultKeyRef.current ?? "",
-          });
+        : await loadSelected();
+      // It may have settled while that read was in flight; read the answer.
+      if (reattaching && !isAgentTurnWatched(user.uid, selectedId)) stored = await loadSelected();
       if (cancelled || restoreEpoch !== historyRestoreEpochRef.current) return;
       const restored = storedMessagesToAgentMessages(stored);
+      const stillRunning = isAgentTurnWatched(user.uid, selectedId);
       updateConversationId(selectedId, false);
       setMessages((current) =>
         mergePendingConsentMessages(
-          restored.length > 0 ? restored : [createGreetingMessage()],
+          restored.length > 0
+            ? [
+                ...restored,
+                ...(stillRunning
+                  ? [{
+                      id: `reattach-${selectedId}`,
+                      role: "assistant" as const,
+                      text: "",
+                      timestamp: formatNow(),
+                      status: "streaming" as const,
+                    }]
+                  : []),
+              ]
+            : [createGreetingMessage()],
           current,
         ),
       );
+      if (stillRunning) {
+        setIsChatLoading(true);
+        setIsStreaming(true);
+      }
     };
 
     const loadRecentConversation = async () => {
@@ -4150,6 +4286,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           setRecoveryCheckedForUid(ownerUid);
           return;
         }
+        pendingDriveSearchSelectionRef.current = null;
+        setPendingDriveSearchSelection(null);
+        generatedDriveSearchDraftRef.current = false;
         setInput(state.input);
         setLongPromptAttachment(state.attachment);
         setComposerExpanded(state.composerExpanded);
@@ -4297,6 +4436,34 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       restoreConversationMessages,
     ],
   );
+
+  // A turn this chat stopped reading has written its answer: show it in place.
+  useEffect(() => {
+    return subscribeAgentTurnSettled((turn) => {
+      if (turn.ownerId !== user?.uid || turn.conversationId !== conversationIdRef.current) return;
+      const token = getVaultOwnerToken();
+      setIsChatLoading(false);
+      setIsStreaming(false);
+      if (!token) {
+        setMessages((current) => current.filter((message) => message.id !== `reattach-${turn.conversationId}`));
+        return;
+      }
+      // A prompt queued meanwhile starts only after this reload lands.
+      reattachRestoreRef.current = restoreConversationMessages(
+        turn.conversationId,
+        token,
+        () => conversationIdRef.current === turn.conversationId,
+      ).catch(() => undefined);
+    });
+  }, [getVaultOwnerToken, restoreConversationMessages, user?.uid]);
+
+  // "Open" on a One replied notice, or a push tap, while this chat is mounted.
+  useEffect(() => {
+    return subscribeOpenAgentConversation(({ ownerId, conversationId: requestedId }) => {
+      if (ownerId !== user?.uid) return;
+      void handleSelectConversation(requestedId);
+    });
+  }, [handleSelectConversation, user?.uid]);
 
   const handleCreateNewPuppyChat = puppyHistory.create;
   const handleSelectPuppyConversation = puppyHistory.select;
@@ -5307,6 +5474,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         pkmContext: agentPkmContext.text || undefined,
         personSelectionHandle: options.personSelectionHandle,
         gmailInformationRequestWorkflowId: options.gmailInformationRequestWorkflowId,
+        driveSearchSelection: options.driveSearchSelection,
+        pendingEmailDraft: pendingEmailDraftFrameRef.current
+          ? buildPendingEmailDraftContext(
+              emailDraftCardValueRef.current,
+              pendingEmailDraftFrameRef.current.envelope,
+              pendingEmailDraftFrameRef.current.sourceBound,
+            )
+          : null,
         screenContext: buildOneVoiceStructuredScreenContext({
           appRuntimeState: appRuntimeStateRef.current,
           state: useAgentVoiceState.getState().oneVoiceState,
@@ -5314,13 +5489,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         }) as unknown as Record<string, unknown>,
         signal: streamAbortController.signal,
         handlers: {
-          onThinkingSummary: (chunk) => {
-            if (streamAbortController.signal.aborted || latestVisibleTurnIdRef.current !== debugTurnId) return;
-            updateMessage(assistantMessageId, (message) => ({
-              ...message,
-              thinkingSummary: appendThinkingSummary(message.thinkingSummary, chunk),
-            }));
-          },
+          // No onThinkingSummary: the model's reasoning is never shown in
+          // chat, live or restored. Only the answer and Activity render.
           onMcpReview: (review) => {
             if (streamAbortController.signal.aborted || !review.isCurrent()) return;
             // Ephemeral only: never copy pending references or private previews
@@ -5353,7 +5523,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onToolStart: (toolEvent) => {
             if (streamAbortController.signal.aborted) return;
             setActiveToolCalls(current => [...current.filter(item => item.id !== toolEvent.callId),
-              { id: toolEvent.callId, label: toolEvent.label }]);
+              { id: toolEvent.callId, label: toolEvent.label, activity: toolEvent.activity }]);
             appendDebugEvent(debugTurnId, "tool_start", toolEvent);
             upsertTurnStreamEvent(
               agentToolEventToVisibleStreamEvent("start", toolEvent),
@@ -5363,6 +5533,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             if (streamAbortController.signal.aborted) return;
             if (toolEvent.requiresConfirmation || toolEvent.trustedActivationRequired || toolEvent.raw.parked === true) {
               setActiveToolCalls(current => current.filter(item => item.id !== toolEvent.callId));
+            } else {
+              // The call's arguments are complete now, so a connector call can
+              // name its product ("Checking Google Drive access…").
+              setActiveToolCalls(current => current.map(item => item.id === toolEvent.callId
+                ? { ...item, label: toolEvent.label, activity: toolEvent.activity } : item));
             }
             appendDebugEvent(debugTurnId, "tool_waiting", toolEvent);
             const visibleEvent = agentToolEventToVisibleStreamEvent(
@@ -5512,6 +5687,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           },
         },
       });
+      if (streamResult.detached) {
+        // The app stopped reading (native background); the server keeps the
+        // turn. The bubble stays in progress until the turn watch reports the
+        // written answer and the settled-turn effect reloads it.
+        flushAssistantDelta();
+        if (streamResult.conversationId) updateConversationId(streamResult.conversationId);
+        // Left before the server's turn was running: nothing to reattach to.
+        if (!isAgentTurnWatched(userId, streamResult.conversationId)) finishCanceledTurn();
+        return;
+      }
       if (streamAbortController.signal.aborted) {
         finishCanceledTurn();
         return;
@@ -5568,7 +5753,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           "error",
         ),
       }));
-      void loadConversationList(true).catch(() => undefined);
+      if (isChatKeyRefusal(error)) {
+        // Chat is locked, not failed. Keep the unsent message, show the unlock
+        // flow, and send it once after unlock. Refreshing the conversation list
+        // here would only be refused again.
+        if (!currentDraftRef.current.input.trim()) setInput(text);
+        if (error.recovery === "unlock") {
+          pendingChatKeyRetryRef.current = { text, options };
+          setVaultDialogOpen(true);
+        }
+      } else {
+        void loadConversationList(true).catch(() => undefined);
+      }
       setIsChatLoading(false);
       setIsStreaming(false);
     } finally {
@@ -5581,6 +5777,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
 
   runAgentTurnRef.current = runAgentTurn;
 
+  // One retry after the unlock a chat-key refusal asked for, and only of the
+  // message the person left untouched in the composer.
+  useEffect(() => {
+    const pending = pendingChatKeyRetryRef.current;
+    if (!hasChatAccess || !pending) return;
+    pendingChatKeyRetryRef.current = null;
+    if (currentDraftRef.current.input.trim() !== pending.text) return;
+    setInput("");
+    void runAgentTurnRef.current(pending.text, pending.options);
+  }, [hasChatAccess]);
+
   /**
    * Follow-up turn that reports a specialist DelegateResult back to One.
    *
@@ -5589,7 +5796,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
    * reusing the same SSE handlers so One's confirmation renders as a regular
    * assistant response. Used by the specialist directive card's confirm/cancel.
    */
-  const sendDelegateResult = async (result: DelegateResult) => {
+  const sendDelegateResult = (result: DelegateResult) =>
+    sendFollowUpTurn(result.detail || result.display || `The requested action ${result.status}.`);
+
+  /**
+   * A follow-up turn with no typed prompt: a specialist's result, or the
+   * other person's answer to an information request sent from this chat.
+   */
+  const sendFollowUpTurn = async (
+    message: string,
+    extra: { consentContinuation?: AgentChatConsentContinuation } = {},
+  ) => {
     if (!hasChatAccess || !user?.uid) return;
     const userId = user.uid;
     const token = getVaultOwnerToken();
@@ -5647,10 +5864,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     try {
       const streamResult = await streamAgentChat({
         userId,
-        message:
-          result.detail ||
-          result.display ||
-          `The requested action ${result.status}.`,
+        message,
+        ...(extra.consentContinuation ? { consentContinuation: extra.consentContinuation } : {}),
         conversationId: conversationIdRef.current,
         vaultOwnerToken: token,
         vaultKey: vaultKeyRef.current ?? "",
@@ -5731,6 +5946,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (streamResult.conversationId) {
         updateConversationId(streamResult.conversationId);
       }
+      if (streamResult.detached) return; // settled-turn effect reloads the answer
       updateMessage(assistantMessageId, (message) => {
         if (message.status === "error") return message;
         return {
@@ -5992,7 +6208,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const enqueuePrompt = (
     textInput: string,
     personSelectionHandle?: string,
-    options: Pick<AgentRunTurnOptions, "deferPkmContext"> = {},
+    options: Pick<AgentRunTurnOptions, "deferPkmContext" | "driveSearchSelection"> = {},
   ) => {
     const text = textInput.trim();
     if (!text) return;
@@ -6001,18 +6217,28 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       text,
       createdAtMs: Date.now(),
       deferPkmContext: options.deferPkmContext,
+      driveSearchSelection: options.driveSearchSelection,
       gmailInformationRequestWorkflowId: gmailKycReplyRequest?.workflow_id,
-      kycInformationSaveConfirmed: Boolean(gmailKycReplyRequest?.workflow_id),
+      // A reply that supplies details One asked for confirms the restricted
+      // save. Once a draft is on screen, a follow-up revises that draft
+      // instead ("remove the account number"), so it confirms no save.
+      kycInformationSaveConfirmed:
+        Boolean(gmailKycReplyRequest?.workflow_id) && !emailDraftOpen,
     };
     const operation: QueuedWorkspaceOperation = {
       id: prompt.id,
       prompt,
       run: async () => {
         if (hasChatAccess) {
+          // One is still finishing a turn the app left: queue behind it and its
+          // reload rather than start a second run in the same conversation.
+          await waitForWatchedAgentTurn(user?.uid, conversationIdRef.current);
+          await reattachRestoreRef.current;
           await runAgentTurn(operation.prompt?.text ?? "", {
             source: "typed",
             personSelectionHandle,
             deferPkmContext: operation.prompt?.deferPkmContext,
+            driveSearchSelection: operation.prompt?.driveSearchSelection,
             gmailInformationRequestWorkflowId:
               operation.prompt?.gmailInformationRequestWorkflowId,
             kycInformationSaveConfirmed:
@@ -6034,7 +6260,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         .snapshot()
         .map((operation) =>
           operation.prompt?.id === id
-            ? { ...operation, prompt: { ...operation.prompt, text } }
+            ? {
+                ...operation,
+                prompt: { ...operation.prompt, text, driveSearchSelection: undefined },
+              }
             : operation,
         ),
     );
@@ -6148,6 +6377,36 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     });
   };
 
+  // The other person answered a request this chat sent: show the outcome as a
+  // status chip at the end of that turn, then let One answer from it.
+  const continueWithConsentOutcome: AgentConsentContinuationHandler["continueWithOutcome"] = async (input) => {
+    const token = getVaultOwnerToken();
+    const key = vaultKeyRef.current;
+    if (!hasChatAccess || !user?.uid || !token || !key) return false;
+    const prepared = await prepareConsentContinuation({
+      userId: user.uid,
+      vaultKey: key,
+      vaultOwnerToken: token,
+      ...input,
+    });
+    if (!prepared) return false;
+    appendMessage({
+      id: `msg-${crypto.randomUUID()}-consent-outcome`,
+      role: "user",
+      text: prepared.message,
+      timestamp: formatNow(),
+      status: "done",
+      kind: "selection",
+    });
+    enqueueWorkspaceOperation({
+      id: `consent-${input.bundleId}`,
+      run: async () => {
+        await sendFollowUpTurn(prepared.message, { consentContinuation: prepared.continuation });
+      },
+    });
+    return true;
+  };
+
   const enqueueDelegateResult = (result: DelegateResult) => {
     enqueueWorkspaceOperation({
       id: `delegate-${crypto.randomUUID()}`,
@@ -6166,7 +6425,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       composerText: attachment?.isExpanded ? "" : draftText,
     });
     if (!text.trim() || isVoiceConnecting || voiceActive) return;
+    const selectedDriveFile = pendingDriveSearchSelectionRef.current;
+    const driveSearchSelection = selectedDriveFile &&
+      selectedDriveFile.ownerUid === user?.uid && isVaultUnlocked &&
+      isVaultSessionEpochCurrent(selectedDriveFile.vaultEpoch)
+      ? { jobId: selectedDriveFile.jobId, position: selectedDriveFile.position }
+      : undefined;
     setInput("");
+    pendingDriveSearchSelectionRef.current = null;
+    setPendingDriveSearchSelection(null);
+    generatedDriveSearchDraftRef.current = false;
     setLongPromptAttachment(null);
     setComposerExpanded(false);
     // A large paste is a dedicated browser-memory import lane. Redact payment
@@ -6194,6 +6462,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     }
     enqueuePrompt(submittedText, undefined, {
       deferPkmContext: attachment !== null,
+      driveSearchSelection,
     });
   };
 
@@ -6376,6 +6645,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onSent={handleEmailSent}
           onSendFailed={handleEmailSendFailed}
           sourceBoundEnvelope={gmailKycEmailDraftEnvelope}
+          onDraftChange={handleEmailDraftChange}
           sourceBoundReply={
             workflowId
               ? {
@@ -6467,9 +6737,23 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     });
   };
   const handleWelcomePromptSelect = useCallback((prompt: string) => {
+    pendingDriveSearchSelectionRef.current = null;
+    setPendingDriveSearchSelection(null);
+    generatedDriveSearchDraftRef.current = false;
     setInput(prompt);
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }, []);
+  const handleUseDriveSearchFile = (selection: SelectedDriveSearchFile) => {
+    if (!user?.uid || !isVaultUnlocked || !getVaultOwnerToken()) return;
+    const pending = { ...selection, ownerUid: user.uid, vaultEpoch: snapshotVaultSessionEpoch() };
+    pendingDriveSearchSelectionRef.current = pending;
+    setPendingDriveSearchSelection(pending);
+    if (!input.trim()) {
+      generatedDriveSearchDraftRef.current = true;
+      setInput(DEFAULT_DRIVE_SEARCH_DRAFT);
+    }
+    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+  };
   const toggleHistoryDrawer = useCallback(() => {
     const next = transitionConnectionsDrawer(
       { open: isHistoryDrawerOpen, mode: drawerMode },
@@ -6589,6 +6873,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       <AgentPersonSelectionContext.Provider value={hasChatAccess && !isStreaming
         ? (handle, name, sourceTool) => enqueuePrompt(personSelectionPrompt(sourceTool, name), handle)
         : null}>
+      <AgentConsentContinuationContext.Provider value={hasChatAccess
+        ? { conversationId, continueWithOutcome: continueWithConsentOutcome }
+        : null}>
       <div
         className={cn(
           "relative flex min-h-0 flex-1",
@@ -6696,10 +6983,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 <div className="truncate text-[17px] font-semibold leading-5 tracking-[-0.02em] text-foreground">
                   {isPuppySurface ? "Puppy One" : "One"}
                 </div>
-                <ChatAgentSubtitle text={isPuppySurface ? "Separate conversation" :
-                  activeToolCalls.length > 0
-                    ? activeToolStatus(activeToolCalls.at(-1)!.label)
-                    : statusText || "Your private agent"} />
+                <ChatAgentSubtitle text={chatHeaderSubtitle({
+                  isPuppySurface,
+                  activeToolCalls,
+                  statusText,
+                })} />
               </div>
             </div>
 
@@ -6853,6 +7141,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             </div>
           </div>
 
+          {!isPuppySurface ? <DriveBackgroundSearches onUseInChat={handleUseDriveSearchFile} /> : null}
+
           {/* Both transcripts are HIDDEN rather than unmounted, and the
               symmetry is the point: `hidden` is display:none, so the surface
               that is not on screen leaves the tab order and the accessibility
@@ -6998,6 +7288,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           toast.error("Request sent, but Chat history could not be saved.");
                           return;
                         }
+                        // Sent from this chat, now: watch for the answer even if
+                        // the person leaves before the card's first status read.
+                        watchSentInformationRequest({
+                          ownerId: ownerUid,
+                          bundleId: receipt.bundleId,
+                          conversationId: threadId,
+                          subjectRef: receipt.subjectRef,
+                          personName: "",
+                        });
                         try {
                           const review = await recordAgentChatInformationRequest({
                             conversationId: threadId,
@@ -8128,6 +8427,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                             {prompt.text}
                           </span>
                         )}
+                        {prompt.driveSearchSelection ? <span className="shrink-0 text-xs text-muted-foreground">Drive file selected</span> : null}
                         {editingQueuedPromptId === prompt.id ? (
                           <Button
                             type="button"
@@ -8184,6 +8484,20 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 </div>
               ) : (
                 <>
+                  {activeDriveSearchSelection ? (
+                    <div className="mb-2 flex min-w-0 items-center gap-2 rounded-[18px] bg-foreground/[0.045] px-3 py-1.5 text-sm" aria-label="Selected Drive file">
+                      <FileText className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate">{activeDriveSearchSelection.name}</span>
+                      <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" aria-label="Remove selected Drive file"
+                        onClick={() => {
+                          pendingDriveSearchSelectionRef.current = null;
+                          setPendingDriveSearchSelection(null);
+                          const generated = generatedDriveSearchDraftRef.current;
+                          generatedDriveSearchDraftRef.current = false;
+                          if (generated) setInput(current => clearGeneratedDriveSearchDraft(current, generated));
+                        }}><X className="h-4 w-4" /></Button>
+                    </div>
+                  ) : null}
                   {longPromptAttachment ? (
                     <div
                       className="relative mb-2 rounded-[var(--app-card-radius-compact)] border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-3 pr-14 text-sm"
@@ -8267,7 +8581,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         }
                         aria-label={composerExpanded ? "Expanded message One" : "Message One"}
                         value={input}
-                        onChange={(event) => setInput(event.target.value)}
+                        onChange={(event) => { generatedDriveSearchDraftRef.current = false; setInput(event.target.value); }}
                         onPaste={handleComposerPaste}
                         onKeyDown={(event) => {
                           if (
@@ -8290,7 +8604,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         }}
                         disabled={
                           recoveryInspectionPending ||
-                          isVoiceConnecting || emailDraftOpen
+                          isVoiceConnecting
                         }
                         placeholder={
                           composerExpanded
@@ -8320,7 +8634,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           composerExpanded
                             ? false
                             : !input.trim() ||
-                              isVoiceConnecting || emailDraftOpen
+                              isVoiceConnecting
                         }
                         onClick={composerExpanded ? collapseComposer : expandComposer}
                       >
@@ -8360,6 +8674,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onSuccess={() => setVaultDialogOpen(false)}
         />
       ) : null}
+      </AgentConsentContinuationContext.Provider>
       </AgentPersonSelectionContext.Provider>
     </div>
   );
