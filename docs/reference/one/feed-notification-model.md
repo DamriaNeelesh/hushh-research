@@ -153,8 +153,10 @@ preserve these additive fields. Image failure, replacement, and removal reset
 the avatar loading state and reveal the same initials used by Connect.
 The live Feed passes the Circle inviter photo through unchanged and uses the
 same avatar component as Connect for person cards. Person-to-person Consent
-Center entries resolve the current identity photo before the Feed uses their
-`counterpart_image_url`; system and developer entries keep their domain icon.
+Center entries resolve the requester's public person reference to its active
+account identity before the Feed uses the current `counterpart_image_url`.
+Removed photos and inactive or unresolvable profiles fall back to initials,
+not a stale request-time image; system and developer entries keep their domain icon.
 
 Feed photo sanitization preserves complete bounded PNG/JPEG/WebP data URLs
 (up to 300 KiB decoded, matching the upload contract). It never truncates
