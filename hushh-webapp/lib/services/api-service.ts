@@ -2580,6 +2580,7 @@ export class ApiService {
     userId: string,
     idToken: string,
     platform?: "web" | "ios" | "android",
+    signal?: AbortSignal,
   ): Promise<Response> {
     if (Capacitor.isNativePlatform()) {
       try {
@@ -2605,6 +2606,7 @@ export class ApiService {
     }
     return apiFetch("/api/notifications/unregister", {
       method: "DELETE",
+      signal,
       headers: {
         Authorization: `Bearer ${idToken}`,
       },
