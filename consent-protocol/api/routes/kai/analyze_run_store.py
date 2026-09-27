@@ -5,10 +5,14 @@ Why this exists
 A resumable analyze run is two HTTP requests: ``POST .../analyze/run/start``
 creates the run, then ``GET .../analyze/run/{run_id}/stream`` streams it. Run
 state lives in :class:`~api.routes.kai.run_manager.KaiAnalyzeRunManager`, an
-in-memory module-global singleton *per Cloud Run instance*. In production the
-two requests fan across instances, so ``/stream`` can land on an instance that
-never created the run -> 404 ``ANALYZE_RUN_NOT_FOUND`` (the multi-instance
-prod-parity bug). UAT runs a single instance, so it never reproduces there.
+in-memory module-global singleton *per worker process*. Each Cloud Run
+instance runs several gunicorn workers and each lane runs several instances, so
+a separate ``/stream`` lands on a process that never created the run -> 404
+``ANALYZE_RUN_NOT_FOUND``. On UAT (2 workers, 2+ instances) that was every
+debate on 2026-09-26/27. New runs therefore start and stream in ONE request
+(``POST /analyze/stream`` with ``debate_session_id``); this store covers the
+remaining cross-process paths: reattach after completion and owner cancel
+(:meth:`request_cancel`).
 
 What this does
 --------------
@@ -49,6 +53,7 @@ logger = logging.getLogger(__name__)
 # kai_analyze_runs.status (migration 125). A non-terminal ("running") run is
 # never persisted -- we only checkpoint the final, replayable state.
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled"})
+_TERMINAL_EVENT_BY_STATUS = {"completed": "decision", "failed": "error", "canceled": "aborted"}
 
 # Default retention for a durable checkpoint. Matches the in-memory manager's
 # 6h retention so durable replay and local buffering expire on the same horizon.
@@ -121,6 +126,11 @@ class KaiAnalyzeRunStore:
                     started_at_iso, completed_at_iso, created_at, expires_at
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 ON CONFLICT (run_id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    debate_session_id = EXCLUDED.debate_session_id,
+                    ticker = EXCLUDED.ticker,
+                    risk_profile = EXCLUDED.risk_profile,
+                    started_at_iso = EXCLUDED.started_at_iso,
                     status = EXCLUDED.status,
                     terminal_event = EXCLUDED.terminal_event,
                     terminal_payload = EXCLUDED.terminal_payload,
@@ -205,7 +215,10 @@ class KaiAnalyzeRunStore:
             if not payload.get("run_id"):
                 payload["run_id"] = run_id
 
-            event_name = row["terminal_event"] or ("decision" if status == "completed" else "error")
+            # The worker sets a canceled run's status before appending its
+            # synthetic "aborted" frame, so terminal_event can be empty; map the
+            # status so a canceled run never replays as a failure.
+            event_name = row["terminal_event"] or _TERMINAL_EVENT_BY_STATUS[status]
 
             frame = {
                 "event": event_name,
@@ -249,6 +262,76 @@ class KaiAnalyzeRunStore:
         except Exception:
             logger.warning("[KaiRunStore] load_terminal_run failed for %s", run_id, exc_info=True)
             return None
+
+    async def request_cancel(self, *, run_id: str, user_id: str) -> bool:
+        """Record an owner's cancel for a run another process holds. Never raises.
+
+        A cancel request lands on any worker process, but only the process that
+        created the run can stop it. This writes the run's ``canceled`` receipt
+        ahead of time; the owning worker polls :meth:`is_cancel_requested` and
+        stops, then overwrites this row with its real terminal receipt. Existing
+        rows are never overwritten here (``DO NOTHING``), so a finished run's
+        receipt -- or another owner's row -- is left untouched. Carries the same
+        metadata-only payload as :meth:`persist_terminal`.
+        """
+        try:
+            now = int(time.time())
+            payload_json = json.dumps(
+                {
+                    "run_id": run_id,
+                    "ticker": "",
+                    "status": "canceled",
+                    "decision": None,
+                    "confidence": 0.0,
+                    "completed_at": None,
+                }
+            )
+
+            from db.connection import get_pool
+
+            pool = await get_pool()
+            await pool.execute(
+                """
+                INSERT INTO kai_analyze_runs (
+                    run_id, user_id, debate_session_id, ticker, risk_profile,
+                    status, terminal_event, terminal_payload,
+                    started_at_iso, completed_at_iso, created_at, expires_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ON CONFLICT (run_id) DO NOTHING
+                """,
+                run_id,
+                user_id,
+                "",
+                "",
+                "",
+                "canceled",
+                "aborted",
+                payload_json,
+                None,
+                None,
+                now,
+                now + self._retention_seconds,
+            )
+            return True
+        except Exception:
+            logger.warning("[KaiRunStore] request_cancel failed for %s", run_id, exc_info=True)
+            return False
+
+    async def is_cancel_requested(self, *, run_id: str, user_id: str) -> bool:
+        """True when the owner recorded a cancel for this run. False on any error."""
+        try:
+            from db.connection import get_pool
+
+            pool = await get_pool()
+            status = await pool.fetchval(
+                "SELECT status FROM kai_analyze_runs WHERE run_id = $1 AND user_id = $2",
+                run_id,
+                user_id,
+            )
+            return status == "canceled"
+        except Exception:
+            logger.warning("[KaiRunStore] is_cancel_requested failed for %s", run_id, exc_info=True)
+            return False
 
 
 def _fallback_iso() -> str:
