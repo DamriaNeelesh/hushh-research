@@ -8,9 +8,9 @@ import {
   FinanceAgentIcon,
   Heart,
   MapPin,
+  MessageCircle,
   Plus,
   ShieldCheck,
-  Siren,
   TrendingUp,
   UserPlus,
 } from "@/components/icons";
@@ -36,7 +36,7 @@ const STARTER_ICONS = {
   investor: TrendingUp,
   business: Briefcase,
   location: MapPin,
-  sms: Siren,
+  sms: MessageCircle,
 };
 
 // Match the home palette and its duotone icon language. The emergency siren
@@ -159,13 +159,10 @@ export function CircleDiscoveryCard({
 
   const memberSlot = (index: number) => {
     const member = previewMembers[index];
-    return member ? (
+    if (!member) return null;
+    return (
       <span key={index} data-testid="circle-discovery-member-avatar" title={member.displayName} className="flex size-7 items-center justify-center rounded-full border-2 border-[color:var(--app-card-surface-default-solid)] shadow-sm min-[390px]:size-8 sm:size-9">
         <ConnectionPersonAvatar size="compact" className="!size-full" photoUrl={member.photoUrl} label={member.displayName} />
-      </span>
-    ) : (
-      <span key={index} data-testid="circle-discovery-empty-slot" className="flex size-7 items-center justify-center rounded-full border-2 border-[color:var(--app-card-surface-default-solid)] bg-[color:var(--app-secondary-fill)] text-[color:var(--app-secondary-label)] shadow-sm min-[390px]:size-8 sm:size-9">
-        <UserPlus className="size-3 min-[390px]:size-3.5 sm:size-4" />
       </span>
     );
   };
@@ -319,7 +316,7 @@ export function CircleDiscoveryCard({
                     )}
                   >
                     <Icon aria-hidden="true" data-circle-icon-style="duotone" weight="duotone" color="currentColor" className="size-5.5" />
-                    {existing ? (
+                    {existing && item.id !== "sms" ? (
                       <span className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] sm:size-4">
                         <Check aria-hidden="true" className="size-2.5 sm:size-3" />
                       </span>
