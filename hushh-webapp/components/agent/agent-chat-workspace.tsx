@@ -244,6 +244,7 @@ import {
   type PendingConsent,
 } from "@/lib/consent/use-consent-actions";
 import { useOneLocationConsentActions } from "@/lib/consent/use-one-location-consent-actions";
+import { DriveBackgroundSearches } from "@/components/agent/drive-background-search";
 import { useVault } from "@/lib/vault/vault-context";
 import { loadCustomConnectorSnapshot } from "@/lib/connections/custom-connector-configuration";
 import {
@@ -6890,6 +6891,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               </ShellActionSurface>
             </div>
           </div>
+
+          {!isPuppySurface ? <DriveBackgroundSearches /> : null}
 
           {/* Both transcripts are HIDDEN rather than unmounted, and the
               symmetry is the point: `hidden` is display:none, so the surface
