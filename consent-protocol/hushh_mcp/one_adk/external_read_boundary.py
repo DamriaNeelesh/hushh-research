@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
 from hushh_mcp.services.connector_feature_admission import connector_feature_enabled
@@ -15,6 +16,11 @@ from hushh_mcp.services.connector_feature_admission import connector_feature_ena
 STATE_EXECUTION_SURFACE = "temp:one_execution_surface"
 STATE_EXTERNAL_READ = "temp:one_external_read_invocation"
 STATE_EXTERNAL_READ_CONTINUATION = "temp:one_external_read_model_continuation"
+STATE_DRIVE_READ_OUTCOME = "temp:one_drive_read_outcome"
+_DRIVE_READ_FAILED_ANSWER = (
+    "I couldn’t complete a fresh Drive check. Earlier filenames and links in this chat "
+    "have not been verified again, so I can’t confirm the current result. Please try again."
+)
 MAIL_TOOL = "ask_email_agent"
 READ_TOOLS = {
     MAIL_TOOL: "gmail_chat_reads",
@@ -100,7 +106,53 @@ def before_external_read_tool(tool: Any, args: dict, tool_context: Any) -> dict 
     return None
 
 
-def before_external_read_model(callback_context: Any, llm_request: Any) -> None:
+def after_external_read_tool(tool: Any, args: dict, tool_context: Any, tool_response: dict) -> None:
+    """Remember only the current, executed Drive read's evidence outcome.
+
+    A blocked parallel/repeated call did not execute a read and cannot erase a
+    successful first result. This state contains no provider text or file IDs.
+    """
+    name = getattr(tool, "name", "")
+    if name != "ask_documents_agent" and not (
+        name == "read_workspace_tool" and args.get("provider") == "drive"
+    ):
+        return
+    invocation = getattr(tool_context, "invocation_id", None)
+    if (
+        not isinstance(invocation, str)
+        or not invocation
+        or tool_context.state.get(STATE_EXECUTION_SURFACE) != "typed_chat"
+        or tool_response.get("reason") == "connector_read_complete"
+    ):
+        return
+    previous = tool_context.state.get(STATE_DRIVE_READ_OUTCOME)
+    if isinstance(previous, dict) and previous.get("invocation") == invocation:
+        return
+    # Both statuses are authored by the read wrapper. A successful partial
+    # metadata result is still usable; input_required must retain its question.
+    status = tool_response.get("status")
+    outcome = status if isinstance(status, str) and status in {"ok", "input_required"} else "failed"
+    tool_context.state[STATE_DRIVE_READ_OUTCOME] = {
+        "invocation": invocation,
+        "outcome": outcome,
+    }
+
+
+def before_external_read_model(callback_context: Any, llm_request: Any) -> LlmResponse | None:
+    invocation = getattr(callback_context, "invocation_id", None)
+    outcome = getattr(callback_context, "state", {}).get(STATE_DRIVE_READ_OUTCOME)
+    if (
+        invocation
+        and isinstance(outcome, dict)
+        and outcome.get("invocation") == invocation
+        and outcome.get("outcome") == "failed"
+    ):
+        # End this answer without asking the model to reinterpret old history
+        # as new evidence. No generated text has been streamed for this step.
+        return LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text=_DRIVE_READ_FAILED_ANSWER)]),
+            turn_complete=True,
+        )
     if external_read_active(callback_context):
         # This callback runs only after the read's tool result has returned to
         # the model. A parallel draft call in the original batch stays blocked.
@@ -119,3 +171,4 @@ def before_external_read_model(callback_context: Any, llm_request: Any) -> None:
             [types.Tool(function_declarations=declarations)] if declarations else []
         )
         llm_request.config.tool_config = None
+    return None

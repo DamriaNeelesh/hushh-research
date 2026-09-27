@@ -1517,7 +1517,6 @@ function ProfilePageContent({
   const handleSignOut = async () => {
     try {
       await signOut();
-      router.push(ROUTES.HOME);
     } catch (error) {
       console.error("Sign out error:", error);
     }

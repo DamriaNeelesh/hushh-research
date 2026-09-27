@@ -754,3 +754,24 @@ async def test_a_client_that_leaves_after_the_run_settled_is_still_notified():
     await stream.aclose()
 
     assert await asyncio.wait_for(settled.get(), timeout=10) == (USER_ID, THREAD_ID)
+
+
+def test_failed_drive_guard_does_not_count_a_model_call():
+    from google.adk.models.llm_request import LlmRequest
+
+    from hushh_mcp.one_adk.external_read_boundary import STATE_DRIVE_READ_OUTCOME
+
+    context = SimpleNamespace(
+        invocation_id="current",
+        state={STATE_DRIVE_READ_OUTCOME: {"invocation": "current", "outcome": "failed"}},
+    )
+    timing = agui_turn_timing.TurnTiming(head=HEAD_ONE, run="run", started_at=time.perf_counter())
+    token = agui_turn_timing._CURRENT_TURN.set(timing)
+    try:
+        result = agui_turn_timing.timed_one_before_model(context, LlmRequest())
+        assert result is not None and result.turn_complete is True
+        agui_turn_timing.timed_one_after_model(context, result)
+        assert timing.model_calls == 0
+        assert timing.model_call_total_ms == 0
+    finally:
+        agui_turn_timing._CURRENT_TURN.reset(token)

@@ -56,6 +56,10 @@ from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION
 from hushh_mcp.one_adk.external_read_projection import redacted_read_receipt
 from hushh_mcp.one_adk.mcp_call_approval import STATE_MCP_APPROVAL, admit_resume_receipt
 from hushh_mcp.one_adk.mcp_turn_scope import STATE_MCP_CONFIGURATION, admit_turn_configurations
+from hushh_mcp.one_adk.pending_email_draft import (
+    STATE_PENDING_EMAIL_DRAFT,
+    admit_pending_email_draft,
+)
 from hushh_mcp.one_adk.request_secrets import consume_request_secret, store_request_secret
 from hushh_mcp.one_adk.turn_completion import (
     newest_turn_answered,
@@ -206,9 +210,14 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
     # The device sends a coarse position only when the person already granted
     # location; pre-vault turns never keep it.
     turn_location = admit_turn_location(forwarded)
+    # The person's unsent draft card, so a follow-up can revise it. Only an
+    # unlocked owner turn keeps it; it never becomes conversation state.
+    pending_email_draft = admit_pending_email_draft(forwarded)
     if not (token and user_id):
         consume_request_secret(turn_location)
         turn_location = ""
+        consume_request_secret(pending_email_draft)
+        pending_email_draft = ""
     return {
         STATE_EXECUTION_SURFACE: "typed_chat",
         STATE_TURN_LOCATION: turn_location,
@@ -240,6 +249,7 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
             gmail_information_request_context
         ),
         **consent_continuation,
+        STATE_PENDING_EMAIL_DRAFT: pending_email_draft,
     }
 
 
