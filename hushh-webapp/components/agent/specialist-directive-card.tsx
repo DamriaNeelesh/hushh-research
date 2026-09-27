@@ -15,6 +15,8 @@ export type SpecialistCardProps = {
   summary: string;
   /** Exact reviewed terms, one labelled line each, shown under the summary. */
   details?: { label: string; value: string }[];
+  /** Exact items the action touches (e.g. one line per email), shown for review. */
+  items?: string[];
   confirmLabel: string;
   onConfirm: () => void;
   onCancel: () => void;
@@ -24,6 +26,7 @@ export type SpecialistCardProps = {
 export function SpecialistDirectiveCard({
   summary,
   details,
+  items,
   confirmLabel,
   onConfirm,
   onCancel,
@@ -46,6 +49,18 @@ export function SpecialistDirectiveCard({
             </div>
           ))}
         </dl>
+      ) : null}
+      {items && items.length > 0 ? (
+        <ul
+          className="mt-2 space-y-1 text-xs text-foreground/70"
+          data-testid="specialist-directive-items"
+        >
+          {items.map((item, index) => (
+            <li key={index} className="truncate">
+              {item}
+            </li>
+          ))}
+        </ul>
       ) : null}
       <div className="mt-3 flex gap-2">
         <button
