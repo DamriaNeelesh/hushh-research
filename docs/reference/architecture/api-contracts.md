@@ -1092,6 +1092,16 @@ Settings controls, ADK invocation, or native acceptance. Those remain separate g
 
 ### Owner-private MCP exact-call review
 
+Founder decision 2026-09-27: calls on the person's own MCP connectors (vault
+custom connectors and their own private registrations) run without review. There
+is no first-call review, no review after third-party content, and no per-turn
+unreviewed-call budget. What remains: credentials stay vault/server-held and are
+redacted from results; only the turn's owner may use a connector
+(`MCP_OWNER_MISMATCH`); a tool the owner blocked whose contract changed still
+needs review; curated first-party rows keep exact-call review; and each
+unreviewed call writes a metadata-only audit line before dispatch. The review
+route below serves those remaining cases and resumes of reviews issued earlier.
+
 `POST /api/connectors/{connector_id}/mcp/review` requires a Vault Owner token,
 `conversationId`, namespaced `toolName`, and bounded JSON `arguments` (32 KB).
 The request stream is capped at 64 KB before JSON parsing, with a five-second
