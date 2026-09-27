@@ -13,6 +13,8 @@ import { formatLocalDateTime } from "@/lib/utils/local-date-time";
 
 export type SpecialistCardProps = {
   summary: string;
+  /** Optional exact items the action touches, shown for review before confirming. */
+  details?: string[];
   confirmLabel: string;
   onConfirm: () => void;
   onCancel: () => void;
@@ -21,6 +23,7 @@ export type SpecialistCardProps = {
 
 export function SpecialistDirectiveCard({
   summary,
+  details,
   confirmLabel,
   onConfirm,
   onCancel,
@@ -32,6 +35,18 @@ export function SpecialistDirectiveCard({
       data-testid="specialist-directive-card"
     >
       <p className="text-sm font-medium text-foreground/90">{summary}</p>
+      {details && details.length > 0 ? (
+        <ul
+          className="mt-2 space-y-1 text-xs text-foreground/70"
+          data-testid="specialist-directive-details"
+        >
+          {details.map((detail, index) => (
+            <li key={index} className="truncate">
+              {detail}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <div className="mt-3 flex gap-2">
         <button
           type="button"
