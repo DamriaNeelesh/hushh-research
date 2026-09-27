@@ -12,6 +12,11 @@ from db.db_client import get_db, get_db_connection
 from hushh_mcp.services.account_deletion_lifecycle_service import (
     AccountDeletionLifecycleService,
 )
+from hushh_mcp.services.account_deletion_provider_cleanup import (
+    ProviderCredentialSnapshot,
+    release_provider_grants_after_erasure,
+    snapshot_provider_credentials_in_transaction,
+)
 from hushh_mcp.services.connection_graph_service import lock_connection_graph_users
 
 logger = logging.getLogger(__name__)
@@ -24,6 +29,10 @@ PERSONAL_AGENT_DEPROVISION_REQUIRED_MESSAGE = (
     "Your private agent or cloud setup must be removed before the account can be "
     "deleted. Please try again later or contact support."
 )
+# Emitted when the erasure transaction raised and was rolled back. A commit that
+# fails on a dropped connection can still be ambiguous, so clients confirm the
+# outcome through the tombstone-aware status route before keeping the session.
+ACCOUNT_DELETION_FAILED_CODE = "ACCOUNT_DELETION_FAILED"
 
 
 class PersonalAgentDeprovisioningRequiredError(RuntimeError):
@@ -86,8 +95,16 @@ class AccountService:
             "connected_system_audit_events": text(
                 "DELETE FROM connected_system_audit_events WHERE user_id = :user_id"
             ),
+            "connected_system_intent_approval_challenges": text(
+                "DELETE FROM connected_system_intent_approval_challenges WHERE user_id = :user_id"
+            ),
             "connected_system_intents": text(
                 "DELETE FROM connected_system_intents WHERE user_id = :user_id"
+            ),
+            "ria_claim_dossiers": text("DELETE FROM ria_claim_dossiers WHERE user_id = :user_id"),
+            "webauthn_challenges": text("DELETE FROM webauthn_challenges WHERE user_id = :user_id"),
+            "webauthn_credentials": text(
+                "DELETE FROM webauthn_credentials WHERE user_id = :user_id"
             ),
             "connected_system_record_bindings": text(
                 "DELETE FROM connected_system_record_bindings WHERE user_id = :user_id"
@@ -909,6 +926,28 @@ class AccountService:
             if table_presence[table_name]:
                 conn.execute(self._delete_by_user_queries[table_name], params)
             results[table_name] = True
+
+    def _delete_private_mcp_connectors(
+        self,
+        conn,
+        *,
+        params: dict[str, Any],
+        results: dict[str, bool],
+    ) -> None:
+        """Delete MCP server definitions the account registered privately.
+
+        Operator-curated catalog rows have ``user_id IS NULL`` and are never
+        touched. Runs after connector erasure, which already removed the owner's
+        connections and OAuth attempts: the only rows that reference a definition.
+        """
+        if self._table_exists(conn, "external_mcp_connectors") and self._column_exists(
+            conn, "external_mcp_connectors", "user_id"
+        ):
+            conn.execute(
+                text("DELETE FROM external_mcp_connectors WHERE user_id = :user_id"),
+                params,
+            )
+        results["external_mcp_private_connectors"] = True
 
     @staticmethod
     def _lock_fabric_receipt_users(conn, *, user_ids: Iterable[str]) -> None:
@@ -1736,9 +1775,11 @@ class AccountService:
             "personal_agent_external_resources_absent": False,
             "vault_key_wrappers": False,
             "vault_keys": False,
+            "external_mcp_private_connectors": False,
             "account_deletion_tombstone": False,
         }
 
+        provider_credentials = ProviderCredentialSnapshot(user_id=user_id)
         try:
             with get_db_connection() as conn:
                 params = {"user_id": user_id}
@@ -1764,7 +1805,15 @@ class AccountService:
                     params=params,
                     results=results,
                 )
+                # Copy encrypted provider credentials before their rows go, so
+                # the grants can be released at the provider after commit.
+                provider_credentials = snapshot_provider_credentials_in_transaction(
+                    conn,
+                    user_id=user_id,
+                    table_exists=lambda table_name: self._table_exists(conn, table_name),
+                )
                 self._clear_external_connector_data(conn, user_id, results, permanent=True)
+                self._delete_private_mcp_connectors(conn, params=params, results=results)
                 self._delete_optional_user_tables(
                     conn,
                     table_names=[
@@ -1780,6 +1829,7 @@ class AccountService:
                         "consent_exports",
                         "connected_system_audit_events",
                         "connected_system_record_bindings",
+                        "connected_system_intent_approval_challenges",
                         "connected_system_intents",
                         "connected_system_owner_signing_keys",
                         "connected_system_zk_contexts",
@@ -1807,6 +1857,11 @@ class AccountService:
                         "developer_oauth_audit_events",
                         "developer_applications",
                         "developer_apps",
+                        # Identity-keyed rows that otherwise go only through a
+                        # parent cascade, and parked passkey tables when present.
+                        "ria_claim_dossiers",
+                        "webauthn_challenges",
+                        "webauthn_credentials",
                     ],
                     params=params,
                     results=results,
@@ -2013,14 +2068,6 @@ class AccountService:
                 results["vault_keys"] = True
 
             logger.info("✅ FULL ACCOUNT DELETION completed for %s", user_id)
-            return {
-                "success": True,
-                "requested_target": requested_target,
-                "deleted_target": "both",
-                "account_deleted": True,
-                "remaining_personas": [],
-                "details": results,
-            }
         except PersonalAgentDeprovisioningRequiredError:
             logger.warning(
                 "Account deletion blocked until personal-agent resources are deprovisioned for %s",
@@ -2048,6 +2095,20 @@ class AccountService:
                 "remaining_personas": [],
                 "details": results,
             }
+
+        # Outside the erasure try-block on purpose: the deletion has committed,
+        # and releasing provider grants is bounded best effort that never raises.
+        results["provider_grant_release"] = await release_provider_grants_after_erasure(
+            provider_credentials
+        )
+        return {
+            "success": True,
+            "requested_target": requested_target,
+            "deleted_target": "both",
+            "account_deleted": True,
+            "remaining_personas": [],
+            "details": results,
+        }
 
     async def _delete_ria_persona(
         self,
