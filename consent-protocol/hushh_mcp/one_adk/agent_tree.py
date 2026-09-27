@@ -94,6 +94,14 @@ from hushh_mcp.one_adk.agui_turn_timing import (
     timed_one_after_model,
     timed_one_before_model,
 )
+from hushh_mcp.one_adk.drive_write_tools import (
+    comment_on_drive_file,
+    copy_drive_file,
+    create_drive_file,
+    move_drive_file,
+    propose_drive_file_share,
+    propose_drive_file_trash,
+)
 from hushh_mcp.one_adk.external_read_boundary import (
     STATE_EXECUTION_SURFACE,
     before_external_read_tool,
@@ -2274,6 +2282,12 @@ def _one_roster_tools(
             [
                 discover_workspace_tools,
                 READ_WORKSPACE_TOOL,
+                create_drive_file,
+                copy_drive_file,
+                move_drive_file,
+                comment_on_drive_file,
+                propose_drive_file_share,
+                propose_drive_file_trash,
                 inspect_private_connectors,
                 RegisteredMcpToolset(),
             ]

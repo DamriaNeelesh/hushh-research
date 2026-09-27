@@ -211,6 +211,12 @@ import {
   parseRestoredTurnActivity,
 } from "@/lib/services/agent-chat-client";
 import { runConnectedSystemDirective } from "@/lib/agent/connected-system-directive-runtime";
+import {
+  DRIVE_REVIEW_DELEGATE,
+  driveReviewDetails,
+  getDriveReviewDirectiveFromToolResult,
+  runDriveReviewDirective,
+} from "@/lib/agent/drive-review-directive-runtime";
 import { isLocalCrmBuildEnabled } from "@/lib/connected-systems/crm-product-availability";
 import { runCalendarDirective } from "@/lib/agent/calendar-directive-runtime";
 import { clearCalendarSetupOAuthReturn } from "@/lib/calendar/calendar-oauth-journey";
@@ -5362,6 +5368,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             if (calendarDirective) {
               setPendingSpecialistDirective(calendarDirective);
             }
+            const driveReview = getDriveReviewDirectiveFromToolResult(
+              toolEvent.raw?.toolName,
+              toolEvent.raw?.result,
+            );
+            if (driveReview) {
+              setPendingSpecialistDirective(driveReview);
+            }
             const visibleEvent = agentToolEventToVisibleStreamEvent(
               "result",
               toolEvent,
@@ -7595,6 +7608,84 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                       toast.info(
                         "Calendar change cancelled. Nothing was changed.",
                       );
+                    }}
+                  />
+                ) : pendingSpecialistDirective.delegateAgentId ===
+                  DRIVE_REVIEW_DELEGATE ? (
+                  <SpecialistDirectiveCard
+                    details={driveReviewDetails(
+                      pendingSpecialistDirective.directive.payload as Record<
+                        string,
+                        unknown
+                      >,
+                    )}
+                    summary={String(
+                      (
+                        pendingSpecialistDirective.directive.payload as Record<
+                          string,
+                          unknown
+                        >
+                      ).summary ?? pendingSpecialistDirective.message,
+                    )}
+                    confirmLabel={String(
+                      (
+                        pendingSpecialistDirective.directive.payload as Record<
+                          string,
+                          unknown
+                        >
+                      ).confirmLabel ?? "Confirm",
+                    )}
+                    busy={specialistBusy}
+                    onConfirm={async () => {
+                      const directive = pendingSpecialistDirective;
+                      const token = getVaultOwnerToken();
+                      if (!token || !user?.uid) {
+                        addErrorMessage(
+                          "Vault access expired. Unlock again to continue.",
+                        );
+                        return;
+                      }
+                      const payload = directive.directive.payload as Record<
+                        string,
+                        unknown
+                      >;
+                      setSpecialistBusy(true);
+                      appendMessage({
+                        id: `msg-${crypto.randomUUID()}-drive-confirm`,
+                        role: "user",
+                        text: String(payload.confirmLabel ?? "Confirm"),
+                        timestamp: formatNow(),
+                        status: "done",
+                        kind: "selection",
+                      });
+                      setPendingSpecialistDirective(null);
+                      try {
+                        const result = await runDriveReviewDirective(
+                          directive.directive,
+                          token,
+                          user.uid,
+                        );
+                        appendMessage({
+                          id: `msg-${crypto.randomUUID()}-drive-result`,
+                          role: "assistant",
+                          text: result.detail,
+                          timestamp: formatNow(),
+                          status: "done",
+                          renderAsPlainAssistantMessage: true,
+                        });
+                      } catch (error) {
+                        addErrorMessage(
+                          error instanceof Error
+                            ? error.message
+                            : "Unable to apply the Drive change.",
+                        );
+                      } finally {
+                        setSpecialistBusy(false);
+                      }
+                    }}
+                    onCancel={() => {
+                      setPendingSpecialistDirective(null);
+                      toast.info("Drive change cancelled. Nothing was changed.");
                     }}
                   />
                 ) : localCrmEnabled && pendingSpecialistDirective.delegateAgentId ===
