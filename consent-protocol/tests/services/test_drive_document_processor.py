@@ -336,6 +336,30 @@ async def test_clamav_startup_reloads_stale_signatures_and_still_fails_closed(
     assert not any(chunk.startswith(b"zINSTREAM") for chunk in sent)
 
 
+@pytest.mark.parametrize("baked", [True, False])
+def test_embedding_client_prefers_the_baked_model_and_never_the_hub(monkeypatch, tmp_path, baked):
+    # UAT 2026-09-27: the default client loaded the hub name, so a new backend
+    # instance called Hugging Face on its first turn; a 429 aborted the process.
+    import sys
+
+    from hushh_mcp.services import embedding_client_leaf as leaf
+
+    calls = []
+    fake = SimpleNamespace(SentenceTransformer=lambda source, **kw: calls.append((source, kw)))
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake)
+    monkeypatch.setattr(leaf, "BAKED_MODEL_DIR", str(tmp_path))
+    monkeypatch.setenv(leaf.BAKED_MODEL_DIR_ENV, str(tmp_path if baked else tmp_path / "missing"))
+
+    leaf.EmbeddingClient()._load()
+
+    source, kwargs = calls[0]
+    if baked:
+        assert (source, kwargs["local_files_only"]) == (str(tmp_path), True)
+    else:  # no baked copy (local development): the pinned hub revision, as before
+        assert (source, kwargs["local_files_only"]) == (leaf.MODEL_ID, False)
+    assert kwargs["revision"] == leaf.MODEL_REVISION
+
+
 @pytest.mark.asyncio
 async def test_clamav_startup_requires_eicar_detection():
     scanner = ClamAvScanner()
