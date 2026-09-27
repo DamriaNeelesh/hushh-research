@@ -923,6 +923,7 @@ export default function GmailReceiptsPage({
     onConnectionStateChange?.(isConnected);
   }, [isConnected, onConnectionStateChange]);
 
+  const preserveGmailModify = gmail.status?.modify_permission_granted === true;
   const handleConnectGmail = useCallback((purpose: "read" | "send" = "read"): Promise<boolean> => {
     if (!user?.uid || gmailActionBusy !== null) return Promise.resolve(false);
 
@@ -962,6 +963,7 @@ export default function GmailReceiptsPage({
             ({ serverAuthCode } = await HushhAuth.connectGmail({
               serverClientId: nativeStart.server_client_id,
               purpose: nativeStart.purpose,
+              preserveModify: preserveGmailModify,
             }));
           } catch (error) {
             GmailReceiptsService.recordConsentFailure(error, user.uid);
@@ -1119,7 +1121,7 @@ export default function GmailReceiptsPage({
         return false;
       }
     })();
-  }, [gmailActionBusy, journeyVariant, refreshGmailStatus, user]);
+  }, [gmailActionBusy, journeyVariant, preserveGmailModify, refreshGmailStatus, user]);
 
   const handleEnableGmailSend = useCallback(() => {
     void handleConnectGmail("send");

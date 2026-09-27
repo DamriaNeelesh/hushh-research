@@ -26,6 +26,7 @@ _EPHEMERAL = frozenset(
         # selected Gmail request cannot affect a later turn.
         "temp:hussh:gmail_information_request_workflow_id",
         "temp:hussh:gmail_information_request_context",
+        "temp:hussh:pending_email_draft",
         "hussh:gmail_information_request_context",
         "hussh:pending_directive:gmail_information_request_reply",
     }

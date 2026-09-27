@@ -465,6 +465,144 @@ def test_route_skips_410_for_durable_replay_on_stale_cursor(monkeypatch) -> None
 
 
 # --------------------------------------------------------------------------- #
+# UAT regression (2026-09-26/27): every debate started, then its separate
+# GET .../stream landed on a worker process that never saw the run and 404'd.
+# --------------------------------------------------------------------------- #
+def _gated_generator(release: asyncio.Event):
+    """A live run that stays running until the test releases it."""
+
+    async def gen(
+        ticker: str,
+        user_id: str,
+        consent_token: str,
+        risk_profile: str,
+        context: dict[str, Any] | None,
+        request: Any,
+    ):
+        yield _frame(1, "start", {"ticker": ticker, "message": "starting"})
+        while not release.is_set():
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.01)
+        yield _frame(
+            2,
+            "decision",
+            {"ticker": ticker, "decision": "hold", "confidence": 0.5},
+            terminal=True,
+        )
+
+    return gen
+
+
+class _AuditSink:
+    async def log_operation(self, **_kwargs: Any) -> None:
+        return None
+
+
+class _NoopFeed:
+    def record_event(self, **_kwargs: Any) -> None:
+        return None
+
+
+def test_start_and_attach_streams_from_the_process_that_owns_the_run(monkeypatch) -> None:
+    import api.routes.kai.stream as stream_mod
+
+    release = asyncio.Event()
+    owner = KaiAnalyzeRunManager(retention_seconds=300, store=KaiAnalyzeRunStore())
+    sibling = KaiAnalyzeRunManager(retention_seconds=300, store=KaiAnalyzeRunStore())
+    monkeypatch.setattr(stream_mod, "_RUN_MANAGER", owner)
+    monkeypatch.setattr(stream_mod, "_stream_factory", _gated_generator(release))
+    monkeypatch.setattr(stream_mod, "_require_known_ticker_or_422", lambda ticker: ticker)
+    monkeypatch.setattr(stream_mod, "ConsentDBService", _AuditSink)
+
+    async def _no_pick_source(*, user_id, context, requested_source=None):
+        return {}
+
+    monkeypatch.setattr(stream_mod, "_canonicalize_pick_source_context", _no_pick_source)
+    user_id = f"user_{uuid.uuid4().hex}"
+
+    async def _scenario() -> None:
+        response = await stream_mod.analyze_stream_post(
+            request=_FakeRequest(),
+            body=stream_mod.StreamAnalyzeRequest(
+                user_id=user_id,
+                ticker="NVDA",
+                debate_session_id=f"sess_{uuid.uuid4().hex}",
+            ),
+            token_data={"user_id": user_id, "token": "fixture-owner-capability"},
+        )
+        frames = response.body_iterator
+        first = json.loads((await frames.__anext__())["data"])
+        run_id = first["payload"]["run_id"]
+        assert first["event"] == "start"
+
+        # Negative control: the old split request. A sibling process has no
+        # live copy, so a separate GET .../stream would 404 while it runs.
+        assert await sibling.get_run(run_id) is None
+
+        release.set()
+        rest = [json.loads(frame["data"]) async for frame in frames]
+        assert rest[-1]["terminal"] is True
+        assert rest[-1]["event"] == "decision"
+        assert rest[-1]["payload"]["run_id"] == run_id
+
+    asyncio.run(_scenario())
+
+
+def test_cancel_from_another_process_stops_the_owner_run(monkeypatch) -> None:
+    import api.routes.kai.run_manager as run_manager_mod
+
+    monkeypatch.setattr(run_manager_mod, "_DURABLE_CANCEL_POLL_SECONDS", 0.0)
+    monkeypatch.setattr(run_manager_mod, "FeedService", _NoopFeed)
+    owner = KaiAnalyzeRunManager(retention_seconds=300, store=KaiAnalyzeRunStore())
+    sibling = KaiAnalyzeRunManager(retention_seconds=300, store=KaiAnalyzeRunStore())
+    user_id = f"user_{uuid.uuid4().hex}"
+
+    async def _start(release: asyncio.Event) -> AnalyzeRunRecord:
+        _, run = await owner.start_or_get_active(
+            user_id=user_id,
+            debate_session_id=f"sess_{uuid.uuid4().hex}",
+            ticker="NVDA",
+            risk_profile="balanced",
+            context={},
+            consent_token="ct",  # noqa: S106
+            generator_factory=_gated_generator(release),
+        )
+        assert run.worker_task is not None
+        return run
+
+    async def _scenario() -> None:
+        # Negative control: a cancel from someone who does not own the run is
+        # recorded against them only and must not stop it; the owner's final
+        # receipt then reclaims the row.
+        release_a = asyncio.Event()
+        run_a = await _start(release_a)
+        await sibling.cancel_run(run_id=run_a.run_id, user_id=f"intruder_{uuid.uuid4().hex}")
+        await asyncio.sleep(0.05)
+        assert run_a.status == "running"
+        release_a.set()
+        await asyncio.wait_for(run_a.worker_task, timeout=2)
+        assert run_a.status == "completed"
+        receipt_a = await sibling.get_run(run_a.run_id)
+        assert receipt_a is not None and receipt_a.user_id == user_id
+
+        # The owner's cancel, served by a process without the live run, stops it.
+        run_b = await _start(asyncio.Event())
+        canceled = await sibling.cancel_run(run_id=run_b.run_id, user_id=user_id)
+        assert canceled is not None
+        assert canceled.status == "canceled"
+        await asyncio.wait_for(run_b.worker_task, timeout=2)
+        assert run_b.status == "canceled"
+        # A reattach elsewhere replays the owner's receipt as a cancel, not a failure.
+        receipt_b = await sibling.get_run(run_b.run_id)
+        assert receipt_b is not None
+        assert (receipt_b.user_id, receipt_b.ticker) == (user_id, "NVDA")
+        assert (receipt_b.status, receipt_b.terminal_event) == ("canceled", "aborted")
+
+    asyncio.run(_scenario())
+
+
+# --------------------------------------------------------------------------- #
 # static drift-gate alignment (guards migration/manifest/contract coherence)
 # --------------------------------------------------------------------------- #
 def test_migration_manifest_and_contracts_aligned() -> None:

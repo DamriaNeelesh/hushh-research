@@ -861,6 +861,22 @@ async function sendWithChatKey(send: () => Promise<Response>): Promise<Response>
   return response;
 }
 
+/**
+ * The person's unsent mail draft as it is on screen, so a follow-up turn can
+ * revise it. It grants nothing: One can only open a replacement review card,
+ * and sending still needs the person's Send click on that card.
+ */
+export type PendingEmailDraftContext = {
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  body: string;
+  driveFileId?: string;
+  /** A reply to the selected Gmail request; its envelope stays server-derived. */
+  sourceBound: boolean;
+};
+
 export async function streamAgentChat(input: {
   userId: string;
   message: string;
@@ -873,6 +889,7 @@ export async function streamAgentChat(input: {
   personSelectionHandle?: string;
   /** Opaque owner-selected KYC workflow; Gmail content stays server-side. */
   gmailInformationRequestWorkflowId?: string;
+  pendingEmailDraft?: PendingEmailDraftContext | null;
   screenContext?: Record<string, unknown> | null;
   signal?: AbortSignal;
   handlers?: AgentChatStreamHandlers;
@@ -1051,6 +1068,7 @@ export async function streamAgentChat(input: {
               pkmContext: input.pkmContext,
               personSelectionHandle: input.personSelectionHandle,
               gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
+              ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
               screenContext: input.screenContext,
             },
             resume: [{ interruptId, status, payload }],
@@ -1437,6 +1455,7 @@ export async function streamAgentChat(input: {
                     timezone, turnLocation, pkmContext: input.pkmContext,
                     personSelectionHandle: input.personSelectionHandle,
                     gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
+                    ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
                     screenContext: input.screenContext,
                     ...(approval ? { mcpApproval: {
                       directiveId: approval.directiveId, connectorId: approval.connectorId,
@@ -1509,6 +1528,7 @@ export async function streamAgentChat(input: {
         pkmContext: input.pkmContext,
         personSelectionHandle: input.personSelectionHandle,
         gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
+        ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
         screenContext: input.screenContext,
       },
     }, subscriber);

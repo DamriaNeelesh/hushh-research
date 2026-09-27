@@ -20,6 +20,7 @@ import { buildOneLocationWorkflowHref } from "@/lib/one-location/notifications";
 import { buildKaiMarketRoute } from "@/lib/navigation/routes";
 import { ROUTES } from "@/lib/navigation/routes";
 import type { FeedItem, FeedSourceDomain } from "@/lib/services/feed-service";
+import { getAnalysisHistoryRunRouteId } from "@/lib/kai/analysis-route-intent";
 
 export type FeedItemPresentation = {
   icon: LucideIcon;
@@ -706,6 +707,7 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
     }
     case "kai_analysis_completed": {
       const ticker = metadataString(item.metadata, "ticker");
+      const runId = metadataString(item.metadata, "run_id");
       return {
         icon,
         domainLabel,
@@ -713,8 +715,13 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
         description: ticker
           ? `One finished analyzing ${ticker}.`
           : "One finished an analysis.",
-        href: ticker
-          ? buildKaiMarketRoute("analysis", { ticker })
+        // Open this run's own saved result. `?ticker=` is the stock-preview
+        // route: it opened the "Start debate" sheet instead of the result.
+        // Older items without a run id land on the analysis history.
+        href: runId
+          ? buildKaiMarketRoute("analysis", {
+              analysis_id: getAnalysisHistoryRunRouteId(runId),
+            })
           : buildKaiMarketRoute("analysis"),
       };
     }
