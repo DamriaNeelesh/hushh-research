@@ -259,12 +259,24 @@ async def _admit_consent_continuation(
     """Admit the follow-up turn that reports an owner's answer, or nothing."""
     if forwarded.get("consentContinuation") is None:
         return {}
-    session_state: dict[str, Any] | None = None
+    session = None
     if owner_id and input_data.thread_id:
         session = await _session_service.get_session(
             app_name=ONE_APP_NAME, user_id=owner_id, session_id=input_data.thread_id
         )
-        session_state = dict(session.state) if session is not None else None
+    session_state = dict(session.state) if session is not None else None
+
+    def asked_here(bundle_id: str) -> bool:
+        # The submission event this conversation recorded when the request was sent.
+        for event in session.events if session is not None else []:
+            metadata = _record(event.custom_metadata) or {}
+            card = _record(metadata.get("card")) or {}
+            if (
+                metadata.get("kind") == "information_request_submission_v1"
+                and str(card.get("bundleId") or "").lower() == bundle_id
+            ):
+                return True
+        return False
 
     def person_name(person_ref: str) -> str:
         try:
@@ -278,6 +290,7 @@ async def _admit_consent_continuation(
             owner_id=owner_id,
             messages=input_data.messages,
             session_state=session_state,
+            asked_here=asked_here,
             get_bundle=InformationRequestService().get,
             person_name=person_name,
         )

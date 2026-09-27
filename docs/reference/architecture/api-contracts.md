@@ -203,9 +203,10 @@ the requester's app opens one follow-up turn in the same conversation with
 `forwardedProps.consentContinuation = {bundleId, outcome, sharedInformation?}`
 and the fixed message `Consent approved`, `Request declined` or `Request
 expired`. `POST /api/one/agent-chat` admits it only with the requester's
-VAULT_OWNER token and chat key, only when the ledger's current outcome for that
-bundle (read as the requester) equals `outcome`, and only once per bundle per
-conversation (`409` after the first). `sharedInformation` is accepted only for
+VAULT_OWNER token and chat key, only in the conversation that recorded the
+submission, only when the ledger's current outcome for that bundle (read as the
+requester) equals `outcome`, and only once per bundle (`409` otherwise). No tool
+runs in that turn. `sharedInformation` is accepted only for
 an approval (≤ 12,000 characters), is the text the requester's device decrypted
 from the approved export, and is held as a 10-minute in-memory request secret;
 session state carries only its reference. Anything else returns `400`/`409`.

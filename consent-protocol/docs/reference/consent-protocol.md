@@ -609,9 +609,11 @@ encrypts the export in the owner's browser to the requester's connector key
 (`X25519-AES256-GCM` wrapped key; the server stores ciphertext and the wrapped
 key only, `export_key` is null). When the ledger shows the answer, the
 requester's own device decrypts the export and One's follow-up turn in the same
-conversation reads it as a one-turn, in-memory block; the conversation that
-records One's answer is sealed with the requester's chat key. Declines and
-expiries continue the chat with an honest outcome and carry no values.
+conversation reads it as a one-turn, in-memory block. That turn runs no tools
+(enforced in code), so it can only answer in words. One's answer is part of the
+requester's conversation, sealed with their chat key like any message they
+received; it is not withdrawn when the grant later ends or is revoked. Declines
+and expiries continue the chat with an honest outcome and carry no values.
 
 What reaches the model:
 
@@ -621,10 +623,10 @@ What reaches the model:
   category cannot crowd others out. Credentials, regulated identifiers, raw
   source material and quarantined records stay excluded, as before.
 - **Another person's information only through an approved grant**: the server
-  admits it only for the requester who owns the bundle, only when the ledger's
-  current outcome is an approval, and only once per conversation. It is never
-  persisted in plaintext, never logged, and never written to the requester's
-  memory.
+  admits it only for the requester who owns the bundle, only in the
+  conversation that sent the request, only when the ledger's current outcome is
+  an approval, and only once. The decrypted text is never persisted or logged,
+  and no tool runs in that turn, so it cannot be saved to the requester's memory.
 
 ## Compliance
 

@@ -95,7 +95,10 @@ from hushh_mcp.one_adk.agui_turn_timing import (
     timed_one_after_model,
     timed_one_before_model,
 )
-from hushh_mcp.one_adk.consent_continuation import consent_continuation_instruction
+from hushh_mcp.one_adk.consent_continuation import (
+    block_tools_during_consent_answer,
+    consent_continuation_instruction,
+)
 from hushh_mcp.one_adk.drive_write_tools import (
     comment_on_drive_file,
     copy_drive_file,
@@ -2343,6 +2346,13 @@ def build_one_root_agent(
     return build_one_text_agent(model=model or specialist_model)
 
 
+def _before_one_tool(tool: Any, args: dict, tool_context: Any) -> dict | None:
+    """One's tool gate: a consent answer turn runs no tools; then the read boundary."""
+    return block_tools_during_consent_answer(tool_context) or before_external_read_tool(
+        tool, args, tool_context
+    )
+
+
 def build_one_text_agent(
     *,
     model: Any | None = None,
@@ -2369,7 +2379,7 @@ def build_one_text_agent(
             specialist_model=text_model,
             allow_workspace_tools=allow_workspace_tools,
         ),
-        before_tool_callback=before_external_read_tool,
+        before_tool_callback=_before_one_tool,
         after_tool_callback=after_external_read_tool,
         before_model_callback=timed_one_before_model,
         after_model_callback=timed_one_after_model,
