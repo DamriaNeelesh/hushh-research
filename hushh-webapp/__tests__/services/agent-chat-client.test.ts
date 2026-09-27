@@ -305,6 +305,28 @@ describe("AG-UI Agent One client", () => {
       .not.toContain("PRIVATE_FILENAME.pdf");
   });
 
+  it("names every roster step and its header phrase instead of a generic Agent step", async () => {
+    // Measured 2026-09-27: Calendar, web search, memory and specialist calls
+    // all rendered as "Agent step · Completing a step for your request."
+    const onToolStart = vi.fn();
+    const tools = ["calendar_events", "google_search", "ask_memory_agent", "finance", "ask_email_agent"];
+    mockTransport.emitEvents = (subscriber) => {
+      for (const name of tools) {
+        subscriber.onToolCallStartEvent({ event: { toolCallId: `call-${name}`, toolCallName: name } });
+      }
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Plan my day",
+      vaultOwnerToken: "fixture", handlers: { onToolStart } });
+    expect(onToolStart.mock.calls.map(([event]) => [event.label, event.activity])).toEqual([
+      ["Google Calendar", "Reading Calendar"],
+      ["Web search", "Searching the web"],
+      ["Your memory", "Checking your memory"],
+      ["Finance", "Checking your finances"],
+      ["Gmail", "Checking Gmail"],
+    ]);
+    mockTransport.emitEvents = null;
+  });
+
   it("shows selected Drive status activity without exposing private filenames", async () => {
     const onToolResult = vi.fn();
     const onToolWaiting = vi.fn();

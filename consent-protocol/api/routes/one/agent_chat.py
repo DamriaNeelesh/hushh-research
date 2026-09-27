@@ -906,6 +906,13 @@ def _safe_workspace_connector_setup_descriptor(
 # App-owned tool identities the browser already labels in the live Activity
 # panel. Anything else (sub-agent transfers, confirmation plumbing) is not a
 # step the owner saw by name, so it is not restored.
+# Every tool on One's roster, so a reopened turn keeps the Activity rows it
+# showed live. Each row is this name plus outcome enums; the browser labels it
+# from its own table (SERVER_TOOL_PRESENTATION in
+# hushh-webapp/lib/services/agent-chat-client.ts), which carries exactly these
+# keys. A roster tool missing from either side rendered as "Agent step" live
+# and vanished on reload; tests/routes/test_agent_chat_turn_restore.py holds
+# both sides to the roster.
 _ACTIVITY_TOOLS = frozenset(
     {
         "discover_person_information",
@@ -921,6 +928,52 @@ _ACTIVITY_TOOLS = frozenset(
         "ask_connected_systems_agent",
         "ask_consent_agent",
         "list_pending_connection_requests",
+        "google_search",
+        "finance",
+        "wallet",
+        "ask_memory_agent",
+        "read_my_pkm_domain_summary",
+        "add_to_pkm",
+        "read_my_profile_status",
+        "ask_location_agent",
+        "list_my_location_circles",
+        "get_location_circle_members",
+        "list_my_location_shares",
+        "list_location_shared_with_me",
+        "list_pending_location_requests",
+        "list_my_outgoing_location_requests",
+        "list_information_shared_with_me",
+        "list_active_grants",
+        "list_my_outgoing_information_requests",
+        "propose_document_request",
+        "list_available_models",
+        "set_preferred_model",
+        "calendar_summary",
+        "calendar_events",
+        "calendar_availability",
+        "calendar_free_slots",
+        "propose_calendar_event",
+        "propose_calendar_reschedule",
+        "propose_calendar_cancellation",
+        "open_gmail_email_draft",
+        "open_gmail_information_request_reply",
+        "propose_gmail_mailbox_change",
+        "propose_drive_share",
+        "propose_drive_file_share",
+        "propose_drive_file_trash",
+        "create_drive_file",
+        "copy_drive_file",
+        "move_drive_file",
+        "comment_on_drive_file",
+        "open_screen",
+        "run_app_action",
+        "propose_app_action",
+        "report_no_app_action",
+        "list_app_actions",
+        "start_app_goal",
+        "continue_app_goal",
+        "resolve_onboarding_goal",
+        "get_current_time",
     }
 )
 _MCP_ACTIVITY_TOOL = re.compile(r"^mcp_[0-9a-f]{40}$")
