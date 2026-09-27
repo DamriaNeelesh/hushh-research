@@ -91,7 +91,7 @@ export function GmailVerificationOnboarding({
 
   const copyPrompt = async () => {
     if (!(await copyToClipboard(EXTERNAL_AGENT_PROMPT))) {
-      toast.error("We couldn't copy that prompt. Select and copy it instead.");
+      toast.error("Couldn't copy the prompt. Try again.");
       return;
     }
     setCopied(true);
@@ -235,7 +235,7 @@ export function GmailVerificationOnboarding({
           Build your KYC profile
         </h2>
         <p className="mt-2 max-w-xs text-[15px] leading-[22px] text-muted-foreground">
-          Paste your profile details to automate future KYC responses.
+          For faster KYC replies.
         </p>
       </div>
       <Textarea
@@ -265,10 +265,6 @@ export function GmailVerificationOnboarding({
           <p className="text-xs leading-5 text-muted-foreground">
             Use in your AI app. Then paste the reply here.
           </p>
-          <details className="mt-1 text-xs text-muted-foreground">
-            <summary className="cursor-pointer py-2">View prompt</summary>
-            <p className="select-all pb-2 leading-5">{EXTERNAL_AGENT_PROMPT}</p>
-          </details>
         </div>
       </div>
       <div className="flex flex-col items-center gap-1">
@@ -279,7 +275,7 @@ export function GmailVerificationOnboarding({
           disabled={saving || !details.trim()}
           className="w-full justify-center"
         >
-          {saving ? "Saving…" : "Save KYC profile"}
+          {saving ? "Saving…" : "Save profile"}
         </Button>
         <Button
           type="button"
