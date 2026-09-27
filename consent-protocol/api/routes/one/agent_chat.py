@@ -44,6 +44,12 @@ from hushh_mcp.one_adk.agent_tree import (
 )
 from hushh_mcp.one_adk.agui_action_tools import action_id_from_tool_name
 from hushh_mcp.one_adk.agui_turn_timing import HEAD_INTRO, HEAD_ONE, TimedADKAgent
+from hushh_mcp.one_adk.consent_continuation import (
+    CONSENT_OUTCOME_LABELS,
+    ConsentContinuationError,
+    admit_consent_continuation,
+    continued_outcomes,
+)
 from hushh_mcp.one_adk.drive_result_privacy import _safe_result as safe_connector_result
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION_SURFACE
@@ -70,6 +76,7 @@ from hushh_mcp.services.information_request_service import (
     InformationRequestError,
     InformationRequestService,
 )
+from hushh_mcp.services.person_profile_service import PersonProfileService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Agent One"])
@@ -193,6 +200,9 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
         raise HTTPException(
             status_code=403, detail="Connector configuration is unavailable. Unlock and try again."
         ) from None
+    consent_continuation = await _admit_consent_continuation(
+        forwarded, input_data=input_data, owner_id=user_id if token else ""
+    )
     # The device sends a coarse position only when the person already granted
     # location; pre-vault turns never keep it.
     turn_location = admit_turn_location(forwarded)
@@ -229,7 +239,44 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
         STATE_GMAIL_INFORMATION_REQUEST_CONTEXT: store_request_secret(
             gmail_information_request_context
         ),
+        **consent_continuation,
     }
+
+
+async def _admit_consent_continuation(
+    forwarded: dict[str, Any], *, input_data: RunAgentInput, owner_id: str
+) -> dict[str, Any]:
+    """Admit the follow-up turn that reports an owner's answer, or nothing."""
+    if forwarded.get("consentContinuation") is None:
+        return {}
+    session_state: dict[str, Any] | None = None
+    if owner_id and input_data.thread_id:
+        session = await _session_service.get_session(
+            app_name=ONE_APP_NAME, user_id=owner_id, session_id=input_data.thread_id
+        )
+        session_state = dict(session.state) if session is not None else None
+
+    def person_name(person_ref: str) -> str:
+        try:
+            return str(PersonProfileService().get_public_profile(person_ref)["displayName"])
+        except Exception:  # noqa: BLE001 - a missing name must not block the answer
+            return ""
+
+    try:
+        return await admit_consent_continuation(
+            forwarded,
+            owner_id=owner_id,
+            messages=input_data.messages,
+            session_state=session_state,
+            get_bundle=InformationRequestService().get,
+            person_name=person_name,
+        )
+    except ConsentContinuationError as exc:
+        logger.info("one.consent_continuation_refused status=%s", exc.status_code)
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+    except InformationRequestError as exc:
+        logger.info("one.consent_continuation_refused status=%s", exc.status_code)
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
 
 
 _app = App(
@@ -1395,6 +1442,9 @@ async def conversation_history(
                 receipt = redacted_read_receipt(response.response)
                 if isinstance(receipt.get("structured"), dict):
                     receipts[event.invocation_id] = receipt["structured"]
+    # A follow-up turn that reported an owner's answer shows as a status chip.
+    consent_outcomes = continued_outcomes(session.state)
+    outcome_labels = {CONSENT_OUTCOME_LABELS[outcome] for outcome in consent_outcomes.values()}
     # A turn's cards and Activity belong with its answer, as they were shown
     # live. Card-only tool events fold into the answer; a turn without an
     # answer keeps its last card message as the anchor.
@@ -1442,6 +1492,8 @@ async def conversation_history(
                 metadata = {**(metadata or {}), "turnActivity": activity}
             if event.author == "one" and turn in receipts and answer_index == index:
                 metadata = {**(metadata or {}), "specialist_read": receipts[turn]}
+        if event.author == "user" and text in outcome_labels:
+            metadata = {**(metadata or {}), "kind": "selection", "display": text}
         messages.append(
             {
                 "id": event.id or f"{event.invocation_id}:{len(messages)}",
@@ -1461,7 +1513,34 @@ async def conversation_history(
         # A client that left mid-turn reattaches while this is true; the turn
         # keeps running server-side and its answer appears here when it settles.
         "turn": {"pending": newest_turn_pending(session.events)},
+        # Requests whose answer this conversation already continued with.
+        "consentOutcomes": consent_outcomes,
     }
+
+
+@router.get("/api/one/agent-chat/information-requests/{bundle_id}/conversation")
+async def information_request_conversation(
+    bundle_id: uuid.UUID,
+    token: dict = Depends(require_vault_owner_chat_key),
+):
+    """The requester's own conversation that sent this request, after unlock.
+
+    A push about an answered request carries only the bundle id; the conversation
+    lives in the requester's sealed history, which only their chat key opens.
+    """
+    owner = str(token["user_id"])
+    wanted = str(bundle_id)
+    response = await _session_service.list_sessions(app_name=ONE_APP_NAME, user_id=owner)
+    for session in sorted(response.sessions, key=lambda item: item.last_update_time, reverse=True):
+        for event in session.events:
+            metadata = _record(event.custom_metadata) or {}
+            card = _record(metadata.get("card")) or {}
+            if (
+                metadata.get("kind") == "information_request_submission_v1"
+                and str(card.get("bundleId") or "") == wanted
+            ):
+                return {"conversationId": session.id}
+    raise HTTPException(status_code=404, detail="Conversation not found.")
 
 
 @router.patch("/api/one/agent-chat/conversations/{conversation_id}")

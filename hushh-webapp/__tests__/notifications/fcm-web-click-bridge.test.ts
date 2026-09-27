@@ -112,6 +112,20 @@ describe("web system-notification click bridge", () => {
     ).toBe("/");
   });
 
+  it("opens the asking chat for an answered information request, never its deep_link", () => {
+    const bundle = "0f0e0d0c-0b0a-4908-8706-050403020100";
+    expect(
+      buildNotificationTapTarget({
+        type: "information_request_updated",
+        bundle_id: bundle,
+        deep_link: "https://evil.example/phish",
+      }),
+    ).toBe(`/?informationRequest=${bundle}`);
+    expect(
+      buildNotificationTapTarget({ type: "information_request_updated", bundle_id: "../one/profile" }),
+    ).toBe("/");
+  });
+
   it("accepts Feed navigation and acknowledges the matching click id", async () => {
     await prepareFCMListeners();
     const postMessage = vi.fn();

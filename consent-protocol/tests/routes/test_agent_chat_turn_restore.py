@@ -63,8 +63,14 @@ def _text(event_id: str, text: str, *, author: str = "one", invocation: str = "t
     )
 
 
-async def _history(monkeypatch, events: list[Event]) -> dict:
-    session = Session(id="thread", app_name=agent_chat.ONE_APP_NAME, user_id="owner", events=events)
+async def _history(monkeypatch, events: list[Event], state: dict | None = None) -> dict:
+    session = Session(
+        id="thread",
+        app_name=agent_chat.ONE_APP_NAME,
+        user_id="owner",
+        events=events,
+        state=state or {},
+    )
 
     class SessionStore:
         async def get_session(self, *, app_name, user_id, session_id):
@@ -467,3 +473,26 @@ async def test_bridge_state_writes_after_a_turn_do_not_read_as_a_new_turn(monkey
     assert (await _history(monkeypatch, paused))["turn"] == {"pending": False}
     # A review waiting on the person is something to open: it earns the push.
     assert len(await _detached_notice(monkeypatch, paused)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_consent_follow_up_restores_as_a_status_chip_and_is_reported_once(
+    monkeypatch,
+) -> None:
+    bundle = "0f0e0d0c-0b0a-4908-8706-050403020100"
+    events = [
+        _text("ask", USER_PROMPT, author="user"),
+        _text("sent", ANSWER),
+        _text("chip", "Consent approved", author="user", invocation="turn-2"),
+        _text("answer", ANSWER, invocation="turn-2"),
+    ]
+    history = await _history(
+        monkeypatch, events, state={f"hussh:consent_outcome:{bundle}": "granted"}
+    )
+
+    assert history["consentOutcomes"] == {bundle: "granted"}
+    chip = next(message for message in history["messages"] if message["id"] == "chip")
+    assert chip["metadata"] == {"kind": "selection", "display": "Consent approved"}
+    # A typed prompt is never re-labelled.
+    typed = next(message for message in history["messages"] if message["id"] == "ask")
+    assert not (typed["metadata"] or {}).get("kind")

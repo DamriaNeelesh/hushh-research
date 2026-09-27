@@ -103,6 +103,39 @@ conversation itself, sealed with the person's chat key. A `feed_events` row is
 not chat-key sealed, so writing one per reply would move chat metadata out of
 the sealed store. The body tap therefore opens the conversation, not Feed.
 
+### Consent request (`consent_request`) is bare
+
+The owner's push names who is asking and nothing else: title `Consent request`,
+body `{Name} asked to see your information` (final reminder: `{Name}'s request
+is still waiting for you.`). Data carries identifiers, the requester's display
+name and photo URL, and timing fields only. Scope, scope description, purpose,
+existing grants and access summaries are never in the push, because the push
+provider and the lock screen see it before the vault is unlocked. The app loads
+those details after unlock from the owner-scoped pending list. Built by
+`build_consent_push_content` in `api/consent_listener.py`; guarded by
+`tests/test_consent_listener_notifications.py`.
+
+### Information request answered (`information_request_updated`)
+
+When the owner approves or declines a person-to-person request, or it times
+out, the requester gets one bare alert:
+
+| Field | Value |
+| ----- | ----- |
+| Title / body | `Hussh One` / `Your information request has an answer` (fixed; never the outcome, scope or values) |
+| `type` | `information_request_updated` with `action` and `bundle_id`, `request_id` |
+| Alert | `CONSENT_GRANTED`, `CONSENT_DENIED`, `TIMEOUT`; `REVOKED` and `CANCELLED` stay silent |
+| Tag | `information-request:{bundle_id}` (one card per request) |
+| Body tap | `/?informationRequest=<bundle_id>`; after unlock the app finds the asking conversation in the person's sealed history and continues it there |
+
+Inside the open app the requester's One chat continues on its own
+(`AgentConsentContinuationNotifier`): on the chat, the request card shows
+`Consent approved` and One answers from the shared information; elsewhere in
+the app a `Consent approved` notice appears and the existing `One replied`
+notice follows. The notifier polls only the requests this tab saw waiting, so
+it works when web push is blocked. The durable record is the sealed
+conversation, the same exception to the Feed-row rule as `one_reply`.
+
 ### Emergency SMS alert policy
 
 One Location `SMS · Save my soul` sends are a separate emergency notification
@@ -156,7 +189,7 @@ There is no midpoint reminder and no repeated reminder loop once a request has b
 2. Backend inserts consent_audit row
 3. PostgreSQL pg_notify trigger fires
 4. consent_listener.py receives event
-5. Enriches FCM payload: { request_id, scope, agent_id, scope_description }
+5. Builds a bare FCM payload: identifiers and the requester's name only (details load after unlock)
 6. Sends FCM message to user's registered tokens
 7. Client receives push → refreshes Feed/domain state; OS presents when the native app is backgrounded/terminated or no visible web client claims the push
 8. No polling and no production SSE requirement for notification data

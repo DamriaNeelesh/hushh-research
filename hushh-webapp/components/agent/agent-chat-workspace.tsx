@@ -17,7 +17,13 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AgentMemoryCaptureStatus } from "@/components/agent/agent-memory-capture-status";
 import { aggregateAgentPkmCaptures, createAgentPkmCaptureGuard, describeAgentPkmCapture, isAgentPkmProcessingReady, type AgentPkmCaptureStatus } from "@/lib/agent/agent-pkm-capture-runtime";
-import { AgentPersonSelectionContext, type InformationRequestSubmissionReceipt } from "@/components/agent/agent-structured-experience";
+import {
+  AgentConsentContinuationContext,
+  AgentPersonSelectionContext,
+  type AgentConsentContinuationHandler,
+  type InformationRequestSubmissionReceipt,
+} from "@/components/agent/agent-structured-experience";
+import { prepareConsentContinuation, watchSentInformationRequest } from "@/lib/agent/consent-continuation";
 import {
   Check,
   ChevronDown,
@@ -208,6 +214,7 @@ import {
   renameAgentChatConversation,
   streamAgentChat,
   streamAgentIntro,
+  type AgentChatConsentContinuation,
   type AgentChatConversation,
   type AgentChatMessage as StoredAgentChatMessage,
   type AgentChatToolEvent,
@@ -5706,7 +5713,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
    * reusing the same SSE handlers so One's confirmation renders as a regular
    * assistant response. Used by the specialist directive card's confirm/cancel.
    */
-  const sendDelegateResult = async (result: DelegateResult) => {
+  const sendDelegateResult = (result: DelegateResult) =>
+    sendFollowUpTurn(result.detail || result.display || `The requested action ${result.status}.`);
+
+  /**
+   * A follow-up turn with no typed prompt: a specialist's result, or the
+   * other person's answer to an information request sent from this chat.
+   */
+  const sendFollowUpTurn = async (
+    message: string,
+    extra: { consentContinuation?: AgentChatConsentContinuation } = {},
+  ) => {
     if (!hasChatAccess || !user?.uid) return;
     const userId = user.uid;
     const token = getVaultOwnerToken();
@@ -5764,10 +5781,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     try {
       const streamResult = await streamAgentChat({
         userId,
-        message:
-          result.detail ||
-          result.display ||
-          `The requested action ${result.status}.`,
+        message,
+        ...(extra.consentContinuation ? { consentContinuation: extra.consentContinuation } : {}),
         conversationId: conversationIdRef.current,
         vaultOwnerToken: token,
         vaultKey: vaultKeyRef.current ?? "",
@@ -6270,6 +6285,36 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     });
   };
 
+  // The other person answered a request this chat sent: show the outcome as a
+  // status chip at the end of that turn, then let One answer from it.
+  const continueWithConsentOutcome: AgentConsentContinuationHandler["continueWithOutcome"] = async (input) => {
+    const token = getVaultOwnerToken();
+    const key = vaultKeyRef.current;
+    if (!hasChatAccess || !user?.uid || !token || !key) return false;
+    const prepared = await prepareConsentContinuation({
+      userId: user.uid,
+      vaultKey: key,
+      vaultOwnerToken: token,
+      ...input,
+    });
+    if (!prepared) return false;
+    appendMessage({
+      id: `msg-${crypto.randomUUID()}-consent-outcome`,
+      role: "user",
+      text: prepared.message,
+      timestamp: formatNow(),
+      status: "done",
+      kind: "selection",
+    });
+    enqueueWorkspaceOperation({
+      id: `consent-${input.bundleId}`,
+      run: async () => {
+        await sendFollowUpTurn(prepared.message, { consentContinuation: prepared.continuation });
+      },
+    });
+    return true;
+  };
+
   const enqueueDelegateResult = (result: DelegateResult) => {
     enqueueWorkspaceOperation({
       id: `delegate-${crypto.randomUUID()}`,
@@ -6711,6 +6756,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       <AgentPersonSelectionContext.Provider value={hasChatAccess && !isStreaming
         ? (handle, name, sourceTool) => enqueuePrompt(personSelectionPrompt(sourceTool, name), handle)
         : null}>
+      <AgentConsentContinuationContext.Provider value={hasChatAccess
+        ? { conversationId, continueWithOutcome: continueWithConsentOutcome }
+        : null}>
       <div
         className={cn(
           "relative flex min-h-0 flex-1",
@@ -7123,6 +7171,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           toast.error("Request sent, but Chat history could not be saved.");
                           return;
                         }
+                        // Sent from this chat, now: watch for the answer even if
+                        // the person leaves before the card's first status read.
+                        watchSentInformationRequest({
+                          ownerId: ownerUid,
+                          bundleId: receipt.bundleId,
+                          conversationId: threadId,
+                          subjectRef: receipt.subjectRef,
+                          personName: "",
+                        });
                         try {
                           const review = await recordAgentChatInformationRequest({
                             conversationId: threadId,
@@ -8485,6 +8542,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onSuccess={() => setVaultDialogOpen(false)}
         />
       ) : null}
+      </AgentConsentContinuationContext.Provider>
       </AgentPersonSelectionContext.Provider>
     </div>
   );

@@ -599,6 +599,33 @@ CREATE INDEX idx_consent_audit_pending ON consent_audit(user_id) WHERE action = 
 
 ---
 
+### 6. Consent inside One chat
+
+A person asks One about someone else; One offers what that person can share and
+the asker sends the request from the chat. The asking turn shows `Waiting for
+{name}'s approval`. The owner gets a bare push (`{Name} asked to see your
+information`) and reviews the details in their app after unlock. Approving
+encrypts the export in the owner's browser to the requester's connector key
+(`X25519-AES256-GCM` wrapped key; the server stores ciphertext and the wrapped
+key only, `export_key` is null). When the ledger shows the answer, the
+requester's own device decrypts the export and One's follow-up turn in the same
+conversation reads it as a one-turn, in-memory block; the conversation that
+records One's answer is sealed with the requester's chat key. Declines and
+expiries continue the chat with an honest outcome and carry no values.
+
+What reaches the model:
+
+- **The person's own memory**, sensitive categories included (Health,
+  Financial), decrypted on their device and sent as the per-turn packet. The
+  packet is filled fairly across sections, shallow facts first, so one large
+  category cannot crowd others out. Credentials, regulated identifiers, raw
+  source material and quarantined records stay excluded, as before.
+- **Another person's information only through an approved grant**: the server
+  admits it only for the requester who owns the bundle, only when the ledger's
+  current outcome is an approval, and only once per conversation. It is never
+  persisted in plaintext, never logged, and never written to the requester's
+  memory.
+
 ## Compliance
 
 ### CCPA

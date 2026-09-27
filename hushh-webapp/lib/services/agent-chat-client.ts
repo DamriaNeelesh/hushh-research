@@ -867,6 +867,12 @@ async function sendWithChatKey(send: () => Promise<Response>): Promise<Response>
   return response;
 }
 
+export type AgentChatConsentContinuation = {
+  bundleId: string;
+  outcome: "granted" | "denied" | "expired";
+  sharedInformation?: string;
+};
+
 export async function streamAgentChat(input: {
   userId: string;
   message: string;
@@ -879,6 +885,12 @@ export async function streamAgentChat(input: {
   personSelectionHandle?: string;
   /** Opaque owner-selected KYC workflow; Gmail content stays server-side. */
   gmailInformationRequestWorkflowId?: string;
+  /**
+   * The follow-up turn after another person answered this person's request.
+   * `sharedInformation` is what this device decrypted from the approved export;
+   * the server admits it only for an approved grant and keeps it for this turn.
+   */
+  consentContinuation?: AgentChatConsentContinuation;
   screenContext?: Record<string, unknown> | null;
   signal?: AbortSignal;
   handlers?: AgentChatStreamHandlers;
@@ -1544,6 +1556,7 @@ export async function streamAgentChat(input: {
         personSelectionHandle: input.personSelectionHandle,
         gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
         screenContext: input.screenContext,
+        ...(input.consentContinuation ? { consentContinuation: input.consentContinuation } : {}),
         // Only the native app asks the server for a "One replied" push when it
         // stops reading; a web tab's closed stream must not wake a phone.
         notifyOnDetach: Capacitor.isNativePlatform(),
@@ -1722,6 +1735,49 @@ export async function getAgentChatTurnState(input: {
   const pending = payload.turn?.pending === true;
   const last = Array.isArray(payload.messages) ? payload.messages[payload.messages.length - 1] : undefined;
   return { pending, answered: !pending && last?.role === "assistant" };
+}
+
+/**
+ * Requests this conversation already continued after their answer, keyed by
+ * bundle id. Identifiers and outcome words only; no message text is read.
+ */
+export async function getAgentChatConsentOutcomes(input: {
+  conversationId: string;
+  vaultOwnerToken: string;
+  vaultKey: string;
+}): Promise<Record<string, string>> {
+  const response = await sendWithChatKey(() => ApiService.getAgentChatHistory({ ...input, limit: 1 }));
+  if (!response.ok) throw new Error(await readError(response));
+  const payload = (await response.json()) as { consentOutcomes?: unknown };
+  const outcomes = payload.consentOutcomes;
+  if (!outcomes || typeof outcomes !== "object" || Array.isArray(outcomes)) return {};
+  return Object.fromEntries(
+    Object.entries(outcomes as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+/** The person's own conversation that sent this request (sealed history, after unlock). */
+export async function findInformationRequestConversation(input: {
+  bundleId: string;
+  vaultOwnerToken: string;
+  vaultKey: string;
+}): Promise<string | null> {
+  const response = await sendWithChatKey(async () => ApiService.apiFetch(
+    `/api/one/agent-chat/information-requests/${encodeURIComponent(input.bundleId)}/conversation`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.vaultOwnerToken}`,
+        ...(await oneChatKeyHeaders(input.vaultKey)),
+      },
+    },
+  ));
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await readError(response));
+  const payload = (await response.json()) as { conversationId?: unknown };
+  return typeof payload.conversationId === "string" ? payload.conversationId : null;
 }
 
 /** Record only a request locator; the Chat owner derives the history card from its ledger. */

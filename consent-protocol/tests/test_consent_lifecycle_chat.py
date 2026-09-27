@@ -50,6 +50,14 @@ from hushh_mcp.one_adk.action_tools import (
     list_pending_information_requests,
     propose_information_request,
 )
+from hushh_mcp.one_adk.consent_continuation import (
+    STATE_CONSENT_CONTINUATION,
+    ConsentContinuationError,
+    admit_consent_continuation,
+    consent_continuation_instruction,
+    consent_outcome_state_key,
+)
+from hushh_mcp.one_adk.request_secrets import resolve_request_secret
 from hushh_mcp.services.connections_service import ConnectionsService
 from hushh_mcp.services.consent_lifecycle_service import (
     ConsentLifecycleService,
@@ -1207,3 +1215,100 @@ def test_the_drive_share_tool_needs_no_person_for_the_trusted_circle():
     parameters = inspect.signature(action_tools.propose_drive_share).parameters
     assert parameters["person"].default == ""
     assert parameters["trusted_circle"].default is False
+
+
+# --- Auto-continue after the owner answers (consent_continuation) ----------
+
+
+_BUNDLE = "0f0e0d0c-0b0a-4908-8706-050403020100"
+_SHARED = "- Allergies > medication: penicillin"
+
+
+def _bundle_with(*statuses: str) -> dict:
+    return {
+        "bundleId": _BUNDLE,
+        "personRef": "person-ref",
+        "cancelled": False,
+        "items": [{"requestId": f"r{i}", "status": status} for i, status in enumerate(statuses)],
+    }
+
+
+async def _admit(bundle: dict, *, outcome: str, shared=None, message=None, state=None):
+    calls = []
+
+    async def get_bundle(*, requester_user_id: str, bundle_id: str) -> dict:
+        calls.append((requester_user_id, bundle_id))
+        return bundle
+
+    labels = {
+        "granted": "Consent approved",
+        "denied": "Request declined",
+        "expired": "Request expired",
+    }
+    payload = {"bundleId": _BUNDLE, "outcome": outcome}
+    if shared is not None:
+        payload["sharedInformation"] = shared
+    result = await admit_consent_continuation(
+        {"consentContinuation": payload},
+        owner_id="requester-uid",
+        messages=[{"role": "user", "content": message or labels.get(outcome, "x")}],
+        session_state=state,
+        get_bundle=get_bundle,
+        person_name=lambda _ref: "Kushal",
+    )
+    return result, calls
+
+
+@pytest.mark.asyncio
+async def test_approved_answer_reaches_the_model_for_one_turn_and_is_never_stored():
+    state, calls = await _admit(_bundle_with("granted"), outcome="granted", shared=_SHARED)
+
+    # Requester-bound ledger read, and a once-per-conversation marker.
+    assert calls == [("requester-uid", _BUNDLE)]
+    assert state[consent_outcome_state_key(_BUNDLE)] == "granted"
+    # The plaintext is only behind an expiring in-memory reference: nothing a
+    # session store could persist carries the value.
+    assert _SHARED not in json.dumps(state)
+    record = state[STATE_CONSENT_CONTINUATION]
+    assert resolve_request_secret(record["shared"]) == _SHARED
+    instruction = consent_continuation_instruction(state.get)
+    assert "penicillin" in instruction and "Kushal approved" in instruction
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("statuses", "claimed", "shared", "code"),
+    [
+        (("pending",), "granted", _SHARED, 409),  # not answered yet
+        (("granted", "pending"), "granted", _SHARED, 409),  # still waiting on an item
+        (("denied",), "granted", _SHARED, 409),  # claims an approval the ledger lacks
+        (("denied",), "denied", _SHARED, 400),  # no grant, so nothing may ride along
+        (("granted",), "granted", "", 400),  # approval without the opened information
+    ],
+)
+async def test_another_persons_information_needs_an_approved_grant(statuses, claimed, shared, code):
+    with pytest.raises(ConsentContinuationError) as refused:
+        await _admit(_bundle_with(*statuses), outcome=claimed, shared=shared)
+    assert refused.value.status_code == code
+
+
+@pytest.mark.asyncio
+async def test_an_answer_continues_a_conversation_once():
+    with pytest.raises(ConsentContinuationError) as refused:
+        await _admit(
+            _bundle_with("granted"),
+            outcome="granted",
+            shared=_SHARED,
+            state={consent_outcome_state_key(_BUNDLE): "granted"},
+        )
+    assert refused.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_a_declined_request_tells_the_model_nothing_about_the_values():
+    state, _calls = await _admit(_bundle_with("denied"), outcome="denied")
+    instruction = consent_continuation_instruction(state.get)
+    assert "declined" in instruction
+    assert state[STATE_CONSENT_CONTINUATION]["shared"] == ""
+    # Without a continuation in state, One's instruction is unchanged.
+    assert consent_continuation_instruction({}.get) == ""

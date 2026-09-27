@@ -196,6 +196,33 @@ submitted descriptor. This history receipt is presentation-only: grant status
 and encrypted exports must still be reread under current authority, and no
 vault key, connector credential, scope payload, or decrypted value is stored.
 
+#### Continuing the asking chat after an answer
+
+When the other person approves, declines, or lets a chat-sent request expire,
+the requester's app opens one follow-up turn in the same conversation with
+`forwardedProps.consentContinuation = {bundleId, outcome, sharedInformation?}`
+and the fixed message `Consent approved`, `Request declined` or `Request
+expired`. `POST /api/one/agent-chat` admits it only with the requester's
+VAULT_OWNER token and chat key, only when the ledger's current outcome for that
+bundle (read as the requester) equals `outcome`, and only once per bundle per
+conversation (`409` after the first). `sharedInformation` is accepted only for
+an approval (≤ 12,000 characters), is the text the requester's device decrypted
+from the approved export, and is held as a 10-minute in-memory request secret;
+session state carries only its reference. Anything else returns `400`/`409`.
+`GET /api/one/agent-chat/history/{conversation_id}` returns `consentOutcomes`
+(`{bundleId: outcome}` for bundles already continued) and restores the follow-up
+message as a `selection` chip.
+
+`GET /api/one/agent-chat/information-requests/{bundle_id}/conversation`
+(VAULT_OWNER + chat key) returns `{conversationId}` for the requester's own
+conversation that recorded the submission, or `404`. It exists because the
+answer push carries only the bundle id; the conversation lives in sealed history.
+
+`GET /api/one/information-requests/shared-with-me` (VAULT_OWNER) lists the
+current approvals other people gave this person: display names, item labels,
+bundle and request ids, purpose and expiry. It never returns values; those stay
+in each encrypted export and open on the person's own device.
+
 `GET /api/one/people/{person_ref}/request-history` requires the authenticated
 Firebase user. It reads only bundles that user requested from the active person
 profile named by `person_ref`; the profile URL alone grants no access. A self

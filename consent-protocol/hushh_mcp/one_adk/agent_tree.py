@@ -95,6 +95,7 @@ from hushh_mcp.one_adk.agui_turn_timing import (
     timed_one_after_model,
     timed_one_before_model,
 )
+from hushh_mcp.one_adk.consent_continuation import consent_continuation_instruction
 from hushh_mcp.one_adk.drive_write_tools import (
     comment_on_drive_file,
     copy_drive_file,
@@ -883,6 +884,8 @@ def _one_runtime_instruction(context: Any) -> str:
             "open_gmail_information_request_reply. That tool keeps the reply attached to this "
             "exact Gmail thread and still requires the owner's Send click."
         )
+    # The owner's answer to this person's information request, for one turn.
+    consent_continuation_block = consent_continuation_instruction(state_getter)
     voice_context = state_getter(STATE_VOICE_CONTEXT) if callable(state_getter) else None
     if not isinstance(voice_context, dict):
         return (
@@ -890,6 +893,7 @@ def _one_runtime_instruction(context: Any) -> str:
             + mail_instruction
             + pkm_instruction
             + gmail_information_request_instruction
+            + consent_continuation_block
         )
 
     # Gate 1/Gate 2 already refuse every actual tool call while voice is off,
@@ -1072,6 +1076,7 @@ def _one_runtime_instruction(context: Any) -> str:
             + screen_state_instruction
             + pkm_instruction
             + gmail_information_request_instruction
+            + consent_continuation_block
             + voice_disabled_instruction
         )
 
@@ -1097,6 +1102,7 @@ def _one_runtime_instruction(context: Any) -> str:
         + screen_state_instruction
         + pkm_instruction
         + gmail_information_request_instruction
+        + consent_continuation_block
         + voice_disabled_instruction
     )
 
