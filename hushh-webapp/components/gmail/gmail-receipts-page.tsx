@@ -433,6 +433,7 @@ export default function GmailReceiptsPage({
   const [gmailPopupAttempt, setGmailPopupAttempt] =
     useState<GmailOAuthPopupAttempt | null>(null);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  const [showMailManagement, setShowMailManagement] = useState(false);
   const receiptsRef = useRef<ReceiptListItem[]>([]);
   const pageRef = useRef(1);
   const pendingSyncFeedbackRef = useRef(false);
@@ -1921,9 +1922,32 @@ export default function GmailReceiptsPage({
             />
           ) : null}
 
+          {journeyVariant === "workspace" && isConnected && workspace === "overview" ? (
+            <div className="flex items-center justify-between gap-4 border-y border-border/60 py-2">
+              <p className="flex items-center gap-2.5 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                Connected
+              </p>
+              <Button
+                type="button"
+                variant="none"
+                effect="fade"
+                aria-expanded={showMailManagement}
+                aria-controls="mail-management-panel"
+                onClick={() => setShowMailManagement((open) => !open)}
+                className="min-h-11 px-2 text-sm text-primary"
+              >
+                {showMailManagement ? "Done" : "Manage"}
+              </Button>
+            </div>
+          ) : null}
+
+          <div id="mail-management-panel" className="contents">
           {journeyVariant === "onboarding" ||
           !isConnected ||
-          workspace === "overview" ? (
+          (workspace === "overview" &&
+            (showMailManagement || loadingStatus || statusSummary.tone === "error" ||
+              isSyncingState || hasStaleBackgroundSync)) ? (
             <SurfaceInset
               className={`space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5 ${statusToneClassName}`}
             >
@@ -2071,15 +2095,16 @@ export default function GmailReceiptsPage({
               {isConnected &&
               journeyVariant === "workspace" &&
               workspace === "overview" &&
+              showMailManagement &&
               !loadingStatus ? (
-                <div className="flex w-full flex-row items-center gap-2 flex-nowrap pt-2">
+                <div className="flex w-full flex-col items-center gap-2 pt-2 sm:flex-row">
                   <Button
                     type="button"
                     variant="destructive"
                     effect="fade"
                     onClick={() => setShowDisconnectConfirm(true)}
                     disabled={gmailActionBusy !== null}
-                    className="flex-1 min-w-0 px-2 sm:px-4"
+                    className="min-h-11 w-full min-w-0 flex-1 px-2 sm:px-4"
                   >
                     <Trash2 className="mr-1.5 h-4 w-4 shrink-0" />
                     <span className="truncate">Disconnect Mail</span>
@@ -2089,7 +2114,7 @@ export default function GmailReceiptsPage({
                     variant="muted"
                     onClick={() => void handleConnectGmail()}
                     disabled={gmailActionBusy !== null}
-                    className="flex-1 min-w-0 px-2 sm:px-4"
+                    className="min-h-11 w-full min-w-0 flex-1 px-2 sm:px-4"
                   >
                     <RefreshCw className="mr-1.5 h-4 w-4 shrink-0" />
                     <span className="truncate">Reconnect Mail</span>
@@ -2098,6 +2123,8 @@ export default function GmailReceiptsPage({
               ) : null}
             </SurfaceInset>
           ) : null}
+
+          </div>
 
           {journeyVariant === "onboarding" && onFinishSetup && onSkipSetup ? (
             <SetupCompletionFooter
@@ -2127,28 +2154,23 @@ export default function GmailReceiptsPage({
           {/* Stable Tab Content Container with Min-Height & Smooth Fade Transition */}
           <div className="min-h-[340px] w-full space-y-4 transition-opacity duration-150 animate-in fade-in">
             {isConnected && workspace === "overview" ? (
-            <SurfaceInset className="space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5">
-              <div className="flex items-start gap-3">
-                <div className="rounded-xl bg-indigo-500/10 p-2.5 text-indigo-600 dark:bg-indigo-400/15 dark:text-indigo-400 shrink-0 mt-0.5">
-                  <PenLine className="h-5 w-5" />
-                </div>
-                <div className="space-y-1 min-w-0 flex-1">
-                  <h2 className="text-lg font-semibold tracking-tight text-foreground">Draft with One</h2>
-                  <p className="text-sm leading-relaxed text-muted-foreground">
-                    Draft, reply, or follow up with One. Nothing sends without your approval.
-                  </p>
-                </div>
+            <section className="mx-auto flex w-full max-w-md flex-col items-center px-4 py-10 text-center sm:py-12">
+              <div aria-hidden="true" className="relative mb-5 flex h-20 w-20 items-center justify-center rounded-3xl bg-primary/10 text-primary">
+                <Mail className="h-10 w-10" />
+                <PenLine className="absolute bottom-4 right-3 h-5 w-5 bg-background rounded" />
               </div>
-              <div className="flex justify-center w-full pt-1">
-                <AskOneButton
-                  onClick={handleOpenOneChat}
-                  showIcon={false}
-                  className="w-40 h-10 justify-center text-sm font-semibold rounded-full"
-                >
-                  Chat with One
-                </AskOneButton>
-              </div>
-            </SurfaceInset>
+              <h2 className="text-2xl font-semibold tracking-tight text-foreground">Draft with One</h2>
+              <p className="mt-2 max-w-xs text-base leading-relaxed text-muted-foreground">
+                Draft, reply, or follow up. You approve before sending.
+              </p>
+              <AskOneButton
+                onClick={handleOpenOneChat}
+                showIcon={false}
+                className="mt-6 h-12 w-full max-w-xs justify-center text-base font-semibold sm:w-full"
+              >
+                Chat with One
+              </AskOneButton>
+            </section>
           ) : null}
 
           {isConnected && workspace === "kyc" ? (
