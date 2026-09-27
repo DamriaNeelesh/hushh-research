@@ -122,6 +122,7 @@ from hushh_mcp.one_adk.turn_location import get_my_location
 from hushh_mcp.one_adk.workspace_mcp_tools import READ_WORKSPACE_TOOL, discover_workspace_tools
 from hushh_mcp.runtime_providers import (
     build_managed_gemini_adk_model,
+    build_managed_regional_gemini_adk_model,
     thinking_config_for,
 )
 from hushh_mcp.runtime_providers.live_compatibility import GEMINI_LIVE_COMPATIBILITY
@@ -2058,19 +2059,27 @@ def _build_ria_agent(*, model: Any | None = None) -> LlmAgent:
     manifest = next(child for child in _KAI_MANIFEST.subagents if child.id == "agent_ria")
     return LlmAgent(
         name="ria",
-        model=model or build_managed_gemini_adk_model(_SPECIALIST_MODEL),
+        model=model or build_managed_regional_gemini_adk_model(_SPECIALIST_MODEL),
         description=manifest.description,
         instruction=manifest.system_instruction,
     )
 
 
 def _resolve_text_model(model: Any | None) -> Any:
-    """Resolve text-model authority without requiring cloud ADC in test collection."""
+    """Resolve text-model authority without requiring cloud ADC in test collection.
+
+    Text agents use the regional model: a 429/500/503 while a request is being
+    opened moves that one request to the next configured Vertex location.
+    Before the first chunk no tool has been chosen, so the move has no side
+    effect. On UAT (2026-09-27) One's chat was pinned to ``global`` and 8 of
+    10 turns failed on RESOURCE_EXHAUSTED while ``us``/``eu`` had capacity.
+    The Live head stays pinned to its own location.
+    """
     if model is not None:
         return model
     if os.getenv("TESTING", "").strip().lower() in {"1", "true", "yes"}:
         return _SPECIALIST_MODEL
-    return build_managed_gemini_adk_model(_SPECIALIST_MODEL)
+    return build_managed_regional_gemini_adk_model(_SPECIALIST_MODEL)
 
 
 def build_one_intro_text_agent(*, model: Any | None = None) -> LlmAgent:
@@ -2098,7 +2107,7 @@ def _build_investor_agent(*, model: Any | None = None) -> LlmAgent:
     manifest = next(child for child in _KAI_MANIFEST.subagents if child.id == "agent_investor")
     return LlmAgent(
         name="investor",
-        model=model or build_managed_gemini_adk_model(_SPECIALIST_MODEL),
+        model=model or build_managed_regional_gemini_adk_model(_SPECIALIST_MODEL),
         description=manifest.description,
         instruction=_investor_runtime_instruction,
     )
@@ -2174,7 +2183,7 @@ def _build_finance_agent(*, model: Any | None = None) -> LlmAgent:
     """
     from google.adk.tools.agent_tool import AgentTool
 
-    specialist_model = model or build_managed_gemini_adk_model(_SPECIALIST_MODEL)
+    specialist_model = model or build_managed_regional_gemini_adk_model(_SPECIALIST_MODEL)
     return LlmAgent(
         name="finance",
         model=specialist_model,
@@ -2196,7 +2205,7 @@ def _build_wallet_agent(*, model: Any | None = None) -> LlmAgent:
     decrypts under the vault key; card secrets never reach this agent, the
     model, or the server in plaintext.
     """
-    specialist_model = model or build_managed_gemini_adk_model(_SPECIALIST_MODEL)
+    specialist_model = model or build_managed_regional_gemini_adk_model(_SPECIALIST_MODEL)
     return LlmAgent(
         name="wallet",
         model=specialist_model,
@@ -2226,7 +2235,7 @@ def _one_roster_tools(
         return [list_app_actions, propose_app_action]
 
     # Full roster below.
-    text_model = specialist_model or build_managed_gemini_adk_model(_SPECIALIST_MODEL)
+    text_model = specialist_model or build_managed_regional_gemini_adk_model(_SPECIALIST_MODEL)
     manifest = next(child for child in _ONE_MANIFEST.subagents if child.id == "google_search")
     search_agent = LlmAgent(
         name=manifest.name,
