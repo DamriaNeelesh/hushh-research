@@ -83,7 +83,7 @@ async def evaluate(reps: int, planner_only: bool) -> int:
                 client.models.generate_content, model=model, contents=prompt, config=config
             )
             if first_tool_from_response(response) != "ask_documents_agent":
-                raise ValueError("wrong_delegation")
+                raise ValueError(f"wrong_delegation:{first_tool_from_response(response)}")
             for part in response.candidates[0].content.parts:
                 call = part.function_call
                 if call and call.name == "ask_documents_agent":
@@ -140,6 +140,10 @@ async def evaluate(reps: int, planner_only: bool) -> int:
                             "case": case_id,
                             "status": "incomplete",
                             "error_type": type(error).__name__,
+                            "reason": str(error)
+                            if isinstance(error, ValueError)
+                            and str(error).startswith("wrong_delegation:")
+                            else "incomplete",
                             "completed": completed,
                             "expected": len(CASES) * reps,
                         }
