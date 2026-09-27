@@ -1443,7 +1443,7 @@ preparation, downloads content, indexes documents, or grants sharing permissions
 | `POST /` | `{clientRequestId,query,backgroundConsent:true,timezone}`; idempotent by owner, request ID and original query/timezone. The Documents planner runs once, then the frozen search is checkpointed. Returns initial job progress after at most one 25-file page. Another active search returns `409 search_in_progress`. |
 | `GET /` | Up to 20 unexpired searches belonging to the current owner, newest first. |
 | `GET /{id}` | `{jobId,status,revision,matched,pagesScanned,incompleteSearch,canStop,createdAt,updatedAt,expiresAt,errorCode}`. Status is `queued`, `running`, `completed`, `stopped`, `failed`, or `limited`. |
-| `GET /{id}/results?cursor=…` | Up to 25 metadata records (`id,name,mimeType,modifiedTime,openUrl`), result count, revision and opaque `nextCursor`, bound to owner and search. Requires the same active Drive connection generation. |
+| `GET /{id}/results?cursor=…` | Up to 25 metadata records (`position,id,name,mimeType,modifiedTime,openUrl`), result count, revision and opaque `nextCursor`, bound to owner and search. `position` is a stable, one-based result reference within the job. Requires the same active Drive connection generation. |
 | `POST /{id}/stop` | Empty body; invalidates the lease atomically. Late provider responses cannot append. Cancellation remains available after search-feature or provider-access revocation. |
 
 Search jobs retain encrypted queries/checkpoints and result metadata for 24 hours, with one active
@@ -1452,6 +1452,20 @@ seconds, checkpoints every page, and resumes through the existing Drive suggesti
 A queued slice wakes its successor; the scheduler remains the recovery path. Search-only consent
 survives tab closure; Stop, connection changes and account deletion fence subsequent collection.
 Expired records are excluded from reads before bounded cleanup removes them.
+
+The recent-results panel is an operational cache, not PKM or a document index. Its
+query/checkpoint/results use a server-held Drive encryption key, so autonomous
+searches that survive tab closure must not be described as strict client-key
+zero knowledge. It never writes Drive listings into `source_library`. When an
+owner selects a result for One chat, the client forwards only `{jobId,position}`
+for that turn. The chat route treats this pointer as untrusted and checks the
+owner session. The selected-result tool checks current owner and connection
+generation, resolves the saved positive result, and verifies the exact file
+with live Drive metadata before providing it to One. A stale,
+deleted, inaccessible, or expired result is refused; cached absence never proves
+that a file does not exist. Selection alone does not read content or grant sharing;
+an explicit read request may fetch content after a fresh access check, and sharing
+still requires the existing review and Share action.
 
 The REST compiler uses exact `name =` for literal titles before pagination, Google's token/phrase
 full-text rules for topics and dates, and preserves provider relevance order. It searches the user
