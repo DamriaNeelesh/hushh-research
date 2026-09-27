@@ -395,23 +395,25 @@ export function OneSetupHub() {
                   isComplete={runtimeChoiceComplete}
                 />
               </SettingsGroup>
-              <Button
-                type="button"
-                variant="blue"
-                effect="fill"
-                size="prominent"
-                fullWidth
-                disabled={!runtimeChoiceComplete}
-                loading={dismissing}
-                onClick={() => void handleMasterAck()}
-                data-testid="one-setup-master-ack"
-                data-voice-control-id="one-setup-master-ack"
-                data-voice-action-id="setup.hub_master_ack"
-                data-voice-label={masterActionLabel}
-                data-voice-purpose="Finish setup and protect what you save."
-              >
-                {masterActionLabel}
-              </Button>
+              <div className="mx-auto w-full sm:w-80">
+                <Button
+                  type="button"
+                  variant="blue"
+                  effect="fill"
+                  size="prominent"
+                  fullWidth
+                  disabled={!runtimeChoiceComplete}
+                  loading={dismissing}
+                  onClick={() => void handleMasterAck()}
+                  data-testid="one-setup-master-ack"
+                  data-voice-control-id="one-setup-master-ack"
+                  data-voice-action-id="setup.hub_master_ack"
+                  data-voice-label={masterActionLabel}
+                  data-voice-purpose="Finish setup and protect what you save."
+                >
+                  {masterActionLabel}
+                </Button>
+              </div>
             </div>
           </>
         )}
