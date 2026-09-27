@@ -83,14 +83,20 @@ $$;
 
 -- During a rolling backend deploy, the previous Calendar revision still
 -- completes successful actions by deleting an executing proposal. The normal
--- expiry sweep only deletes executing plans after expiry, so a non-expired
--- executed-plan delete is a safe, temporary success signal. New revisions
--- update to 'executed' first and their later delete does not match this.
+-- expiry sweep only deletes executing plans after expiry. A service disconnect
+-- also deletes executing plans, but first marks its grant disconnected in the
+-- same transaction; require a still-connected grant to avoid false success.
+-- New revisions update to 'executed' first, so their delete does not match.
 CREATE OR REPLACE FUNCTION feed_from_calendar_legacy_delete()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF OLD.status = 'executing' AND OLD.expires_at > NOW()
-     AND EXISTS (SELECT 1 FROM actor_profiles WHERE user_id = OLD.user_id) THEN
+     AND EXISTS (SELECT 1 FROM actor_profiles WHERE user_id = OLD.user_id)
+     AND EXISTS (
+       SELECT 1 FROM google_service_grants
+       WHERE user_id = OLD.user_id AND provider = 'google'
+         AND service = 'calendar' AND status = 'connected'
+     ) THEN
     PERFORM project_calendar_mail_feed(
       OLD.user_id,
       CASE OLD.action

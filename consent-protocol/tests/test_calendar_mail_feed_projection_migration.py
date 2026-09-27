@@ -72,6 +72,7 @@ def test_projection_never_copies_calendar_or_mail_content_to_plaintext_feed() ->
     assert "NEW.status = 'executed'" in sql
     assert "OLD.status = 'executing' AND OLD.expires_at > NOW()" in sql
     assert "EXISTS (SELECT 1 FROM actor_profiles WHERE user_id = OLD.user_id)" in sql
+    assert "service = 'calendar' AND status = 'connected'" in sql
     assert "AFTER DELETE ON google_calendar_action_proposals" in sql
     assert "NEW.status = 'detected'" in sql
     assert "NEW.synced_count > 0" in sql
