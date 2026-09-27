@@ -635,7 +635,7 @@ def _drive_listing_receipt(result: Any, tool_context: ToolContext) -> dict[str, 
     }
     content = getattr(tool_context, "user_content", None)
     query = None
-    if getattr(content, "role", None) == "user":
+    if content is not None and getattr(content, "role", None) == "user":
         texts = [
             part.text
             for part in (content.parts or [])
@@ -648,7 +648,7 @@ def _drive_listing_receipt(result: Any, tool_context: ToolContext) -> dict[str, 
             and not re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", candidate)
         ):
             query = candidate
-    return SpecialistReadResult(
+    receipt: dict[str, Any] = SpecialistReadResult(
         connector="drive",
         status="ok",
         metadata_only=True,
@@ -662,6 +662,7 @@ def _drive_listing_receipt(result: Any, tool_context: ToolContext) -> dict[str, 
         background_search_available=truncated and query is not None,
         background_search_query=query if truncated else None,
     ).model_dump(mode="json")
+    return receipt
 
 
 async def read_workspace_tool(
