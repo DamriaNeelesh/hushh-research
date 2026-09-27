@@ -123,7 +123,7 @@
           "required_scope": "cap.one.invoke"
         },
         {
-          "description": "List events in an exact time interval and return real event ids.",
+          "description": "List events in an exact time interval, optionally matching search text, and return real event ids; says when more events exist than were returned.",
           "name": "calendar_events",
           "py_func": "hushh_mcp.agents.calendar.tools.calendar_events",
           "required_scope": "cap.one.invoke"
@@ -147,7 +147,7 @@
           "required_scope": "cap.one.invoke"
         },
         {
-          "description": "Prepare an existing event change for explicit owner confirmation.",
+          "description": "Prepare an existing event change for explicit owner confirmation; only named fields change, and the review lists every attendee added or removed.",
           "name": "propose_calendar_reschedule",
           "py_func": "hushh_mcp.agents.calendar.tools.propose_calendar_reschedule",
           "required_scope": "cap.one.invoke"
@@ -3741,7 +3741,7 @@
           "required_scope": "vault.owner"
         },
         {
-          "description": "Perform one bounded Workspace MCP read using its discovered schema; provider writes require their existing reviewed app action.",
+          "description": "Perform one bounded Drive read using its discovered schema; Gmail and Calendar read through their own Chat tools, and provider writes require their existing reviewed app action.",
           "name": "read_workspace_tool",
           "py_func": "hushh_mcp.one_adk.workspace_mcp_tools.read_workspace_tool",
           "required_scope": "vault.owner"
