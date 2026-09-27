@@ -1358,8 +1358,10 @@ See [Mail + Drive UAT acceptance](../operations/mail-drive-uat-acceptance.md).
 
 ### Delegated Mail metadata reads (default-off)
 
-One's existing AG-UI typed-chat route can delegate `list_needs_reply` or `search_inbox`
-through the authored Email specialist. Admission requires UAT rollout eligibility,
+One's existing AG-UI typed-chat route can delegate `list_recent` (newest INBOX page, no
+search expression, limit 1-25), `list_needs_reply` or `search_inbox` through the authored
+Email specialist. A planned inbox search with no criteria is read as `list_recent`; the
+reader itself still refuses an empty search expression. Admission requires UAT rollout eligibility,
 `gmail_chat_reads`, a current Vault Owner session and a manifest-declared invocation
 capability bound to the same owner, task, call and expiry. Voice, arbitrary operations,
 client-supplied delegated results and action plans cannot enter this path. Existing

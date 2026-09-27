@@ -106,6 +106,47 @@ async def test_disconnection_during_interpretation_suppresses_answer():
     assert result["structured"]["status"] == "connection_changed"
 
 
+@pytest.mark.parametrize(
+    "plan",
+    [
+        {"operation": "list_recent", "limit": 10},
+        # The planner's observed UAT output for "show me my last 10 emails":
+        # an inbox search with no criteria. It is the newest page, not an error.
+        {"operation": "search_inbox", "query": "", "limit": 10},
+        {"operation": "search_inbox", "query": "   ", "limit": 10},
+    ],
+)
+async def test_recent_emails_request_is_one_direct_bounded_read(plan):
+    reader = _Reader(metadata={**_Reader().metadata, "truncated": False})
+    calls = []
+
+    async def gene(**kwargs):
+        calls.append(kwargs["gene_id"])
+        if kwargs["gene_id"] == "agent_email_read_planner":
+            return plan
+        return {"answer": "Your latest message.", "source_refs": ["mail:1"]}
+
+    result = await _run(reader, gene)
+    assert reader.calls == [("list_recent", {"limit": 10})]
+    assert calls == ["agent_email_read_planner", "agent_email_read_interpreter"]
+    assert result["structured"]["status"] == "ok"
+    assert "omitted" not in result["response"]
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        {"operation": "list_recent", "query": "from:someone", "limit": 10},
+        {"operation": "list_needs_reply", "query": "from:someone"},
+    ],
+)
+async def test_query_on_a_fixed_listing_is_rejected_before_io(plan):
+    reader = _Reader()
+    result = await _run(reader, AsyncMock(return_value=plan))
+    assert result["structured"]["status"] == "invalid_argument"
+    assert not reader.calls
+
+
 async def test_clarification_does_not_read_provider():
     reader = _Reader()
     result = await _run(

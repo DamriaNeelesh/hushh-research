@@ -141,6 +141,46 @@ async def test_needs_reply_does_not_fetch_invites_or_full_messages():
     assert result["untrusted_external_content"][0]["sender"] == "Alice"
 
 
+async def test_list_recent_reads_newest_inbox_page_without_a_search_expression():
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        if request.url.path.endswith("/messages"):
+            params = request.url.params
+            assert "q" not in params
+            assert params["labelIds"] == "INBOX"
+            assert params["maxResults"] == "2"
+            assert params["includeSpamTrash"] == "false"
+            return _response(
+                {"messages": [{"id": "message-1"}, {"id": "message-2"}], "nextPageToken": "n"}
+            )
+        assert request.url.params["format"] == "metadata"
+        assert "body" not in request.url.params["fields"]
+        identity = request.url.path.rsplit("/", 1)[-1]
+        return _response(_message(identity))
+
+    result = await _reader(_Gmail(), respond).read("list_recent", {"limit": 2})
+    assert len(calls) == 3
+    assert result["operation"] == "list_recent"
+    assert [item["source_ref"] for item in result["untrusted_external_content"]] == [
+        "mail:1",
+        "mail:2",
+    ]
+    # The person asked for exactly the newest two; older mail is not an omission.
+    assert result["truncated"] is False
+    serialized = json.dumps(result)
+    assert "UNEXPECTED_BODY_MUST_NOT_LEAVE" not in serialized
+    assert "message-1" not in serialized
+
+
+async def test_list_recent_is_still_one_bounded_read_per_instance():
+    reader = _reader(_Gmail(), lambda _: _response({"messages": []}))
+    await reader.read("list_recent", {})
+    with pytest.raises(GmailMetadataError, match="read_already_used"):
+        await reader.read("list_recent", {})
+
+
 @pytest.mark.parametrize("mutation", ["disconnect", "account", "reconnect", "refresh"])
 async def test_late_result_suppressed_on_any_observation_change(mutation):
     gmail = _Gmail()
@@ -210,6 +250,11 @@ async def test_stale_provider_rejection_does_not_disable_new_connection():
         ("list_needs_reply", {"limit": True}),
         ("list_needs_reply", {"limit": 26}),
         ("list_needs_reply", {"limit": -1}),
+        # "Last N" is bounded exactly like the other reads and takes no query.
+        ("list_recent", {"query": "from:anyone"}),
+        ("list_recent", {"limit": 26}),
+        ("list_recent", {"limit": 0}),
+        ("list_recent", {"limit": "10"}),
     ],
 )
 async def test_arbitrary_operations_arguments_and_limits_rejected_before_io(operation, args):

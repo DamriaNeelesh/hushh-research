@@ -18,13 +18,14 @@ from hushh_mcp.agents.email.runtime import run_email_gene
 from hushh_mcp.services.gmail_metadata_reader import (
     GmailMetadataError,
     GmailMetadataReader,
+    MailOperation,
     RequireAccess,
 )
 
 
 class MailReadPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    operation: Literal["list_needs_reply", "search_inbox", "clarify"]
+    operation: Literal["list_needs_reply", "list_recent", "search_inbox", "clarify"]
     query: str = Field(default="", max_length=512)
     limit: int = Field(default=10, ge=1, le=25)
     clarification: str = Field(default="", max_length=500)
@@ -43,7 +44,9 @@ _ERRORS = {
     "permission_denied": "Mail did not allow that read. Check your connection permissions.",
     "source_changed": "The inbox changed during that read. Please try again.",
     "response_too_large": "That inbox result is too large. Try a narrower search.",
-    "invalid_argument": "Please narrow your request to an inbox search or messages needing a reply.",
+    "invalid_argument": (
+        "Please ask for your recent emails, an inbox search, or messages needing a reply."
+    ),
 }
 
 
@@ -101,13 +104,20 @@ async def run_delegated_mail_read(
                     plan.clarification or "What would you like to find in your inbox?",
                     "input_required",
                 )
-            arguments: dict[str, Any] = {"limit": plan.limit}
-            if plan.operation == "search_inbox":
-                arguments["query"] = plan.query
-            elif plan.query:
+            operation: MailOperation = plan.operation
+            if operation == "search_inbox" and not plan.query.strip():
+                # A search with no criteria is a request for the newest inbox
+                # page ("my last 10 emails"). Decided from the plan's shape,
+                # never from request words; the reader still refuses an empty
+                # search expression.
+                operation = "list_recent"
+            elif operation != "search_inbox" and plan.query:
                 raise GmailMetadataError("invalid_argument")
+            arguments: dict[str, Any] = {"limit": plan.limit}
+            if operation == "search_inbox":
+                arguments["query"] = plan.query
             reader = reader_factory(gmail=gmail, user_id=user_id, require_access=require_access)
-            metadata = await reader.read(plan.operation, arguments)
+            metadata = await reader.read(operation, arguments)
             await reader.require_current()
             answer = MailReadAnswer.model_validate(
                 await gene_runner(

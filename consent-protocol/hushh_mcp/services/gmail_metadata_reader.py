@@ -27,7 +27,7 @@ _HEADERS = ["From", "Subject", "Date"]
 _BUDGET = 256 * 1024
 _DEADLINE = 20.0
 _NUDGE_QUERY = "in:inbox category:primary newer_than:30d -in:spam -in:trash"
-MailOperation = Literal["list_needs_reply", "search_inbox"]
+MailOperation = Literal["list_needs_reply", "list_recent", "search_inbox"]
 RequireAccess = Callable[[], Awaitable[None]]
 
 
@@ -49,7 +49,10 @@ def _label(value: Any, maximum: int) -> tuple[str, bool]:
 
 def _arguments(operation: str, arguments: dict[str, Any]) -> tuple[int, str]:
     allowed = {"limit", "query"} if operation == "search_inbox" else {"limit"}
-    if operation not in {"list_needs_reply", "search_inbox"} or set(arguments) - allowed:
+    if (
+        operation not in {"list_needs_reply", "list_recent", "search_inbox"}
+        or set(arguments) - allowed
+    ):
         raise GmailMetadataError("invalid_argument")
     limit = arguments.get("limit", 10)
     if type(limit) is not int or not 1 <= limit <= 25:
@@ -216,18 +219,18 @@ class GmailMetadataReader:
         limit: int,
         query: str,
     ) -> dict[str, Any]:
-        listing = await self._get(
-            client,
-            token,
-            "/messages",
-            {
-                "q": query if operation == "search_inbox" else _NUDGE_QUERY,
-                "labelIds": "INBOX",
-                "maxResults": 25 if operation == "list_needs_reply" else limit,
-                "includeSpamTrash": "false",
-                "fields": "messages(id,threadId),nextPageToken",
-            },
-        )
+        params: dict[str, Any] = {
+            "labelIds": "INBOX",
+            "maxResults": 25 if operation == "list_needs_reply" else limit,
+            "includeSpamTrash": "false",
+            "fields": "messages(id,threadId),nextPageToken",
+        }
+        # list_recent is the newest INBOX page with no search expression; the
+        # provider already returns it newest first. The other operations keep
+        # their authored query.
+        if operation != "list_recent":
+            params["q"] = query if operation == "search_inbox" else _NUDGE_QUERY
+        listing = await self._get(client, token, "/messages", params)
         entries = listing.get("messages", [])
         maximum = 25 if operation == "list_needs_reply" else limit
         if not isinstance(entries, list) or len(entries) > maximum:
@@ -267,7 +270,10 @@ class GmailMetadataReader:
             else:
                 _validate_message(payload)
             payloads.append(payload)
-        truncated = bool(listing.get("nextPageToken"))
+        # "Last N" asked for exactly N newest messages, so older mail beyond the
+        # page is not an omission. Search and needs-reply still report a next
+        # page as truncation because matches were left out.
+        truncated = operation != "list_recent" and bool(listing.get("nextPageToken"))
         if is_threads:
             row = await asyncio.to_thread(self._gmail._fetch_connection_row, user_id=self._user_id)
             account_email = str((row or {}).get("google_email") or "")
