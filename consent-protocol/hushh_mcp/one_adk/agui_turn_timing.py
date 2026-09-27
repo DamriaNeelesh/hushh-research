@@ -33,6 +33,7 @@ from ag_ui.core import (
     ToolMessage,
 )
 from ag_ui_adk import ADKAgent
+from google.adk.models.llm_response import LlmResponse
 
 from hushh_mcp.one_adk.drive_result_privacy import (
     ConfirmationWireProjection,
@@ -554,13 +555,16 @@ def record_connector_discovery(elapsed_ms: float) -> None:
         timing.connector_discovery_ms += max(0.0, elapsed_ms)
 
 
-def timed_one_before_model(callback_context: Any, llm_request: Any) -> None:
+def timed_one_before_model(callback_context: Any, llm_request: Any) -> LlmResponse | None:
     """Preserve the external-read barrier and record privacy-safe request sizes."""
     drop_empty_history_parts(llm_request)
-    before_external_read_model(callback_context, llm_request)
+    guarded_response = before_external_read_model(callback_context, llm_request)
+    if guarded_response is not None:
+        return guarded_response
     timing = _CURRENT_TURN.get()
     if timing is not None:
         timing.begin_model_call(llm_request)
+    return None
 
 
 def timed_one_after_model(_callback_context: Any, _llm_response: Any) -> None:

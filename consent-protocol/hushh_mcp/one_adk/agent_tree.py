@@ -105,6 +105,7 @@ from hushh_mcp.one_adk.drive_write_tools import (
 )
 from hushh_mcp.one_adk.external_read_boundary import (
     STATE_EXECUTION_SURFACE,
+    after_external_read_tool,
     before_external_read_tool,
 )
 from hushh_mcp.one_adk.one_persona import build_one_persona_grounding
@@ -2363,6 +2364,7 @@ def build_one_text_agent(
             allow_workspace_tools=allow_workspace_tools,
         ),
         before_tool_callback=before_external_read_tool,
+        after_tool_callback=after_external_read_tool,
         before_model_callback=timed_one_before_model,
         after_model_callback=timed_one_after_model,
         # Preserve the configured Chat thinking level for measured comparison.
