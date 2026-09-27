@@ -59,16 +59,20 @@ def _response(payload, status=200, headers=None):
     )
 
 
-def _message(identity="message-1", subject="Project plan"):
+def _message(identity="message-1", subject="Project plan", labels=None, to=None):
+    headers = [
+        {"name": "Subject", "value": subject},
+        {"name": "From", "value": "Alice <alice@example.com>"},
+    ]
+    if to is not None:
+        headers.append({"name": "To", "value": to})
     return {
         "id": identity,
         "threadId": "thread-1",
         "internalDate": str(int(datetime.now(timezone.utc).timestamp() * 1000)),
+        "labelIds": ["INBOX"] if labels is None else labels,
         "payload": {
-            "headers": [
-                {"name": "Subject", "value": subject},
-                {"name": "From", "value": "Alice <alice@example.com>"},
-            ],
+            "headers": headers,
             "body": {"data": "UNEXPECTED_BODY_MUST_NOT_LEAVE"},
         },
         "snippet": "UNEXPECTED_SNIPPET_MUST_NOT_LEAVE",
@@ -174,6 +178,60 @@ async def test_list_recent_reads_newest_inbox_page_without_a_search_expression()
     assert "message-1" not in serialized
 
 
+async def test_unread_flag_comes_from_labels_without_widening_metadata():
+    def respond(request):
+        if request.url.path.endswith("/messages"):
+            return _response({"messages": [{"id": "m-1"}, {"id": "m-2"}]})
+        assert "labelIds" in request.url.params["fields"]
+        assert request.url.params.get_list("metadataHeaders") == ["From", "Subject", "Date"]
+        identity = request.url.path.rsplit("/", 1)[-1]
+        labels = ["INBOX", "UNREAD"] if identity == "m-1" else ["INBOX"]
+        return _response(_message(identity, labels=labels))
+
+    result = await _reader(_Gmail(), respond).read("list_recent", {"limit": 2})
+    assert [item["unread"] for item in result["untrusted_external_content"]] == [True, False]
+    assert result["mailbox"] == "inbox"
+    assert all("recipient" not in item for item in result["untrusted_external_content"])
+    # Label names other than the unread bit never leave the reader.
+    assert "INBOX" not in json.dumps(result["untrusted_external_content"])
+
+
+@pytest.mark.parametrize("mailbox,label", [("sent", "SENT"), ("anywhere", None)])
+async def test_mailbox_scope_sets_the_label_and_sent_mail_names_its_recipient(mailbox, label):
+    def respond(request):
+        if request.url.path.endswith("/messages"):
+            assert request.url.params.get("labelIds") == label
+            assert request.url.params["includeSpamTrash"] == "false"
+            return _response({"messages": [{"id": "m-1"}]})
+        headers = request.url.params.get_list("metadataHeaders")
+        assert ("To" in headers) == (mailbox == "sent")
+        return _response(
+            _message("m-1", labels=[label or "INBOX"], to='"Bo" <bo@example.com>, cy@example.com')
+        )
+
+    result = await _reader(_Gmail(), respond).read(
+        "search_inbox", {"query": "subject:plan", "mailbox": mailbox}
+    )
+    item = result["untrusted_external_content"][0]
+    assert result["mailbox"] == mailbox
+    if mailbox == "sent":
+        assert item["recipient"] == "Bo (+1 more)"
+    else:
+        assert "recipient" not in item
+    assert "bo@example.com" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("labels", ["UNREAD", [1], ["x"] * 101])
+async def test_malformed_labels_are_not_read_as_state(labels):
+    def respond(request):
+        if request.url.path.endswith("/messages"):
+            return _response({"messages": [{"id": "m-1"}]})
+        return _response(_message("m-1", labels=labels))
+
+    with pytest.raises(GmailMetadataError, match="invalid_response"):
+        await _reader(_Gmail(), respond).read("list_recent", {})
+
+
 async def test_list_recent_is_still_one_bounded_read_per_instance():
     reader = _reader(_Gmail(), lambda _: _response({"messages": []}))
     await reader.read("list_recent", {})
@@ -255,6 +313,11 @@ async def test_stale_provider_rejection_does_not_disable_new_connection():
         ("list_recent", {"limit": 26}),
         ("list_recent", {"limit": 0}),
         ("list_recent", {"limit": "10"}),
+        # Mailbox scope is a closed set, and needs-reply is inbox-only.
+        ("list_recent", {"mailbox": "spam"}),
+        ("search_inbox", {"query": "ok", "mailbox": "trash"}),
+        ("list_needs_reply", {"mailbox": "sent"}),
+        ("list_needs_reply", {"mailbox": "anywhere"}),
     ],
 )
 async def test_arbitrary_operations_arguments_and_limits_rejected_before_io(operation, args):

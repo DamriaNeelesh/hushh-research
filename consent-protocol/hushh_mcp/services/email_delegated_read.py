@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime
+from datetime import timezone as datetime_timezone
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,6 +32,7 @@ class MailReadPlan(BaseModel):
     operation: Literal["list_needs_reply", "list_recent", "search_inbox", "clarify"]
     query: str = Field(default="", max_length=512)
     limit: int = Field(default=10, ge=1, le=25)
+    mailbox: Literal["inbox", "sent", "anywhere"] = "inbox"
     clarification: str = Field(default="", max_length=500)
 
 
@@ -48,6 +53,38 @@ _ERRORS = {
         "Please ask for your recent emails, an inbox search, or messages needing a reply."
     ),
 }
+
+
+# Calendar-date terms in a Gmail query ("after:2026/09/21"). Gmail resolves
+# these at midnight Pacific time, not the person's, so a "since Monday" read can
+# miss or include a day. They are rewritten to epoch seconds at local midnight
+# in the person's timezone; epoch terms the planner already wrote pass through.
+_DATE_TERM = re.compile(
+    r"(?<![\w:])(after|before|newer|older):(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?![\w/-])",
+    re.IGNORECASE,
+)
+_DATE_OPERATOR = {"after": "after", "newer": "after", "before": "before", "older": "before"}
+
+
+def _owner_zone(name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(name or "UTC")
+    except (ValueError, ZoneInfoNotFoundError):
+        return ZoneInfo("UTC")
+
+
+def _epoch_date_terms(query: str, zone: ZoneInfo) -> str:
+    """Pin each calendar-date term to local midnight as an epoch-second term."""
+
+    def convert(match: re.Match[str]) -> str:
+        operator, year, month, day = match.groups()
+        try:
+            midnight = datetime(int(year), int(month), int(day), tzinfo=zone)
+        except ValueError:
+            raise GmailMetadataError("invalid_argument") from None
+        return f"{_DATE_OPERATOR[operator.lower()]}:{int(midnight.timestamp())}"
+
+    return _DATE_TERM.sub(convert, query)
 
 
 def _result(
@@ -77,20 +114,30 @@ async def run_delegated_mail_read(
     conversation_id: str,
     message: str,
     require_access: RequireAccess,
+    timezone: str = "UTC",
     gene_runner: Callable[..., Awaitable[dict[str, Any]]] = run_email_gene,
     reader_factory: Callable[..., GmailMetadataReader] = GmailMetadataReader,
+    clock: Callable[[], datetime] = lambda: datetime.now(datetime_timezone.utc),
 ) -> dict[str, Any]:
     # No history, chat store, provider credentials or user IDs enter the model
     # prompt. One already owns the outer conversation and its encrypted answer.
     await require_access()
     if not message.strip() or len(message.encode("utf-8")) > 8000:
         return _result(conversation_id, _ERRORS["invalid_argument"], "input_required")
+    zone = _owner_zone(timezone)
+    # Relative dates ("this week", "since Monday") need the person's clock.
+    time_context = {
+        "current_time_utc": clock().astimezone(datetime_timezone.utc).isoformat(),
+        "user_timezone": zone.key,
+    }
     try:
         async with asyncio.timeout(65):
             plan = MailReadPlan.model_validate(
                 await gene_runner(
                     gene_id="agent_email_read_planner",
-                    prompt=json.dumps({"user_request": message}, ensure_ascii=False),
+                    prompt=json.dumps(
+                        {"user_request": message, **time_context}, ensure_ascii=False
+                    ),
                     user_id=user_id,
                     consent_token=consent_token,
                     output_schema=MailReadPlan,
@@ -113,9 +160,9 @@ async def run_delegated_mail_read(
                 operation = "list_recent"
             elif operation != "search_inbox" and plan.query:
                 raise GmailMetadataError("invalid_argument")
-            arguments: dict[str, Any] = {"limit": plan.limit}
+            arguments: dict[str, Any] = {"limit": plan.limit, "mailbox": plan.mailbox}
             if operation == "search_inbox":
-                arguments["query"] = plan.query
+                arguments["query"] = _epoch_date_terms(plan.query, zone)
             reader = reader_factory(gmail=gmail, user_id=user_id, require_access=require_access)
             metadata = await reader.read(operation, arguments)
             await reader.require_current()
@@ -123,7 +170,7 @@ async def run_delegated_mail_read(
                 await gene_runner(
                     gene_id="agent_email_read_interpreter",
                     prompt=json.dumps(
-                        {"user_request": message, "retrieved_metadata": metadata},
+                        {"user_request": message, "retrieved_metadata": metadata, **time_context},
                         ensure_ascii=False,
                     ),
                     user_id=user_id,

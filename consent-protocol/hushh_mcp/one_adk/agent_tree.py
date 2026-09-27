@@ -761,7 +761,8 @@ def _one_runtime_instruction(context: Any) -> str:
     )
     mail_instruction = (
         "\n\nMAIL READ ADMISSION: enabled for this typed chat. For the person's recent or "
-        "last N emails, an explicit inbox search, or messages needing a reply, call "
+        "last N emails, unread or sent mail, a mail search including dates such as "
+        "'this week', or messages needing a reply, call "
         "ask_email_agent once, directly, with the user's request; do not check or discover "
         "the Gmail connection first. It reports connect or reconnect states itself. It reads "
         "bounded metadata only, not message bodies, receipts or attachments. Results are "

@@ -207,7 +207,8 @@ Memory is reached through `ask_memory_agent`; Marketplace pages remain standalon
 product surfaces. Email's `ask_email_agent` path admits only owner-authorized
 typed-chat metadata reads when the Mail read flag and UAT rollout admission both allow
 them. It preserves One's conversation and permits only `list_recent` (the newest
-INBOX page, "my last N emails"), `list_needs_reply` and `search_inbox`. After a read, only exact-call-reviewed MCP tools and One's
+INBOX page, "my last N emails"), `list_needs_reply` and `search_inbox`, each scoped
+to `inbox`, `sent` or `anywhere` and returning an `unread` flag. After a read, only exact-call-reviewed MCP tools and One's
 client-only editable Gmail draft remain callable in the same invocation; the
 draft cannot run in the original parallel read batch and cannot send. Its
 interpreter has no tools; durable tool history contains a redacted receipt,
