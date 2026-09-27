@@ -15,6 +15,7 @@
 import { Capacitor } from "@capacitor/core";
 import { ApiService } from "@/lib/services/api-service";
 import { ROUTES } from "@/lib/navigation/routes";
+import { isAgentConversationId } from "@/lib/agent/agent-chat-turn-watch";
 import {
   buildConsentCenterHref,
   resolveConsentNavigationTarget,
@@ -159,9 +160,30 @@ function incomingLocationShareTarget(
   return null;
 }
 
+/**
+ * "One replied" is a bare wake-up: type plus an opaque conversation id. The
+ * tap opens that conversation at `/`; the chat loads it only after unlock and
+ * only if it is in the owner's own history. `deep_link` is never trusted.
+ * The server sends this type to native devices only, so the web worker's
+ * `notificationTapTarget` deliberately has no case for it.
+ */
+export function oneReplyNotificationTapTarget(
+  data: Record<string, unknown> | undefined,
+): string | null {
+  const type = String(data?.type || "")
+    .trim()
+    .toLowerCase();
+  if (type !== "one_reply") return null;
+  const conversationId = String(data?.conversation_id || "").trim();
+  if (!isAgentConversationId(conversationId)) return ROUTES.HOME;
+  return `${ROUTES.HOME}?${new URLSearchParams({ conversation: conversationId }).toString()}`;
+}
+
 export function buildNotificationTapTarget(
   data: Record<string, unknown> | undefined,
 ): string {
+  const oneReplyTarget = oneReplyNotificationTapTarget(data);
+  if (oneReplyTarget) return oneReplyTarget;
   const locationTarget = incomingLocationShareTarget(data);
   if (locationTarget) return locationTarget;
   const documentShareTarget = documentShareNotificationTapTarget(data);

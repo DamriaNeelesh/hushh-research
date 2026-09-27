@@ -51,6 +51,11 @@ from hushh_mcp.one_adk.external_read_projection import redacted_read_receipt
 from hushh_mcp.one_adk.mcp_call_approval import STATE_MCP_APPROVAL, admit_resume_receipt
 from hushh_mcp.one_adk.mcp_turn_scope import STATE_MCP_CONFIGURATION, admit_turn_configurations
 from hushh_mcp.one_adk.request_secrets import consume_request_secret, store_request_secret
+from hushh_mcp.one_adk.turn_completion import (
+    newest_turn_answered,
+    newest_turn_pending,
+    notify_one_reply,
+)
 from hushh_mcp.one_adk.turn_location import STATE_TURN_LOCATION, admit_turn_location
 from hushh_mcp.one_adk.workspace_mcp_tools import WORKSPACE_CHAT_ADMISSION_STATE
 from hushh_mcp.services.action_directive_ledger import ActionDirectiveAuthorityError
@@ -327,6 +332,23 @@ _intro_agent = TimedADKAgent.from_app(
     emit_messages_snapshot=True,
     capabilities=_intro_capabilities,
 )
+
+
+async def _notify_detached_turn(owner_id: str, conversation_id: str) -> None:
+    """A turn finished after its client left: wake the owner's device, once.
+
+    Runs from the turn's own background task, which still holds the chat key it
+    received, so the sealed session can be read. The push carries no content.
+    """
+    session = await _session_service.get_session(
+        app_name=ONE_APP_NAME, user_id=owner_id, session_id=conversation_id
+    )
+    if session is None or not newest_turn_answered(session.events):
+        return
+    await notify_one_reply(owner_id=owner_id, conversation_id=conversation_id)
+
+
+_agent.detached_turn_hook = _notify_detached_turn
 
 
 async def _resolve_agent(_request: Request, input_data: RunAgentInput) -> ADKAgent:
@@ -1433,7 +1455,13 @@ async def conversation_history(
                 "metadata": metadata,
             }
         )
-    return {"conversation_id": conversation_id, "messages": messages[-limit:]}
+    return {
+        "conversation_id": conversation_id,
+        "messages": messages[-limit:],
+        # A client that left mid-turn reattaches while this is true; the turn
+        # keeps running server-side and its answer appears here when it settles.
+        "turn": {"pending": newest_turn_pending(session.events)},
+    }
 
 
 @router.patch("/api/one/agent-chat/conversations/{conversation_id}")

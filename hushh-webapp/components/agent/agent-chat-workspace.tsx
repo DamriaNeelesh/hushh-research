@@ -180,6 +180,13 @@ import {
   clearAgentChatHistoryCache,
 } from "@/lib/agent/agent-chat-history-cache";
 import { rememberInAppChat, selectedInAppChat } from "@/lib/agent/in-app-chat-selection";
+import {
+  AGENT_TURN_DETACH_REASON,
+  isAgentTurnWatched,
+  subscribeAgentTurnSettled,
+  subscribeOpenAgentConversation,
+  waitForWatchedAgentTurn,
+} from "@/lib/agent/agent-chat-turn-watch";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
 import { usePersonaState } from "@/lib/persona/persona-context";
 import { isRiaAdvisoryAccessReady } from "@/lib/ria/ria-profile-view-model";
@@ -2424,6 +2431,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const historyRestoreEpochRef = useRef(0);
   const skipInitialHistoryLoadRef = useRef(false);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
+  const reattachRestoreRef = useRef<Promise<void> | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   const operationQueueRef = useRef(
     new SerialAgentOperationQueue<QueuedWorkspaceOperation>(),
@@ -2480,9 +2488,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const rootChatReady = useRootChatDeferredReady();
   const tokenIsFresh = !tokenExpiresAt || Date.now() < tokenExpiresAt;
   const agentVoiceEnabled = isAgentCommandEnabled();
-  const abortAgentTurnWork = useCallback(() => {
+  const abortAgentTurnWork = useCallback((reason?: string) => {
     setPendingMcpReviews([]);
-    streamAbortControllerRef.current?.abort();
+    streamAbortControllerRef.current?.abort(reason);
     streamAbortControllerRef.current = null;
     for (const controller of pkmAbortControllersRef.current) {
       controller.abort();
@@ -3150,7 +3158,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
 
   useEffect(() => {
     return () => {
-      abortAgentTurnWork();
+      // Leaving the chat stops reading; the server keeps the turn and the
+      // app-shell turn watch reattaches (or says "One replied") later.
+      abortAgentTurnWork(AGENT_TURN_DETACH_REASON);
     };
   }, [abortAgentTurnWork]);
 
@@ -3982,27 +3992,58 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (cancelled || restoreEpoch !== historyRestoreEpochRef.current) return;
       setConversations(snapshot.conversations);
       const selectedId = selectedInAppChat(user.uid);
-      if (!selectedId || !snapshot.conversations.some((item) => item.id === selectedId)) {
+      // A first turn the person left may not be in a cached list yet; its
+      // history load below is still owner-checked by the server.
+      if (
+        !selectedId ||
+        (!snapshot.conversations.some((item) => item.id === selectedId) &&
+          !isAgentTurnWatched(user.uid, selectedId))
+      ) {
         updateConversationId(null, false);
         setMessages((current) =>
           mergePendingConsentMessages([createGreetingMessage()], current),
         );
         return;
       }
-      const stored = selectedId === snapshot.latestConversationId && snapshot.latestMessages.length > 0
+      // A turn the person left is still running server-side: read fresh
+      // history rather than the cache, and show it as in progress.
+      const reattaching = isAgentTurnWatched(user.uid, selectedId);
+      const loadSelected = () => loadAgentChatConversationHistory({
+        userId: user.uid, conversationId: selectedId, vaultOwnerToken, vaultKey: vaultKeyRef.current ?? "",
+        force: reattaching,
+      });
+      let stored = !reattaching && selectedId === snapshot.latestConversationId && snapshot.latestMessages.length > 0
         ? snapshot.latestMessages
-        : await loadAgentChatConversationHistory({
-            userId: user.uid, conversationId: selectedId, vaultOwnerToken, vaultKey: vaultKeyRef.current ?? "",
-          });
+        : await loadSelected();
+      // It may have settled while that read was in flight; read the answer.
+      if (reattaching && !isAgentTurnWatched(user.uid, selectedId)) stored = await loadSelected();
       if (cancelled || restoreEpoch !== historyRestoreEpochRef.current) return;
       const restored = storedMessagesToAgentMessages(stored);
+      const stillRunning = isAgentTurnWatched(user.uid, selectedId);
       updateConversationId(selectedId, false);
       setMessages((current) =>
         mergePendingConsentMessages(
-          restored.length > 0 ? restored : [createGreetingMessage()],
+          restored.length > 0
+            ? [
+                ...restored,
+                ...(stillRunning
+                  ? [{
+                      id: `reattach-${selectedId}`,
+                      role: "assistant" as const,
+                      text: "",
+                      timestamp: formatNow(),
+                      status: "streaming" as const,
+                    }]
+                  : []),
+              ]
+            : [createGreetingMessage()],
           current,
         ),
       );
+      if (stillRunning) {
+        setIsChatLoading(true);
+        setIsStreaming(true);
+      }
     };
 
     const loadRecentConversation = async () => {
@@ -4313,6 +4354,34 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       restoreConversationMessages,
     ],
   );
+
+  // A turn this chat stopped reading has written its answer: show it in place.
+  useEffect(() => {
+    return subscribeAgentTurnSettled((turn) => {
+      if (turn.ownerId !== user?.uid || turn.conversationId !== conversationIdRef.current) return;
+      const token = getVaultOwnerToken();
+      setIsChatLoading(false);
+      setIsStreaming(false);
+      if (!token) {
+        setMessages((current) => current.filter((message) => message.id !== `reattach-${turn.conversationId}`));
+        return;
+      }
+      // A prompt queued meanwhile starts only after this reload lands.
+      reattachRestoreRef.current = restoreConversationMessages(
+        turn.conversationId,
+        token,
+        () => conversationIdRef.current === turn.conversationId,
+      ).catch(() => undefined);
+    });
+  }, [getVaultOwnerToken, restoreConversationMessages, user?.uid]);
+
+  // "Open" on a One replied notice, or a push tap, while this chat is mounted.
+  useEffect(() => {
+    return subscribeOpenAgentConversation(({ ownerId, conversationId: requestedId }) => {
+      if (ownerId !== user?.uid) return;
+      void handleSelectConversation(requestedId);
+    });
+  }, [handleSelectConversation, user?.uid]);
 
   const handleCreateNewPuppyChat = puppyHistory.create;
   const handleSelectPuppyConversation = puppyHistory.select;
@@ -5528,6 +5597,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           },
         },
       });
+      if (streamResult.detached) {
+        // The app stopped reading (native background); the server keeps the
+        // turn. The bubble stays in progress until the turn watch reports the
+        // written answer and the settled-turn effect reloads it.
+        flushAssistantDelta();
+        if (streamResult.conversationId) updateConversationId(streamResult.conversationId);
+        // Left before the server's turn was running: nothing to reattach to.
+        if (!isAgentTurnWatched(userId, streamResult.conversationId)) finishCanceledTurn();
+        return;
+      }
       if (streamAbortController.signal.aborted) {
         finishCanceledTurn();
         return;
@@ -5769,6 +5848,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (streamResult.conversationId) {
         updateConversationId(streamResult.conversationId);
       }
+      if (streamResult.detached) return; // settled-turn effect reloads the answer
       updateMessage(assistantMessageId, (message) => {
         if (message.status === "error") return message;
         return {
@@ -6047,6 +6127,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       prompt,
       run: async () => {
         if (hasChatAccess) {
+          // One is still finishing a turn the app left: queue behind it and its
+          // reload rather than start a second run in the same conversation.
+          await waitForWatchedAgentTurn(user?.uid, conversationIdRef.current);
+          await reattachRestoreRef.current;
           await runAgentTurn(operation.prompt?.text ?? "", {
             source: "typed",
             personSelectionHandle,
