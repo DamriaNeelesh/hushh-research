@@ -110,17 +110,27 @@ export async function awaitProductFont(page: {
   evaluate: <T>(fn: () => T | Promise<T>) => Promise<T>;
 }): Promise<void> {
   const state = await page.evaluate(async () => {
-    await document.fonts.ready;
     const probe = document.createElement("span");
     probe.style.cssText =
       "position:absolute;visibility:hidden;font:400 16px DMSansVariable";
     probe.textContent = "0123456789";
     document.body.appendChild(probe);
+    // A freshly mounted React fixture can have no text when `fonts.ready`
+    // first resolves. Explicitly request the face before checking it so the
+    // assertion cannot race its initial download on slower CI browsers.
+    const loadedFaces = await document.fonts.load(
+      '400 16px "DMSansVariable"',
+      "0123456789",
+    );
+    await document.fonts.ready;
     const usedFamily = getComputedStyle(document.body).fontFamily;
     probe.remove();
     return {
-      loaded: document.fonts.check('16px "DMSansVariable"'),
-      faces: [...document.fonts].map((f) => f.family),
+      loaded:
+        loadedFaces.length > 0 &&
+        loadedFaces.every((face) => face.status === "loaded") &&
+        document.fonts.check('16px "DMSansVariable"'),
+      faces: [...document.fonts].map((face) => `${face.family}:${face.status}`),
       usedFamily,
     };
   });

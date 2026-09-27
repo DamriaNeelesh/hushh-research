@@ -2792,7 +2792,7 @@ describe("Connect — inviting someone who is not on One yet", () => {
 });
 
 describe("Connect — Circles", () => {
-  it("opens the directory filter as a portalled solid popover on web", async () => {
+  it("opens the directory filter as a portalled frosted popover on web", async () => {
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
 
@@ -2802,8 +2802,7 @@ describe("Connect — Circles", () => {
     const anchor = screen.getByTestId("connect-directory-menu-anchor");
     expect(anchor.contains(menu)).toBe(false);
     expect(menu).toHaveAttribute("data-slot", "popover-content");
-    expect(menu.className).toContain("bg-[color:var(--app-settings-surface)]");
-    expect(menu.className).toContain("shadow-[var(--app-card-shadow-feature)]");
+    expect(menu.className).toContain("connect-web-directory-popover");
     expect(menu.className).not.toContain("absolute");
     expect(
       within(menu).getByRole("menuitemradio", { name: "People" }),
