@@ -13,6 +13,7 @@ import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary"
 import { parseMcpCallReview, type McpCallApproval, type McpCallReviewReference } from "@/lib/agent/mcp-call-review";
 import { snapshotValidatedAuthSessionOwner, isValidatedAuthSessionOwnerCurrent } from "@/lib/auth/session-owner";
 import { snapshotVaultSessionEpoch, isVaultSessionEpochCurrent } from "@/lib/vault/session-epoch";
+import { resolveTurnLocation } from "@/lib/agent/turn-location";
 import { oneChatKeyHeaders } from "@/lib/vault/one-chat-key";
 import {
   parseAgentActivityExperience,
@@ -610,7 +611,11 @@ export async function streamAgentChat(input: {
   });
   // Chat history is sealed with a key derived from the vault key; the server
   // refuses the turn without it and holds it for this request only.
-  const chatKeyHeaders = await oneChatKeyHeaders(input.vaultKey);
+  // The coarse position is resolved beside the key so it adds no serial wait.
+  const [chatKeyHeaders, turnLocation] = await Promise.all([
+    oneChatKeyHeaders(input.vaultKey),
+    resolveTurnLocation(),
+  ]);
   const chatKey = Object.values(chatKeyHeaders)[0] ?? "";
   const agent = new HttpAgent({
     url: "/api/one/agent-chat",
@@ -700,6 +705,7 @@ export async function streamAgentChat(input: {
             forwardedProps: {
               ...await connectorProjection(),
               timezone,
+              turnLocation,
               pkmContext: input.pkmContext,
               personSelectionHandle: input.personSelectionHandle,
               gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
@@ -1079,7 +1085,7 @@ export async function streamAgentChat(input: {
                   tools, context: [],
                   forwardedProps: {
                     ...await connectorProjection(),
-                    timezone, pkmContext: input.pkmContext,
+                    timezone, turnLocation, pkmContext: input.pkmContext,
                     personSelectionHandle: input.personSelectionHandle,
                     gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
                     screenContext: input.screenContext,
@@ -1143,6 +1149,7 @@ export async function streamAgentChat(input: {
       forwardedProps: {
         ...await connectorProjection(),
         timezone,
+        turnLocation,
         pkmContext: input.pkmContext,
         personSelectionHandle: input.personSelectionHandle,
         gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,

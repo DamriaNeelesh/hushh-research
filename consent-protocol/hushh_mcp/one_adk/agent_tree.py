@@ -118,6 +118,7 @@ from hushh_mcp.one_adk.specialist_availability import (
     resolve_specialist_availability,
     specialist_label,
 )
+from hushh_mcp.one_adk.turn_location import get_my_location, get_weather
 from hushh_mcp.one_adk.workspace_mcp_tools import READ_WORKSPACE_TOOL, discover_workspace_tools
 from hushh_mcp.runtime_providers import (
     build_managed_gemini_adk_model,
@@ -470,7 +471,13 @@ ONE_IDENTITY_INSTRUCTION: str = (
     "rely on a feeling of confidence. "
     "Actions owned by a specialist must go through that specialist's ask_ "
     "tool; run_app_action will redirect you if needed. Use google_search when "
-    "the user needs fresh public information from the web. Answer general "
+    "the user needs fresh public information from the web. "
+    "Never tell the person you cannot access their location or ask them for their city "
+    "first: for weather call get_weather (it uses their approximate current location by "
+    "default), and for anything else that depends on where they are now call "
+    "get_my_location. If either returns needs_location_permission, relay its message once "
+    "and briefly. If get_weather returns unavailable, use google_search for the current "
+    "weather near the returned coordinates. Describe that location only as approximate. Answer general "
     "questions yourself. Call at most ONE action-producing tool per turn "
     "(run_app_action, start_app_goal, or a specialist ask_ tool); wait for its settlement "
     "before starting another action. This limit is about not starting a SECOND, "
@@ -2270,6 +2277,8 @@ def _one_roster_tools(
         set_preferred_model,
         list_pending_connection_requests,
         get_current_time,
+        get_my_location,
+        get_weather,
         calendar_summary,
         calendar_events,
         calendar_availability,
