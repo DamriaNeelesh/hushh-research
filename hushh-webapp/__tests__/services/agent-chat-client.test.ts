@@ -803,6 +803,25 @@ describe("AG-UI Agent One client", () => {
     });
   });
 
+  it("carries a pending mail draft only on a turn that has one", async () => {
+    const pendingEmailDraft = {
+      to: "pat@example.com", cc: "", bcc: "", subject: "Details",
+      body: "The details are attached.", sourceBound: false,
+    };
+    const turn = { vaultKey: TEST_VAULT_KEY, userId: "user-1", conversationId: "thread-1",
+      vaultOwnerToken: "owner-token", handlers: {} };
+
+    await streamAgentChat({ ...turn, message: "Add priya@example.com to cc", pendingEmailDraft });
+    await streamAgentChat({ ...turn, message: "What is on my calendar?", pendingEmailDraft: null });
+
+    expect(mockTransport.runAgent.mock.calls[0]?.[0].forwardedProps.pendingEmailDraft).toEqual(
+      pendingEmailDraft,
+    );
+    expect(mockTransport.runAgent.mock.calls[1]?.[0].forwardedProps).not.toHaveProperty(
+      "pendingEmailDraft",
+    );
+  });
+
   it("uses the same AG-UI endpoint before vault unlock", async () => {
     await expect(streamAgentIntro({ message: "What is Hussh?" })).resolves.toMatchObject({
       text: "Hello",
