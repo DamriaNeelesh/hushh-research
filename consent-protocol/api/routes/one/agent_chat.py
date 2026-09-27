@@ -21,7 +21,11 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from api.middleware import require_vault_owner_token
-from api.middlewares.chat_key import CHAT_KEY_REQUIRED_DETAIL, require_vault_owner_chat_key
+from api.middlewares.chat_key import (
+    CHAT_KEY_REQUIRED_DETAIL,
+    log_chat_key_refusal,
+    require_vault_owner_chat_key,
+)
 from api.routes.one.agent_context import sanitize_agent_context
 from api.utils.firebase_auth import verify_firebase_bearer
 from hushh_mcp.one_adk.agent_tree import (
@@ -118,6 +122,7 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
         # Durable history is sealed with the owner's chat key. Refuse before any
         # stream starts rather than failing mid-turn or reading without it.
         if not request_has_chat_key(user_id):
+            log_chat_key_refusal(request, "CHAT_KEY_REQUIRED", owner_id=user_id)
             raise HTTPException(
                 status_code=403,
                 detail={"message": CHAT_KEY_REQUIRED_DETAIL, "code": "CHAT_KEY_REQUIRED"},
