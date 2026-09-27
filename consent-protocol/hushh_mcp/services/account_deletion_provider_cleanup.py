@@ -38,10 +38,32 @@ PROVIDER_RELEASE_TIMEOUT_SECONDS = 8.0
 _REVOKE_HTTP_TIMEOUT_SECONDS = 5.0
 
 # Tables whose rows hold a provider credential for the owner, in snapshot order.
+# Each query is static; to_jsonb keeps the read independent of column drift.
 _CREDENTIAL_SOURCES = (
-    ("google_provider_connections", "google_connection"),
-    ("kai_gmail_connections", "gmail_receipts"),
-    ("user_external_connector_connections", "external_connector"),
+    (
+        "google_provider_connections",
+        "google_connection",
+        text(
+            "SELECT to_jsonb(source_row) AS row FROM google_provider_connections AS source_row "
+            "WHERE source_row.user_id = :user_id"
+        ),
+    ),
+    (
+        "kai_gmail_connections",
+        "gmail_receipts",
+        text(
+            "SELECT to_jsonb(source_row) AS row FROM kai_gmail_connections AS source_row "
+            "WHERE source_row.user_id = :user_id"
+        ),
+    ),
+    (
+        "user_external_connector_connections",
+        "external_connector",
+        text(
+            "SELECT to_jsonb(source_row) AS row FROM user_external_connector_connections "
+            "AS source_row WHERE source_row.user_id = :user_id"
+        ),
+    ),
 )
 
 
@@ -68,18 +90,10 @@ def snapshot_provider_credentials_in_transaction(
     rows: dict[str, tuple[dict[str, Any], ...]] = {}
     try:
         with conn.begin_nested():
-            for table_name, source in _CREDENTIAL_SOURCES:
+            for table_name, source, query in _CREDENTIAL_SOURCES:
                 if not table_exists(table_name):
                     continue
-                # to_jsonb keeps this read independent of column drift; the
-                # table name comes from the fixed tuple above, never input.
-                result = conn.execute(
-                    text(
-                        f"SELECT to_jsonb(source_row) AS row FROM {table_name} AS source_row "  # noqa: S608
-                        "WHERE source_row.user_id = :user_id"
-                    ),
-                    {"user_id": user_id},
-                )
+                result = conn.execute(query, {"user_id": user_id})
                 rows[source] = tuple(
                     dict(record["row"])
                     for record in result.mappings()
