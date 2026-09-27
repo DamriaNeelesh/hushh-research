@@ -15,6 +15,11 @@ import { snapshotValidatedAuthSessionOwner, isValidatedAuthSessionOwnerCurrent }
 import { snapshotVaultSessionEpoch, isVaultSessionEpochCurrent } from "@/lib/vault/session-epoch";
 import { oneChatKeyHeaders } from "@/lib/vault/one-chat-key";
 import {
+  AGENT_TURN_DETACH_REASON,
+  registerAttachedAgentTurn,
+  watchDetachedAgentTurn,
+} from "@/lib/agent/agent-chat-turn-watch";
+import {
   parseAgentActivityExperience,
   parseAgentToolResultExperience,
   type AgentStructuredExperience,
@@ -554,6 +559,11 @@ export async function streamAgentChat(input: {
   model: string | null;
   text: string;
   interrupted: boolean;
+  /**
+   * The app stopped reading while the server kept the turn running. The answer
+   * is sealed into history when it settles; the turn watch reattaches to it.
+   */
+  detached: boolean;
 }> {
   const timezone = resolveBrowserTimeZone();
   const threadId = input.conversationId || crypto.randomUUID();
@@ -623,6 +633,13 @@ export async function streamAgentChat(input: {
   let failure: Error | null = null;
   let interrupted = false;
   let intentionallyStoppedAtConfirmation = false;
+  // Server events seen, and whether one was terminal. The bridge starts the
+  // turn's own task only after RUN_STARTED, so a second event proves a turn is
+  // running server-side and will outlive this stream.
+  let serverEvents = 0;
+  let serverTerminal = false;
+  let detached = false;
+  const startedAtMs = Date.now();
   let settleTerminalRun: (() => void) | null = null;
   const terminalRun = new Promise<void>((resolve) => {
     settleTerminalRun = resolve;
@@ -714,6 +731,8 @@ export async function streamAgentChat(input: {
   const subscriber: AgentSubscriber = {
     ...publicOutputSubscriber,
     onEvent: ({ event }) => {
+      serverEvents += 1;
+      if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") serverTerminal = true;
       if (event.type === "REASONING_MESSAGE_CONTENT") {
         const delta = (event as { delta?: unknown }).delta;
         const metadata = (event as { metadata?: unknown }).metadata;
@@ -1122,7 +1141,9 @@ export async function streamAgentChat(input: {
       finishTerminalRun();
     },
     onRunFailed: ({ error }) => {
-      if (intentionallyStoppedAtConfirmation) {
+      // Our own abort of a detached stream is not a failure of the turn, which
+      // is still running server-side.
+      if (intentionallyStoppedAtConfirmation || detached) {
         finishTerminalRun();
         return;
       }
@@ -1132,10 +1153,22 @@ export async function streamAgentChat(input: {
     },
   };
   const abort = () => {
+    // A detach reason means the caller stopped reading (it left the chat); the
+    // server keeps the turn. Any other abort is the caller cancelling.
+    if (input.signal?.reason === AGENT_TURN_DETACH_REASON) detached = true;
     agent.abortRun();
     finishTerminalRun();
   };
   input.signal?.addEventListener("abort", abort, { once: true });
+  const unregisterAttached = registerAttachedAgentTurn({
+    ownerId: input.userId,
+    conversationId: threadId,
+    detach: () => {
+      detached = true;
+      agent.abortRun();
+      finishTerminalRun();
+    },
+  });
   try {
     await agent.runAgent({
       tools,
@@ -1150,11 +1183,20 @@ export async function streamAgentChat(input: {
       },
     }, subscriber);
     await terminalRun;
+  } catch (error) {
+    // Aborting our own read of a detached turn may reject the run; the turn
+    // itself is still running server-side and is reported as detached below.
+    if (!detached) throw error;
   } finally {
     input.signal?.removeEventListener("abort", abort);
+    unregisterAttached();
   }
-  if (failure) throw failure;
-  return { conversationId: threadId, model: null, text, interrupted };
+  const leftRunningTurn = detached && !serverTerminal && !intentionallyStoppedAtConfirmation && serverEvents > 1;
+  if (leftRunningTurn) {
+    watchDetachedAgentTurn({ ownerId: input.userId, conversationId: threadId, startedAtMs });
+  }
+  if (failure && !leftRunningTurn) throw failure;
+  return { conversationId: threadId, model: null, text, interrupted, detached: leftRunningTurn };
 }
 
 /**
@@ -1286,6 +1328,29 @@ export async function getAgentChatHistory(input: {
           }
         : message.metadata,
     }));
+}
+
+/**
+ * Where a turn the app stopped reading stands. The server keeps it running and
+ * writes its answer into history; ``pending`` stays true until it settles.
+ * Returns only these two flags, so no message text leaves this function.
+ */
+export async function getAgentChatTurnState(input: {
+  conversationId: string;
+  vaultOwnerToken: string;
+  vaultKey: string;
+}): Promise<{ pending: boolean; answered: boolean }> {
+  const response = await ApiService.getAgentChatHistory({ ...input, limit: 1 });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const payload = (await response.json()) as {
+    messages?: Array<{ role?: unknown }>;
+    turn?: { pending?: unknown };
+  };
+  const pending = payload.turn?.pending === true;
+  const last = Array.isArray(payload.messages) ? payload.messages[payload.messages.length - 1] : undefined;
+  return { pending, answered: !pending && last?.role === "assistant" };
 }
 
 /** Record only a request locator; the Chat owner derives the history card from its ledger. */

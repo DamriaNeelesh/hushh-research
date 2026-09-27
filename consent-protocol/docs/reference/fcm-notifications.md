@@ -1,7 +1,7 @@
 # FCM Notifications
 
 > **Status**: Production (Pure Push)
-> **Last Updated**: August 2026
+> **Last Updated**: September 2026
 > **Scope**: Web (FCM), iOS/Android (Capacitor Firebase Messaging)
 
 
@@ -69,6 +69,31 @@ already attended the system notification. Transient acknowledgement failures
 retry with capped backoff while Feed remains open and retry immediately when
 connectivity returns; permanent authorization or validation failures do not
 spin in the background.
+
+### One replied (`one_reply`)
+
+A One chat turn keeps running on the server after the app stops reading it
+(the person left the chat, or the native app went to the background), and its
+answer is sealed into the conversation with the turn's own chat key. When such
+a turn settles with something to open, the server sends one bare wake-up:
+
+| Field | Value |
+| ----- | ----- |
+| Title / body | `Hussh One` / `One replied` (fixed; never answer or prompt text) |
+| `type` | `one_reply` |
+| Data | `conversation_id` (opaque) and `message_id` only; no `user_id` |
+| Platforms | iOS and Android tokens only; a web token is skipped |
+| Body tap | `/?conversation=<id>`; the chat selects it after unlock through its owner-checked history load. `deep_link` is ignored |
+
+It is sent only when the stream had already closed before the turn settled; a
+client still reading receives the answer live. Inside the open app the chat
+shows its own "One replied" notice (see `AgentChatTurnNotifier`), and nothing
+while the person is looking at that conversation.
+
+**Exception to the Feed-row rule, by design.** The durable record is the
+conversation itself, sealed with the person's chat key. A `feed_events` row is
+not chat-key sealed, so writing one per reply would move chat metadata out of
+the sealed store. The body tap therefore opens the conversation, not Feed.
 
 ### Emergency SMS alert policy
 
