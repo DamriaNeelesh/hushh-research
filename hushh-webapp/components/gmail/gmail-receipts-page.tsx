@@ -390,6 +390,8 @@ export type GmailReceiptsPageProps = {
   voicePublisherRole?: VoiceSurfacePublisherRole;
   /** The normal Gmail route owns lightweight local workspace selection. */
   initialWorkspace?: GmailWorkspace;
+  /** Explicit Feed navigation takes precedence over the last session tab. */
+  forceWorkspace?: GmailWorkspace;
 };
 
 export default function GmailReceiptsPage({
@@ -401,6 +403,7 @@ export default function GmailReceiptsPage({
   skippingSetup = false,
   voicePublisherRole = "route",
   initialWorkspace = "overview",
+  forceWorkspace,
 }: GmailReceiptsPageProps) {
   // This component is hosted on both /one/gmail and /one/setup/gmail, so the
   // origin handed to the agent has to be the live path, not a route constant.
@@ -445,7 +448,8 @@ export default function GmailReceiptsPage({
   const resolvedInitialWorkspace =
     journeyVariant === "onboarding"
       ? "receipts"
-      : getGmailWorkspaceSession(user?.uid, pathname, initialWorkspace);
+      : forceWorkspace ??
+        getGmailWorkspaceSession(user?.uid, pathname, initialWorkspace);
   const [workspace, setWorkspaceState] = useState<GmailWorkspace>(
     resolvedInitialWorkspace,
   );
@@ -470,9 +474,10 @@ export default function GmailReceiptsPage({
     setWorkspaceState(
       journeyVariant === "onboarding"
         ? "receipts"
-        : getGmailWorkspaceSession(user?.uid, pathname, initialWorkspace),
+        : forceWorkspace ??
+          getGmailWorkspaceSession(user?.uid, pathname, initialWorkspace),
     );
-  }, [initialWorkspace, journeyVariant, pathname, user?.uid]);
+  }, [forceWorkspace, initialWorkspace, journeyVariant, pathname, user?.uid]);
   // This is intentionally memory-only. A KYC summary can be
   // sensitive, so workspace navigation must not write unfinished text to
   // browser storage just to preserve it.
@@ -918,6 +923,7 @@ export default function GmailReceiptsPage({
     onConnectionStateChange?.(isConnected);
   }, [isConnected, onConnectionStateChange]);
 
+  const preserveGmailModify = gmail.status?.modify_permission_granted === true;
   const handleConnectGmail = useCallback((purpose: "read" | "send" = "read"): Promise<boolean> => {
     if (!user?.uid || gmailActionBusy !== null) return Promise.resolve(false);
 
@@ -957,6 +963,7 @@ export default function GmailReceiptsPage({
             ({ serverAuthCode } = await HushhAuth.connectGmail({
               serverClientId: nativeStart.server_client_id,
               purpose: nativeStart.purpose,
+              preserveModify: preserveGmailModify,
             }));
           } catch (error) {
             GmailReceiptsService.recordConsentFailure(error, user.uid);
@@ -1114,7 +1121,7 @@ export default function GmailReceiptsPage({
         return false;
       }
     })();
-  }, [gmailActionBusy, journeyVariant, refreshGmailStatus, user]);
+  }, [gmailActionBusy, journeyVariant, preserveGmailModify, refreshGmailStatus, user]);
 
   const handleEnableGmailSend = useCallback(() => {
     void handleConnectGmail("send");

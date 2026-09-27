@@ -204,6 +204,7 @@ import {
   type AgentChatConversation,
   type AgentChatMessage as StoredAgentChatMessage,
   type AgentChatToolEvent,
+  type PendingEmailDraftContext,
   type SpecialistDirectiveEvent,
   type AgentSource,
   getAgentChatFeedback,
@@ -575,6 +576,28 @@ export function getGmailEmailDraftPayload(
           : null,
       }
     : null;
+}
+
+/**
+ * The draft card as the person sees it, for the next chat turn. A source-bound
+ * reply shows its server-derived envelope, so that is what One is told too.
+ */
+export function buildPendingEmailDraftContext(
+  draft: EmailDraft | null,
+  sourceBoundEnvelope: { to: string; subject: string } | null,
+  sourceBound: boolean,
+): PendingEmailDraftContext | null {
+  if (!draft) return null;
+  const context: PendingEmailDraftContext = {
+    to: (sourceBound ? sourceBoundEnvelope?.to ?? "" : draft.to).trim(),
+    cc: sourceBound ? "" : draft.cc.trim(),
+    bcc: sourceBound ? "" : draft.bcc.trim(),
+    subject: (sourceBound ? sourceBoundEnvelope?.subject ?? "" : draft.subject).trim(),
+    body: draft.body.trim(),
+    sourceBound,
+  };
+  if (!sourceBound && draft.driveFileId) context.driveFileId = draft.driveFileId;
+  return context.body || context.to || context.subject ? context : null;
 }
 
 export function getGmailInformationRequestReplyPayload(
@@ -2344,6 +2367,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const [gmailKycEmailDraftEnvelope, setGmailKycEmailDraftEnvelope] = useState<
     { to: string; subject: string } | null
   >(null);
+  // The open draft card's current value, read when a chat turn actually runs
+  // so a follow-up ("add Priya to cc") revises what is on screen right now.
+  // Refs, not state: a keystroke in the card must not re-render the workspace.
+  const emailDraftCardValueRef = useRef<EmailDraft | null>(null);
+  const pendingEmailDraftFrameRef = useRef<{
+    sourceBound: boolean;
+    envelope: { to: string; subject: string } | null;
+  } | null>(null);
+  const handleEmailDraftChange = useCallback((draft: EmailDraft) => {
+    emailDraftCardValueRef.current = draft;
+  }, []);
   const runAgentTurnRef = useRef<(
     text: string,
     options: AgentRunTurnOptions,
@@ -2780,7 +2814,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     !recoveryInspectionPending &&
     !isVoiceConnecting &&
     !voiceActive &&
-    !emailDraftOpen &&
+    // A pending mail draft keeps the composer open: follow-ups revise it, and
+    // sending still happens only from the card's own Send control.
     // Do not trim a potentially very large expanded attachment on every
     // keystroke. The submit path performs the authoritative empty check.
     (input.length > 0 || longPromptAttachment !== null);
@@ -3355,6 +3390,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     };
   }, [emailDraftOpen, gmailKycEmailDraftWorkflowId, loadGmailInformationRequestPreview]);
 
+  useEffect(() => {
+    if (!emailDraftOpen) {
+      pendingEmailDraftFrameRef.current = null;
+      emailDraftCardValueRef.current = null;
+      return;
+    }
+    pendingEmailDraftFrameRef.current = {
+      sourceBound: Boolean(gmailKycEmailDraftWorkflowId),
+      envelope: gmailKycEmailDraftEnvelope,
+    };
+  }, [emailDraftOpen, gmailKycEmailDraftEnvelope, gmailKycEmailDraftWorkflowId]);
+
   const handleEmailSendStarted = (draft: EmailDraft): string => {
     const id = `email-delivery-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setEmailDeliveryHistory((current) => [
@@ -3616,7 +3663,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       // workflow id; authenticated agent-chat ingress re-fetches the actual
       // selected Gmail message as one-turn source context for One.
       void runAgentTurnRef.current(
-        "Reply to the selected Gmail email with appropriate details from my PKM.",
+        "Reply to the selected Gmail email with appropriate details from my memory.",
         {
           source: "typed",
           gmailInformationRequestWorkflowId: gmailInformationRequest.workflow_id,
@@ -5323,6 +5370,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         pkmContext: agentPkmContext.text || undefined,
         personSelectionHandle: options.personSelectionHandle,
         gmailInformationRequestWorkflowId: options.gmailInformationRequestWorkflowId,
+        pendingEmailDraft: pendingEmailDraftFrameRef.current
+          ? buildPendingEmailDraftContext(
+              emailDraftCardValueRef.current,
+              pendingEmailDraftFrameRef.current.envelope,
+              pendingEmailDraftFrameRef.current.sourceBound,
+            )
+          : null,
         screenContext: buildOneVoiceStructuredScreenContext({
           appRuntimeState: appRuntimeStateRef.current,
           state: useAgentVoiceState.getState().oneVoiceState,
@@ -6040,7 +6094,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       createdAtMs: Date.now(),
       deferPkmContext: options.deferPkmContext,
       gmailInformationRequestWorkflowId: gmailKycReplyRequest?.workflow_id,
-      kycInformationSaveConfirmed: Boolean(gmailKycReplyRequest?.workflow_id),
+      // A reply that supplies details One asked for confirms the restricted
+      // save. Once a draft is on screen, a follow-up revises that draft
+      // instead ("remove the account number"), so it confirms no save.
+      kycInformationSaveConfirmed:
+        Boolean(gmailKycReplyRequest?.workflow_id) && !emailDraftOpen,
     };
     const operation: QueuedWorkspaceOperation = {
       id: prompt.id,
@@ -6414,6 +6472,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onSent={handleEmailSent}
           onSendFailed={handleEmailSendFailed}
           sourceBoundEnvelope={gmailKycEmailDraftEnvelope}
+          onDraftChange={handleEmailDraftChange}
           sourceBoundReply={
             workflowId
               ? {
@@ -8331,7 +8390,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         }}
                         disabled={
                           recoveryInspectionPending ||
-                          isVoiceConnecting || emailDraftOpen
+                          isVoiceConnecting
                         }
                         placeholder={
                           composerExpanded
@@ -8361,7 +8420,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           composerExpanded
                             ? false
                             : !input.trim() ||
-                              isVoiceConnecting || emailDraftOpen
+                              isVoiceConnecting
                         }
                         onClick={composerExpanded ? collapseComposer : expandComposer}
                       >

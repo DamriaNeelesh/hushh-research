@@ -105,9 +105,11 @@ from hushh_mcp.one_adk.drive_write_tools import (
 )
 from hushh_mcp.one_adk.external_read_boundary import (
     STATE_EXECUTION_SURFACE,
+    after_external_read_tool,
     before_external_read_tool,
 )
 from hushh_mcp.one_adk.one_persona import build_one_persona_grounding
+from hushh_mcp.one_adk.pending_email_draft import pending_email_draft_instruction
 from hushh_mcp.one_adk.registered_mcp_toolset import (
     RegisteredMcpToolset,
     inspect_private_connectors,
@@ -435,7 +437,12 @@ ONE_IDENTITY_INSTRUCTION: str = (
     "app surface. Navigate there with route.one_kyc; do not invent a direct "
     "conversational KYC tool or claim a workflow changed before the app confirms it.\n"
     "- Location: live sharing with trusted people and local context.\n"
-    "- Memory: saved knowledge the user can review (PKM).\n"
+    "- Memory: the person's own private memory, saved knowledge they can review "
+    "(internally called PKM). When the person says 'my memory', 'what you know about "
+    "me', 'my saved details', 'my info' or similar, in any request, they mean this "
+    "memory: use CONSENTED TURN INFORMATION when it has what is needed, otherwise read "
+    "it with read_my_pkm_domain_summary, and save to it with add_to_pkm only when they "
+    "ask. When you talk to them, call it their memory, never PKM.\n"
     + (
         "- Connected Systems: CRM and external system workflows.\n\n"
         if _CRM_PRODUCT_AVAILABLE
@@ -883,6 +890,7 @@ def _one_runtime_instruction(context: Any) -> str:
             "open_gmail_information_request_reply. That tool keeps the reply attached to this "
             "exact Gmail thread and still requires the owner's Send click."
         )
+    pending_draft_instruction = pending_email_draft_instruction(state_getter)
     voice_context = state_getter(STATE_VOICE_CONTEXT) if callable(state_getter) else None
     if not isinstance(voice_context, dict):
         return (
@@ -890,6 +898,7 @@ def _one_runtime_instruction(context: Any) -> str:
             + mail_instruction
             + pkm_instruction
             + gmail_information_request_instruction
+            + pending_draft_instruction
         )
 
     # Gate 1/Gate 2 already refuse every actual tool call while voice is off,
@@ -1072,6 +1081,7 @@ def _one_runtime_instruction(context: Any) -> str:
             + screen_state_instruction
             + pkm_instruction
             + gmail_information_request_instruction
+            + pending_draft_instruction
             + voice_disabled_instruction
         )
 
@@ -1097,6 +1107,7 @@ def _one_runtime_instruction(context: Any) -> str:
         + screen_state_instruction
         + pkm_instruction
         + gmail_information_request_instruction
+        + pending_draft_instruction
         + voice_disabled_instruction
     )
 
@@ -2353,6 +2364,7 @@ def build_one_text_agent(
             allow_workspace_tools=allow_workspace_tools,
         ),
         before_tool_callback=before_external_read_tool,
+        after_tool_callback=after_external_read_tool,
         before_model_callback=timed_one_before_model,
         after_model_callback=timed_one_after_model,
         # Preserve the configured Chat thinking level for measured comparison.

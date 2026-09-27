@@ -48,8 +48,12 @@ Before a routine notification type is added, its authoritative transition must
 already produce either a durable `feed_events` row or a live Feed actionable.
 Current coverage includes consent, connection actionables, the full One
 Location notification lifecycle (including Circle joins and referrals), and
-terminal funding-transfer statuses. A new emitter that only calls FCM is
-incomplete.
+terminal funding-transfer statuses. Calendar and Mail also project
+privacy-safe, durable in-app Feed outcomes: Calendar connection state and
+confirmed create/reschedule/cancel actions; Mail connection state, opted-in
+information requests, receipt sync outcomes, and owner-approved send outcomes.
+These Feed projections do not themselves send an OS push. A new emitter that
+only calls FCM is incomplete.
 
 `message_id` identifies one semantic transition and `notification_tag`
 identifies the system card it may replace. Connection requests are scoped by
