@@ -41,6 +41,7 @@ def test_projection_is_registered_replayable_and_reversible() -> None:
     for trigger in (
         "calendar_grant_feed_projection",
         "calendar_proposal_feed_projection",
+        "calendar_legacy_delete_feed_projection",
         "mail_connection_feed_projection",
         "mail_information_request_feed_projection",
         "mail_sync_feed_projection",
@@ -69,10 +70,19 @@ def test_projection_never_copies_calendar_or_mail_content_to_plaintext_feed() ->
     ):
         assert forbidden not in insert
     assert "NEW.status = 'executed'" in sql
+    assert "OLD.status = 'executing' AND OLD.expires_at > NOW()" in sql
+    assert "EXISTS (SELECT 1 FROM actor_profiles WHERE user_id = OLD.user_id)" in sql
+    assert "AFTER DELETE ON google_calendar_action_proposals" in sql
     assert "NEW.status = 'detected'" in sql
     assert "NEW.synced_count > 0" in sql
     assert "NEW.sync_mode = 'manual'" in sql
     assert "NEW.state IN ('sent', 'failed', 'outcome_unknown')" in sql
+
+
+def test_release_contracts_probe_the_v251_projection_function() -> None:
+    for name in ("dev_minimum_schema", "prod_core_schema", "uat_integrated_schema"):
+        contract = json.loads((ROOT / f"db/contracts/{name}.json").read_text())
+        assert "project_calendar_mail_feed" in contract["required_functions"]
 
 
 def test_every_projected_event_has_a_web_and_native_feed_presentation() -> None:

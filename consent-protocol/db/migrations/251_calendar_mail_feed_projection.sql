@@ -81,6 +81,30 @@ BEGIN
 END;
 $$;
 
+-- During a rolling backend deploy, the previous Calendar revision still
+-- completes successful actions by deleting an executing proposal. The normal
+-- expiry sweep only deletes executing plans after expiry, so a non-expired
+-- executed-plan delete is a safe, temporary success signal. New revisions
+-- update to 'executed' first and their later delete does not match this.
+CREATE OR REPLACE FUNCTION feed_from_calendar_legacy_delete()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.status = 'executing' AND OLD.expires_at > NOW()
+     AND EXISTS (SELECT 1 FROM actor_profiles WHERE user_id = OLD.user_id) THEN
+    PERFORM project_calendar_mail_feed(
+      OLD.user_id,
+      CASE OLD.action
+        WHEN 'create' THEN 'calendar_event_created'
+        WHEN 'reschedule' THEN 'calendar_event_rescheduled'
+        WHEN 'cancel' THEN 'calendar_event_canceled'
+      END,
+      OLD.proposal_id, NOW()
+    );
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION feed_from_mail_connection()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -196,6 +220,12 @@ BEGIN
       AFTER UPDATE ON google_calendar_action_proposals
       FOR EACH ROW EXECUTE FUNCTION feed_from_calendar_proposal();
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'calendar_legacy_delete_feed_projection'
+    AND tgrelid = 'google_calendar_action_proposals'::regclass) THEN
+    CREATE TRIGGER calendar_legacy_delete_feed_projection
+      AFTER DELETE ON google_calendar_action_proposals
+      FOR EACH ROW EXECUTE FUNCTION feed_from_calendar_legacy_delete();
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'mail_connection_feed_projection'
     AND tgrelid = 'kai_gmail_connections'::regclass) THEN
     CREATE TRIGGER mail_connection_feed_projection
@@ -223,41 +253,8 @@ BEGIN
 END;
 $$;
 
--- Small, idempotent catch-up for durable outcomes; not historical mailbox
--- content, not current connection status (which may have changed meanwhile).
-SELECT project_calendar_mail_feed(user_id,
-  CASE action WHEN 'create' THEN 'calendar_event_created'
-    WHEN 'reschedule' THEN 'calendar_event_rescheduled'
-    WHEN 'cancel' THEN 'calendar_event_canceled' END,
-  proposal_id, executed_at)
-FROM google_calendar_action_proposals
-WHERE status = 'executed' AND executed_at > NOW() - INTERVAL '3 days';
-
-SELECT project_calendar_mail_feed(user_id,
-  'mail_information_request_detected', workflow_id::TEXT, created_at)
-FROM gmail_personal_information_requests
-WHERE status = 'detected' AND created_at > NOW() - INTERVAL '3 days';
-
-SELECT project_calendar_mail_feed(user_id,
-  CASE WHEN status = 'completed' AND synced_count > 0 THEN 'mail_receipts_imported'
-    WHEN status = 'completed' AND sync_mode = 'manual' THEN 'mail_sync_completed'
-    WHEN status = 'failed' THEN 'mail_sync_failed' END,
-  CASE WHEN sync_mode = 'manual' THEN run_id
-    ELSE 'mail-sync:' || TO_CHAR(
-      COALESCE(completed_at, updated_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') END,
-  COALESCE(completed_at, updated_at))
-FROM kai_gmail_sync_runs
-WHERE status IN ('completed', 'failed')
-  AND (status = 'failed' OR synced_count > 0 OR sync_mode = 'manual')
-  AND COALESCE(completed_at, updated_at) > NOW() - INTERVAL '3 days';
-
-SELECT project_calendar_mail_feed(user_id,
-  CASE state WHEN 'sent' THEN 'mail_message_sent'
-    WHEN 'failed' THEN 'mail_message_failed'
-    WHEN 'outcome_unknown' THEN 'mail_delivery_unconfirmed' END,
-  action_id, COALESCE(sent_at, updated_at))
-FROM gmail_owner_send_actions
-WHERE state IN ('sent', 'failed', 'outcome_unknown')
-  AND COALESCE(sent_at, updated_at) > NOW() - INTERVAL '3 days';
+-- Deliberately no historical scan while CREATE TRIGGER locks are held.
+-- Future transitions (including old Calendar workers during a rolling deploy)
+-- are captured immediately; previous history remains in its source tables.
 
 COMMIT;
