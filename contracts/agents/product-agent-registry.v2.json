@@ -3759,7 +3759,7 @@
           "required_scope": "vault.owner"
         },
         {
-          "description": "Move one Drive file by exact ID into a folder no one else can see, rename it, or both.",
+          "description": "Move one Drive file by exact ID into a folder no one else can see, give it a new name, or both.",
           "name": "move_drive_file",
           "py_func": "hushh_mcp.one_adk.drive_write_tools.move_drive_file",
           "required_scope": "vault.owner"

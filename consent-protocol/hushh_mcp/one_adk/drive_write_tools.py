@@ -202,7 +202,7 @@ async def copy_drive_file(
 async def move_drive_file(
     file_id: str, tool_context: ToolContext, folder_id: str = "", new_name: str = ""
 ) -> dict[str, Any]:
-    """Move one Drive file into a folder only the person can see, rename it, or both."""
+    """Move one Drive file into a folder only the person can see, give it a new name, or both."""
     return await _direct_write(
         tool_context, "move_file", _present(fileId=file_id, folderId=folder_id, name=new_name)
     )
