@@ -299,6 +299,44 @@ async def test_clamav_rejects_stale_or_future_signatures_before_sending_content(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("version_age_days", "expect_reload"),
+    # Stale baked signatures (2026-09-27 UAT outage): reload, still fail closed so the
+    # startup loop re-proves freshness. An outage is not staleness: never reload.
+    [(8, True), (None, False)],
+)
+async def test_clamav_startup_reloads_stale_signatures_and_still_fails_closed(
+    monkeypatch, version_age_days, expect_reload
+):
+    import asyncio
+
+    sent = []
+
+    def connection(reply):
+        writer = SimpleNamespace(
+            write=sent.append, drain=AsyncMock(), close=lambda: None, wait_closed=AsyncMock()
+        )
+        return SimpleNamespace(readuntil=AsyncMock(return_value=reply)), writer
+
+    if version_age_days is None:
+        replies = [connection(b"garbled\0")]
+    else:
+        stale = (datetime.now(UTC) - timedelta(days=version_age_days)).strftime(
+            "%a %b %d %H:%M:%S %Y"
+        )
+        replies = [
+            connection(f"ClamAV 1.5.4/28129/{stale}\0".encode()),
+            connection(b"RELOADING\0"),
+        ]
+    monkeypatch.setattr(asyncio, "open_connection", AsyncMock(side_effect=replies))
+
+    with pytest.raises(DriveReadError, match="^scanner_unavailable$"):
+        await ClamAvScanner().check_ready()
+    assert (b"zRELOAD\0" in sent) is expect_reload
+    assert not any(chunk.startswith(b"zINSTREAM") for chunk in sent)
+
+
+@pytest.mark.asyncio
 async def test_clamav_startup_requires_eicar_detection():
     scanner = ClamAvScanner()
     scanner.scan = AsyncMock(side_effect=DriveReadError("unsafe_document"))
