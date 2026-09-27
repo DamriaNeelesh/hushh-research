@@ -226,20 +226,42 @@ def _roster_tool_names() -> set[str]:
     return names | {"ask_connected_systems_agent"}
 
 
-def _browser_presentation_keys() -> set[str]:
+def _browser_presentations() -> dict[str, dict[str, str]]:
     source = (
         Path(__file__).resolve().parents[3] / "hushh-webapp/lib/services/agent-chat-client.ts"
     ).read_text()
     table = source.split("const SERVER_TOOL_PRESENTATION", 1)[1].split("\n};\n", 1)[0]
-    return set(re.findall(r"^  ([a-z_]+): \{$", table, flags=re.MULTILINE))
+    entry = re.compile(
+        r'^  ([a-z_]+): \{\n    label: "([^"]*)",\n    message: "([^"]*)",\n    activity: "([^"]*)",\n  \},$',
+        flags=re.MULTILINE,
+    )
+    parsed = {
+        tool: {"label": label, "message": message, "activity": activity}
+        for tool, label, message, activity in entry.findall(table)
+    }
+    # Every key in the table must parse; a malformed entry must not hide a tool.
+    assert len(parsed) == len(re.findall(r"^  [a-z_]+: \{$", table, flags=re.MULTILINE))
+    return parsed
 
 
-def test_every_roster_tool_restores_and_is_named_in_the_browser() -> None:
+# ADK's confirmation envelope for a reviewed connector call. The browser names
+# it live; history restores the reviewed call's own row instead.
+_LIVE_ONLY_TOOLS = {"adk_request_confirmation"}
+_GENERIC_LABELS = {"", "Agent step", "Connected tool", "Action", "Working on your request"}
+
+
+def test_every_tool_one_can_call_has_a_specific_name_live_and_restored() -> None:
+    # Measured 2026-09-27: 46 roster tools rendered as "Agent step · Completing
+    # a step for your request." and vanished on reload. A tool added to the
+    # roster without a name, live or restored, fails here.
     roster = _roster_tool_names()
+    presentations = _browser_presentations()
     assert roster - agent_chat._ACTIVITY_TOOLS == set()
-    # The browser labels exactly what history can restore: a key only on one
-    # side is a row that is named live but dropped on reload, or the reverse.
-    assert _browser_presentation_keys() == agent_chat._ACTIVITY_TOOLS
+    assert set(presentations) == agent_chat._ACTIVITY_TOOLS | _LIVE_ONLY_TOOLS
+    for tool, presentation in presentations.items():
+        assert presentation["label"] not in _GENERIC_LABELS, tool
+        assert presentation["message"] and presentation["activity"], tool
+        assert presentation["activity"] not in _GENERIC_LABELS, tool
 
 
 @pytest.mark.asyncio

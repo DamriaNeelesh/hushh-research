@@ -89,7 +89,6 @@ export const PRIVATE_MEMORY_PREPARATION_EVENT_ID = "private-memory-preparation";
 const ROUTINE_READINESS_TOOLS: ReadonlySet<string> = new Set([
   "discover_workspace_tools",
   "get_current_time",
-  "list_app_actions",
   "report_no_app_action",
   "resolve_onboarding_goal",
 ]);

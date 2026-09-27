@@ -387,12 +387,12 @@ const SERVER_TOOL_PRESENTATION: Record<
   ask_email_agent: {
     label: "Gmail",
     message: "Checking your mail request.",
-    activity: "Checking Gmail",
+    activity: "Checking your Gmail",
   },
   ask_documents_agent: {
     label: "Google Drive",
     message: "Searching your Drive for this answer.",
-    activity: "Searching Drive",
+    activity: "Searching your Drive",
   },
   ask_connected_systems_agent: {
     label: "Connected systems",
@@ -512,12 +512,12 @@ const SERVER_TOOL_PRESENTATION: Record<
   calendar_summary: {
     label: "Google Calendar",
     message: "Summarizing your calendar.",
-    activity: "Checking Calendar",
+    activity: "Checking your Calendar",
   },
   calendar_events: {
     label: "Google Calendar",
     message: "Reading your calendar events.",
-    activity: "Reading Calendar",
+    activity: "Reading your Calendar",
   },
   calendar_availability: {
     label: "Google Calendar",
@@ -616,8 +616,8 @@ const SERVER_TOOL_PRESENTATION: Record<
   },
   list_app_actions: {
     label: "App actions",
-    message: "Checking what One can do on this screen.",
-    activity: "Checking available actions",
+    message: "Looking up what One can do here.",
+    activity: "Looking up actions",
   },
   start_app_goal: {
     label: "App task",
@@ -639,7 +639,42 @@ const SERVER_TOOL_PRESENTATION: Record<
     message: "Checking the current time.",
     activity: "Checking the time",
   },
+  // ADK's own confirmation step for a reviewed connector call. Live only:
+  // history restores the reviewed call's row, never this envelope.
+  adk_request_confirmation: {
+    label: "Your review",
+    message: "Waiting for your review.",
+    activity: "Waiting for your review",
+  },
 };
+
+const WORKSPACE_PROVIDER_NAMES: Record<string, string> = {
+  gmail: "Gmail",
+  drive: "Google Drive",
+  calendar: "Google Calendar",
+};
+
+/**
+ * Connector setup and reads name the Google product once the call's provider
+ * is known, so "lets connect to Google Drive" reads "Google Drive · Checking
+ * Google Drive access" rather than a generic connector row. Only the fixed
+ * enum above ever labels a step; any other provider value keeps the generic
+ * presentation.
+ */
+function workspaceToolPresentation(
+  toolName: string,
+  provider: unknown,
+): { label: string; message: string; activity: string } | null {
+  const name = typeof provider === "string" ? WORKSPACE_PROVIDER_NAMES[provider] : undefined;
+  if (!name) return null;
+  if (toolName === "discover_workspace_tools") {
+    return { label: name, message: `Checking ${name} access.`, activity: `Checking ${name} access` };
+  }
+  if (toolName === "read_workspace_tool") {
+    return { label: name, message: `Reading ${name}.`, activity: `Reading ${name}` };
+  }
+  return null;
+}
 
 export const TURN_ACTIVITY_TYPE = "one.turn_activity.v1" as const;
 
@@ -674,7 +709,8 @@ export function parseRestoredTurnActivity(descriptor: unknown): RestoredActivity
     const rawStatus = step?.status;
     if (!step || !id || !toolName) return [];
     const mcp = /^mcp_[0-9a-f]{40}$/.test(toolName);
-    const presentation = SERVER_TOOL_PRESENTATION[toolName];
+    const presentation = workspaceToolPresentation(toolName, step.provider) ??
+      SERVER_TOOL_PRESENTATION[toolName];
     if (!mcp && !presentation) return [];
     if (!["done", "waiting", "blocked", "interrupted"].includes(String(rawStatus))) return [];
     const status = rawStatus === "interrupted" ? "blocked" : rawStatus as "done" | "waiting" | "blocked";
@@ -910,7 +946,8 @@ export async function streamAgentChat(input: {
   const toolPayload = (callId: string, name: string, args: Record<string, unknown> = {}): AgentChatToolEvent => {
     const actionId = tools.find((tool) => tool.name === name)?.metadata?.actionId;
     const action = getKaiActionById(typeof actionId === "string" ? actionId : null);
-    const serverPresentation = SERVER_TOOL_PRESENTATION[name];
+    const serverPresentation = workspaceToolPresentation(name, args.provider) ??
+      SERVER_TOOL_PRESENTATION[name];
     const resolvedActionId = typeof actionId === "string" ? actionId : null;
     // Native MCP identities are opaque digests. Never render their raw name or
     // provider-authored descriptions as app-owned activity labels.

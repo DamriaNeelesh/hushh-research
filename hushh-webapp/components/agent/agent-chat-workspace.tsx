@@ -5371,6 +5371,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             if (streamAbortController.signal.aborted) return;
             if (toolEvent.requiresConfirmation || toolEvent.trustedActivationRequired || toolEvent.raw.parked === true) {
               setActiveToolCalls(current => current.filter(item => item.id !== toolEvent.callId));
+            } else {
+              // The call's arguments are complete now, so a connector call can
+              // name its product ("Checking Google Drive access…").
+              setActiveToolCalls(current => current.map(item => item.id === toolEvent.callId
+                ? { ...item, label: toolEvent.label, activity: toolEvent.activity } : item));
             }
             appendDebugEvent(debugTurnId, "tool_waiting", toolEvent);
             const visibleEvent = agentToolEventToVisibleStreamEvent(
