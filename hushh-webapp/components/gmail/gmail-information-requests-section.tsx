@@ -36,6 +36,7 @@ import {
 import { apiErrorCode } from "@/lib/services/api-client";
 
 type Props = {
+  active?: boolean;
   userId: string | null;
   vaultKey: string | null;
   vaultOwnerToken: string | null;
@@ -464,6 +465,7 @@ function ActivityCard({
  * intentionally not used by this workflow.
  */
 export default function GmailInformationRequestsSection({
+  active = true,
   userId,
   vaultKey,
   vaultOwnerToken,
@@ -603,15 +605,27 @@ export default function GmailInformationRequestsSection({
     }
   }, [isConnected, userId, vaultOwnerToken]);
 
+  // Retain the warm workspace across tabs without restarting its first-load UI.
+  const loadedForRef = useRef<typeof load | null>(null);
   useEffect(() => {
+    if (!active || loadedForRef.current === load) return;
+    loadedForRef.current = load;
     void load();
-  }, [load]);
+  }, [active, load]);
 
   useEffect(() => {
-    if (!isConnected || !userId || !vaultOwnerToken) return;
+    if (active) return;
+    scanAbortControllerRef.current?.abort();
+    setSelectedWorkflowId(null);
+    setShowEnableConfirm(false);
+    setShowDisableConfirm(false);
+  }, [active]);
+
+  useEffect(() => {
+    if (!active || !isConnected || !userId || !vaultOwnerToken) return;
     const timer = window.setInterval(() => void load(), 60_000);
     return () => window.clearInterval(timer);
-  }, [isConnected, load, userId, vaultOwnerToken]);
+  }, [active, isConnected, load, userId, vaultOwnerToken]);
 
   const scanInbox = useCallback(async () => {
     if (!vaultOwnerToken || !idTokenProvider || scanInFlightRef.current) {
@@ -663,6 +677,10 @@ export default function GmailInformationRequestsSection({
       setActivityLoaded(true);
       return true;
     } catch (scanError) {
+      if (controller.signal.aborted) {
+        automaticScanSessionRef.current = null;
+        return false;
+      }
       setError(
         scanError instanceof Error
           ? scanError.message
@@ -681,6 +699,7 @@ export default function GmailInformationRequestsSection({
   }, [idTokenProvider, vaultOwnerToken]);
 
   useEffect(() => {
+    if (!active || scanningInbox || scanInFlightRef.current) return;
     if (!preference?.monitoring_enabled || !userId || !vaultOwnerToken) {
       automaticScanSessionRef.current = null;
       return;
@@ -689,7 +708,7 @@ export default function GmailInformationRequestsSection({
     if (automaticScanSessionRef.current === sessionKey) return;
     automaticScanSessionRef.current = sessionKey;
     void scanInbox();
-  }, [preference?.monitoring_enabled, scanInbox, userId, vaultOwnerToken]);
+  }, [active, preference?.monitoring_enabled, scanInbox, scanningInbox, userId, vaultOwnerToken]);
 
   const setMonitoring = useCallback(
     async (enabled: boolean) => {
@@ -1319,7 +1338,7 @@ export default function GmailInformationRequestsSection({
       )}
 
       <AdaptiveDetailSurface
-        open={Boolean(selectedWorkflow)}
+        open={active && Boolean(selectedWorkflow)}
         onOpenChange={(open) => {
           if (!open) setSelectedWorkflowId(null);
         }}
@@ -1352,7 +1371,7 @@ export default function GmailInformationRequestsSection({
         ) : null}
       </AdaptiveDetailSurface>
       <AlertDialog
-        open={showEnableConfirm}
+        open={active && showEnableConfirm}
         onOpenChange={(open) => setShowEnableConfirm(open)}
       >
         <AlertDialogContent className="w-[calc(100%-1rem)] sm:max-w-md">
@@ -1380,7 +1399,7 @@ export default function GmailInformationRequestsSection({
         </AlertDialogContent>
       </AlertDialog>
       <AlertDialog
-        open={showDisableConfirm}
+        open={active && showDisableConfirm}
         onOpenChange={(open) => setShowDisableConfirm(open)}
       >
         <AlertDialogContent className="w-[calc(100%-1rem)] sm:max-w-md">

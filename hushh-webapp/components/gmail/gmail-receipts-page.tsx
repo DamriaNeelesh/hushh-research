@@ -449,6 +449,13 @@ export default function GmailReceiptsPage({
   const [workspace, setWorkspaceState] = useState<GmailWorkspace>(
     resolvedInitialWorkspace,
   );
+  const [kycVisitedOwner, setKycVisitedOwner] = useState<string | null>(
+    resolvedInitialWorkspace === "kyc" ? user?.uid ?? null : null,
+  );
+  useEffect(() => {
+    if (workspace === "kyc" && user?.uid) setKycVisitedOwner(user.uid);
+  }, [workspace, user?.uid]);
+
   const setWorkspace = useCallback(
     (nextWorkspace: GmailWorkspace) => {
       setWorkspaceState(nextWorkspace);
@@ -2174,7 +2181,8 @@ export default function GmailReceiptsPage({
             </section>
           ) : null}
 
-          {isConnected && workspace === "kyc" ? (
+          {isConnected && (kycVisitedOwner === user?.uid || workspace === "kyc") ? (
+            <div hidden={workspace !== "kyc"} key={`${user?.uid ?? "guest"}:${Boolean(vaultKey && vaultOwnerToken)}`}>
             <GmailVerificationOnboarding
               userId={user?.uid || null}
               vaultKey={vaultKey}
@@ -2186,6 +2194,7 @@ export default function GmailReceiptsPage({
               onDetailsChange={setVerificationDraft}
             >
               <GmailInformationRequestsSection
+                active={workspace === "kyc"}
                 userId={user?.uid || null}
                 vaultKey={vaultKey}
                 vaultOwnerToken={vaultOwnerToken}
@@ -2195,6 +2204,7 @@ export default function GmailReceiptsPage({
                 onEnableGmailSend={handleEnableGmailSend}
               />
             </GmailVerificationOnboarding>
+            </div>
           ) : null}
 
           {showReceiptOnboarding ? (

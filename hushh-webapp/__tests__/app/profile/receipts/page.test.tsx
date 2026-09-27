@@ -1349,6 +1349,20 @@ describe("ProfileReceiptsPage", () => {
     ).toBeVisible();
   });
 
+  it("retains the KYC panel while switching between Mail tabs", async () => {
+    render(<ProfileReceiptsPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "KYC" }));
+    const panel = await screen.findByText("KYC requests");
+    expect(panel).toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    expect(panel).not.toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "Receipts" }));
+    expect(panel).not.toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "KYC" }));
+    expect(screen.getByText("KYC requests")).toBe(panel);
+    expect(panel).toBeVisible();
+  });
+
   it("restores the KYC workspace after a secure-session remount", async () => {
     const firstMount = render(<ProfileReceiptsPage />);
 
