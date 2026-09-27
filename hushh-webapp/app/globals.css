@@ -2215,6 +2215,28 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
   color: currentColor !important;
 }
 
+/* The anchored Connect directory floats over live content without a modal
+ * scrim. Keep its neutral surface opaque enough for text while blurring the
+ * page immediately behind it in both themes. */
+.connect-web-directory-popover {
+  background: color-mix(in srgb, var(--app-settings-surface) 94%, transparent);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  backdrop-filter: blur(12px) saturate(140%);
+  box-shadow: 0 14px 32px rgb(0 0 0 / 14%);
+}
+
+.dark .connect-web-directory-popover {
+  box-shadow: 0 14px 32px rgb(0 0 0 / 30%);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .connect-web-directory-popover {
+    background: var(--app-settings-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 html:has(.profile-home-screen),
 html:has(.profile-account-content),
 html:has([data-profile-stack="true"]),

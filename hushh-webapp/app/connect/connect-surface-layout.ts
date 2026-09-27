@@ -2,7 +2,7 @@ export const CONNECT_DIRECTORY_MENU_CLASSNAME =
   "absolute left-0 top-full z-30 mt-1 w-[min(15rem,calc(100vw-2rem))] overflow-hidden rounded-[16px] border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-1.5 shadow-[var(--app-card-shadow-feature)]";
 
 export const CONNECT_WEB_DIRECTORY_POPOVER_CLASSNAME =
-  "w-[min(15rem,calc(100vw-2rem))] overflow-hidden rounded-[16px] border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-1.5 shadow-[var(--app-card-shadow-feature)]";
+  "connect-web-directory-popover w-[min(15rem,calc(100vw-2rem))] overflow-hidden rounded-[16px] border border-[color:var(--app-settings-border)] p-1.5 shadow-[var(--app-card-shadow-feature)]";
 
 export const CONNECT_CONNECTIONS_SUMMARY_TRAILING_CLASSNAME =
   "flex shrink-0 items-center gap-2";
