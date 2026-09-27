@@ -404,16 +404,18 @@ export function GeminiRuntimeConfigurationPage({
           }
         />
         {setupMode ? (
-          <Button
-            type="button" variant="blue" effect="fill" size="prominent" fullWidth
-            onClick={() => void finishConnections()}
-            loading={finishing} disabled={!canContinue || finishing}
-            data-testid="one-setup-connections-terminal"
-            data-voice-control-id="one-setup-connections-terminal"
-            data-voice-action-id="setup.finish_connections"
-            data-voice-label="Continue"
-            data-voice-purpose="Record the selected Gemini runtime and finish setup."
-          >Continue</Button>
+          <div className="mx-auto w-full sm:w-80">
+            <Button
+              type="button" variant="blue" effect="fill" size="prominent" fullWidth
+              onClick={() => void finishConnections()}
+              loading={finishing} disabled={!canContinue || finishing}
+              data-testid="one-setup-connections-terminal"
+              data-voice-control-id="one-setup-connections-terminal"
+              data-voice-action-id="setup.finish_connections"
+              data-voice-label="Continue"
+              data-voice-purpose="Record the selected Gemini runtime and finish setup."
+            >Continue</Button>
+          </div>
         ) : null}
       </AppPageContentRegion>
       {setupMode && finalizationError ? (
