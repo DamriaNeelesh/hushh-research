@@ -128,8 +128,10 @@ The vault key and VAULT_OWNER token remain memory-only. A normal background/resu
   document/process require unlock again. Browser storage never holds the key.
 - Owner-token validity is separate from local key availability. Expired tokens
   cannot authorize calls. Temporary validation/renewal outages hide protected
-  UI behind retryable recovery without discarding the key; terminal invalidation
-  clears it. Late unlock, renewal and native Messages publication are scoped to
+  UI behind retryable recovery without discarding the key, and renewal retries
+  itself every 30 seconds until the network returns, however long that takes
+  (each failure re-arms the timer; a sleeping laptop or offline phone never
+  locks). There is no idle-lock setting. Terminal invalidation clears the key. Late unlock, renewal and native Messages publication are scoped to
   the current identity/runtime epoch.
 - Native enrollment prefers the available Face ID/Touch ID Keychain path;
   existing native passkeys remain supported. New protected secrets have unique
