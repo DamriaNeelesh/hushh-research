@@ -32,6 +32,7 @@ from hushh_mcp.one_adk.agent_tree import (
     ONE_APP_NAME,
     STATE_CONSENT_TOKEN,
     STATE_CONVERSATION_ID,
+    STATE_DRIVE_SEARCH_SELECTION,
     STATE_GMAIL_INFORMATION_REQUEST_CONTEXT,
     STATE_GMAIL_INFORMATION_REQUEST_WORKFLOW_ID,
     STATE_PKM_CONTEXT,
@@ -94,6 +95,103 @@ def _user_id(input_data: RunAgentInput) -> str:
     return value
 
 
+async def _admit_drive_search_selection(
+    selection: object,
+    *,
+    request: Request,
+    authorization: str | None,
+    consent_header: str | None,
+    owner_id: str,
+    content_authorized: bool = False,
+    share_authorized: bool = False,
+) -> str:
+    """Bound the untrusted pointer; the tool verifies owner and live Drive later."""
+    if selection is None:
+        return ""
+    if (
+        not owner_id
+        or not isinstance(selection, dict)
+        or set(selection) != {"jobId", "position"}
+        or not isinstance(selection.get("jobId"), str)
+        or type(selection.get("position")) is not int
+        or not 1 <= selection["position"] <= 10000
+    ):
+        raise HTTPException(status_code=400, detail="Selected Drive result is invalid.")
+    try:
+        job_id = str(uuid.UUID(selection["jobId"]))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Selected Drive result is invalid.") from None
+
+    async def require_current() -> None:
+        try:
+            current = await require_vault_owner_token(
+                request=request,
+                authorization=authorization,
+                hushh_consent=consent_header,
+            )
+        except HTTPException:
+            raise PermissionError("owner session changed") from None
+        if str(current.get("user_id") or "") != owner_id:
+            raise PermissionError("owner session changed")
+
+    try:
+        await require_current()
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="Unlock One to use this Drive result."
+        ) from None
+    # Only the opaque lookup pointer crosses into the turn. One may pause on a
+    # reviewed action for ten minutes, so cleanup is scheduled just after it.
+    return store_request_secret(
+        json.dumps(
+            {
+                "jobId": job_id,
+                "position": selection["position"],
+                "contentAllowed": content_authorized is True,
+                "shareAllowed": share_authorized is True,
+            }
+        ),
+        ttl_seconds=660,
+    )
+
+
+def _current_user_text(input_data: RunAgentInput) -> str:
+    messages = input_data.messages
+    last = messages[-1] if messages else None
+    if getattr(last, "role", None) != "user":
+        return ""
+    text = getattr(last, "content", None)
+    if not isinstance(text, str) or len(text) > 2048:
+        return ""
+    return text
+
+
+def _selected_content_authorized(input_data: RunAgentInput) -> bool:
+    """Only an explicit current owner request can authorize a selected-file export."""
+    text = _current_user_text(input_data)
+    return bool(
+        re.match(
+            r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+            r"(?:read\b|summari[sz]e\b|show\s+(?:me\s+)?(?:the\s+)?(?:contents?|text)\b|"
+            r"what\s+(?:does\s+(?:this|the)\s+(?:file|document)\s+say|is\s+in\s+(?:this|the)\s+(?:file|document)))",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _selected_share_authorized(input_data: RunAgentInput) -> bool:
+    """Untrusted file metadata cannot induce an unasked-for share draft."""
+    return bool(
+        re.match(
+            r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+            r"(?:share\b|send\s+(?:this|the)\s+(?:file|document)\b)",
+            _current_user_text(input_data),
+            re.IGNORECASE,
+        )
+    )
+
+
 async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[str, Any]:
     authorization = request.headers.get("authorization")
     consent_header = request.headers.get("x-hushh-consent")
@@ -153,6 +251,16 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
                     "code": "CHAT_CONVERSATION_RETIRED",
                 },
             )
+    drive_search_selection = await _admit_drive_search_selection(
+        forwarded.get("driveSearchSelection"),
+        request=request,
+        authorization=authorization,
+        consent_header=consent_header,
+        owner_id=user_id if token else "",
+        content_authorized=_selected_content_authorized(input_data),
+        share_authorized=_selected_share_authorized(input_data),
+    )
+    forwarded.pop("driveSearchSelection", None)
     try:
         mcp_approval = admit_resume_receipt(
             forwarded, owner_id=user_id if token else "", conversation_id=input_data.thread_id
@@ -228,6 +336,7 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
         STATE_CONSENT_TOKEN: store_request_secret(str((token or {}).get("token") or "")),
         STATE_CONVERSATION_ID: input_data.thread_id,
         STATE_TIMEZONE: str(forwarded.get("timezone") or "")[:64],
+        STATE_DRIVE_SEARCH_SELECTION: drive_search_selection,
         # This is only an untrusted selection request. The resolver validates
         # it against owner/thread-bound server-issued choices before any read.
         # A picker handle is an untrusted, current-turn admission request. The
@@ -1028,6 +1137,7 @@ _ACTIVITY_TOOLS = frozenset(
         "inspect_private_connectors",
         "discover_workspace_tools",
         "read_workspace_tool",
+        "read_selected_drive_search_result",
         "ask_email_agent",
         "ask_documents_agent",
         "ask_connected_systems_agent",
@@ -1117,6 +1227,14 @@ def _activity_step_from_response(name: str, response: Any) -> dict[str, Any]:
         if safe.get("connectorId"):
             step["connectorId"] = safe["connectorId"]
         return step
+    if name == "read_selected_drive_search_result":
+        status = (_record(response) or {}).get("status")
+        return {
+            "status": "done",
+            "readStatus": status
+            if isinstance(status, str) and status in _READ_STATUSES
+            else "unavailable",
+        }
     if name in READ_TOOLS and name != "inspect_selected_drive_files":
         structured = redacted_read_receipt(_record(response) or {}).get("structured")
         read_status = (_record(structured) or {}).get("status")

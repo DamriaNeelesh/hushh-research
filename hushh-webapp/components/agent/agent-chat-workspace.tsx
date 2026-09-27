@@ -259,7 +259,9 @@ import {
   type PendingConsent,
 } from "@/lib/consent/use-consent-actions";
 import { useOneLocationConsentActions } from "@/lib/consent/use-one-location-consent-actions";
-import { DriveBackgroundSearches } from "@/components/agent/drive-background-search";
+import { DriveBackgroundSearches, type SelectedDriveSearchFile } from "@/components/agent/drive-background-search";
+import { clearGeneratedDriveSearchDraft, DEFAULT_DRIVE_SEARCH_DRAFT } from "@/lib/agent/drive-search-draft";
+import { isVaultSessionEpochCurrent, snapshotVaultSessionEpoch } from "@/lib/vault/session-epoch";
 import { useVault } from "@/lib/vault/vault-context";
 import { loadCustomConnectorSnapshot } from "@/lib/connections/custom-connector-configuration";
 import {
@@ -479,6 +481,7 @@ type AgentRunTurnOptions = {
   source: AgentTurnSource;
   personSelectionHandle?: string;
   gmailInformationRequestWorkflowId?: string;
+  driveSearchSelection?: { jobId: string; position: number };
   kycInformationSaveConfirmed?: boolean;
   appendUserMessage?: boolean;
   replaceAssistantMessageId?: string | null;
@@ -2144,6 +2147,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     tokenExpiresAt,
     getVaultOwnerToken,
   } = useVault();
+  const vaultSessionEpoch = snapshotVaultSessionEpoch();
   // Chat history is sealed with a key derived from this; read it at call time so
   // history requests never capture a stale (or locked) vault.
   const vaultKeyRef = useRef<string | null>(vaultKey);
@@ -2241,6 +2245,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   }, []);
 
   const [input, setInput] = useState("");
+  // A selected search result is session-only; chat receives its opaque reference
+  // separately from the human prompt and rechecks it against live Drive.
+  const [pendingDriveSearchSelection, setPendingDriveSearchSelection] = useState<
+    (SelectedDriveSearchFile & { ownerUid: string; vaultEpoch: number }) | null
+  >(null);
+  const pendingDriveSearchSelectionRef = useRef<typeof pendingDriveSearchSelection>(null);
+  const generatedDriveSearchDraftRef = useRef(false);
   const [longPromptAttachment, setLongPromptAttachment] =
     useState<PendingTextAttachment | null>(null);
   // Which model runs this person's agent. The catalog is served, so a new
@@ -2253,6 +2264,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   >(null);
   const [editingQueuedPromptText, setEditingQueuedPromptText] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const activeDriveSearchSelection = pendingDriveSearchSelection &&
+    pendingDriveSearchSelection.ownerUid === user?.uid && isVaultUnlocked &&
+    isVaultSessionEpochCurrent(pendingDriveSearchSelection.vaultEpoch)
+      ? pendingDriveSearchSelection : null;
+  useEffect(() => {
+    pendingDriveSearchSelectionRef.current = null;
+    setPendingDriveSearchSelection(null);
+    const generated = generatedDriveSearchDraftRef.current;
+    generatedDriveSearchDraftRef.current = false;
+    if (generated) setInput(current => clearGeneratedDriveSearchDraft(current, generated));
+  }, [conversationId, user?.uid, isVaultUnlocked, vaultSessionEpoch]);
   // Ratings for this conversation, keyed by message id. Durable, so a reload
   // and a conversation switch both keep what the person said about an answer.
   const [messageRatings, setMessageRatings] = useState<
@@ -3308,6 +3330,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   ]);
 
   const handleCreateNewChat = useCallback(() => {
+    pendingDriveSearchSelectionRef.current = null;
+    setPendingDriveSearchSelection(null);
+    generatedDriveSearchDraftRef.current = false;
     abortAgentTurnWork();
     clearTranscriptProgrammaticScroll();
     transcriptUserScrollRef.current = false;
@@ -4261,6 +4286,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           setRecoveryCheckedForUid(ownerUid);
           return;
         }
+        pendingDriveSearchSelectionRef.current = null;
+        setPendingDriveSearchSelection(null);
+        generatedDriveSearchDraftRef.current = false;
         setInput(state.input);
         setLongPromptAttachment(state.attachment);
         setComposerExpanded(state.composerExpanded);
@@ -5446,6 +5474,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         pkmContext: agentPkmContext.text || undefined,
         personSelectionHandle: options.personSelectionHandle,
         gmailInformationRequestWorkflowId: options.gmailInformationRequestWorkflowId,
+        driveSearchSelection: options.driveSearchSelection,
         pendingEmailDraft: pendingEmailDraftFrameRef.current
           ? buildPendingEmailDraftContext(
               emailDraftCardValueRef.current,
@@ -6179,7 +6208,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const enqueuePrompt = (
     textInput: string,
     personSelectionHandle?: string,
-    options: Pick<AgentRunTurnOptions, "deferPkmContext"> = {},
+    options: Pick<AgentRunTurnOptions, "deferPkmContext" | "driveSearchSelection"> = {},
   ) => {
     const text = textInput.trim();
     if (!text) return;
@@ -6188,6 +6217,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       text,
       createdAtMs: Date.now(),
       deferPkmContext: options.deferPkmContext,
+      driveSearchSelection: options.driveSearchSelection,
       gmailInformationRequestWorkflowId: gmailKycReplyRequest?.workflow_id,
       // A reply that supplies details One asked for confirms the restricted
       // save. Once a draft is on screen, a follow-up revises that draft
@@ -6208,6 +6238,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             source: "typed",
             personSelectionHandle,
             deferPkmContext: operation.prompt?.deferPkmContext,
+            driveSearchSelection: operation.prompt?.driveSearchSelection,
             gmailInformationRequestWorkflowId:
               operation.prompt?.gmailInformationRequestWorkflowId,
             kycInformationSaveConfirmed:
@@ -6229,7 +6260,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         .snapshot()
         .map((operation) =>
           operation.prompt?.id === id
-            ? { ...operation, prompt: { ...operation.prompt, text } }
+            ? {
+                ...operation,
+                prompt: { ...operation.prompt, text, driveSearchSelection: undefined },
+              }
             : operation,
         ),
     );
@@ -6391,7 +6425,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       composerText: attachment?.isExpanded ? "" : draftText,
     });
     if (!text.trim() || isVoiceConnecting || voiceActive) return;
+    const selectedDriveFile = pendingDriveSearchSelectionRef.current;
+    const driveSearchSelection = selectedDriveFile &&
+      selectedDriveFile.ownerUid === user?.uid && isVaultUnlocked &&
+      isVaultSessionEpochCurrent(selectedDriveFile.vaultEpoch)
+      ? { jobId: selectedDriveFile.jobId, position: selectedDriveFile.position }
+      : undefined;
     setInput("");
+    pendingDriveSearchSelectionRef.current = null;
+    setPendingDriveSearchSelection(null);
+    generatedDriveSearchDraftRef.current = false;
     setLongPromptAttachment(null);
     setComposerExpanded(false);
     // A large paste is a dedicated browser-memory import lane. Redact payment
@@ -6419,6 +6462,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     }
     enqueuePrompt(submittedText, undefined, {
       deferPkmContext: attachment !== null,
+      driveSearchSelection,
     });
   };
 
@@ -6693,9 +6737,23 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     });
   };
   const handleWelcomePromptSelect = useCallback((prompt: string) => {
+    pendingDriveSearchSelectionRef.current = null;
+    setPendingDriveSearchSelection(null);
+    generatedDriveSearchDraftRef.current = false;
     setInput(prompt);
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }, []);
+  const handleUseDriveSearchFile = (selection: SelectedDriveSearchFile) => {
+    if (!user?.uid || !isVaultUnlocked || !getVaultOwnerToken()) return;
+    const pending = { ...selection, ownerUid: user.uid, vaultEpoch: snapshotVaultSessionEpoch() };
+    pendingDriveSearchSelectionRef.current = pending;
+    setPendingDriveSearchSelection(pending);
+    if (!input.trim()) {
+      generatedDriveSearchDraftRef.current = true;
+      setInput(DEFAULT_DRIVE_SEARCH_DRAFT);
+    }
+    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+  };
   const toggleHistoryDrawer = useCallback(() => {
     const next = transitionConnectionsDrawer(
       { open: isHistoryDrawerOpen, mode: drawerMode },
@@ -7083,7 +7141,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             </div>
           </div>
 
-          {!isPuppySurface ? <DriveBackgroundSearches /> : null}
+          {!isPuppySurface ? <DriveBackgroundSearches onUseInChat={handleUseDriveSearchFile} /> : null}
 
           {/* Both transcripts are HIDDEN rather than unmounted, and the
               symmetry is the point: `hidden` is display:none, so the surface
@@ -8369,6 +8427,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                             {prompt.text}
                           </span>
                         )}
+                        {prompt.driveSearchSelection ? <span className="shrink-0 text-xs text-muted-foreground">Drive file selected</span> : null}
                         {editingQueuedPromptId === prompt.id ? (
                           <Button
                             type="button"
@@ -8425,6 +8484,20 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 </div>
               ) : (
                 <>
+                  {activeDriveSearchSelection ? (
+                    <div className="mb-2 flex min-w-0 items-center gap-2 rounded-[18px] bg-foreground/[0.045] px-3 py-1.5 text-sm" aria-label="Selected Drive file">
+                      <FileText className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate">{activeDriveSearchSelection.name}</span>
+                      <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" aria-label="Remove selected Drive file"
+                        onClick={() => {
+                          pendingDriveSearchSelectionRef.current = null;
+                          setPendingDriveSearchSelection(null);
+                          const generated = generatedDriveSearchDraftRef.current;
+                          generatedDriveSearchDraftRef.current = false;
+                          if (generated) setInput(current => clearGeneratedDriveSearchDraft(current, generated));
+                        }}><X className="h-4 w-4" /></Button>
+                    </div>
+                  ) : null}
                   {longPromptAttachment ? (
                     <div
                       className="relative mb-2 rounded-[18px] border border-foreground/[0.12] bg-foreground/[0.045] p-3 pr-11 text-sm"
@@ -8508,7 +8581,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         }
                         aria-label={composerExpanded ? "Expanded message One" : "Message One"}
                         value={input}
-                        onChange={(event) => setInput(event.target.value)}
+                        onChange={(event) => { generatedDriveSearchDraftRef.current = false; setInput(event.target.value); }}
                         onPaste={handleComposerPaste}
                         onKeyDown={(event) => {
                           if (
