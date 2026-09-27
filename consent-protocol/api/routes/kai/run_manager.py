@@ -9,10 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, AsyncGenerator, Callable, Dict, Optional
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, Optional
 
 from starlette.concurrency import run_in_threadpool
 
@@ -32,14 +33,47 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class _BackgroundRunRequest:
-    """Minimal request shim used by background workers."""
+# How often a live worker may ask the durable store whether its owner canceled
+# the run from another process. Coarse on purpose: the generator polls
+# ``is_disconnected`` only at stage boundaries, and this keeps the read to at
+# most one query per interval per live run (never per frame).
+_DURABLE_CANCEL_POLL_SECONDS = 5.0
 
-    def __init__(self, cancel_event: asyncio.Event):
+
+class _BackgroundRunRequest:
+    """Minimal request shim used by background workers.
+
+    ``cancel_probe`` reads a cancel recorded by a different worker process (see
+    ``KaiAnalyzeRunStore.request_cancel``). It is throttled and only consulted
+    while the local cancel event is still clear.
+    """
+
+    def __init__(
+        self,
+        cancel_event: asyncio.Event,
+        cancel_probe: Optional[Callable[[], Awaitable[bool]]] = None,
+        *,
+        poll_seconds: Optional[float] = None,
+    ):
         self._cancel_event = cancel_event
+        self._cancel_probe = cancel_probe
+        interval = _DURABLE_CANCEL_POLL_SECONDS if poll_seconds is None else poll_seconds
+        self._poll_seconds = max(0.0, interval)
+        self._last_probe_at: Optional[float] = None
 
     async def is_disconnected(self) -> bool:
-        return self._cancel_event.is_set()
+        if self._cancel_event.is_set():
+            return True
+        if self._cancel_probe is None:
+            return False
+        now = time.monotonic()
+        if self._last_probe_at is not None and now - self._last_probe_at < self._poll_seconds:
+            return False
+        self._last_probe_at = now
+        if await self._cancel_probe():
+            self._cancel_event.set()
+            return True
+        return False
 
 
 @dataclass
@@ -66,6 +100,8 @@ class AnalyzeRunRecord:
     # carry a single terminal frame; the stream route replays it and skips the
     # stale-cursor 410 guard. Always False for live, locally-owned runs.
     is_durable_replay: bool = False
+    # Set once the "Analysis ready" Feed item has been written for this run.
+    completion_feed_recorded: bool = False
 
     @property
     def latest_cursor(self) -> int:
@@ -155,7 +191,6 @@ class KaiAnalyzeRunManager:
                 payload["run_id"] = run.run_id
             frame["data"] = json.dumps(envelope)
 
-        just_completed = False
         async with run.condition:
             run.events.append(frame)
             run.updated_at = _now_iso()
@@ -174,23 +209,34 @@ class KaiAnalyzeRunManager:
                     payload = envelope.get("payload")
                     run.terminal_payload = payload if isinstance(payload, dict) else None
                     run.status = terminal_status
-                    just_completed = terminal_status == "completed"
             run.condition.notify_all()
-        if just_completed:
-            # Best-effort projection of the in-memory terminal transition. The
-            # stable run id makes retries harmless. The optional durable-run
-            # store checkpoints later and exposes no shared transaction/outbox
-            # contract, so this manager must not invent a second DB authority.
-            await run_in_threadpool(
-                FeedService().record_event,
-                user_id=run.user_id,
-                source_domain="kai",
-                event_type="kai_analysis_completed",
-                actor_label="Kai",
-                metadata={"ticker": run.ticker},
-                source_row_id=run.run_id,
-            )
         return envelope if isinstance(envelope, dict) else None
+
+    async def _record_completion_feed(self, run: AnalyzeRunRecord) -> None:
+        """Write "Analysis ready" once the decision has reached the person's device.
+
+        The result is saved to the person's encrypted history by the client that
+        receives the decision; this server never holds it. A run that completes
+        with nobody attached (the stream never attached, the app was closed)
+        produces no saved result, so announcing it as ready sent people to an
+        analysis that did not exist. Only a completed, locally-owned run whose
+        terminal frame was handed to an attached stream is announced. Cancelled
+        and failed runs never are. The stable run id keeps retries harmless; the
+        optional durable store exposes no shared outbox, so this manager must not
+        invent a second DB authority.
+        """
+        if run.completion_feed_recorded or run.is_durable_replay or run.status != "completed":
+            return
+        run.completion_feed_recorded = True
+        await run_in_threadpool(
+            FeedService().record_event,
+            user_id=run.user_id,
+            source_domain="kai",
+            event_type="kai_analysis_completed",
+            actor_label="Kai",
+            metadata={"ticker": run.ticker, "run_id": run.run_id},
+            source_row_id=run.run_id,
+        )
 
     async def _append_synthetic_terminal(
         self,
@@ -221,7 +267,10 @@ class KaiAnalyzeRunManager:
         run: AnalyzeRunRecord,
         generator_factory: RunGeneratorFactory,
     ) -> None:
-        background_request = _BackgroundRunRequest(run.cancel_event)
+        background_request = _BackgroundRunRequest(
+            run.cancel_event,
+            self._durable_cancel_probe(run) if self._store is not None else None,
+        )
         saw_terminal = False
         try:
             generator = generator_factory(
@@ -390,8 +439,32 @@ class KaiAnalyzeRunManager:
             logger.warning("[KaiRun] durable read-through failed for %s", run_id, exc_info=True)
             return None
 
+    def _durable_cancel_probe(self, run: AnalyzeRunRecord) -> Callable[[], Awaitable[bool]]:
+        store = self._store
+
+        async def _probe() -> bool:
+            if store is None:
+                return False
+            return bool(await store.is_cancel_requested(run_id=run.run_id, user_id=run.user_id))
+
+        return _probe
+
     async def cancel_run(self, *, run_id: str, user_id: str) -> Optional[AnalyzeRunRecord]:
-        run = await self.get_run(run_id)
+        async with self._lock:
+            local_run = self._runs_by_id.get(run_id)
+        if local_run is None and self._store is not None:
+            # The run lives in another worker process (or has finished). An
+            # existing receipt means it is already terminal; otherwise record the
+            # owner's cancel so the owning worker stops at its next poll instead
+            # of running to completion as an orphan.
+            existing = await self.get_run(run_id)
+            if existing is None:
+                await self._store.request_cancel(run_id=run_id, user_id=user_id)
+                existing = await self.get_run(run_id)
+            if existing is None or existing.user_id != user_id:
+                return None
+            return existing
+        run = local_run
         if run is None or run.user_id != user_id:
             return None
         run.cancel_event.set()
@@ -431,4 +504,6 @@ class KaiAnalyzeRunManager:
                 yield frame
 
             if terminal_reached:
+                # Reached only after the consumer pulled the terminal frame.
+                await self._record_completion_feed(run)
                 return
