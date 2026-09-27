@@ -299,9 +299,9 @@ async function mapWithConcurrency<T, R>(
 /** Fetch one small batch at a time as browsing or search reaches the list end. */
 const DEFAULT_PAGE_SIZE = 20;
 const CONNECT_ROW_ACTION_CLASSNAME =
-  "ui-text-compact-button-label h-11 min-h-11 rounded-xl px-2.5 text-[13px] leading-4";
+  "ui-text-compact-button-label h-11 min-h-11 rounded-[12px] px-3 text-[13px] leading-4";
 const CONNECT_INLINE_BUTTON_CLASSNAME =
-  "ui-text-compact-button-label h-11 min-h-11 rounded-xl px-2.5 text-[13px] leading-4";
+  "ui-text-compact-button-label h-11 min-h-11 rounded-[12px] px-3 text-[13px] leading-4";
 const CONNECT_REMOVE_BUTTON_CLASSNAME =
   "text-destructive hover:bg-destructive/10 hover:text-destructive";
 const CONNECT_REMOVE_CONFIRM_BUTTON_CLASSNAME =
@@ -309,7 +309,7 @@ const CONNECT_REMOVE_CONFIRM_BUTTON_CLASSNAME =
 const CONNECT_SECTION_CONTROL_LABEL_CLASSNAME =
   "connect-section-control-label";
 const CONNECT_REFRESH_BUTTON_CLASSNAME =
-  "h-11 min-h-11 w-11 min-w-11 rounded-full p-0 text-muted-foreground hover:text-foreground disabled:opacity-70";
+  "h-11 min-h-11 w-11 min-w-11 rounded-[12px] bg-[color:var(--app-settings-icon-surface)] p-0 text-[color:var(--app-settings-icon-foreground)] hover:bg-[color:var(--app-neutral-fill-strong)] hover:text-[color:var(--app-label)] focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] disabled:opacity-70";
 
 /** Maximum number of connection requests the People bulk action can send. */
 const MAX_BULK_CONNECTION_REQUESTS = 10;
@@ -2709,8 +2709,8 @@ export default function ConnectPageClient() {
           "flex min-h-11 w-full items-center justify-between px-3 text-left font-sans text-[length:var(--type-section-label-size)] leading-[var(--type-section-label-line)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]",
           useWebDirectoryPopover ? "rounded-[12px]" : "rounded-[10px]",
           active
-            ? "font-semibold text-[color:var(--app-accent)]"
-            : "font-normal text-[color:var(--app-primary-label)] hover:bg-[color:var(--app-secondary-fill)]",
+            ? "bg-[color:var(--app-settings-icon-surface)] font-semibold text-[color:var(--app-label)]"
+            : "font-normal text-[color:var(--app-secondary-label)] hover:bg-[color:var(--app-neutral-fill)] hover:text-[color:var(--app-label)]",
         )}
         onClick={() => {
           setTab(option.value);
@@ -2782,7 +2782,7 @@ export default function ConnectPageClient() {
               aria-haspopup="menu"
               aria-expanded={directoryMenuOpen}
               aria-label={`Current directory: ${CONNECT_TAB_LABEL[tab]}`}
-              className="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
+              className="inline-flex min-h-11 max-w-full items-center gap-2 rounded-[12px] border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] px-3 text-left transition-colors hover:bg-[color:var(--app-settings-icon-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
               onKeyDown={handleDirectoryMenuTriggerKeyDown}
             >
               <SectionLabel
@@ -2818,7 +2818,7 @@ export default function ConnectPageClient() {
             aria-haspopup="menu"
             aria-expanded={directoryMenuOpen}
             aria-label={`Current directory: ${CONNECT_TAB_LABEL[tab]}`}
-            className="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
+            className="inline-flex min-h-11 max-w-full items-center gap-2 rounded-[12px] border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] px-3 text-left transition-colors hover:bg-[color:var(--app-settings-icon-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
             onClick={() => setDirectoryMenuOpen((current) => !current)}
             onKeyDown={handleDirectoryMenuTriggerKeyDown}
           >
@@ -3003,7 +3003,7 @@ export default function ConnectPageClient() {
                                 data-testid="connect-my-connections-toggle"
                                 className={cn(
                                   CONNECT_SECTION_CONTROL_LABEL_CLASSNAME,
-                                  "group max-w-full rounded-full border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-secondary-fill)] px-3 text-[color:var(--app-label)] shadow-none hover:bg-[color:var(--app-tertiary-fill)] focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2",
+                                  "group max-w-full rounded-[12px] border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-icon-surface)] px-3 text-[color:var(--app-label)] shadow-none hover:bg-[color:var(--app-neutral-fill-strong)] focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2",
                                 )}
                               >
                                 <span

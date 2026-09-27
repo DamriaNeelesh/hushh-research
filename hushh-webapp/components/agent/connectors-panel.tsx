@@ -111,10 +111,10 @@ type ConnectorListEntry = {
 function ConnectorGlyph({ id }: { id: string }) {
   const logo = ({ gmail: "gmail", google_drive: "drive", calendar: "calendar", plaid: "plaid" } as Record<string, string>)[id];
   return (
-    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-background text-foreground shadow-sm" aria-hidden="true">
+    <span className="flex size-10 shrink-0 items-center justify-center text-foreground" aria-hidden="true">
       {logo ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={`/icons/connectors/${logo}.svg`} alt="" className={`size-6 object-contain${id === "plaid" ? " dark:invert" : ""}`} />
+        <img src={`/icons/connectors/${logo}.svg`} alt="" className={`size-7 object-contain${id === "plaid" ? " dark:invert" : ""}`} />
       ) : (
         <span className="text-sm font-semibold">•</span>
       )}
@@ -125,7 +125,7 @@ function ConnectorGlyph({ id }: { id: string }) {
 function ConnectorRow({ entry }: { entry: ConnectorListEntry }) {
   const detailId = useId();
   return (
-    <li className="flex min-h-14 min-w-0 items-center gap-3 border-b border-foreground/10 px-4 last:border-b-0">
+    <li className="flex min-h-[68px] min-w-0 items-center gap-3 border-b border-[color:var(--app-card-border-standard)] px-4 py-2.5 last:border-b-0 sm:px-5">
       <ConnectorGlyph id={entry.id} />
       {entry.onOpen ? (
         <button
@@ -133,24 +133,24 @@ function ConnectorRow({ entry }: { entry: ConnectorListEntry }) {
           aria-label={entry.name}
           aria-describedby={entry.detail ? detailId : undefined}
           onClick={entry.onOpen}
-          className="flex min-h-14 min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium">{entry.name}</span>
-            {entry.detail ? <span id={detailId} className="sr-only">{entry.detail}</span> : null}
+            <span className="block break-words text-[15px] font-semibold leading-5 text-foreground">{entry.name}</span>
+            {entry.detail ? <span id={detailId} className="mt-0.5 block text-xs leading-4 text-muted-foreground">{entry.detail}</span> : null}
           </span>
           {!entry.action ? <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> : null}
         </button>
       ) : (
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium">{entry.name}</span>
-          {entry.detail ? <span className="sr-only">{entry.detail}</span> : null}
+          <span className="block break-words text-[15px] font-semibold leading-5 text-foreground">{entry.name}</span>
+          {entry.detail ? <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">{entry.detail}</span> : null}
         </span>
       )}
       {entry.action ? (
         <button
           type="button"
-          className="min-h-11 shrink-0 px-1 text-sm font-semibold text-primary disabled:cursor-not-allowed disabled:opacity-50 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className={`inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg px-2 text-sm font-semibold transition-colors hover:bg-[color:var(--app-settings-icon-surface)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${entry.connected ? "text-muted-foreground hover:text-foreground" : "text-[color:var(--app-settings-link)]"}`}
           aria-label={entry.action.label}
           disabled={entry.action.disabled}
           onClick={entry.action.onClick}
@@ -158,7 +158,7 @@ function ConnectorRow({ entry }: { entry: ConnectorListEntry }) {
           {entry.action.label.split(" ")[0]}
         </button>
       ) : entry.trailingText ? (
-        <span className="shrink-0 text-xs text-muted-foreground">{entry.trailingText}</span>
+        <span className="max-w-24 shrink-0 text-right text-xs leading-4 text-muted-foreground">{entry.trailingText}</span>
       ) : null}
     </li>
   );
@@ -1404,11 +1404,12 @@ function OwnerConnectorsPanel({
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col bg-[color:var(--app-card-surface-default-solid)] text-foreground"
+      className="flex h-full min-h-0 flex-col bg-[color:var(--app-settings-canvas)] text-foreground"
+      data-slot="connectors-panel"
       data-connections-panel
       data-surface={surface}
     >
-      <header className="flex shrink-0 items-center gap-2 px-4 pb-3 pt-4">
+      <header className="flex shrink-0 items-center gap-3 border-b border-[color:var(--app-settings-border)] px-4 pb-4 pt-4 sm:px-6 sm:pt-5">
         {activeConnector || surface === "settings" ? (
           <ShellActionSurface
             ref={detailBackRef}
@@ -1424,7 +1425,7 @@ function OwnerConnectorsPanel({
           </ShellActionSurface>
         ) : null}
         {activeConnector ? <ConnectorGlyph id={activeConnector} /> : null}
-        <h2 className="min-w-0 flex-1 truncate text-lg font-semibold">
+        <h2 className="min-w-0 flex-1 truncate text-xl font-semibold tracking-tight sm:text-2xl">
           {activeConnector
             ? entries.find((entry) => entry.id === activeConnector)?.name || "Connector"
             : "Connectors"}
@@ -1442,14 +1443,14 @@ function OwnerConnectorsPanel({
           </ShellActionSurface>
         ) : null}
       </header>
-      <div className="min-h-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+      <div className="min-h-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-5 sm:px-6 sm:pt-6">
         {!vaultOwnerToken ? (
           <p role="status" className="text-sm text-muted-foreground">
             Unlock your vault to manage connectors.
           </p>
         ) : !activeConnector ? (
           <>
-            <label className="flex min-h-11 items-center gap-2 rounded-full bg-foreground/10 px-4 text-muted-foreground focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring">
+            <label className="flex min-h-11 items-center gap-2 rounded-full bg-[color:var(--app-settings-surface)] px-4 text-muted-foreground focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring">
               <SearchIcon className="size-4 shrink-0" aria-hidden="true" />
               <input
                 ref={searchRef}
@@ -1469,9 +1470,9 @@ function OwnerConnectorsPanel({
               availableEntries,
             ]] as const).map(([heading, items]) =>
               query && items.length === 0 ? null : (
-                <section key={heading} aria-label={heading} className="space-y-2">
-                  <h3 className="text-sm font-medium text-muted-foreground">{heading}</h3>
-                  <ul className="overflow-hidden rounded-2xl bg-foreground/10">
+                <section key={heading} aria-label={heading} className="space-y-2.5">
+                  <h3 className="px-1 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">{heading}</h3>
+                  <ul className="overflow-hidden rounded-2xl bg-[color:var(--app-settings-surface)]">
                     {items.length ? items.map((entry) => <ConnectorRow key={entry.id} entry={entry} />) : (
                       <li className="px-4 py-4 text-sm text-muted-foreground">
                         {heading === "Connected" ? "No connected connectors" : "No available connectors"}
@@ -1494,7 +1495,7 @@ function OwnerConnectorsPanel({
           <>
             {activeConnector === "gmail" && <section
               aria-labelledby="connection-mail-title"
-              className="space-y-3 rounded-xl border border-border p-3"
+              className="space-y-3 rounded-2xl border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-4 sm:p-5"
             >
               <h3 id="connection-mail-title" className="font-semibold">
                 Gmail
@@ -1550,7 +1551,7 @@ function OwnerConnectorsPanel({
                 )}
               </div>
               {gmail.status?.connected && (
-                <div className="divide-y rounded-lg border border-border px-3 text-sm" aria-label="Gmail permissions">
+                <div className="divide-y divide-[color:var(--app-settings-border)] rounded-xl border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] px-3 text-sm" aria-label="Gmail permissions">
                   <div className="flex min-h-11 items-center justify-between gap-3"><span>Read mail</span><span className="text-muted-foreground">Allowed</span></div>
                   <div className="flex min-h-11 items-center justify-between gap-3"><span>Send mail</span><span className="text-muted-foreground">{gmail.status.send_permission_granted ? "Allowed · review required" : "Not enabled"}</span></div>
                   <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 py-1">
@@ -1651,7 +1652,7 @@ function OwnerConnectorsPanel({
                 </p>
               )}
               {drive?.profile === "live" && drive.status === "connected" && (
-                <div className="space-y-3 rounded-lg border border-border p-3">
+                <div className="space-y-3 rounded-xl border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-4">
                   <p className="text-sm">Prepare document requests while you’re away. One reads relevant files on Hushh servers and sends excerpts to Gemini. Files are shared only after your approval or under document trust.</p>
                   <Button className={touch} disabled={driveBusy || liveBackground === null}
                     onClick={() => void runDrive(async (token) => {
@@ -1680,7 +1681,7 @@ function OwnerConnectorsPanel({
               {pending && (
                 <section
                   ref={pendingRef}
-                  className="space-y-3 rounded-lg border border-border p-3"
+                  className="space-y-3 rounded-xl border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-4"
                   aria-label="Confirm selected files"
                 >
                   <p className="text-sm">
@@ -1872,7 +1873,7 @@ function OwnerConnectorsPanel({
               )}
             </section>}
             {activeConnector === "calendar" && (
-              <section className="space-y-3 rounded-xl border border-border p-3" aria-label="Calendar details">
+              <section className="space-y-3 rounded-2xl border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-4 sm:p-5" aria-label="Calendar details">
                 <p role="status" className="text-sm">{calendar.error ? "Status unavailable" : calendar.connected ? "Connected" : calendar.status?.status === "needs_reauth" ? "Sign-in needed" : "Not connected"}</p>
                 {calendar.connected ? (
                   <Button size="compact" variant="outline" disabled={calendarBusy} onClick={() => setConfirm("calendar")}>Disconnect Calendar</Button>
@@ -1889,7 +1890,7 @@ function OwnerConnectorsPanel({
                   {financial.error ? "Could not check bank connections." : financial.loading ? "Checking bank connections…" : plaidConnections.length ? `${plaidConnections.length} connected ${plaidConnections.length === 1 ? "bank" : "banks"}` : "No banks connected"}
                 </p>
                 {Object.entries(vaultConnections(financial.data?.data)).map(([itemId, connection]) => (
-                  <div key={itemId} className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-border p-3">
+                  <div key={itemId} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-xl border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-4">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium">{connection.institution_name || "Bank connection"}</p>
                       <p className="text-xs text-muted-foreground">{connection.status === "needs_relink" ? "Reconnect needed" : "Connected"}</p>
@@ -1908,7 +1909,7 @@ function OwnerConnectorsPanel({
               </section>
             )}
             {selectedCatalog && !["google_drive", "gmail", "calendar", "plaid"].includes(activeConnector ?? "") && (
-              <section className="space-y-3 rounded-xl border border-border p-3" aria-label={`${selectedCatalog.displayName} details`}>
+              <section className="space-y-3 rounded-2xl border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-4 sm:p-5" aria-label={`${selectedCatalog.displayName} details`}>
                 <h3 className="font-semibold">{selectedCatalog.displayName}</h3>
                 <p className="text-sm text-muted-foreground">{selectedCatalog.description}</p>
                 {selectedCatalog.accountLabel ? <p className="break-all text-sm">{selectedCatalog.accountLabel}</p> : null}
@@ -1917,7 +1918,7 @@ function OwnerConnectorsPanel({
             )}
             {confirm && (
               <section
-                className="space-y-3 rounded-xl border border-border p-3"
+                className="space-y-3 rounded-2xl border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-4 sm:p-5"
                 aria-label="Confirm connection change"
               >
                 <p className="text-sm">

@@ -511,9 +511,9 @@ function AgentGridItem({
       data-testid={`one-agent-tile-${mode.id}`}
       title={mode.description}
       className={cn(
-        "group relative flex min-h-[96px] min-w-0 w-full flex-col items-center justify-start gap-[7px] overflow-hidden rounded-[14px] px-1.5 py-2 text-center",
-        "transition-[background-color,transform] duration-[var(--motion-duration-sm)] ease-[var(--motion-ease-standard)]",
-        "hover:bg-[rgba(120,120,128,.08)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)]/60 focus-visible:ring-inset active:scale-[0.98] motion-reduce:transition-none motion-reduce:active:scale-100",
+        "group relative flex min-h-[156px] min-w-0 w-full flex-col items-center justify-center gap-2 overflow-hidden rounded-[var(--app-card-radius-compact)] border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] px-3 py-4 text-center",
+        "transition-[background-color,border-color,transform] duration-[var(--motion-duration-sm)] ease-[var(--motion-ease-standard)]",
+        "hover:border-[color:var(--app-secondary-label)]/35 hover:bg-[color:var(--app-neutral-fill)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-focus-ring)] focus-visible:ring-inset active:scale-[0.98] motion-reduce:transition-none motion-reduce:active:scale-100",
         className,
       )}
     >
@@ -531,12 +531,15 @@ function AgentGridItem({
         className="relative z-10"
         profileStyle={dashboardAgentIconStyle(mode)}
       />
-      <span className="relative z-10 flex w-full min-w-0 flex-col items-center gap-[2px] text-center">
+      <span className="relative z-10 flex w-full min-w-0 flex-col items-center gap-1 text-center">
         <span
           className="block w-full text-center text-sm font-medium leading-5 tracking-normal text-foreground [overflow-wrap:anywhere]"
           data-ui-role="body-strong"
         >
           {mode.title}
+        </span>
+        <span className="line-clamp-2 min-h-9 w-full text-xs leading-[18px] text-muted-foreground [overflow-wrap:anywhere]">
+          {mode.description}
         </span>
         <AgentMetric mode={mode} align="grid" />
       </span>
@@ -553,9 +556,9 @@ function AgentListRow({ mode }: { mode: OneAgentMode }) {
       title={mode.description}
       data-testid={`one-agent-list-row-${mode.id}`}
       className={cn(
-        "group/agent-row relative grid min-h-16 w-full grid-cols-[40px_minmax(0,1fr)_14px] items-center gap-x-2 gap-y-0.5 sm:grid-cols-[40px_minmax(0,1fr)_minmax(64px,auto)_14px] overflow-hidden px-3.5 py-2 text-left outline-none sm:gap-x-3",
+        "group/agent-row relative grid min-h-[76px] w-full grid-cols-[40px_minmax(0,1fr)_14px] items-center gap-x-3 gap-y-0.5 overflow-hidden px-4 py-2.5 text-left outline-none sm:grid-cols-[40px_minmax(0,1fr)_minmax(64px,auto)_14px] sm:gap-x-4",
         "transition-colors duration-[var(--motion-duration-sm)] ease-[var(--motion-ease-standard)]",
-        "hover:bg-[rgba(120,120,128,.08)] active:bg-[rgba(120,120,128,.12)]",
+        "hover:bg-[color:var(--app-neutral-fill)] active:bg-[color:var(--app-neutral-fill-strong)]",
         "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
       )}
     >
@@ -579,10 +582,9 @@ function AgentListRow({ mode }: { mode: OneAgentMode }) {
         >
           {mode.title}
         </span>
-        {/*
-          List view is the compact scan: one label per row. The description
-          stays available as the row's title attribute and in grid view.
-        */}
+        <span className="mt-0.5 block truncate text-xs leading-[18px] text-muted-foreground">
+          {mode.description}
+        </span>
       </span>
       <span className="relative z-10 col-start-2 row-start-2 flex min-w-0 justify-start [&>span]:justify-start [&>span]:text-left sm:col-start-3 sm:row-start-1 sm:max-w-[132px] sm:justify-end sm:[&>span]:justify-end sm:[&>span]:text-right">
         <AgentMetric mode={mode} />
@@ -709,16 +711,24 @@ export function OneAgentRoster({
       // gap on top. Reserving them a second time is the wide empty band under
       // the last agent on /one: roughly another 90-115px of scroll that no
       // content can ever occupy. See components/calendar/calendar-agent-page-layout.ts.
-      className="mx-auto w-full max-w-[720px]"
+      className="mx-auto w-full max-w-[800px]"
     >
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <PageTitle
-          as="h1"
-          id="one-agents-heading"
-          className="min-w-0"
-        >
-          Agents ({modes.length})
-        </PageTitle>
+      <div className="mb-5 flex items-end justify-between gap-4 sm:mb-7">
+        <div className="min-w-0">
+          <p className="mb-2 text-xs font-semibold tracking-[0.02em] text-muted-foreground">
+            Your workspace
+          </p>
+          <PageTitle
+            as="h1"
+            id="one-agents-heading"
+            className="min-w-0"
+          >
+            Agents ({modes.length})
+          </PageTitle>
+          <p className="mt-1.5 max-w-[42ch] text-sm leading-5 text-muted-foreground">
+            Open an agent to pick up where you left off.
+          </p>
+        </div>
         <AgentRosterViewToggle value={view} onChange={selectView} />
       </div>
       {SHOW_AGENT_SEARCH ? (
@@ -753,11 +763,11 @@ export function OneAgentRoster({
         {view === "grid" ? (
           <div
             data-testid="one-agents-grid"
-            className="overflow-hidden rounded-[var(--app-card-radius-compact)] border border-[color:var(--app-settings-border)] bg-[color:var(--app-settings-surface)] p-3.5 sm:p-[18px]"
+            className="rounded-[var(--app-card-radius-compact)]"
           >
             <div
               data-agent-roster-layout="grouped-icon-grid"
-              className="grid w-full grid-cols-[repeat(3,minmax(0,1fr))] justify-center gap-x-2 gap-y-5 sm:grid-cols-[repeat(3,128px)] sm:gap-x-6 sm:gap-y-6"
+              className="grid w-full grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4"
             >
               {visibleModes.map((mode) => (
                 <AgentGridItem key={mode.id} mode={mode} />

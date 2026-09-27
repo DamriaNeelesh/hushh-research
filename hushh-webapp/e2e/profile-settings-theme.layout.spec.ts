@@ -179,14 +179,13 @@ for (const theme of ["light", "dark"] as const) {
       expect(state.profileBackground).toBe(state.connectorBackground);
       expect(state.bodyBackground).toBe(state.profileBackground);
       expect(state.profileCard).not.toBe(state.profileBackground);
-      expect(state.profileIconBackground).not.toBe(state.profileCard);
-      expect(state.nestedIconBackground).not.toBe(state.profileIconBackground);
-      expect(state.nestedIconBackground).not.toBe(state.nestedCard);
+      expect(state.profileIconBackground).toBe("rgba(0, 0, 0, 0)");
+      expect(state.nestedIconBackground).toBe("rgba(0, 0, 0, 0)");
       const accountIconLight = Math.max(
-        luminance(state.accountIcon), luminance(state.accountIconBackground),
+        luminance(state.accountIcon), luminance(state.profileBackground),
       );
       const accountIconDark = Math.min(
-        luminance(state.accountIcon), luminance(state.accountIconBackground),
+        luminance(state.accountIcon), luminance(state.profileBackground),
       );
       expect((accountIconLight + 0.05) / (accountIconDark + 0.05)).toBeGreaterThanOrEqual(3);
       expect(state.actionHeights.every((height) => height >= 44)).toBe(true);
@@ -204,8 +203,8 @@ for (const theme of ["light", "dark"] as const) {
         ).toBeGreaterThanOrEqual(4.5);
       }
       for (const [foreground, background] of [
-        [state.profileIcon, state.profileIconBackground],
-        [state.nestedIcon, state.nestedIconBackground],
+        [state.profileIcon, state.profileCard],
+        [state.nestedIcon, state.nestedCard],
       ]) {
         const light = Math.max(luminance(foreground), luminance(background));
         const dark = Math.min(luminance(foreground), luminance(background));

@@ -2438,7 +2438,7 @@ describe("Connect — the phone-width geometry QA reported", () => {
     });
     expect(remove.className).toContain("h-11");
     expect(remove.className).toContain("min-h-11");
-    expect(remove.className).toContain("rounded-xl");
+    expect(remove.className).toContain("rounded-[12px]");
     expect(remove.className).toContain("text-destructive");
     expect(remove.className).not.toContain("h-9");
     expect(remove.className).not.toContain("before:-inset-y-1.5");
@@ -2552,7 +2552,7 @@ describe("Connect — the phone-width geometry QA reported", () => {
     expect(cancel.textContent).toBe("Cancel");
     expect(cancel.className).toContain("h-11");
     expect(cancel.className).toContain("min-h-11");
-    expect(cancel.className).toContain("rounded-xl");
+    expect(cancel.className).toContain("rounded-[12px]");
     expect(screen.queryByText("Cancel request")).toBeNull();
 
     // WCAG 2.5.3: the accessible name has to contain the visible label, or
@@ -2792,7 +2792,7 @@ describe("Connect — inviting someone who is not on One yet", () => {
 });
 
 describe("Connect — Circles", () => {
-  it("opens the directory filter as a portalled material popover on web", async () => {
+  it("opens the directory filter as a portalled solid popover on web", async () => {
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
 
@@ -2802,8 +2802,8 @@ describe("Connect — Circles", () => {
     const anchor = screen.getByTestId("connect-directory-menu-anchor");
     expect(anchor.contains(menu)).toBe(false);
     expect(menu).toHaveAttribute("data-slot", "popover-content");
-    expect(menu.className).toContain("backdrop-blur-2xl");
-    expect(menu.className).toContain("shadow-[0_18px_48px");
+    expect(menu.className).toContain("bg-[color:var(--app-settings-surface)]");
+    expect(menu.className).toContain("shadow-[var(--app-card-shadow-feature)]");
     expect(menu.className).not.toContain("absolute");
     expect(
       within(menu).getByRole("menuitemradio", { name: "People" }),
@@ -2852,7 +2852,7 @@ describe("Connect — Circles", () => {
     expect(menu).not.toHaveAttribute("data-slot", "popover-content");
     expect(menu.className).toContain("absolute left-0 top-full");
     expect(menu.className).toContain(
-      "bg-[color:var(--app-card-surface-default-solid)]",
+      "bg-[color:var(--app-settings-surface)]",
     );
     expect(menu.className).not.toContain("app-card-surface-standard");
   });

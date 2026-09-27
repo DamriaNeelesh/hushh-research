@@ -630,7 +630,7 @@ function FeedPageSession({
                 <SettingsGroup
                   separatorInset
                   testId="feed-live-group"
-                  shellClassName="!bg-accent/[0.04] shadow-none ring-1 ring-inset ring-accent/10"
+                  shellClassName="!bg-[color:var(--app-settings-surface)] shadow-none ring-1 ring-inset ring-[color:var(--app-settings-border)]"
                 >
                   {liveActionables.map((item) => (
                     <FeedActionableRow key={item.id} item={item} />
@@ -642,7 +642,7 @@ function FeedPageSession({
           {hasRegularActionables ? (
             <section aria-label="Needs you">
               <SectionLabel>Needs you</SectionLabel>
-              <SettingsGroup separatorInset>
+              <SettingsGroup separatorInset shellClassName="shadow-none ring-1 ring-inset ring-[color:var(--app-settings-border)]">
                 {regularActionables.map((item) => (
                   <FeedActionableRow key={item.id} item={item} />
                 ))}
@@ -744,7 +744,7 @@ function FeedPageSession({
               ? dayGroups.map((group) => (
                   <section key={group.label} aria-label={group.label}>
                     <SectionLabel>{group.label}</SectionLabel>
-                    <SettingsGroup separatorInset>
+                    <SettingsGroup separatorInset shellClassName="shadow-none ring-1 ring-inset ring-[color:var(--app-settings-border)]">
                       {group.items.map((item) => (
                         <FeedRow
                           key={item.id}
@@ -800,7 +800,7 @@ function SectionLabel({ children }: { children: ReactNode }) {
     <AppSectionLabel
       as="h2"
       compact
-      className="px-1 pb-1.5 pt-5 text-[color:var(--app-section-label)]"
+      className="px-1 pb-2 pt-6 text-[color:var(--app-label)]"
     >
       {children}
     </AppSectionLabel>

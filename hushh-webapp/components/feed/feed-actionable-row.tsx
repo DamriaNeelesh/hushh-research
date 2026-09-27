@@ -78,10 +78,12 @@ function ActionButton({
         runNow();
       }}
       className={cn(
-        "min-h-11 w-auto min-w-[5.5rem] max-w-full shrink-0 whitespace-normal px-4 text-center [overflow-wrap:anywhere] sm:min-w-24",
+        "min-h-11 w-auto min-w-[5.5rem] max-w-full shrink-0 whitespace-normal rounded-[12px] px-4 text-center [overflow-wrap:anywhere] sm:min-w-24",
+        action.tone === "primary" &&
+          "bg-[color:var(--app-label)] text-[color:var(--app-settings-canvas)] hover:bg-[color:var(--app-secondary-label)]",
         action.tone === "danger" &&
           !showConfirm &&
-          "text-destructive hover:bg-destructive/10",
+          "bg-[color:var(--app-settings-icon-surface)] text-[color:var(--app-destructive-deep)] hover:bg-[color:var(--app-destructive-tint)] dark:text-[color:var(--app-destructive-bright)]",
       )}
     >
       {isRunning ? (

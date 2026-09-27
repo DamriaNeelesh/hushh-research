@@ -156,7 +156,7 @@ Forbidden:
 
 Profile, pushed Profile screens, and Connectors use one quiet settings palette:
 `--app-settings-canvas`, `--app-settings-surface`, `--app-settings-border`,
-`--app-settings-link`, and the neutral icon-well tokens. These have explicit light and dark values in
+`--app-settings-link`, and neutral utility glyph tokens. These have explicit light and dark values in
 `app/globals.css`. Use `SettingsGroup` and `SettingsRow` for grouped actions;
 keep service marks, text hierarchy, and action placement consistent across the
 three surfaces. Accent color marks actions and focus, while status and destructive
@@ -164,11 +164,15 @@ states keep their own semantics.
 
 This direction comes from Meta's [Muse design essay](https://introducing.muse.ai/),
 its [iPhone listing](https://apps.apple.com/us/app/muse-from-meta/id6760173601),
-and the [Mac preview](https://ai.meta.com/muse/download/). Public imagery shows
-neutral surfaces, soft separators, compact grouped rows, thin icons, and blue
-actions. The public Muse site uses an `optimisticAI` font stack; authenticated
-Profile/Settings screens and the app font files are not publicly available, so
-their exact values are not treated as implementation specifications.
+and public [web Settings](https://cashinstinct.ca/muse-ai/images/muse-settings-web-en.jpg),
+[iPhone Settings](https://cashinstinct.ca/muse-ai/images/muse-settings-redeem-code-en.jpeg),
+and [Connectors](https://wtfisai.blog/media/meta-muse-ai-agent/meta-muse-ai-agent-b3.webp)
+screenshots. The visible pattern is a white desktop canvas with pale-gray
+grouped rows, and a gray iPhone canvas with white rounded row groups. Utility
+icons are simple unboxed line glyphs; connector logos retain their own color.
+Muse's full token library, authenticated source CSS, dark-mode screenshots,
+and app font files are not publicly documented, so exact values are not
+treated as implementation specifications.
 
 ### Home, setup, and Agent Chat
 

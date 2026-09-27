@@ -482,19 +482,20 @@ textarea {
   --app-accent-ink: #005abf;
   --app-accent-ring: rgba(0, 122, 255, 0.25);
 
-  /* Apple Summer 2026 semantic refinement tokens. These intentionally alias
-     the existing Foundation system instead of creating a second design system. */
+  /* Quiet settings surfaces shared by Profile, Connect, Feed, and connectors. */
   --app-screen-background: #ffffff;
   --app-grouped-background: #f2f2f7;
   --app-primary-surface: #ffffff;
   --app-secondary-surface: #f9f9fb;
   --app-elevated-surface: #ffffff;
   /* One settings canvas shared by Profile and the connector manager. */
-  --app-settings-canvas: #f8f9fb;
-  --app-settings-surface: #ffffff;
-  --app-settings-border: #e8ebef;
-  --app-settings-icon-surface: #f0f2f5;
-  --app-settings-icon-foreground: #38414b;
+  --app-settings-canvas: #ffffff;
+  --app-settings-surface: #f2f2f3;
+  --app-settings-border: #e9e9eb;
+  --app-settings-icon-surface: #f2f2f3;
+  --app-settings-icon-foreground: #55565b;
+  --app-settings-row-hover: #f5f5f6;
+  --app-settings-row-pressed: #ececee;
   --app-settings-link: var(--app-accent-ink);
   --app-label: #1d1d1f;
   --app-secondary-label: #6e6e73;
@@ -1335,11 +1336,13 @@ textarea {
   --app-glass-surface: rgba(24, 24, 28, 0.9);
   --app-glass-border: rgba(84, 84, 88, 0.65);
   --app-glass-shadow: 0 12px 32px -24px rgba(0, 0, 0, 0.85);
-  --app-settings-canvas: #111317;
-  --app-settings-surface: #1c1f25;
-  --app-settings-border: #343943;
-  --app-settings-icon-surface: #2a2e36;
-  --app-settings-icon-foreground: #e3e7ed;
+  --app-settings-canvas: #111113;
+  --app-settings-surface: #222225;
+  --app-settings-border: #303034;
+  --app-settings-icon-surface: #2b2b2f;
+  --app-settings-icon-foreground: #dedee1;
+  --app-settings-row-hover: #232326;
+  --app-settings-row-pressed: #2d2d31;
   --app-settings-link: var(--app-accent-ink);
   /* Dark Profile aliases — same rule as the light block above. */
   --ios-account-screen-background: var(--app-settings-canvas);
@@ -1562,15 +1565,15 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
 [data-profile-stack-screen="panel:account"] [data-slot="settings-group-shell"],
 .profile-account-content [data-slot="settings-group-shell"] {
   --settings-group-radius: var(--ios-account-card-radius);
-  background: var(--ios-account-card-background);
-  border: 1px solid var(--app-settings-border);
+  background: var(--app-settings-surface);
+  border: 0;
   box-shadow: none;
 }
 
 [data-profile-stack-screen="account"] [data-testid="settings-row"],
 [data-profile-stack-screen="panel:account"] [data-testid="settings-row"],
 .profile-account-content [data-testid="settings-row"] {
-  background: var(--ios-account-card-background);
+  background: var(--app-settings-surface);
   min-height: 56px;
 }
 
@@ -1617,7 +1620,7 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
     [data-icon-tone="transparent"]
   )
   svg {
-  color: #ffffff !important;
+  color: currentColor !important;
 }
 
 [data-profile-stack-screen="account"]
@@ -1984,14 +1987,26 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
 
 .profile-home-content [data-slot="settings-group-shell"] {
   --settings-group-radius: var(--ios-account-card-radius);
-  background: var(--ios-account-card-background);
-  border: 1px solid var(--app-settings-border);
+  background: var(--app-settings-surface);
+  border: 0;
   box-shadow: none;
 }
 
 .profile-home-content [data-testid="settings-row"] {
-  background: var(--ios-account-card-background);
+  background: var(--app-settings-surface);
   min-height: 56px;
+}
+
+.profile-home-content [data-testid="settings-row"]:is(button, a):hover,
+.profile-account-content [data-testid="settings-row"]:is(button, a):hover,
+[data-profile-stack-content="true"] [data-testid="settings-row"]:is(button, a):hover {
+  background: var(--app-settings-row-hover);
+}
+
+.profile-home-content [data-testid="settings-row"]:is(button, a):active,
+.profile-account-content [data-testid="settings-row"]:is(button, a):active,
+[data-profile-stack-content="true"] [data-testid="settings-row"]:is(button, a):active {
+  background: var(--app-settings-row-pressed);
 }
 
 .profile-home-content [data-testid="settings-row"]::after {
@@ -2022,59 +2037,8 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
   width: 17px !important;
 }
 
-.profile-home-content
-  [data-slot="settings-row-icon"][data-icon-tone="blue"]:not(
-    [data-icon-tone="capability"]
-  ):not([data-icon-tone="transparent"]) {
-  background: var(--ios-account-accent) !important;
-}
-
-.profile-home-content
-  [data-slot="settings-row-icon"][data-icon-tone="green"]:not(
-    [data-icon-tone="capability"]
-  ):not([data-icon-tone="transparent"]) {
-  background: var(--app-success) !important;
-}
-
-.profile-home-content
-  [data-slot="settings-row-icon"][data-icon-tone="orange"]:not(
-    [data-icon-tone="capability"]
-  ):not([data-icon-tone="transparent"]) {
-  background: var(--app-warning) !important;
-}
-
-.profile-home-content
-  [data-slot="settings-row-icon"][data-icon-tone="indigo"]:not(
-    [data-icon-tone="capability"]
-  ):not([data-icon-tone="transparent"]) {
-  background: var(--app-indigo) !important;
-}
-
-.profile-home-content
-  [data-slot="settings-row-icon"][data-icon-tone="purple"]:not(
-    [data-icon-tone="capability"]
-  ):not([data-icon-tone="transparent"]) {
-  background: var(--app-purple) !important;
-}
-
-.profile-home-content
-  [data-slot="settings-row-icon"][data-icon-tone="red"]:not(
-    [data-icon-tone="capability"]
-  ):not([data-icon-tone="transparent"]) {
-  background: var(--app-destructive) !important;
-}
-
-.profile-home-content
-  [data-icon-tone]:not([data-icon-tone="capability"]):not(
-    [data-icon-tone="transparent"]
-  )
-  svg {
-  color: #ffffff !important;
-}
-
-/* Preserve a clean, unboxed treatment for any genuinely branded capability
- * icon added to Profile later. The primary Profile menu intentionally uses
- * semantic coloured tiles, matching its Account and Vault detail screens. */
+/* Branded connector marks keep their own identity; utility actions use the
+ * same neutral icon wells as Muse's simple settings and activity rows. */
 .profile-home-content [data-icon-tone="capability"],
 .profile-home-content [data-icon-tone="transparent"] {
   background: transparent !important;
@@ -2103,8 +2067,8 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
   [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not(
     [data-icon-tone="transparent"]
   ) {
-  background: var(--ios-account-destructive) !important;
-  color: var(--ios-account-on-accent) !important;
+  background: color-mix(in srgb, var(--ios-account-destructive) 10%, transparent) !important;
+  color: var(--ios-account-destructive) !important;
 }
 
 .profile-home-content
@@ -2113,7 +2077,7 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
     [data-icon-tone="transparent"]
   )
   svg {
-  color: var(--ios-account-on-accent) !important;
+  color: currentColor !important;
 }
 
 .profile-home-content
@@ -2130,7 +2094,7 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
 [data-profile-stack-content="true"] [data-slot="settings-group-shell"],
 [data-slot="connectors-panel"] [data-slot="settings-group-shell"] {
   background: var(--app-settings-surface);
-  border: 1px solid var(--app-settings-border);
+  border: 0;
   box-shadow: none;
 }
 
@@ -2150,6 +2114,72 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
 [data-slot="connectors-panel"] {
   background: var(--app-settings-canvas);
   color: var(--app-label);
+}
+
+/* Muse's utility navigation uses simple line glyphs. Brand marks in connector
+   rows remain untouched; only Profile and Account actions use this treatment. */
+.profile-home-content [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
+.profile-account-content [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]),
+[data-profile-stack-content="true"] [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]) {
+  background: transparent !important;
+  border-radius: 0 !important;
+  color: var(--app-label) !important;
+  height: 28px !important;
+  width: 28px !important;
+}
+
+.profile-home-content [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) svg,
+.profile-account-content [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]) svg,
+[data-profile-stack-content="true"] [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]) svg {
+  color: currentColor !important;
+  height: 20px !important;
+  stroke-width: 1.8 !important;
+  width: 20px !important;
+}
+
+.profile-home-content [data-tone="destructive"] [data-slot="settings-row-icon"],
+.profile-account-content [data-tone="destructive"] [data-slot="settings-row-icon"],
+[data-profile-stack-content="true"] [data-tone="destructive"] [data-slot="settings-row-icon"] {
+  color: var(--app-destructive) !important;
+}
+
+@media (max-width: 767px) {
+  body:has(.profile-home-screen),
+  body:has(.profile-account-content),
+  body:has([data-profile-stack="true"]) {
+    --ios-account-screen-background: #f4f4f5;
+    --ios-account-card-background: #ffffff;
+  }
+
+  .dark body:has(.profile-home-screen),
+  .dark body:has(.profile-account-content),
+  .dark body:has([data-profile-stack="true"]) {
+    --ios-account-screen-background: #111113;
+    --ios-account-card-background: #222225;
+  }
+
+  .profile-home-screen {
+    background: var(--ios-account-screen-background);
+  }
+
+  [data-slot="connectors-panel"] {
+    background: var(--ios-account-screen-background);
+  }
+
+  .profile-home-content [data-slot="settings-group-shell"],
+  .profile-account-content [data-slot="settings-group-shell"],
+  [data-profile-stack-content="true"] [data-slot="settings-group-shell"],
+  [data-slot="connectors-panel"] [data-slot="settings-group-shell"] {
+    background: var(--ios-account-card-background);
+    border-radius: 20px;
+  }
+
+  .profile-home-content [data-testid="settings-row"],
+  .profile-account-content [data-testid="settings-row"],
+  [data-profile-stack-content="true"] [data-testid="settings-row"],
+  [data-slot="connectors-panel"] [data-testid="settings-row"] {
+    background: var(--ios-account-card-background);
+  }
 }
 
 /* Feed, Connect, and route-level settings share Profile's reading canvas. Their
@@ -5417,15 +5447,11 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
     0 2px 6px rgba(0, 0, 0, 0.5) !important;
 }
 
-/* The One composer is a direct-entry surface, not another navigation pill.
-   It keeps the shared chrome geometry while giving active writing a warmer
-   elevation and an accent-only focus state. */
+/* Keep the composer quiet and distinct from the active chat content. */
 .agent-chat-composer-surface {
-  border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent);
-  background: color-mix(in oklab, var(--background) 92%, var(--foreground)) !important;
-  box-shadow:
-    0 16px 36px -26px color-mix(in oklab, var(--foreground) 48%, transparent),
-    inset 0 1px 0 color-mix(in oklab, var(--background) 16%, var(--foreground));
+  border: 1px solid var(--app-settings-border);
+  background: var(--app-settings-surface) !important;
+  box-shadow: none;
   transition:
     background-color 150ms ease,
     border-color 150ms ease,
@@ -5433,17 +5459,14 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
 }
 
 .dark .agent-chat-composer-surface {
-  background: color-mix(in oklab, var(--background) 86%, var(--foreground)) !important;
-  border-color: color-mix(in oklab, var(--foreground) 16%, transparent);
+  background: var(--app-settings-surface) !important;
+  border-color: var(--app-settings-border);
 }
 
 .agent-chat-composer-surface:focus-within {
-  border-color: color-mix(in oklab, var(--app-accent) 62%, transparent);
-  background: color-mix(in oklab, var(--background) 88%, var(--app-accent)) !important;
-  box-shadow:
-    0 16px 38px -24px color-mix(in oklab, var(--app-accent) 42%, transparent),
-    0 0 0 3px color-mix(in oklab, var(--app-accent) 16%, transparent),
-    inset 0 1px 0 color-mix(in oklab, var(--background) 18%, var(--foreground));
+  border-color: var(--app-accent);
+  background: var(--app-settings-surface) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 18%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -11,7 +11,9 @@ For broader page-shell, header, and content-surface rules beyond settings, use [
 
 Signed-in settings surfaces inherit the app-wide compact density contract by default. That means grouped settings, privacy managers, and audit lists should feel efficient above the fold while auth, onboarding, and form-first overlays remain readable.
 
-The Profile stack, Connectors manager, Feed, Connect, and route-level Connected Systems screens share `--app-settings-canvas`, `--app-settings-surface`, `--app-settings-border`, and neutral utility icon tokens in both themes. Feature components keep their own layout and state behavior. Success, warning, error, and branded connector marks retain semantic colors. The central Sonner renderer uses these surface tokens for all app notifications, with 44px dismiss and action controls and native safe-area offsets.
+The Profile stack, Connectors manager, Feed, Connect, and route-level Connected Systems screens share `--app-settings-canvas`, `--app-settings-surface`, and `--app-settings-border` in both themes. Profile utility icons are unboxed monochrome line glyphs; branded connector marks and semantic status colors retain their identity. Feature components keep their own layout and state behavior. The central Sonner renderer uses these surface tokens for all app notifications, with 44px dismiss and action controls and native safe-area offsets.
+
+The visual reference is Meta's [Muse design article](https://introducing.muse.ai/), a [public screenshot of Muse web Settings](https://cashinstinct.ca/muse-ai/images/muse-settings-web-en.jpg), a [public iPhone Settings screenshot](https://cashinstinct.ca/muse-ai/images/muse-settings-redeem-code-en.jpeg), and an [App Store Connectors screenshot reproduced here](https://wtfisai.blog/media/meta-muse-ai-agent/meta-muse-ai-agent-b3.webp). These are observations of public screens, not a published Muse token or Figma library. Use them for surface hierarchy, icon treatment, and responsive grouping; keep One's own product language and behavior.
 
 ## Design Intent
 
@@ -43,8 +45,8 @@ Use as the default container for grouped settings rows.
 Rules:
 
 1. Flat grouped surface, never cards-inside-cards.
-2. Strong 1px divider treatment.
-3. Rounded outer shell with subtle background and blur only at the group level.
+2. Thin inset separators where rows form one list.
+3. Rounded outer shell without decorative border, blur, or shadow.
 4. Optional eyebrow, title, and short supporting description above the group.
 5. Description must stay compact; do not write paragraph-length helper text.
 6. Group spacing should come from the shared density variables, not ad-hoc `space-y-*` tuning inside route files.
@@ -91,8 +93,8 @@ Rules:
 
 ### Divider and surface treatment
 
-1. Prefer strong separators over decorative underlines.
-2. Group shells may have subtle blur and shadow.
+1. Prefer thin separators over decorative underlines.
+2. Use one neutral surface per group without blur or decorative shadow.
 3. Rows should feel like one contiguous list.
 4. Avoid isolated mini-panels inside a group unless the content is destructive or security-critical.
 
@@ -108,8 +110,7 @@ Rules:
 
 1. Hover and press behavior must belong to the whole row, not just the text.
 2. Ripple is allowed only on actionable controls and rows.
-3. Icons should inherit the same emphasis as text in active or highlighted states.
-   Settings utility icons use regular-weight canonical glyphs on the shared neutral icon surface; branded connector marks and semantic status icons keep their identity.
+3. Icons should inherit the same emphasis as text in active or highlighted states. Profile utility icons use regular-weight unboxed monochrome glyphs; branded connector marks and semantic status icons keep their identity.
 4. Chevrons remain right-aligned and vertically centered.
 5. Actionable cards are treated the same way as actionable rows: if a card is clickable, the whole card owns one ripple surface.
 6. Decorative icon choices must be semantically grounded. Do not default to generic `Sparkles` for onboarding, optimization, AI, or premium states unless the feature meaning is explicitly “sparkle” or celebratory.
@@ -121,6 +122,7 @@ Rules:
 3. Trailing chevrons and toggles stay aligned right.
 4. Dense content opens in `SettingsDetailPanel`, not inline expansions that stretch the root page.
 5. Safe-area spacing must be respected at the bottom of mobile drawers.
+6. On phones, use a quiet gray page with white rounded row groups; on desktop, use a white page with soft gray selected or grouped surfaces. Dark mode preserves the same relative contrast.
 
 ## Vault Access Rules
 
