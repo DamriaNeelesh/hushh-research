@@ -105,6 +105,7 @@ export interface HushhAuthPlugin {
     serverClientId: string;
     purpose: "read" | "send" | "compose";
     preserveSend?: boolean;
+    preserveModify?: boolean;
   }): Promise<{
     serverAuthCode: string;
   }>;

@@ -1503,6 +1503,7 @@ describe("ProfileReceiptsPage", () => {
       expect(mocks.hushhAuth.connectGmail).toHaveBeenCalledWith({
         serverClientId: "native-client-id",
         purpose: "read",
+        preserveModify: false,
       });
       expect(GmailReceiptsService.completeNativeConnect).toHaveBeenCalledWith({
         idToken: "token-abc",
