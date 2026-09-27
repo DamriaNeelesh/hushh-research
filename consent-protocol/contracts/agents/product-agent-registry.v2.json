@@ -3725,7 +3725,7 @@
         "voice": true,
         "web": true
       },
-      "system_instruction_sha256": "ea7b8676e4f564bdf03457c83e8a8c24eb908dc2b9ed7a76a4fd2394397ab030",
+      "system_instruction_sha256": "bc09983e97a557b18b12496a9e9387408373a392f8dc74f3996998fb615ddeb7",
       "telemetry_namespace": "agent.one",
       "tools": [
         {
@@ -3741,9 +3741,45 @@
           "required_scope": "vault.owner"
         },
         {
-          "description": "Perform one bounded Drive read using its discovered schema; Gmail and Calendar read through their own Chat tools, and provider writes require their existing reviewed app action.",
+          "description": "Perform one bounded Drive read using its discovered schema; Gmail and Calendar read through their own Chat tools, and Drive writes use the Drive write tools.",
           "name": "read_workspace_tool",
           "py_func": "hushh_mcp.one_adk.workspace_mcp_tools.read_workspace_tool",
+          "required_scope": "vault.owner"
+        },
+        {
+          "description": "Create a Google Doc from Markdown or text, a Sheet from CSV, or a folder in the owner's live Drive; only into a folder no one else can see.",
+          "name": "create_drive_file",
+          "py_func": "hushh_mcp.one_adk.drive_write_tools.create_drive_file",
+          "required_scope": "vault.owner"
+        },
+        {
+          "description": "Copy one Drive file by exact ID, optionally renamed or into a folder no one else can see.",
+          "name": "copy_drive_file",
+          "py_func": "hushh_mcp.one_adk.drive_write_tools.copy_drive_file",
+          "required_scope": "vault.owner"
+        },
+        {
+          "description": "Move one Drive file by exact ID into a folder no one else can see, rename it, or both.",
+          "name": "move_drive_file",
+          "py_func": "hushh_mcp.one_adk.drive_write_tools.move_drive_file",
+          "required_scope": "vault.owner"
+        },
+        {
+          "description": "Add one comment as the owner to a Drive file by exact ID.",
+          "name": "comment_on_drive_file",
+          "py_func": "hushh_mcp.one_adk.drive_write_tools.comment_on_drive_file",
+          "required_scope": "vault.owner"
+        },
+        {
+          "description": "Prepare a reviewed share of one Drive file with an email address as Viewer, Commenter or Editor; nothing is shared until the owner confirms the exact card.",
+          "name": "propose_drive_file_share",
+          "py_func": "hushh_mcp.one_adk.drive_write_tools.propose_drive_file_share",
+          "required_scope": "vault.owner"
+        },
+        {
+          "description": "Prepare a reviewed move of one Drive file to the trash; nothing is trashed until the owner confirms the exact card.",
+          "name": "propose_drive_file_trash",
+          "py_func": "hushh_mcp.one_adk.drive_write_tools.propose_drive_file_trash",
           "required_scope": "vault.owner"
         }
       ],

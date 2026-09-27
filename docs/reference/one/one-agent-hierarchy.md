@@ -129,6 +129,19 @@ are not a second credential authority. Source admission does not establish an
 active curated registry row, Google Developer Preview access, or a successful
 provider call. Do not report these reads as live solely from this wiring.
 
+Typed Chat also carries the owner's Drive writes over the live (full `drive`)
+grant, per the 2026-09-27 founder decision to expose Drive "like any other MCP"
+(`hushh_mcp/one_adk/drive_write_tools.py`). `create_drive_file`,
+`copy_drive_file`, `move_drive_file` and `comment_on_drive_file` run when called,
+but may file only into a folder no one else can see, because filing into a
+shared folder would share the file. `propose_drive_file_share` (any email, as
+Viewer, Commenter or Editor) and `propose_drive_file_trash` only issue a
+one-use `adk_chat` review in `one_action_directive_ledger`; Drive is called only
+from `POST /api/one/drive/reviewed-actions/execute`, whose rebuilt terms must
+match that review exactly. Every call keeps the transport's owner, grant and
+connection-generation fence, and a same-turn Drive read still ends the turn
+before any write.
+
 Nav's public handle runs a fresh, bounded ADK session per turn. Nav and its
 Consent AgentTool child use supported `chat` roots because ADK 2.9 Runner rejects
 `single_turn` roots; this does not introduce shared owner history. One's intro
