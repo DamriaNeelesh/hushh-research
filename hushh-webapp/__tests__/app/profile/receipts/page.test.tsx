@@ -1384,6 +1384,29 @@ describe("ProfileReceiptsPage", () => {
     expect(await screen.findByText("KYC requests")).toBeVisible();
   });
 
+  it("opens a Feed-requested workspace over the saved session tab", async () => {
+    const firstMount = render(<ProfileReceiptsPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "KYC" }));
+    expect(screen.getByRole("tab", { name: "KYC" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    firstMount.unmount();
+
+    const feedMount = render(<ProfileReceiptsPage forceWorkspace="receipts" />);
+    expect(screen.getByRole("tab", { name: "Receipts" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    feedMount.unmount();
+
+    render(<ProfileReceiptsPage />);
+    expect(screen.getByRole("tab", { name: "KYC" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
   it("falls back to same-window OAuth when the retained popup is unavailable", async () => {
     const retainedPopup = mocks.gmailOAuthPopup.popup;
     (mocks.gmailOAuthPopup as { popup: typeof retainedPopup | null }).popup =
