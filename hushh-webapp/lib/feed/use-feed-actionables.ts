@@ -555,8 +555,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
           icon: ShieldCheck,
           iconTone: "accent",
           person:
-            entry.counterpart_id &&
-            ["ria", "investor", "person"].includes(entry.counterpart_type)
+            ["ria", "investor", "person"].includes(entry.counterpart_type) &&
+            (entry.counterpart_id || entry.counterpart_image_url)
               ? {
                   displayName: requesterLabel,
                   photoUrl: entry.counterpart_image_url ?? null,

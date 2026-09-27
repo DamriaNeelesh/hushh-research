@@ -237,6 +237,26 @@ describe("useFeedActionables — connection request de-duplication", () => {
     });
   });
 
+  it("shows an older person consent photo even without a counterpart id", () => {
+    mocks.pendingCount = 1;
+    mocks.consentItems = [{
+      id: "legacy-person-consent",
+      kind: "incoming_request",
+      status: "pending",
+      action: "REQUESTED",
+      counterpart_type: "person",
+      counterpart_label: "Kunal",
+      counterpart_image_url: "https://example.test/kunal.png",
+    }];
+
+    const { result } = renderHook(() => useFeedActionables());
+
+    expect(result.current.actionables[0].person).toEqual({
+      displayName: "Kunal",
+      photoUrl: "https://example.test/kunal.png",
+    });
+  });
+
   it("uses the Circle inviter photo already returned by Location state", () => {
     mocks.circleMemberInvites = [{
       id: "circle-invite-1",
