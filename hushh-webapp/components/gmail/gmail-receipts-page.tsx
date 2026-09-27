@@ -10,7 +10,7 @@ import {
   Mail,
   PenLine,
   RefreshCw,
-  ShoppingBag,
+  Receipt,
   Trash2,
 } from "@/components/icons";
 import { toast } from "sonner";
@@ -2198,43 +2198,37 @@ export default function GmailReceiptsPage({
           ) : null}
 
           {showReceiptOnboarding ? (
-            <SurfaceInset className="space-y-4 px-4 py-5 text-sm sm:px-5">
-              <div className="flex items-start gap-3">
-                <div className="rounded-xl bg-primary/10 p-2 text-primary">
-                  <ShoppingBag className="h-5 w-5" />
-                </div>
-                <div className="space-y-1">
-                  <h2 className="text-base font-semibold text-foreground">
-                    Receipts
-                  </h2>
-                  <p className="text-sm leading-6 text-muted-foreground">
-                    One syncs purchase receipts into a private shopping summary.
-                    It does not scan KYC requests here.
-                  </p>
-                </div>
+            <section className="mx-auto flex w-full max-w-md flex-col items-center border-t border-[color:var(--app-separator)] px-4 py-10 text-center sm:py-12">
+              <div aria-hidden="true" className="mb-5 flex size-16 items-center justify-center rounded-[20px] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)]">
+                <Receipt className="size-9" />
               </div>
-              <div className="flex flex-col gap-2 sm:flex-row">
+              <h2 className="text-2xl font-semibold tracking-tight text-foreground">Receipts</h2>
+              <p className="mt-2 max-w-xs text-[15px] leading-[22px] text-muted-foreground">
+                One organizes your email receipts into a shopping summary.
+              </p>
+              <div className="mt-6 flex w-full max-w-xs flex-col items-center gap-1">
                 <Button
                   type="button"
+                  size="prominent"
                   onClick={() => {
                     completeReceiptOnboarding();
                     void handleSyncNow();
                   }}
-                  className="w-full sm:w-auto"
+                  className="w-full justify-center"
                 >
-                  <RefreshCw className="mr-2 h-4 w-4" />
                   Start receipt sync
                 </Button>
                 <Button
                   type="button"
-                  variant="muted"
+                  variant="none"
+                  effect="fade"
                   onClick={completeReceiptOnboarding}
-                  className="w-full sm:w-auto"
+                  className="min-h-11 px-4 text-[15px] font-normal !text-[color:var(--app-accent)]"
                 >
                   Explore receipts
                 </Button>
               </div>
-            </SurfaceInset>
+            </section>
           ) : null}
 
           {isConnected && receiptsContentActive ? (

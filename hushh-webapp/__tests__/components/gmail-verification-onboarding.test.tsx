@@ -122,8 +122,6 @@ describe("GmailVerificationOnboarding", () => {
 
     expect(await screen.findByText("KYC workspace")).toBeInTheDocument();
     expect(screen.queryByText("Build your KYC profile")).not.toBeInTheDocument();
-    expect(screen.getByText("Saved")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Edit in Memory" })).toHaveAttribute("href", "/one/pkm");
     expect(mocks.getStaleFirst).toHaveBeenCalledWith(expect.objectContaining({
       forceRefresh: true,
       backgroundRefresh: false,
@@ -158,6 +156,5 @@ describe("GmailVerificationOnboarding", () => {
       );
     });
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-    expect(screen.getByText("Not saved")).toBeVisible();
   });
 });

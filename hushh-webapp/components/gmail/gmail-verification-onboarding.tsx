@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, KycAgentIcon, ShieldCheck } from "@/components/icons";
+import { Copy, KycAgentIcon, ShieldCheck } from "@/components/icons";
 import { toast } from "sonner";
-import Link from "next/link";
-import { ROUTES } from "@/lib/navigation/routes";
 
 import { SurfaceInset } from "@/components/app-ui/surfaces";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -42,7 +40,6 @@ export function GmailVerificationOnboarding({
   children: ReactNode;
 }) {
   const [profileReady, setProfileReady] = useState(false);
-  const [profileStatus, setProfileStatus] = useState<"unknown" | "saved" | "failed">("unknown");
   const [checking, setChecking] = useState(true);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -51,7 +48,6 @@ export function GmailVerificationOnboarding({
   useEffect(() => {
     setChecking(true);
     setProfileReady(false);
-    setProfileStatus("unknown");
     if (!userId || !vaultKey || !vaultOwnerToken) {
       setChecking(false);
       return;
@@ -73,7 +69,6 @@ export function GmailVerificationOnboarding({
         const profile = snapshot?.data?.identity_profile;
         if (!cancelled && hasCompletedKycIdentityIntake(profile)) {
           setProfileReady(true);
-          setProfileStatus("saved");
         }
       })
       .catch(() => {
@@ -129,7 +124,6 @@ export function GmailVerificationOnboarding({
     void saveTask
       .then((result) => {
         if (!result.success) {
-          setProfileStatus("failed");
           console.error("[PKM_INGEST] kyc_background_save_failed", {
             source: "kyc_identity_onboarding",
             error_code: "save_incomplete",
@@ -139,11 +133,9 @@ export function GmailVerificationOnboarding({
           );
           return;
         }
-        setProfileStatus("saved");
         toast.success(result.message || "KYC details saved privately.");
       })
       .catch(() => {
-        setProfileStatus("failed");
         console.error("[PKM_INGEST] kyc_background_save_failed", {
           source: "kyc_identity_onboarding",
           error_code: "background_task_rejected",
@@ -181,25 +173,7 @@ export function GmailVerificationOnboarding({
       </SurfaceInset>
     );
   }
-  if (profileReady || deferred) return (
-    <>
-      <div className="flex items-center justify-between gap-3 border-y border-[color:var(--app-separator)] py-4">
-        <div className="space-y-1">
-          <h2 className="text-[17px] font-semibold text-foreground">KYC profile</h2>
-          <p aria-live="polite" className={profileStatus === "saved" && !saving
-            ? "flex items-center gap-1.5 text-sm text-[color:var(--app-success-deep)] dark:text-[color:var(--app-success-bright)]"
-            : "text-sm text-muted-foreground"}>
-            {profileStatus === "saved" && !saving ? <Check aria-hidden="true" className="size-4" /> : null}
-            {saving ? "Saving…" : profileStatus === "saved" ? "Saved" : profileStatus === "failed" ? "Not saved" : deferred ? "Skipped for now" : "Review in Memory"}
-          </p>
-        </div>
-        <Button asChild variant="none" effect="fade" className="min-h-11 shrink-0 px-2 text-sm font-normal !text-[color:var(--app-accent)]">
-          <Link href={ROUTES.PKM}>Edit in Memory</Link>
-        </Button>
-      </div>
-      {children}
-    </>
-  );
+  if (profileReady || deferred) return <>{children}</>;
 
   if (!vaultKey || !vaultOwnerToken) {
     return (
@@ -247,7 +221,6 @@ export function GmailVerificationOnboarding({
         disabled={saving}
       />
       <div className="flex items-start gap-2.5">
-        <Copy aria-hidden="true" className="mt-2.5 size-5 shrink-0 text-[color:var(--app-accent)]" />
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-x-2">
             <Button
@@ -258,6 +231,7 @@ export function GmailVerificationOnboarding({
               aria-label="Copy prompt to clipboard"
               className="min-h-11 px-0 text-[15px] font-medium !text-[color:var(--app-accent)]"
             >
+              <Copy aria-hidden="true" className="mr-2 size-5 shrink-0" />
               {copied ? "Copied" : "Copy AI prompt"}
             </Button>
             <span className="text-xs text-muted-foreground">· Optional</span>
