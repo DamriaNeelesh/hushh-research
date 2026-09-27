@@ -172,6 +172,7 @@ import {
   subscribeAgentPkmAutoSavePolicyInvalidation,
   type AgentPkmAutoSavePolicy,
 } from "@/lib/agent/agent-pkm-auto-save-policy";
+import { isChatKeyRefusal } from "@/lib/vault/one-chat-key";
 import {
   loadAgentChatConversationHistory,
   peekAgentChatHistoryCache,
@@ -2267,6 +2268,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     state: Awaited<ReturnType<typeof takeDriveChatRecovery>>;
   } | null>(null);
   const currentDraftRef = useRef({ input, attachment: longPromptAttachment });
+  const pendingChatKeyRetryRef = useRef<{ text: string; options: AgentRunTurnOptions } | null>(null);
   currentDraftRef.current = { input, attachment: longPromptAttachment };
   const recoveryUiRef = useRef({
     conversationId, composerExpanded, drawerOpen: isHistoryDrawerOpen, drawerMode,
@@ -5568,7 +5570,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           "error",
         ),
       }));
-      void loadConversationList(true).catch(() => undefined);
+      if (isChatKeyRefusal(error)) {
+        // Chat is locked, not failed. Keep the unsent message, show the unlock
+        // flow, and send it once after unlock. Refreshing the conversation list
+        // here would only be refused again.
+        if (!currentDraftRef.current.input.trim()) setInput(text);
+        if (error.recovery === "unlock") {
+          pendingChatKeyRetryRef.current = { text, options };
+          setVaultDialogOpen(true);
+        }
+      } else {
+        void loadConversationList(true).catch(() => undefined);
+      }
       setIsChatLoading(false);
       setIsStreaming(false);
     } finally {
@@ -5580,6 +5593,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   };
 
   runAgentTurnRef.current = runAgentTurn;
+
+  // One retry after the unlock a chat-key refusal asked for, and only of the
+  // message the person left untouched in the composer.
+  useEffect(() => {
+    const pending = pendingChatKeyRetryRef.current;
+    if (!hasChatAccess || !pending) return;
+    pendingChatKeyRetryRef.current = null;
+    if (currentDraftRef.current.input.trim() !== pending.text) return;
+    setInput("");
+    void runAgentTurnRef.current(pending.text, pending.options);
+  }, [hasChatAccess]);
 
   /**
    * Follow-up turn that reports a specialist DelegateResult back to One.

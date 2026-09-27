@@ -13,7 +13,13 @@ import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary"
 import { parseMcpCallReview, type McpCallApproval, type McpCallReviewReference } from "@/lib/agent/mcp-call-review";
 import { snapshotValidatedAuthSessionOwner, isValidatedAuthSessionOwnerCurrent } from "@/lib/auth/session-owner";
 import { snapshotVaultSessionEpoch, isVaultSessionEpochCurrent } from "@/lib/vault/session-epoch";
-import { oneChatKeyHeaders } from "@/lib/vault/one-chat-key";
+import {
+  ChatKeyUnavailableError,
+  chatKeyRefusalCode,
+  noteChatKeyAccepted,
+  oneChatKeyHeaders,
+  routeChatKeyRefusal,
+} from "@/lib/vault/one-chat-key";
 import {
   parseAgentActivityExperience,
   parseAgentToolResultExperience,
@@ -534,6 +540,31 @@ async function readError(response: Response): Promise<string> {
     : `Agent chat request failed (${response.status})`;
 }
 
+/**
+ * Send one keyed chat-history request. A missing local key or a CHAT_KEY_*
+ * refusal becomes a routed `ChatKeyRefusalError` (chat is treated as locked and
+ * the person is asked to unlock) instead of an error the caller might retry.
+ */
+async function sendWithChatKey(send: () => Promise<Response>): Promise<Response> {
+  const vaultEpoch = snapshotVaultSessionEpoch();
+  let response: Response;
+  try {
+    response = await send();
+  } catch (error) {
+    if (error instanceof ChatKeyUnavailableError) {
+      throw routeChatKeyRefusal("CHAT_KEY_REQUIRED", vaultEpoch);
+    }
+    throw error;
+  }
+  if (response.ok) {
+    noteChatKeyAccepted();
+    return response;
+  }
+  const code = chatKeyRefusalCode(await response.clone().json().catch(() => null));
+  if (code) throw routeChatKeyRefusal(code, vaultEpoch);
+  return response;
+}
+
 export async function streamAgentChat(input: {
   userId: string;
   message: string;
@@ -610,7 +641,17 @@ export async function streamAgentChat(input: {
   });
   // Chat history is sealed with a key derived from the vault key; the server
   // refuses the turn without it and holds it for this request only.
-  const chatKeyHeaders = await oneChatKeyHeaders(input.vaultKey);
+  let chatKeyHeaders: Record<string, string>;
+  try {
+    chatKeyHeaders = await oneChatKeyHeaders(input.vaultKey);
+  } catch (error) {
+    // A vault-owner token without a vault key is not an unlocked chat. Nothing
+    // is sent; the person is routed to unlock.
+    if (error instanceof ChatKeyUnavailableError) {
+      throw routeChatKeyRefusal("CHAT_KEY_REQUIRED", mcpVaultEpoch);
+    }
+    throw error;
+  }
   const chatKey = Object.values(chatKeyHeaders)[0] ?? "";
   const agent = new HttpAgent({
     url: "/api/one/agent-chat",
@@ -726,7 +767,10 @@ export async function streamAgentChat(input: {
         ? { stopPropagation: true }
         : undefined;
     },
-    onRunStartedEvent: () => handlers.onStart?.({ conversationId: threadId }),
+    onRunStartedEvent: () => {
+      noteChatKeyAccepted();
+      handlers.onStart?.({ conversationId: threadId });
+    },
     onMessagesSnapshotEvent: (snapshot) => {
       const { event } = snapshot;
       const serverMessageId = lastAssistantMessageId(event.messages);
@@ -1117,7 +1161,10 @@ export async function streamAgentChat(input: {
         finishTerminalRun();
         return;
       }
-      failure = new Error(formatAgentChatErrorMessage(event.message || "", event.code || undefined));
+      const refusal = chatKeyRefusalCode(event.code || "");
+      failure = refusal
+        ? routeChatKeyRefusal(refusal, mcpVaultEpoch)
+        : new Error(formatAgentChatErrorMessage(event.message || "", event.code || undefined));
       handlers.onError?.(failure.message);
       finishTerminalRun();
     },
@@ -1126,7 +1173,11 @@ export async function streamAgentChat(input: {
         finishTerminalRun();
         return;
       }
-      failure = new Error(formatAgentChatErrorMessage(error.message || ""));
+      const refusal = chatKeyRefusalCode((error as Error & { payload?: unknown }).payload)
+        ?? chatKeyRefusalCode(error.message || "");
+      failure = refusal
+        ? routeChatKeyRefusal(refusal, mcpVaultEpoch)
+        : new Error(formatAgentChatErrorMessage(error.message || ""));
       handlers.onError?.(failure.message);
       finishTerminalRun();
     },
@@ -1150,6 +1201,10 @@ export async function streamAgentChat(input: {
       },
     }, subscriber);
     await terminalRun;
+  } catch (error) {
+    // AG-UI reports a failed request to the subscriber, then rejects with the
+    // raw "HTTP 403: {...}" error. The typed, owner-safe failure wins.
+    if (!failure) throw error;
   } finally {
     input.signal?.removeEventListener("abort", abort);
   }
@@ -1224,7 +1279,7 @@ export async function listAgentChatConversations(input: {
   vaultKey: string;
   limit?: number;
 }): Promise<AgentChatConversation[]> {
-  const response = await ApiService.listAgentChatConversations(input);
+  const response = await sendWithChatKey(() => ApiService.listAgentChatConversations(input));
   if (!response.ok) {
     throw new Error(await readError(response));
   }
@@ -1238,7 +1293,7 @@ export async function getAgentChatHistory(input: {
   vaultKey: string;
   limit?: number;
 }): Promise<AgentChatMessage[]> {
-  const response = await ApiService.getAgentChatHistory(input);
+  const response = await sendWithChatKey(() => ApiService.getAgentChatHistory(input));
   if (!response.ok) {
     throw new Error(await readError(response));
   }
@@ -1297,7 +1352,7 @@ export async function recordAgentChatInformationRequest(input: {
   vaultOwnerToken: string;
   vaultKey: string;
 }): Promise<AgentStructuredExperience> {
-  const response = await ApiService.apiFetch(
+  const response = await sendWithChatKey(async () => ApiService.apiFetch(
     `/api/one/agent-chat/history/${encodeURIComponent(input.conversationId)}/information-requests`,
     {
       method: "POST",
@@ -1311,7 +1366,7 @@ export async function recordAgentChatInformationRequest(input: {
         idempotency_key: input.idempotencyKey,
       }),
     },
-  );
+  ));
   if (!response.ok) throw new Error(await readError(response));
   const payload = (await response.json()) as { descriptor?: { activityType?: string; content?: unknown } };
   const descriptor = payload.descriptor;
@@ -1382,7 +1437,7 @@ export async function renameAgentChatConversation(input: {
   vaultOwnerToken: string;
   vaultKey: string;
 }): Promise<AgentChatConversation> {
-  const response = await ApiService.renameAgentChatConversation(input);
+  const response = await sendWithChatKey(() => ApiService.renameAgentChatConversation(input));
   if (!response.ok) {
     throw new Error(await readError(response));
   }
