@@ -43,6 +43,18 @@ if [ "$missing" -ne 0 ]; then
   exit 1
 fi
 
+# The manifest runs in parallel, one pytest-xdist worker per CPU. This script is
+# the switch: CI (protocol-check) and the local `orchestrate.sh core` stage both
+# reach it through backend-check.sh, so there is no flag to forget or to turn
+# off. `--dist loadfile` keeps every test of a file on one worker, in file
+# order, so module-scoped fixtures and in-file ordering behave exactly as they
+# do serially; isolation ACROSS files is what parallelism tests, and
+# tests/conftest.py gives each worker its own offline database for that.
+#
+# Measured 2026-09-26 on the full manifest (see docs/reference/operations/ci.md):
+# serial vs parallel, same pass count, three clean parallel runs.
+PYTEST_PARALLEL_ARGS=(-n auto --dist loadfile)
+
 CI_OFFLINE_DB_DIR=""
 if [ -z "${OFFLINE_DB_PATH:-}" ]; then
   CI_OFFLINE_DB_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hushh-protocol-ci.XXXXXX")"
@@ -64,7 +76,7 @@ APP_SIGNING_KEY="${APP_SIGNING_KEY:-test_secret_key_for_ci_only_32chars_min}" \
 VAULT_DATA_KEY="${VAULT_DATA_KEY:-0000000000000000000000000000000000000000000000000000000000000000}" \
 HUSHH_DEVELOPER_TOKEN="${HUSHH_DEVELOPER_TOKEN:-test_hushh_developer_token_for_ci}" \
 PYTHONPATH=. \
-"$PYTHON_BIN" -m pytest -q "${TESTS[@]}"
+"$PYTHON_BIN" -m pytest -q "${PYTEST_PARALLEL_ARGS[@]}" "${TESTS[@]}"
 
 # Every test file must at least IMPORT, listed in the manifest or not.
 #
