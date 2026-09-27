@@ -391,6 +391,11 @@ const SERVER_TOOL_PRESENTATION: Record<
     message: "Reading the selected connected capability.",
     activity: "Reading a connected app",
   },
+  read_selected_drive_search_result: {
+    label: "Google Drive",
+    message: "Checking the selected file.",
+    activity: "Checking a Drive file",
+  },
   ask_email_agent: {
     label: "Gmail",
     message: "Checking your mail request.",
@@ -748,6 +753,11 @@ export function parseRestoredTurnActivity(descriptor: unknown): RestoredActivity
     if (rawStatus === "interrupted") message = "This step did not finish.";
     else if (toolName === "discover_workspace_tools" || toolName === "read_workspace_tool") message = "Connector access checked.";
     else if (toolName === "inspect_private_connectors") message = "One checked your connectors.";
+    else if (toolName === "read_selected_drive_search_result") {
+      message = step.readStatus === "ok" ? "Drive file checked."
+        : step.readStatus === "input_required" ? "Choose the file again."
+          : "Drive file could not be checked.";
+    }
     else if (toolName === "ask_email_agent" || toolName === "ask_documents_agent" || toolName === "inspect_selected_drive_files") {
       const source = toolName === "ask_email_agent" ? "Mail" : "Drive";
       message = step.readStatus === "status_checked" ? "Drive status checked."
@@ -889,6 +899,8 @@ export async function streamAgentChat(input: {
   personSelectionHandle?: string;
   /** Opaque owner-selected KYC workflow; Gmail content stays server-side. */
   gmailInformationRequestWorkflowId?: string;
+  /** One saved Drive result, checked against the current owner and live Drive before use. */
+  driveSearchSelection?: { jobId: string; position: number };
   pendingEmailDraft?: PendingEmailDraftContext | null;
   screenContext?: Record<string, unknown> | null;
   signal?: AbortSignal;
@@ -1068,6 +1080,7 @@ export async function streamAgentChat(input: {
               pkmContext: input.pkmContext,
               personSelectionHandle: input.personSelectionHandle,
               gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
+              ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
               ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
               screenContext: input.screenContext,
             },
@@ -1149,7 +1162,7 @@ export async function streamAgentChat(input: {
         ? { provider: toolCallArgs.provider }
         : toolCallName === "inspect_private_connectors"
           ? {}
-        : toolCallName === "ask_email_agent" || toolCallName === "ask_documents_agent" || toolCallName === "inspect_selected_drive_files"
+        : toolCallName === "ask_email_agent" || toolCallName === "ask_documents_agent" || toolCallName === "inspect_selected_drive_files" || toolCallName === "read_selected_drive_search_result"
           ? {}
           : toolCallArgs;
       toolArgs.set(event.toolCallId, safeArgs);
@@ -1194,6 +1207,17 @@ export async function streamAgentChat(input: {
         toolName === "discover_workspace_tools" ||
         toolName === "read_workspace_tool" ||
         toolName === "inspect_private_connectors";
+      if (toolName === "read_selected_drive_search_result") {
+        const result = unwrapParkedActionResult(event.content);
+        const payload = toolPayload(event.toolCallId, toolName);
+        payload.execution = "server";
+        payload.message = result?.status === "ok" ? "Drive file checked."
+          : result?.status === "input_required" ? "Choose the file again."
+            : "Drive file could not be checked.";
+        payload.raw = { protocol: "ag-ui", toolName };
+        handlers.onToolResult?.(payload);
+        return;
+      }
       // External-read receipts are display-only, even if an invalid result attempts to
       // smuggle a parked navigation/send directive alongside it.
       if (toolName === "ask_email_agent" || toolName === "ask_documents_agent" || toolName === "inspect_selected_drive_files") {
@@ -1455,6 +1479,7 @@ export async function streamAgentChat(input: {
                     timezone, turnLocation, pkmContext: input.pkmContext,
                     personSelectionHandle: input.personSelectionHandle,
                     gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
+                    ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
                     ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
                     screenContext: input.screenContext,
                     ...(approval ? { mcpApproval: {
@@ -1528,6 +1553,7 @@ export async function streamAgentChat(input: {
         pkmContext: input.pkmContext,
         personSelectionHandle: input.personSelectionHandle,
         gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
+        ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
         ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
         screenContext: input.screenContext,
       },

@@ -76,6 +76,7 @@ vi.mock("@/lib/services/api-service", () => ({
 
 import {
   formatAgentChatErrorMessage,
+  parseRestoredTurnActivity,
   getAgentChatHistory,
   listAgentChatConversations,
   recordAgentChatInformationRequest,
@@ -93,6 +94,20 @@ const TEST_VAULT_KEY = "0f".repeat(32);
 const TEST_CHAT_KEY = "hck1.0a3419cafc7896f9384d95ec76704bb30b272e913e80702075270f69a2feae8b";
 
 describe("One chat key transport", () => {
+  it("forwards a saved Drive result only for the selected turn", async () => {
+    publishValidatedAuthSessionOwner("user-1");
+    mockTransport.runAgent.mockClear();
+    mockTransport.aborted = false;
+    mockTransport.failWith = null;
+    const selection = { jobId: "11111111-1111-4111-8111-111111111111", position: 3 };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "Show me this file",
+      vaultOwnerToken: "owner-token", driveSearchSelection: selection });
+    expect(mockTransport.runAgent.mock.calls[0][0].forwardedProps.driveSearchSelection).toEqual(selection);
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "Hello",
+      vaultOwnerToken: "owner-token" });
+    expect(mockTransport.runAgent.mock.calls[1][0].forwardedProps).not.toHaveProperty("driveSearchSelection");
+  });
+
   it("sends only the derived chat key, in a header, never in the turn body", async () => {
     publishValidatedAuthSessionOwner("user-1");
     mockTransport.runAgent.mockClear();
@@ -531,6 +546,30 @@ describe("AG-UI Agent One client", () => {
       handlers: { onToolResult } });
     expect(onToolResult.mock.calls[0][0].message).toBe("Drive status could not be checked.");
     expect(JSON.stringify(onToolResult.mock.calls)).not.toContain("PRIVATE_DIAGNOSTIC");
+  });
+
+  it("shows a selected Drive result as a redacted Activity step live and after reload", async () => {
+    const onToolResult = vi.fn();
+    const onToolWaiting = vi.fn();
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onToolCallStartEvent({ event: {
+        toolCallId: "saved-result", toolCallName: "read_selected_drive_search_result",
+      } });
+      subscriber.onToolCallResultEvent({ event: {
+        toolCallId: "saved-result", content: JSON.stringify({
+          status: "ok", result: { file: { name: "PRIVATE FILE", id: "private-id" } },
+        }),
+      } });
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Show me this file",
+      vaultOwnerToken: "fixture", handlers: { onToolResult, onToolWaiting } });
+    expect(onToolResult.mock.calls[0][0].message).toBe("Drive file checked.");
+    expect(JSON.stringify([onToolResult.mock.calls, onToolWaiting.mock.calls])).not.toContain("PRIVATE FILE");
+    expect(JSON.stringify([onToolResult.mock.calls, onToolWaiting.mock.calls])).not.toContain("private-id");
+    const restored = parseRestoredTurnActivity({ activityType: "one.turn_activity.v1", content: { steps: [
+      { id: "saved-result", tool: "read_selected_drive_search_result", status: "done", readStatus: "ok" },
+    ] } });
+    expect(restored[0]?.message).toBe("Drive file checked.");
   });
 
   it.each([
