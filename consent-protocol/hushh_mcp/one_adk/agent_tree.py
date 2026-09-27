@@ -110,7 +110,7 @@ from hushh_mcp.one_adk.specialist_availability import (
     resolve_specialist_availability,
     specialist_label,
 )
-from hushh_mcp.one_adk.workspace_mcp_tools import discover_workspace_tools, read_workspace_tool
+from hushh_mcp.one_adk.workspace_mcp_tools import READ_WORKSPACE_TOOL, discover_workspace_tools
 from hushh_mcp.runtime_providers import (
     build_managed_gemini_adk_model,
     thinking_config_for,
@@ -2281,7 +2281,7 @@ def _one_roster_tools(
         tools.extend(
             [
                 discover_workspace_tools,
-                read_workspace_tool,
+                READ_WORKSPACE_TOOL,
                 inspect_private_connectors,
                 RegisteredMcpToolset(),
             ]
