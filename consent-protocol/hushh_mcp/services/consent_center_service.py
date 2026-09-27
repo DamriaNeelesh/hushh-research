@@ -483,7 +483,8 @@ class ConsentCenterService:
         identity_ids = [
             str(entry.get("counterpart_id") or "").strip()
             for entry in entries
-            if str(entry.get("counterpart_type") or "").strip() in {"investor", "ria", "self"}
+            if str(entry.get("counterpart_type") or "").strip()
+            in {"investor", "ria", "person", "self"}
             and str(entry.get("counterpart_id") or "").strip()
         ]
         identities = await self._identity.ensure_many(identity_ids)
@@ -502,9 +503,13 @@ class ConsentCenterService:
             )
             counterpart_email = str(item.get("counterpart_email") or "").strip().lower() or None
 
-            if counterpart_type in {"investor", "ria", "self"} and identity:
+            if counterpart_type in {"investor", "ria", "person", "self"} and identity:
                 identity_label = str(identity.get("display_name") or "").strip() or None
                 identity_email = str(identity.get("email") or "").strip().lower() or None
+                # Connect and Location read the current identity photo. A
+                # request-time image can be absent or stale after a profile
+                # change, so person entries use that same current value.
+                item["counterpart_image_url"] = str(identity.get("photo_url") or "").strip() or None
                 if identity_label and (
                     not counterpart_label or counterpart_label == counterpart_id
                 ):

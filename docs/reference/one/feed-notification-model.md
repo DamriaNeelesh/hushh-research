@@ -151,6 +151,10 @@ Photo reads prefer a nonblank `actor_identity_cache.custom_photo_url`, then
 `inviterPhotoUrl` and `inviteePhotoUrl`. Web proxies and native HTTP transport
 preserve these additive fields. Image failure, replacement, and removal reset
 the avatar loading state and reveal the same initials used by Connect.
+The live Feed passes the Circle inviter photo through unchanged and uses the
+same avatar component as Connect for person cards. Person-to-person Consent
+Center entries resolve the current identity photo before the Feed uses their
+`counterpart_image_url`; system and developer entries keep their domain icon.
 
 Feed photo sanitization preserves complete bounded PNG/JPEG/WebP data URLs
 (up to 300 KiB decoded, matching the upload contract). It never truncates
