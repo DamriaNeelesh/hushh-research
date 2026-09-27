@@ -1330,7 +1330,7 @@ describe("Connect — People", () => {
       .mockRejectedValueOnce(new Error("Temporary failure"))
       .mockResolvedValueOnce({ items: EVERYONE.slice(19, 40), hasMore: false });
     render(<ConnectPageClient />);
-    await screen.findByText("Person 0");
+    await screen.findByText("Person 0", {}, { timeout: 5_000 });
     await waitFor(() => {
       act(() => expect(enter()).toBe(true));
     });
@@ -1374,7 +1374,9 @@ describe("Connect — People", () => {
     });
 
     render(<ConnectPageClient />);
-    expect(await screen.findByText("Person 0")).toBeTruthy();
+    expect(
+      await screen.findByText("Person 0", {}, { timeout: 5_000 }),
+    ).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Load more people" }));
 

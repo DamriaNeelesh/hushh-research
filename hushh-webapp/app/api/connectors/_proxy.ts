@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { getPythonApiUrl } from "@/app/api/_utils/backend";
+import { ONE_CHAT_KEY_HEADER } from "@/lib/vault/one-chat-key";
 import {
   createUpstreamHeaders,
   resolveRequestId,
@@ -60,6 +61,36 @@ function keepUpstreamAlive(
   });
 }
 
+class McpReviewBodyError extends Error {
+  constructor(readonly status: number) {
+    super("Invalid connector review body");
+  }
+}
+
+async function readMcpReviewBody(request: NextRequest): Promise<string> {
+  const reader = request.body?.getReader();
+  if (!reader) return "";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new McpReviewBodyError(408)), 5_000);
+  });
+  try {
+    const decoder = new TextDecoder();
+    let bytes = 0,
+      text = "";
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), deadline]);
+      if (done) return text + decoder.decode();
+      bytes += value.byteLength;
+      if (bytes > 64_000) throw new McpReviewBodyError(413);
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    clearTimeout(timer);
+    void reader.cancel().catch(() => undefined);
+  }
+}
+
 function connectorPath(path: string[]): string {
   const suffix = path.map((segment) => encodeURIComponent(segment)).join("/");
   return suffix ? `/api/connectors/${suffix}` : "/api/connectors";
@@ -73,11 +104,15 @@ export async function proxyExternalConnectorRequest(
   const targetUrl = `${getPythonApiUrl()}${connectorPath(path)}${request.nextUrl.search}`;
   const authHeader = request.headers.get("authorization");
   const consentHeader = request.headers.get("x-hushh-consent");
+  // The owner's chat key (derived in the browser): connector reviews read the
+  // sealed conversation. Forwarded as-is and never logged.
+  const chatKeyHeader = request.headers.get(ONE_CHAT_KEY_HEADER);
   const contentType = request.headers.get("content-type") || "";
   const headers = createUpstreamHeaders(requestId);
 
   if (authHeader) headers.set("Authorization", authHeader);
   if (consentHeader) headers.set("X-Hushh-Consent", consentHeader);
+  if (chatKeyHeader) headers.set(ONE_CHAT_KEY_HEADER, chatKeyHeader);
   const joinedPath = path.join("/");
   const isPrepareStream =
     request.method === "POST" && DRIVE_PREPARE_STREAM.test(joinedPath);
@@ -93,7 +128,26 @@ export async function proxyExternalConnectorRequest(
         ? contentType
         : "application/json",
     );
-    body = await request.text();
+    const isMcpReview =
+      path[1] === "mcp" &&
+      ((path.length === 3 &&
+        (path[2] === "review" || path[2] === "confirm" || path[2] === "catalog")) ||
+        (path.length === 4 && path[2] === "oauth" &&
+          ["begin", "complete", "cancel"].includes(path[3] ?? "")));
+    try {
+      body = isMcpReview
+        ? await readMcpReviewBody(request)
+        : await request.text();
+    } catch (error) {
+      return withRequestIdJson(
+        requestId,
+        { error: "Connector request could not be read." },
+        {
+          status: error instanceof McpReviewBodyError ? error.status : 400,
+          headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
+        },
+      );
+    }
   }
 
   try {
@@ -137,6 +191,12 @@ export async function proxyExternalConnectorRequest(
           },
         },
       );
+    }
+    if (response.status === 204) {
+      return new Response(null, {
+        status: 204,
+        headers: { "Cache-Control": "no-store", Pragma: "no-cache", "X-Request-Id": requestId },
+      });
     }
     const payload = await response
       .json()

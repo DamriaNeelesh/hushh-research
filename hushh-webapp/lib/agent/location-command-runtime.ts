@@ -1,6 +1,7 @@
 "use client";
 
 import { ApiService } from "@/lib/services/api-service";
+import { oneChatKeyHeaders } from "@/lib/vault/one-chat-key";
 import {
   LocationReferenceSession,
   isLocationObservation,
@@ -248,6 +249,8 @@ export class LocationCommandRuntime {
       method,
       headers: {
         Authorization: `Bearer ${authority.token}`,
+        // Command checkpoints are sealed with the owner's chat key.
+        ...(await oneChatKeyHeaders(authority.vaultKey)),
         "Content-Type": "application/json",
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),

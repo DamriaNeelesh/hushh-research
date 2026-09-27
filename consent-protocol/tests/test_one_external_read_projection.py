@@ -12,12 +12,14 @@ from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionServi
 from hushh_mcp.one_adk.external_read_boundary import (
     STATE_EXECUTION_SURFACE,
     STATE_EXTERNAL_READ,
+    STATE_EXTERNAL_READ_CONTINUATION,
     external_read_active,
 )
 from hushh_mcp.one_adk.external_read_projection import (
     durable_external_read_projection,
     redacted_read_receipt,
 )
+from tests.helpers.chat_keys import static_chat_cipher
 
 
 def _event(parts, *, author="one", invocation="read-turn"):
@@ -29,7 +31,12 @@ def test_encrypted_roundtrip_redacts_tools_but_preserves_answers_and_continuatio
         id="thread",
         app_name="one",
         user_id="owner",
-        state={STATE_EXECUTION_SURFACE: "typed_chat", STATE_EXTERNAL_READ: "read-turn", "other": 1},
+        state={
+            STATE_EXECUTION_SURFACE: "typed_chat",
+            STATE_EXTERNAL_READ: "read-turn",
+            STATE_EXTERNAL_READ_CONTINUATION: "read-turn",
+            "other": 1,
+        },
         events=[
             Event(author="user", invocation_id="read-turn"),
             _event([types.Part(text="USER REQUEST")], author="user"),
@@ -75,13 +82,19 @@ def test_encrypted_roundtrip_redacts_tools_but_preserves_answers_and_continuatio
         ],
     )
     session.events[2].actions = EventActions(state_delta={STATE_EXTERNAL_READ: "read-turn"})
-    service = EncryptedAdkSessionService()
+    service = EncryptedAdkSessionService(static_chat_cipher())
     encoded = service._encode(session)
-    decoded = service._decode({f"payload_{key}": value for key, value in encoded.items()})
+    decoded = service._decode(
+        {f"payload_{key}": value for key, value in encoded.items()},
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+    )
     durable = decoded.model_dump_json()
     assert "PRIVATE_" not in durable
     assert "USER REQUEST" in durable and "NORMAL ASSISTANT ANSWER" in durable
     assert STATE_EXECUTION_SURFACE not in durable and STATE_EXTERNAL_READ not in durable
+    assert STATE_EXTERNAL_READ_CONTINUATION not in durable
     call = decoded.events[2].content.parts[0]
     assert call.function_call.name == "ask_email_agent" and call.function_call.id == "call"
     assert call.function_call.args == {} and call.thought_signature == b"\xff\x00\x81"
@@ -104,6 +117,23 @@ def test_malformed_receipts_are_replaced_not_copied(payload):
 def test_unrelated_sessions_and_events_are_preserved():
     session = Session(id="thread", app_name="one", user_id="owner", events=[Event(author="one")])
     assert durable_external_read_projection(session) is session
+
+
+@pytest.mark.parametrize("in_state", [False, True])
+def test_mcp_approval_reference_is_never_durable_even_in_event_only(in_state):
+    key = "temp:hussh:mcp_approval"
+    reference = "one_secret_ref:private-reference"
+    session = Session(
+        id="thread",
+        app_name="one",
+        user_id="owner",
+        state={key: reference} if in_state else {},
+        events=[Event(author="one", actions=EventActions(state_delta={key: reference}))],
+    )
+    projected = durable_external_read_projection(session)
+    assert reference not in projected.model_dump_json()
+    assert key not in projected.model_dump_json()
+    assert session.events[0].actions.state_delta[key] == reference
 
 
 def test_selected_gmail_reply_context_and_draft_body_are_not_durable():
@@ -154,7 +184,7 @@ def test_selected_gmail_reply_context_and_draft_body_are_not_durable():
 
 
 async def test_compare_and_swap_retry_preserves_live_guard_without_persisting_it(monkeypatch):
-    service = EncryptedAdkSessionService()
+    service = EncryptedAdkSessionService(static_chat_cipher())
     session = Session(
         id="thread",
         app_name="one",
@@ -191,7 +221,10 @@ async def test_compare_and_swap_retry_preserves_live_guard_without_persisting_it
     for call in service._execute.call_args_list:
         encoded = call.args[1]
         decoded = service._decode(
-            {f"payload_{key}": encoded[key] for key in ("ciphertext", "iv", "tag", "algorithm")}
+            {f"payload_{key}": encoded[key] for key in ("ciphertext", "iv", "tag", "algorithm")},
+            app_name="one",
+            user_id="owner",
+            session_id="thread",
         )
         assert STATE_EXTERNAL_READ not in decoded.state
         assert "PRIVATE_RESULT" not in decoded.model_dump_json()

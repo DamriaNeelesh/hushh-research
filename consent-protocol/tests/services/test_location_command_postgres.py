@@ -13,8 +13,8 @@ from hushh_mcp.services.action_directive_ledger import (
     ActionDirectiveAuthorityError,
     ActionDirectiveStore,
 )
-from hushh_mcp.services.agent_chat_service import AgentChatService
 from hushh_mcp.services.command_checkpoints import CommandCheckpointConflict, CommandCheckpointStore
+from tests.helpers.chat_keys import static_chat_cipher
 
 
 @pytest.fixture
@@ -58,6 +58,8 @@ def db():
         "216_location_command_membership_receipts.sql",
         "217_location_command_effect_receipts.sql",
         "218_location_command_audience_receipts.sql",
+        # The ledger store writes adk_app_name; keep the fixture at the real schema.
+        "248_adk_chat_action_authority.sql",
     ):
         database.execute_raw((migrations / name).read_text())
     yield database
@@ -69,9 +71,7 @@ def db():
 
 async def ready(db, confirmation=True):
     ledger = ActionDirectiveStore(db=db, hmac_key="command-test-key")
-    checkpoint = CommandCheckpointStore(
-        db=db, cipher=AgentChatService(db=db, vault_key_hex="12" * 32)
-    )
+    checkpoint = CommandCheckpointStore(db=db, cipher=static_chat_cipher("12" * 32))
     state = await checkpoint.create(
         "owner",
         "command",
@@ -177,9 +177,7 @@ async def nearby_checkout_command(db, monkeypatch, *, empty=False):
     store, check_in, ledger, _, receipts = await nearby_command(db, monkeypatch)
     check_in.pop("command_operation_id")
     row = None if empty else store.upsert_presence(**check_in)
-    checkpoint = CommandCheckpointStore(
-        db=db, cipher=AgentChatService(db=db, vault_key_hex="12" * 32)
-    )
+    checkpoint = CommandCheckpointStore(db=db, cipher=static_chat_cipher("12" * 32))
     state = await checkpoint.create(
         "owner",
         "checkout",
