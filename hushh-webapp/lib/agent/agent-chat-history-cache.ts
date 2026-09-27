@@ -91,6 +91,8 @@ export function clearAgentChatHistoryCache(userId?: string): void {
 export function warmAgentChatHistoryCache(input: {
   userId: string;
   vaultOwnerToken: string;
+  /** Unlocked vault key; only its derived chat key is sent. */
+  vaultKey: string;
   force?: boolean;
 }): Promise<AgentChatHistorySnapshot> {
   const cached = entriesByUser.get(input.userId);
@@ -113,26 +115,16 @@ export function warmAgentChatHistoryCache(input: {
   const warmup = listAgentChatConversations({
     userId: input.userId,
     vaultOwnerToken: input.vaultOwnerToken,
+    vaultKey: input.vaultKey,
     limit: CONVERSATION_LIMIT,
   })
-    .then(async (conversations) => {
+    .then((conversations) => {
       assertCurrentGeneration(input.userId, generation);
       const previous = entriesByUser.get(input.userId);
       const messagesByConversation = new Map(previous?.messagesByConversation || []);
       const validIds = new Set(conversations.map((conversation) => conversation.id));
       for (const conversationId of messagesByConversation.keys()) {
         if (!validIds.has(conversationId)) messagesByConversation.delete(conversationId);
-      }
-
-      const latestConversationId = conversations[0]?.id;
-      if (latestConversationId) {
-        const latestMessages = await getAgentChatHistory({
-          conversationId: latestConversationId,
-          vaultOwnerToken: input.vaultOwnerToken,
-          limit: MESSAGE_LIMIT,
-        });
-        assertCurrentGeneration(input.userId, generation);
-        messagesByConversation.set(latestConversationId, latestMessages);
       }
 
       const next: AgentChatHistoryCacheEntry = {
@@ -148,6 +140,18 @@ export function warmAgentChatHistoryCache(input: {
         warmPriority: "agent_chat_history",
         durationMs: Date.now() - startedAt,
       });
+      const latestConversationId = conversations[0]?.id;
+      if (latestConversationId && (input.force || !messagesByConversation.has(latestConversationId))) {
+        // The list is usable as soon as it arrives. A slow transcript must not
+        // hold the entire sidebar in its loading state.
+        void loadAgentChatConversationHistory({
+          userId: input.userId,
+          conversationId: latestConversationId,
+          vaultOwnerToken: input.vaultOwnerToken,
+          vaultKey: input.vaultKey,
+          force: input.force,
+        }).catch(() => undefined);
+      }
       return snapshot(next);
     })
     .catch((error) => {
@@ -175,6 +179,8 @@ export async function loadAgentChatConversationHistory(input: {
   userId: string;
   conversationId: string;
   vaultOwnerToken: string;
+  /** Unlocked vault key; only its derived chat key is sent. */
+  vaultKey: string;
   force?: boolean;
 }): Promise<AgentChatMessage[]> {
   const entry = entriesByUser.get(input.userId);
@@ -189,6 +195,7 @@ export async function loadAgentChatConversationHistory(input: {
   const request = getAgentChatHistory({
     conversationId: input.conversationId,
     vaultOwnerToken: input.vaultOwnerToken,
+    vaultKey: input.vaultKey,
     limit: MESSAGE_LIMIT,
   })
     .then((messages) => {

@@ -78,11 +78,12 @@ ERASURE_METHODS = (
     "_delete_personal_agent_state",
     "_delete_one_referral_graph",
     "_delete_owned_named_circles",
-    "_delete_private_mcp_connectors",
 )
+# Connector erasure, including private MCP registrations, called in the same
+# transaction by AccountService._clear_external_connector_data.
 DRIVE_ERASURE = (
     "hushh_mcp/services/drive_sharing_retention.py",
-    "erase_drive_account_in_transaction",
+    ("erase_drive_account_in_transaction", "_erase_private_connector_registrations"),
 )
 
 _TABLE_CONSTRAINT_HEADS = {"constraint", "primary", "unique", "check", "foreign", "exclude", "like"}
@@ -316,17 +317,11 @@ def erasure_delete_targets() -> set[str]:
         for constant in _string_constants(methods[method]):
             fragments.append(constant)
             fragments.append(keyed_sql.get(constant, ""))
-    drive_path, drive_function = DRIVE_ERASURE
+    drive_path, drive_functions = DRIVE_ERASURE
     drive_tree = ast.parse((BACKEND_ROOT / drive_path).read_text(encoding="utf-8"))
-    fragments.extend(
-        _string_constants(
-            next(
-                node
-                for node in drive_tree.body
-                if isinstance(node, ast.FunctionDef) and node.name == drive_function
-            )
-        )
-    )
+    for node in drive_tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in drive_functions:
+            fragments.extend(_string_constants(node))
     return {
         name.lower() for name in re.findall(r"\bDELETE\s+FROM\s+(\w+)", "\n".join(fragments), re.I)
     }

@@ -226,10 +226,15 @@ export async function createReviewerSessionHarness({
     let vaultState = null;
     let ownerToken = "";
     let identityToken = "";
+    // The app's own derived chat key (X-Hussh-Chat-Key), kept in memory only so
+    // a rehearsal can read the history it just wrote. Never printed.
+    let chatKey = "";
     const criticalApiFailures = [];
     const responsePromises = new Set();
     page.on("request", (request) => {
       const pathname = endpointPath(request.url());
+      const sentChatKey = request.headers()["x-hussh-chat-key"] || "";
+      if (sentChatKey) chatKey = sentChatKey;
       const authorization = request.headers().authorization || "";
       if (!authorization.startsWith("Bearer ")) return;
       if (pathname.startsWith("/api/pkm/")) ownerToken = authorization.slice(7);
@@ -238,7 +243,8 @@ export async function createReviewerSessionHarness({
       // read-only rehearsal. Keep the vault-owner token scoped to PKM routes.
       if (
         pathname.startsWith("/api/one/connections") ||
-        pathname.startsWith("/api/one/people/")
+        pathname.startsWith("/api/one/people/") ||
+        pathname === "/api/one/models/preference"
       ) {
         identityToken = authorization.slice(7);
       }
@@ -270,6 +276,9 @@ export async function createReviewerSessionHarness({
       },
       async identityToken() {
         return waitForValue(() => identityToken, "reviewer identity token", timeoutMs);
+      },
+      async chatKey() {
+        return waitForValue(() => chatKey, "chat key", timeoutMs);
       },
       async vaultState() {
         const state = await waitForValue(() => vaultState, "encrypted vault state", timeoutMs);
@@ -305,6 +314,7 @@ export async function createReviewerSessionHarness({
         return {
           state: String(bridge?.bootstrapState || ""),
           errorClass: String(bridge?.bootstrapErrorClass || ""),
+          mismatchStage: String(bridge?.bootstrapDetail || "").split(":", 1)[0],
           path: window.location.pathname,
           userMatches: Boolean(bootstrapUserId && bootstrapUserId === expectedUserId),
         };
@@ -316,7 +326,7 @@ export async function createReviewerSessionHarness({
       if (bootstrap.state === "vault_unlocked" && bootstrap.userMatches) return;
       if (terminalFailures.has(bootstrap.state)) {
         const error = new Error(
-          `Reviewer vault bootstrap failed (state=${bootstrap.state}, error_class=${bootstrap.errorClass || "unknown"}, path=${bootstrap.path}, user_match=${bootstrap.userMatches}).`
+          `Reviewer vault bootstrap failed (state=${bootstrap.state}, error_class=${bootstrap.errorClass || "unknown"}, stage=${["signin_result", "auth_context", "native_session", "vault_context"].includes(bootstrap.mismatchStage) ? bootstrap.mismatchStage : "unknown"}, path=${bootstrap.path}, user_match=${bootstrap.userMatches}).`
         );
         error.code = "REVIEWER_TERMINAL_BOOTSTRAP";
         throw error;

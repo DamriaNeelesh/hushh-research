@@ -69,7 +69,24 @@ def _first_env(*keys: str) -> str:
 
 
 def _resolve_reviewer_uid() -> str:
-    return _first_env(REVIEWER_UID_KEY, *DEPRECATED_REVIEWER_UID_KEYS)
+    # The local reviewer-mode script writes the canonical UID to this ignored
+    # overlay. Runtime dotenv loading uses override=False, so an older .env
+    # value can otherwise mint the wrong Firebase subject despite preflight.
+    # Never prefer the overlay in production or outside explicit review mode.
+    return _review_mode_overlay_uid() or _first_env(REVIEWER_UID_KEY, *DEPRECATED_REVIEWER_UID_KEYS)
+
+
+def _review_mode_overlay_uid() -> str:
+    if not _is_app_review_mode_enabled() or _is_production_runtime():
+        return ""
+    try:
+        overlay = Path(__file__).resolve().parents[2] / ".env.local"
+        values = dotenv_values(str(overlay)) if overlay.is_file() else {}
+        if str(values.get("APP_REVIEW_MODE", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+            return ""
+        return str(values.get(REVIEWER_UID_KEY, "")).strip()
+    except Exception:
+        return ""
 
 
 def _resolve_reviewer_vault_passphrase() -> str:
@@ -139,12 +156,17 @@ def _select_review_mode_identity(
     APP_REVIEW_MODE and REVIEWER_UID), and for a passphrase that matches no
     pair. The counterpart pair only adds a second match: a passphrase equal to
     a configured pair's mints that pair's uid. In non-production, a requested_uid
-    matching a configured reviewer pair mints that pair directly. Values are never logged.
+    equal to the primary, or matching a configured reviewer pair, mints that identity directly. Values are never logged.
     """
     primary = (_resolve_reviewer_uid(), "reviewer")
     configured = _configured_reviewer_identities()
     if requested_uid and not _is_production_runtime():
         clean_requested = str(requested_uid).strip()
+        # The primary needs no passphrase (the reviewer button mints it bare),
+        # so asking for it by uid grants nothing a bare request would not. This
+        # keeps a shared passphrase from resolving the owner to the counterpart.
+        if primary[0] and clean_requested == primary[0]:
+            return primary
         for candidate_uid, _, subject in configured:
             if candidate_uid == clean_requested:
                 return candidate_uid, subject

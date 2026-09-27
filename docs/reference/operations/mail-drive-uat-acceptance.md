@@ -1,8 +1,25 @@
 # Mail + Drive UAT acceptance
 
-Status: implementation evidence only; verify the live rollout and two-account acceptance separately.
-Runtime remains in `hushh-pda-uat`; the isolated Drive OAuth project is `hushh-drive-uat`.
+Status: historical post-merge UAT deployment verified; verify the current live rollout and two-account acceptance separately. Mail/Drive acceptance remains incomplete.
+Runtime remains in `hushh-pda-uat`. Founder decision 2026-09-26: Drive moves off the isolated
+`hushh-drive-uat` project onto the Hussh PDA Google projects. Localhost and dev use the
+dev/localhost OAuth client (project `hushh-pda-uat`) with its Picker key (secret
+`GOOGLE_DRIVE_PICKER_API_KEY` in `hushh-pda-dev`); UAT and production will use the same
+`hushh-pda` client as Gmail and Calendar once its connector return
+(`/one/profile/connectors/oauth/return`) is registered for the UAT and production origins.
+Until then UAT stays on `hushh-drive-uat`. Switching a lane's client requires existing Drive
+connections in that lane to reconnect once.
 Mail/Calendar/Firebase clients and existing grants are unchanged.
+
+## Latest verified state
+
+PR [#6967](https://github.com/hushh-labs/hushh-research/pull/6967) passed its
+Main Post-Merge Smoke Gate and immutable-SHA UAT deployment. The backend and web
+services serve that merged SHA at 100% traffic, and their health/root checks
+succeeded. This proves deployment, not document-processing or authenticated
+sharing acceptance. Connector feature flags and the internal-owner cohort remain
+off; indexing remains fail-closed. The detailed evidence is in
+[Post-merge UAT delivery record](#post-merge-uat-delivery-record-2026-09-23).
 
 ## Visual Map
 
@@ -336,11 +353,16 @@ DRIVE_WORK_DRAIN_SCHEDULER_SERVICE_ACCOUNT_EMAIL=drive-work-drain-sched@hushh-pd
 DRIVE_WORK_DRAIN_SCHEDULER_AUDIENCE=https://<exact-backend-origin>
 ```
 
-The feature flags remain independently default-off: `GOOGLE_DRIVE_CONNECTION`,
-`DRIVE_DOCUMENT_INDEXING`, and `DRIVE_DOCUMENT_SHARING` each require explicit activation.
-UAT admission can use exact Firebase UIDs in `CONNECTOR_INTERNAL_OWNER_COHORT` or
-`CONNECTOR_UAT_ALL_USERS=true` for every signed-in UAT user. These modes are mutually exclusive;
-`*` and `all` remain invalid cohort values, and production cannot enable either mode.
+Drive connection, selected-file setup, and owner-authorized Gmail/Drive Chat reads
+no longer require rollout flags or reviewer-cohort membership. A configured OAuth
+client, registered return URL, explicit Google approval, and current owner grant
+are still required. The connector catalog reports Drive unavailable if the OAuth
+configuration is incomplete. `DRIVE_DOCUMENT_INDEXING`, `DRIVE_DOCUMENT_SHARING`,
+and account-wide live Drive remain independently default-off staged effects.
+Their UAT admission can use exact Firebase UIDs in `CONNECTOR_INTERNAL_OWNER_COHORT`
+or `CONNECTOR_UAT_ALL_USERS=true` for every signed-in UAT user. These modes are
+mutually exclusive; `*` and `all` remain invalid cohort values, and production
+cannot enable staged effects through either mode.
 Google's OAuth app audience must independently allow the intended Google accounts.
 For a Trusted-circle share that returns `no_recipients`, inspect the backend's
 `drive_share.timing` entries for `trusted_members` and `recipient_identity` counts,

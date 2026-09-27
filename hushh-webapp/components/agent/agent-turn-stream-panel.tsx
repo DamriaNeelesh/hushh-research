@@ -6,7 +6,8 @@ import {
   AppStreamPanel,
   type AppStreamProgressItem,
 } from "@/components/app-ui/stream-progress-panel";
-import { AgentStructuredExperienceView } from "@/components/agent/agent-structured-experience";
+import { AgentMarkdown } from "@/components/agent/agent-markdown";
+import { AgentStructuredExperienceView, type InformationRequestSubmissionReceipt } from "@/components/agent/agent-structured-experience";
 import type {
   AgentStructuredExperience,
   AgentStructuredExperienceWithPresentation,
@@ -18,23 +19,42 @@ import {
 } from "@/lib/agent/drive-batch-progress";
 import { driveOwnerCompileKey, type DriveOwnerCompileWindow } from "@/lib/agent/connector-read-receipt";
 import type { AgentChatToolEvent, AgentSource } from "@/lib/services/agent-chat-client";
+import type { WorkspaceConnectorProvider } from "@/lib/agent/connector-read-receipt";
+import { ConnectorBrandMark, connectorBrandFor, type ConnectorBrand } from "@/components/agent/connector-brand-mark";
 
-export type AgentVisibleStreamStatus = "running" | "done" | "blocked" | "error";
+export type AgentVisibleStreamStatus = "running" | "waiting" | "done" | "blocked" | "error";
 
 export type AgentVisibleStreamEvent = {
   id: string;
   label: string;
   message: string;
   status: AgentVisibleStreamStatus;
+  /** App-authored, e.g. "Read" or "Needs review". Never provider text. */
+  tag?: string;
+  /** First-party product whose official mark labels this step. */
+  brand?: ConnectorBrand;
+  /** Opaque owner connector id on a restored step, resolved to the owner's name from the vault. */
+  connectorId?: string;
   createdAtMs: number;
   durationMs?: number;
   batchProgress?: DriveBatchProgress;
 };
 
+/** Only app-owned tool identities map to a product mark; provider text never does. */
+export function connectorBrandForTool(toolName: unknown, provider?: unknown): ConnectorBrand | null {
+  if (toolName === "discover_workspace_tools" || toolName === "read_workspace_tool") {
+    return connectorBrandFor(provider);
+  }
+  if (toolName === "ask_email_agent") return "gmail";
+  if (toolName === "ask_documents_agent" || toolName === "inspect_selected_drive_files") return "drive";
+  return null;
+}
+
 export const PRIVATE_MEMORY_PREPARATION_EVENT_ID = "private-memory-preparation";
 
 export type AgentTurnStreamPanelProps = {
   streamEvents: AgentVisibleStreamEvent[];
+  thinkingSummary?: string;
   responseText: string;
   isStreaming: boolean;
   isError?: boolean;
@@ -47,7 +67,8 @@ export type AgentTurnStreamPanelProps = {
     id: string;
     experience: AgentStructuredExperienceWithPresentation;
   }>;
-  onOpenConnections?: (trigger: HTMLButtonElement) => void;
+  onOpenConnections?: (provider: WorkspaceConnectorProvider, trigger: HTMLButtonElement) => void;
+  onInformationRequestSubmitted?: (activityId: string, receipt: InformationRequestSubmissionReceipt) => Promise<void>;
   onCompileDriveNotes?: (query: string, window: DriveOwnerCompileWindow) => void;
   onDownloadDriveNotes?: () => void;
   driveCompilation?: DriveCompilationUiState;
@@ -126,9 +147,11 @@ export function agentToolEventToVisibleStreamEvent(
   const status: AgentVisibleStreamStatus =
     toolEvent.execution === "blocked" || toolEvent.status === "blocked"
       ? "blocked"
-      : phase === "result"
-        ? "done"
-        : "running";
+      : toolEvent.status === "waiting"
+        ? "waiting"
+        : phase === "result"
+          ? "done"
+          : "running";
   const fallback =
     phase === "start"
       ? "Preparing the next step."
@@ -137,11 +160,17 @@ export function agentToolEventToVisibleStreamEvent(
         : status === "blocked"
           ? "That step needs attention."
           : "Step complete.";
+  const brand = connectorBrandForTool(
+    toolEvent.raw?.toolName,
+    toolEvent.raw?.provider ?? toolEvent.slots?.provider,
+  );
   return {
     id: visibleToolEventId(toolEvent, nowMs),
     label: normalizeToolLabel(toolEvent),
     message: cleanVisibleText(toolEvent.message, fallback),
     status,
+    ...(toolEvent.tag ? { tag: toolEvent.tag } : {}),
+    ...(brand ? { brand } : {}),
     createdAtMs: nowMs,
   };
 }
@@ -195,6 +224,7 @@ export function driveBatchProgressToVisibleStreamEvent(
 
 export function AgentTurnStreamPanel({
   streamEvents,
+  thinkingSummary = "",
   responseText,
   isStreaming,
   isError = false,
@@ -205,6 +235,7 @@ export function AgentTurnStreamPanel({
   structuredExperience = null,
   structuredExperiences = [],
   onOpenConnections,
+  onInformationRequestSubmitted,
   onCompileDriveNotes,
   onDownloadDriveNotes,
   driveCompilation,
@@ -242,6 +273,8 @@ export function AgentTurnStreamPanel({
         label: event.label,
         message: event.message,
         status: event.status,
+        tag: event.tag,
+        ...(event.brand ? { mark: <ConnectorBrandMark brand={event.brand} size="sm" /> } : {}),
         durationMs: event.durationMs,
       })),
     [streamEvents]
@@ -287,6 +320,14 @@ export function AgentTurnStreamPanel({
         : `${isError ? "Stopped" : "Response complete"} in ${(elapsedMs / 1000).toFixed(1)}s${firstTextMs === null ? "" : ` · first text in ${(firstTextMs / 1000).toFixed(1)}s`}`}
       responseText={responseText}
       response={response}
+      thinkingTitle="Thinking summary"
+      thinkingContent={thinkingSummary ? (
+        <div className="max-h-44 min-h-0 overflow-y-auto overscroll-contain text-sm text-muted-foreground">
+          {/* Provider summaries are markdown ("**Heading**" then a paragraph);
+              render them with the same renderer as the answer. */}
+          <AgentMarkdown text={thinkingSummary} className="[&_strong]:text-foreground" />
+        </div>
+      ) : undefined}
       structuredContent={
         experienceItems.length > 0 ? (
           <div className="space-y-3">
@@ -300,6 +341,8 @@ export function AgentTurnStreamPanel({
                 key={id}
                 experience={experience}
                 onOpenConnections={onOpenConnections}
+                onInformationRequestSubmitted={onInformationRequestSubmitted
+                  ? (receipt) => onInformationRequestSubmitted(id, receipt) : undefined}
                 onCompileDriveNotes={onCompileDriveNotes}
                 onDownloadDriveNotes={scopedCompilation ? onDownloadDriveNotes : undefined}
                 driveCompilation={scopedCompilation}

@@ -16,8 +16,8 @@
     "surface_map_count": 140,
     "class_counts": {
       "public/auth-split": 1,
-      "redirect/alias": 48,
-      "vault-backed": 53,
+      "redirect/alias": 47,
+      "vault-backed": 54,
       "hidden flow": 18,
       "auth/pre-vault": 5,
       "RIA/provider": 8,
@@ -3369,23 +3369,26 @@
     {
       "route": "/one/profile/connectors",
       "page_file": "app/one/profile/connectors/page.tsx",
-      "route_contract_mode": "redirect",
-      "screen_class": "redirect/alias",
-      "cache_policy": "none",
+      "route_contract_mode": "standard",
+      "screen_class": "vault-backed",
+      "cache_policy": "memory-only",
       "cache_keys": [],
       "resource_classes": [
         "unknown"
       ],
       "sensitivity_class": "app-metadata",
-      "ttl_class": "none",
-      "warm_source": "none",
-      "refresh_trigger": "none",
-      "mutation_invalidator": "none",
+      "ttl_class": "CACHE_TTL.MEDIUM",
+      "warm_source": "Route-local resource loader",
+      "refresh_trigger": "stale-aware background refresh; explicit user refresh may force",
+      "mutation_invalidator": "CacheSyncService user/session invalidation",
       "best_available_ux_path": [
-        "static render"
+        "fresh memory",
+        "cold loader"
       ],
       "readiness_kpis": [
-        "route_readiness_completed"
+        "route_readiness_completed",
+        "cache_resource_resolved",
+        "route_refresh_completed"
       ],
       "realtime_policy": "not realtime",
       "reviewer_fixture": "/login?redirect=%2Fone%2Fprofile%2Fconnectors",
@@ -3404,7 +3407,9 @@
         "sse_or_streaming": false,
         "native_beacon": false
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/one/profile/connectors/oauth/return",
@@ -4705,7 +4710,7 @@
       "surface_map_present": true,
       "route_contract_present": true,
       "evidence": {
-        "cache_service": false,
+        "cache_service": true,
         "use_stale_resource": false,
         "device_cache": false,
         "secure_cache": false,
@@ -6282,5 +6287,5 @@
       ]
     }
   ],
-  "content_sha256": "9d739daf44a6540928d18da078cb05adb44216b5170531602f1921ff39e9f0c3"
+  "content_sha256": "1b0ccdf5e70749b4870222f335e7cd23a6e788f3c1eee78e0f8732e140438220"
 }

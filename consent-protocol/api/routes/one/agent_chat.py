@@ -6,17 +6,22 @@ import hashlib
 import json
 import logging
 import re
+import uuid
 from typing import Any
 
 from ag_ui.core import RunAgentInput
 from ag_ui_adk import ADKAgent, add_adk_fastapi_endpoint
+from ag_ui_adk.request_state_service import RequestStateSessionService
+from ag_ui_adk.session_manager import SessionManager
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from google.adk.apps import App, ResumabilityConfig
+from google.adk.events import Event
 from google.adk.sessions import InMemorySessionService
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from api.middleware import require_vault_owner_token
+from api.middlewares.chat_key import CHAT_KEY_REQUIRED_DETAIL, require_vault_owner_chat_key
 from api.routes.one.agent_context import sanitize_agent_context
 from api.utils.firebase_auth import verify_firebase_bearer
 from hushh_mcp.one_adk.agent_tree import (
@@ -35,14 +40,29 @@ from hushh_mcp.one_adk.agent_tree import (
 )
 from hushh_mcp.one_adk.agui_action_tools import action_id_from_tool_name
 from hushh_mcp.one_adk.agui_turn_timing import HEAD_INTRO, HEAD_ONE, TimedADKAgent
+from hushh_mcp.one_adk.drive_result_privacy import _safe_result as safe_connector_result
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
-from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION_SURFACE
+from hushh_mcp.one_adk.external_read_boundary import (
+    READ_TOOLS,
+    STATE_EXECUTION_SURFACE,
+    STATE_UNTRUSTED_CONTENT,
+)
 from hushh_mcp.one_adk.external_read_projection import redacted_read_receipt
+from hushh_mcp.one_adk.mcp_call_approval import STATE_MCP_APPROVAL, admit_resume_receipt
+from hushh_mcp.one_adk.mcp_turn_scope import STATE_MCP_CONFIGURATION, admit_turn_configurations
 from hushh_mcp.one_adk.request_secrets import store_request_secret
+from hushh_mcp.one_adk.workspace_mcp_tools import WORKSPACE_CHAT_ADMISSION_STATE
+from hushh_mcp.services.action_directive_ledger import ActionDirectiveAuthorityError
 from hushh_mcp.services.action_gateway import get_action_gateway_action, list_action_gateway_actions
+from hushh_mcp.services.chat_key import request_has_chat_key
+from hushh_mcp.services.external_mcp_client import ExternalMcpError
 from hushh_mcp.services.gmail_personal_information_request_service import (
     PersonalGmailInformationRequestError,
     get_personal_gmail_information_request_service,
+)
+from hushh_mcp.services.information_request_service import (
+    InformationRequestError,
+    InformationRequestService,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,6 +117,33 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
         f"{request.client.host if request.client else ''}|{request.headers.get('user-agent', '')}"
     )
     user_id = str((token or {}).get("user_id") or firebase_uid).strip()
+    if token and user_id:
+        # Durable history is sealed with the owner's chat key. Refuse before any
+        # stream starts rather than failing mid-turn or reading without it.
+        if not request_has_chat_key(user_id):
+            raise HTTPException(
+                status_code=403,
+                detail={"message": CHAT_KEY_REQUIRED_DETAIL, "code": "CHAT_KEY_REQUIRED"},
+            )
+        if input_data.thread_id and await _session_service.is_legacy_session(
+            app_name=ONE_APP_NAME, user_id=user_id, session_id=input_data.thread_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "This conversation is no longer available. Start a new chat.",
+                    "code": "CHAT_CONVERSATION_RETIRED",
+                },
+            )
+    try:
+        mcp_approval = admit_resume_receipt(
+            forwarded, owner_id=user_id if token else "", conversation_id=input_data.thread_id
+        )
+    except ActionDirectiveAuthorityError:
+        raise HTTPException(
+            status_code=403,
+            detail="Connector confirmation is unavailable. Unlock and review again.",
+        ) from None
     session_user_id = (
         user_id or f"anonymous:{hashlib.sha256(anonymous_seed.encode()).hexdigest()[:24]}"
     )
@@ -131,8 +178,19 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
                 status_code=503,
                 detail="The selected Gmail request is temporarily unavailable. Please try again.",
             ) from exc
+    try:
+        mcp_configuration = admit_turn_configurations(
+            forwarded, owner_id=user_id if token else "", conversation_id=input_data.thread_id
+        )
+    except ExternalMcpError:
+        raise HTTPException(
+            status_code=403, detail="Connector configuration is unavailable. Unlock and try again."
+        ) from None
     return {
         STATE_EXECUTION_SURFACE: "typed_chat",
+        STATE_MCP_CONFIGURATION: mcp_configuration,
+        STATE_MCP_APPROVAL: mcp_approval,
+        WORKSPACE_CHAT_ADMISSION_STATE: bool(token and user_id),
         STATE_USER_ID: session_user_id,
         STATE_CONSENT_TOKEN: store_request_secret(str((token or {}).get("token") or "")),
         STATE_CONVERSATION_ID: input_data.thread_id,
@@ -157,12 +215,16 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
         STATE_GMAIL_INFORMATION_REQUEST_CONTEXT: store_request_secret(
             gmail_information_request_context
         ),
+        # A selected email enters the instructions without any tool call, so
+        # no tool marks it. Mark the conversation here. Only ever set True: a
+        # request must never clear a durable mark left by an earlier turn.
+        **({STATE_UNTRUSTED_CONTENT: True} if gmail_information_request_context else {}),
     }
 
 
 _app = App(
     name=ONE_APP_NAME,
-    root_agent=build_one_text_agent(),
+    root_agent=build_one_text_agent(allow_workspace_tools=True, include_thought_summaries=True),
     resumability_config=ResumabilityConfig(is_resumable=True),
 )
 _intro_app = App(
@@ -172,6 +234,28 @@ _intro_app = App(
 )
 _session_service = EncryptedAdkSessionService()
 _intro_session_service = InMemorySessionService()
+
+
+class _DurableSessionManager(SessionManager):
+    """ag_ui_adk session manager without its idle-session sweeper.
+
+    The library default re-reads every tracked session every five minutes from a
+    background task, copies idle ones into an in-memory memory service, and then
+    deletes them from storage twenty minutes after their last turn. For durable,
+    person-key history that is both a background reader with no person present and
+    a silent deletion of the person's history, so it never starts here.
+    """
+
+    def _start_cleanup_task(self) -> None:
+        return None
+
+
+_durable_session_manager = _DurableSessionManager(
+    session_service=RequestStateSessionService(_session_service),
+    delete_session_on_cleanup=False,
+    save_session_to_memory_on_cleanup=False,
+    use_thread_id_as_session_id=True,
+)
 _authenticated_capabilities = {
     "identity": {
         "name": "Agent One",
@@ -184,7 +268,7 @@ _authenticated_capabilities = {
     "tools": {"supported": True, "parallelCalls": False, "clientProvided": True},
     "state": {"snapshots": True, "deltas": True, "memory": False, "persistentState": True},
     "multiAgent": {"supported": True, "delegation": True, "handoffs": False},
-    "reasoning": {"supported": False, "streaming": False, "encrypted": False},
+    "reasoning": {"supported": True, "streaming": True, "encrypted": False},
     "humanInTheLoop": {
         "supported": True,
         "approvals": True,
@@ -196,6 +280,7 @@ _authenticated_capabilities = {
 }
 _intro_capabilities = {
     **_authenticated_capabilities,
+    "reasoning": {"supported": False, "streaming": False, "encrypted": False},
     "tools": {"supported": False, "parallelCalls": False, "clientProvided": False},
     "state": {"snapshots": True, "deltas": True, "memory": False, "persistentState": False},
     "multiAgent": {"supported": False, "delegation": False, "handoffs": False},
@@ -216,7 +301,7 @@ _agent = TimedADKAgent.from_app(
     user_id_extractor=_user_id,
     max_concurrent_executions=_MAX_CONCURRENT_EXECUTIONS,
     execution_timeout_seconds=_EXECUTION_TIMEOUT_SECONDS,
-    session_service=_session_service,
+    session_manager=_durable_session_manager,
     use_in_memory_services=True,
     use_thread_id_as_session_id=True,
     emit_messages_snapshot=True,
@@ -521,6 +606,73 @@ def _safe_information_request_descriptor(
     return None
 
 
+def _safe_submitted_information_request_card(card: Any) -> dict[str, Any] | None:
+    """Allowlist display-only submission metadata, never consent authority."""
+    card = _record(card) or {}
+    if (
+        card.get("activityType") != "one.information_request_review.v1"
+        or card.get("direction") != "outgoing"
+        or card.get("phase") != "submitted"
+    ):
+        return None
+    person_name = _bounded_text(card.get("personName"), 120)
+    purpose = _bounded_text(card.get("purpose"), 500)
+    duration_label = _bounded_text(card.get("durationLabel"), 100)
+    status = _bounded_text(card.get("status"), 32)
+    if (
+        not person_name
+        or not purpose
+        or not duration_label
+        or status
+        not in {"pending", "mixed", "cancelled", "granted", "denied", "expired", "revoked"}
+    ):
+        return None
+    raw_fields = card.get("fields")
+    if not isinstance(raw_fields, list):
+        return None
+    fields: list[dict[str, Any]] = []
+    for raw_field in raw_fields[:50]:
+        field = _record(raw_field)
+        if not field:
+            continue
+        label = _bounded_text(field.get("label"), 120)
+        domain = _bounded_text(field.get("domain"), 80)
+        if not label or not domain:
+            continue
+        projected = {
+            "label": label,
+            "domain": domain,
+            "sensitivity": _bounded_text(field.get("sensitivity"), 32) or "standard",
+        }
+        request_id = _bounded_text(field.get("requestId"), 128)
+        if request_id and re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request_id):
+            projected["requestId"] = request_id
+        field_status = _bounded_text(field.get("status"), 32)
+        if field_status in {"pending", "cancelled", "granted", "denied", "expired", "revoked"}:
+            projected["status"] = field_status
+        fields.append(projected)
+    if not fields:
+        return None
+    content: dict[str, Any] = {
+        "direction": "outgoing",
+        "phase": "submitted",
+        "status": status,
+        "personName": person_name,
+        "purpose": purpose,
+        "durationLabel": duration_label,
+        "fields": fields,
+    }
+    for key, pattern in (
+        ("subjectRef", r"^[A-Za-z0-9_-]{16,128}$"),
+        ("bundleId", r"^[A-Za-z0-9_-]{8,128}$"),
+        ("requestId", r"^[A-Za-z0-9_-]{8,128}$"),
+    ):
+        value = _bounded_text(card.get(key), 128)
+        if value and re.fullmatch(pattern, value):
+            content[key] = value
+    return {"activityType": "one.information_request_review.v1", "content": content}
+
+
 def _safe_document_request_descriptor(
     event: Any, selected_parts: list[Any] | None = None
 ) -> dict[str, Any] | None:
@@ -643,16 +795,53 @@ def _safe_drive_share_descriptor(
     return None
 
 
-def _safe_submitted_information_request_descriptor(
-    event: Any, selected_parts: list[Any] | None = None
-) -> dict[str, Any] | None:
-    """Restore a sent request from a browser settlement, never from authority.
+_WORKSPACE_SETUP_TOOLS = frozenset({"discover_workspace_tools", "read_workspace_tool"})
+_WORKSPACE_PROVIDERS = frozenset({"drive", "gmail", "calendar"})
+_CUSTOM_CONNECTOR_ID = re.compile(r"^custom_[a-f0-9]{32}$")
+_CUSTOM_CONNECTOR_STATUSES = frozenset({"saved", "disabled", "reconnect_needed"})
 
-    The browser sends this allowlisted display descriptor as the result of the
-    already-authorized directive. It contains no proposal handle, scope
-    authority, connector, credential, or decrypted value. Current status is
-    deliberately not inferred from this historical event; the descriptor only
-    records the last safe status observed at submission time.
+
+def _status_result(value: Any) -> dict[str, Any]:
+    """Unwrap the tool envelope the same way the browser's card parser does."""
+    outer = _record(value) or {}
+    if isinstance(outer.get("status"), str):
+        return outer
+    for key in ("result", "content", "data"):
+        nested = _record(outer.get(key))
+        if nested and nested.get("status"):
+            return nested
+    return outer
+
+
+def _call_providers(events: list[Any]) -> dict[str, str]:
+    """Provider enum from each workspace tool call, keyed by call id.
+
+    Only the provider enum crosses: it is the one argument the live card uses,
+    and the only one a restored card may use.
+    """
+    providers: dict[str, str] = {}
+    for event in events:
+        for part in getattr(getattr(event, "content", None), "parts", None) or []:
+            call = getattr(part, "function_call", None)
+            if call is None or getattr(call, "name", "") not in _WORKSPACE_SETUP_TOOLS:
+                continue
+            call_id = _bounded_text(getattr(call, "id", None), 128)
+            provider = (_record(getattr(call, "args", None)) or {}).get("provider")
+            if call_id and provider in _WORKSPACE_PROVIDERS:
+                providers[call_id] = provider
+    return providers
+
+
+def _safe_workspace_connector_setup_descriptor(
+    event: Any,
+    selected_parts: list[Any] | None = None,
+    call_providers: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Project the connect/manage card: a provider enum and a status, nothing else.
+
+    The card never authorizes a connection; the owner still taps through the
+    connector surface, which re-reads the grant. So the restored card carries
+    no grant, scope, account, or result content.
     """
     parts = (
         selected_parts
@@ -660,92 +849,220 @@ def _safe_submitted_information_request_descriptor(
         else (getattr(getattr(event, "content", None), "parts", None) or [])
     )
     for part in parts:
-        function_response = getattr(part, "function_response", None)
-        if function_response is None or getattr(function_response, "name", "") != "run_app_action":
-            continue
-        response = _record(getattr(function_response, "response", None)) or {}
-        if response.get("status") != "succeeded":
-            continue
-        data = _record(response.get("data")) or {}
-        card = _record(data.get("consentCard")) or {}
-        if (
-            card.get("activityType") != "one.information_request_review.v1"
-            or card.get("direction") != "outgoing"
-            or card.get("phase") != "submitted"
-        ):
-            continue
-        person_name = _bounded_text(card.get("personName"), 120)
-        purpose = _bounded_text(card.get("purpose"), 500)
-        duration_label = _bounded_text(card.get("durationLabel"), 100)
-        status = _bounded_text(card.get("status"), 32)
-        if (
-            not person_name
-            or not purpose
-            or not duration_label
-            or status
-            not in {"pending", "mixed", "cancelled", "granted", "denied", "expired", "revoked"}
-        ):
-            continue
-        raw_fields = card.get("fields")
-        if not isinstance(raw_fields, list):
-            continue
-        fields: list[dict[str, Any]] = []
-        for raw_field in raw_fields[:50]:
-            field = _record(raw_field)
-            if not field:
+        response = getattr(part, "function_response", None)
+        name = getattr(response, "name", "") if response is not None else ""
+        result = _status_result(getattr(response, "response", None)) if response else {}
+        if name == "inspect_private_connectors":
+            if result.get("status") != "setup_available" or result.get("provider") != "custom":
                 continue
-            label = _bounded_text(field.get("label"), 120)
-            domain = _bounded_text(field.get("domain"), 80)
-            if not label or not domain:
-                continue
-            projected = {
-                "label": label,
-                "domain": domain,
-                "sensitivity": _bounded_text(field.get("sensitivity"), 32) or "standard",
+            saved: list[dict[str, str]] = []
+            raw_saved = result.get("saved")
+            if isinstance(raw_saved, list) and len(raw_saved) <= 32:
+                for raw in raw_saved:
+                    item = _record(raw) or {}
+                    connector_id = item.get("id")
+                    raw_name = item.get("name")
+                    label = (
+                        _bounded_text(raw_name, 100)
+                        if isinstance(raw_name, str)
+                        and len(raw_name) <= 100
+                        and not re.search(r"[\x00-\x1f\x7f]", raw_name)
+                        else None
+                    )
+                    status = item.get("status")
+                    if (
+                        not isinstance(connector_id, str)
+                        or not _CUSTOM_CONNECTOR_ID.fullmatch(connector_id)
+                        or not label
+                        or status not in _CUSTOM_CONNECTOR_STATUSES
+                    ):
+                        saved = []
+                        break
+                    saved.append({"id": connector_id, "name": label, "status": status})
+            return {
+                "activityType": "one.workspace_connector_setup.v1",
+                "content": {
+                    "provider": "custom",
+                    "status": "manage_available",
+                    **({"saved": saved} if saved else {}),
+                },
             }
-            request_id = _bounded_text(field.get("requestId"), 128)
-            if request_id and re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request_id):
-                projected["requestId"] = request_id
-            field_status = _bounded_text(field.get("status"), 32)
-            if field_status in {
-                "pending",
-                "cancelled",
-                "granted",
-                "denied",
-                "expired",
-                "revoked",
-            }:
-                projected["status"] = field_status
-            fields.append(projected)
-        if not fields:
+        if name not in _WORKSPACE_SETUP_TOOLS:
             continue
-        content: dict[str, Any] = {
-            "direction": "outgoing",
-            "phase": "submitted",
-            "status": status,
-            "personName": person_name,
-            "purpose": purpose,
-            "durationLabel": duration_label,
-            "fields": fields,
-        }
-        for key, pattern in (
-            ("subjectRef", r"^[A-Za-z0-9_-]{16,128}$"),
-            ("bundleId", r"^[A-Za-z0-9_-]{8,128}$"),
-            ("requestId", r"^[A-Za-z0-9_-]{8,128}$"),
-        ):
-            value = _bounded_text(card.get(key), 128)
-            if value and re.fullmatch(pattern, value):
-                content[key] = value
+        status = result.get("status")
+        if status == "permission_required":
+            setup_status = "connect_required"
+        elif name == "discover_workspace_tools" and status in {"api_available", "ok"}:
+            setup_status = "manage_available"
+        else:
+            continue
+        result_provider = result.get("provider")
+        call_id = _bounded_text(getattr(response, "id", None), 128)
+        argument_provider = (call_providers or {}).get(call_id or "")
+        if result_provider and argument_provider and result_provider != argument_provider:
+            continue
+        provider = result_provider or argument_provider
+        if provider not in _WORKSPACE_PROVIDERS:
+            continue
         return {
-            "activityType": "one.information_request_review.v1",
-            "content": content,
+            "activityType": "one.workspace_connector_setup.v1",
+            "content": {"provider": provider, "status": setup_status},
         }
     return None
 
 
-def _safe_agent_history_metadata(event: Any) -> dict[str, Any] | None:
+# App-owned tool identities the browser already labels in the live Activity
+# panel. Anything else (sub-agent transfers, confirmation plumbing) is not a
+# step the owner saw by name, so it is not restored.
+_ACTIVITY_TOOLS = frozenset(
+    {
+        "discover_person_information",
+        "list_pending_information_requests",
+        "propose_information_request",
+        "list_my_connections",
+        "inspect_selected_drive_files",
+        "inspect_private_connectors",
+        "discover_workspace_tools",
+        "read_workspace_tool",
+        "ask_email_agent",
+        "ask_documents_agent",
+        "ask_connected_systems_agent",
+        "ask_consent_agent",
+        "list_pending_connection_requests",
+    }
+)
+_MCP_ACTIVITY_TOOL = re.compile(r"^mcp_[0-9a-f]{40}$")
+_READ_STATUSES = frozenset(
+    {
+        "ok",
+        "input_required",
+        "connect_required",
+        "reconnect_required",
+        "connection_changed",
+        "permission_denied",
+        "source_changed",
+        "response_too_large",
+        "invalid_argument",
+        "unavailable",
+    }
+)
+_MAX_ACTIVITY_STEPS = 10
+
+
+def _activity_step_from_response(name: str, response: Any) -> dict[str, Any]:
+    """Outcome enums only. Result bodies, arguments and provider text never cross."""
+    if _MCP_ACTIVITY_TOOL.fullmatch(name):
+        safe = safe_connector_result(response)
+        step: dict[str, Any] = {}
+        if safe["status"] == "ok":
+            step["status"] = "done"
+            if safe.get("review") in {"read_only", "no_credential"}:
+                step["review"] = safe["review"]
+        elif safe["status"] == "review_required":
+            step["status"] = "waiting"
+            step["review"] = "required"
+        else:
+            step["status"] = "blocked"
+        if safe.get("connectorId"):
+            step["connectorId"] = safe["connectorId"]
+        return step
+    if name in READ_TOOLS and name != "inspect_selected_drive_files":
+        structured = redacted_read_receipt(_record(response) or {}).get("structured")
+        read_status = (_record(structured) or {}).get("status")
+        return {
+            "status": "done",
+            **({"readStatus": read_status} if read_status in _READ_STATUSES else {}),
+        }
+    if name == "inspect_selected_drive_files":
+        checked = _status_result(response).get("status") == "ok"
+        return {"status": "done", **({"readStatus": "status_checked"} if checked else {})}
+    return {"status": "done"}
+
+
+def _safe_turn_activity(events: list[Any]) -> dict[str, Any] | None:
+    """Rebuild one turn's Activity rows from its own tool calls and results.
+
+    Each row is a tool identity from a fixed allowlist plus outcome enums: the
+    same facts the live panel showed, and nothing it did not.
+    """
+    steps: list[dict[str, Any]] = []
+    by_call: dict[str, dict[str, Any]] = {}
+    providers = _call_providers(events)
+    for event in events:
+        event_identity = _bounded_text(getattr(event, "id", None), 128) or "event"
+        for index, part in enumerate(getattr(getattr(event, "content", None), "parts", None) or []):
+            call = getattr(part, "function_call", None)
+            response = getattr(part, "function_response", None)
+            item = call or response
+            name = str(getattr(item, "name", "") or "")
+            if item is None or not (name in _ACTIVITY_TOOLS or _MCP_ACTIVITY_TOOL.fullmatch(name)):
+                continue
+            call_id = _bounded_text(getattr(item, "id", None), 128) or f"{event_identity}:{index}"
+            step = by_call.get(call_id)
+            if step is None:
+                step = {"id": call_id, "tool": name, "status": "interrupted"}
+                if call_id in providers:
+                    step["provider"] = providers[call_id]
+                by_call[call_id] = step
+                steps.append(step)
+            if response is not None:
+                step.update(_activity_step_from_response(name, getattr(response, "response", None)))
+                provider = _status_result(getattr(response, "response", None)).get("provider")
+                if name in _WORKSPACE_SETUP_TOOLS and provider in _WORKSPACE_PROVIDERS:
+                    step["provider"] = provider
+    if not steps:
+        return None
+    return {
+        "activityType": "one.turn_activity.v1",
+        "content": {"steps": steps[-_MAX_ACTIVITY_STEPS:]},
+    }
+
+
+def _safe_submitted_information_request_descriptor(
+    event: Any, selected_parts: list[Any] | None = None
+) -> dict[str, Any] | None:
+    """Restore existing app-action settlements without replaying their authority."""
+    parts = (
+        selected_parts
+        if selected_parts is not None
+        else (getattr(getattr(event, "content", None), "parts", None) or [])
+    )
+    for part in parts:
+        response = getattr(part, "function_response", None)
+        if response is None or response.name != "run_app_action":
+            continue
+        result = _record(response.response) or {}
+        if result.get("status") != "succeeded":
+            continue
+        data = _record(result.get("data")) or {}
+        descriptor = _safe_submitted_information_request_card(data.get("consentCard"))
+        if descriptor:
+            return descriptor
+    return None
+
+
+def _safe_agent_history_metadata(
+    event: Any,
+    suppressed_discovery_ids: set[str] | None = None,
+    call_providers: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
     descriptors = []
     seen = set()
+    presentation = _record(getattr(event, "custom_metadata", None)) or {}
+    if presentation.get("kind") == "information_request_submission_v1":
+        if _submitted_source_id(event) is None:
+            return None
+        descriptor = _safe_submitted_information_request_card(presentation.get("card"))
+        return (
+            {
+                "kind": "structured_experience",
+                "structuredExperiences": [{"id": event.id, **descriptor}],
+                "structuredExperience": descriptor,
+                "structuredExperienceId": event.id,
+            }
+            if descriptor
+            else None
+        )
     event_identity = (
         _bounded_text(getattr(event, "id", None), 128)
         or _bounded_text(getattr(event, "invocation_id", None), 128)
@@ -762,11 +1079,17 @@ def _safe_agent_history_metadata(event: Any) -> dict[str, Any] | None:
         if descriptor is None:
             descriptor = _safe_drive_share_descriptor(event, [part])
         if descriptor is None:
+            descriptor = _safe_workspace_connector_setup_descriptor(event, [part], call_providers)
+        if descriptor is None:
             continue
         invocation_identity = _bounded_text(
             getattr(getattr(part, "function_response", None), "id", None), 128
         )
         card_id = f"{event_identity}:{invocation_identity or index}"
+        if card_id in (suppressed_discovery_ids or set()) and _safe_discovery_descriptor(
+            event, [part]
+        ):
+            continue
         if card_id in seen:
             continue
         seen.add(card_id)
@@ -799,11 +1122,135 @@ class RenameConversation(BaseModel):
     title: str = Field(min_length=1, max_length=160)
 
 
+class RecordInformationRequestSubmission(BaseModel):
+    source_activity_id: str = Field(min_length=1, max_length=256)
+    bundle_id: uuid.UUID
+    idempotency_key: str = Field(min_length=16, max_length=256)
+
+
+def _discovery_source(session: Any, activity_id: str) -> tuple[str, dict[str, Any]] | None:
+    matches: list[tuple[str, dict[str, Any]]] = []
+    for event in session.events:
+        event_id = (
+            _bounded_text(getattr(event, "id", None), 128)
+            or _bounded_text(getattr(event, "invocation_id", None), 128)
+            or "event"
+        )
+        for index, part in enumerate(getattr(getattr(event, "content", None), "parts", None) or []):
+            descriptor = _safe_discovery_descriptor(event, [part])
+            if descriptor is None:
+                continue
+            tool_id = _bounded_text(
+                getattr(getattr(part, "function_response", None), "id", None), 128
+            )
+            card_id = f"{event_id}:{tool_id or index}"
+            if activity_id in {card_id, tool_id}:
+                matches.append((card_id, descriptor["content"]))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _submitted_source_id(event: Any) -> str | None:
+    presentation = _record(getattr(event, "custom_metadata", None)) or {}
+    if presentation.get("kind") != "information_request_submission_v1" or event.content is not None:
+        return None
+    if _safe_submitted_information_request_card(presentation.get("card")) is None:
+        return None
+    source_id = _bounded_text(presentation.get("sourceCardId"), 256)
+    expected_id = f"request_submission_{hashlib.sha256(str(source_id).encode()).hexdigest()[:32]}"
+    return source_id if source_id and event.id == expected_id else None
+
+
+@router.post("/api/one/agent-chat/history/{conversation_id}/information-requests")
+async def record_information_request_submission(
+    conversation_id: str,
+    payload: RecordInformationRequestSubmission,
+    token: dict = Depends(require_vault_owner_chat_key),
+):
+    """Record one confirmed browser request in the existing encrypted ADK history.
+
+    The caller supplies locators and the one-time request key, never a card body.
+    The request ledger and this owner's conversation derive every display field.
+    """
+    owner = str(token["user_id"])
+    session = await _session_service.get_session(
+        app_name=ONE_APP_NAME, user_id=owner, session_id=conversation_id
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    source = _discovery_source(session, payload.source_activity_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Discovery card not found.")
+    source_card_id, discovery = source
+    try:
+        bundle = await InformationRequestService().verify_submission_receipt(
+            requester_user_id=owner,
+            bundle_id=str(payload.bundle_id),
+            idempotency_key=payload.idempotency_key,
+        )
+    except InformationRequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    person = discovery["person"]
+    if bundle["personRef"] != person.get("personRef") or not bundle.get("items"):
+        raise HTTPException(status_code=409, detail="Request recipient did not match discovery.")
+    statuses = [item["status"] for item in bundle["items"]]
+    status = statuses[0] if all(value == statuses[0] for value in statuses) else "mixed"
+    hours = bundle["durationSeconds"] // 3600
+    duration_label = (
+        f"{hours // 24} {'day' if hours // 24 == 1 else 'days'}"
+        if hours % 24 == 0
+        else f"{hours} {'hour' if hours == 1 else 'hours'}"
+    )
+    card = {
+        "activityType": "one.information_request_review.v1",
+        "direction": "outgoing",
+        "phase": "submitted",
+        "status": status,
+        "personName": person["displayName"],
+        "subjectRef": bundle["personRef"],
+        "bundleId": bundle["bundleId"],
+        "purpose": bundle["purpose"],
+        "durationLabel": duration_label,
+        "fields": [
+            {
+                "requestId": item["requestId"],
+                "label": item["label"],
+                "domain": "Information",
+                "sensitivity": item.get("sensitivity") or "standard",
+                "status": item["status"],
+            }
+            for item in bundle["items"]
+        ],
+    }
+    descriptor = _safe_submitted_information_request_card(card)
+    if descriptor is None:
+        raise HTTPException(status_code=409, detail="Request receipt could not be projected.")
+    event = Event(
+        id=f"request_submission_{hashlib.sha256(source_card_id.encode()).hexdigest()[:32]}",
+        author="one",
+        invocation_id=f"information_request_{payload.bundle_id}",
+        custom_metadata={
+            "kind": "information_request_submission_v1",
+            "sourceCardId": source_card_id,
+            "card": card,
+        },
+    )
+    persisted = await _session_service.append_event_once(
+        app_name=ONE_APP_NAME, user_id=owner, session_id=conversation_id, event=event
+    )
+    persisted_metadata = _record(persisted.custom_metadata) or {}
+    persisted_descriptor = _safe_submitted_information_request_card(persisted_metadata.get("card"))
+    if _submitted_source_id(persisted) != source_card_id or not persisted_descriptor:
+        raise HTTPException(status_code=409, detail="Discovery was already submitted.")
+    if persisted_descriptor["content"].get("bundleId") != str(payload.bundle_id):
+        raise HTTPException(status_code=409, detail="Discovery was already submitted.")
+    return {"descriptor": persisted_descriptor, "sourceActivityId": source_card_id}
+
+
 @router.get("/api/one/agent-chat/conversations/{user_id}")
 async def list_conversations(
     user_id: str,
     limit: int = Query(default=5, ge=1, le=20),
-    token: dict = Depends(require_vault_owner_token),
+    token: dict = Depends(require_vault_owner_chat_key),
 ):
     if str(token["user_id"]) != user_id:
         raise HTTPException(status_code=403, detail="Conversation owner mismatch.")
@@ -833,7 +1280,7 @@ async def list_conversations(
 async def conversation_history(
     conversation_id: str,
     limit: int = Query(default=50, ge=1, le=100),
-    token: dict = Depends(require_vault_owner_token),
+    token: dict = Depends(require_vault_owner_chat_key),
 ):
     user_id = str(token["user_id"])
     session = await _session_service.get_session(
@@ -842,24 +1289,78 @@ async def conversation_history(
     if session is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     messages: list[dict[str, object]] = []
+    submitted_discovery_ids = {
+        source_id for event in session.events if (source_id := _submitted_source_id(event))
+    }
+    call_providers = _call_providers(session.events)
     receipts: dict[str, dict[str, Any]] = {}
     last_answer: dict[str, int] = {}
+    last_card: dict[str, int] = {}
+    turn_events: dict[str, list[Any]] = {}
+    projected: list[tuple[str, dict[str, Any] | None]] = []
     for index, event in enumerate(session.events):
-        if event.invocation_id and event.author == "one" and _event_text(event):
-            last_answer[event.invocation_id] = index
+        text = _event_text(event)
+        metadata = _safe_agent_history_metadata(event, submitted_discovery_ids, call_providers)
+        projected.append((text, metadata))
+        if event.invocation_id:
+            turn_events.setdefault(event.invocation_id, []).append(event)
+            if event.author == "one" and text:
+                last_answer[event.invocation_id] = index
+            if metadata and not text:
+                last_card[event.invocation_id] = index
         for part in event.content.parts or [] if event.content else []:
             response = part.function_response
             if response and response.name in READ_TOOLS:
                 receipt = redacted_read_receipt(response.response)
                 if isinstance(receipt.get("structured"), dict):
                     receipts[event.invocation_id] = receipt["structured"]
+    # A turn's cards and Activity belong with its answer, as they were shown
+    # live. Card-only tool events fold into the answer; a turn without an
+    # answer keeps its last card message as the anchor.
+    held_cards: dict[str, list[dict[str, Any]]] = {}
     for index, event in enumerate(session.events):
-        text = _event_text(event)
-        metadata = _safe_agent_history_metadata(event)
+        text, metadata = projected[index]
         if (event.author not in {"user", "one"} and not metadata) or (not text and not metadata):
             continue
         if event.author not in {"user", "one"}:
             text = ""  # Tool events restore only allowlisted safe descriptors.
+        turn = event.invocation_id
+        answer_index = last_answer.get(turn) if turn else None
+        if (
+            metadata
+            and not text
+            and answer_index is not None
+            and answer_index > index
+            and metadata.get("structuredExperiences")
+        ):
+            held_cards.setdefault(turn, []).extend(metadata["structuredExperiences"])
+            continue
+        is_anchor = (
+            bool(turn)
+            and event.author != "user"
+            and index == (answer_index if answer_index is not None else last_card.get(turn))
+        )
+        if is_anchor:
+            cards = [
+                *held_cards.pop(turn, []),
+                *((metadata or {}).get("structuredExperiences") or []),
+            ]
+            activity = _safe_turn_activity(turn_events.get(turn, []))
+            if cards:
+                metadata = {
+                    **(metadata or {}),
+                    "kind": "structured_experience",
+                    "structuredExperiences": cards,
+                    "structuredExperience": {
+                        key: value for key, value in cards[0].items() if key != "id"
+                    },
+                    "structuredExperienceId": (metadata or {}).get("structuredExperienceId")
+                    or cards[0]["id"],
+                }
+            if activity:
+                metadata = {**(metadata or {}), "turnActivity": activity}
+            if event.author == "one" and turn in receipts and answer_index == index:
+                metadata = {**(metadata or {}), "specialist_read": receipts[turn]}
         messages.append(
             {
                 "id": event.id or f"{event.invocation_id}:{len(messages)}",
@@ -870,13 +1371,7 @@ async def conversation_history(
                 "model": event.model_version,
                 "created_at": event.timestamp,
                 "completed_at": event.timestamp,
-                "metadata": (
-                    {**(metadata or {}), "specialist_read": receipts[event.invocation_id]}
-                    if event.author == "one"
-                    and event.invocation_id in receipts
-                    and last_answer.get(event.invocation_id) == index
-                    else metadata
-                ),
+                "metadata": metadata,
             }
         )
     return {"conversation_id": conversation_id, "messages": messages[-limit:]}
@@ -886,7 +1381,7 @@ async def conversation_history(
 async def rename_conversation(
     conversation_id: str,
     payload: RenameConversation,
-    token: dict = Depends(require_vault_owner_token),
+    token: dict = Depends(require_vault_owner_chat_key),
 ):
     session = await _session_service.set_title(
         app_name=ONE_APP_NAME,
@@ -909,15 +1404,13 @@ async def delete_conversation(
     conversation_id: str,
     token: dict = Depends(require_vault_owner_token),
 ):
-    user_id = str(token["user_id"])
-    session = await _session_service.get_session(
-        app_name=ONE_APP_NAME, user_id=user_id, session_id=conversation_id
+    # Deleting needs no plaintext, so it needs no chat key: only the owner's
+    # current conversation row, matched by id, is removed.
+    deleted = await _session_service.delete_owned_session(
+        app_name=ONE_APP_NAME, user_id=str(token["user_id"]), session_id=conversation_id
     )
-    if session is None:
+    if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    await _session_service.delete_session(
-        app_name=ONE_APP_NAME, user_id=user_id, session_id=conversation_id
-    )
     return {"conversation_id": conversation_id, "deleted": True}
 
 

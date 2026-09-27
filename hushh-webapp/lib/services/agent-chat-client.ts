@@ -1,4 +1,5 @@
 import { ApiService } from "@/lib/services/api-service";
+import { projectCustomConnectorTurnConfigurations, type CustomConnectorConfiguration } from "@/lib/connections/custom-connector-schema";
 import { nativeStreamFetch } from "@/lib/services/native-sse-fetch";
 import { parseConnectorReadReceipt, type ConnectorReadExperience } from "@/lib/agent/connector-read-receipt";
 import {
@@ -9,6 +10,10 @@ import { HttpAgent, type AgentSubscriber, type Tool } from "@ag-ui/client";
 import { applyPatch, type Operation } from "fast-json-patch";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
 import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary";
+import { parseMcpCallReview, type McpCallApproval, type McpCallReviewReference } from "@/lib/agent/mcp-call-review";
+import { snapshotValidatedAuthSessionOwner, isValidatedAuthSessionOwnerCurrent } from "@/lib/auth/session-owner";
+import { snapshotVaultSessionEpoch, isVaultSessionEpochCurrent } from "@/lib/vault/session-epoch";
+import { oneChatKeyHeaders } from "@/lib/vault/one-chat-key";
 import {
   parseAgentActivityExperience,
   parseAgentToolResultExperience,
@@ -34,6 +39,8 @@ export type AgentChatMessage = {
     structuredExperienceId?: string | null;
     structuredExperiences?: Array<{ id: string; activityType: string; content: unknown }>;
     connectorRead?: ConnectorReadExperience | null;
+    /** Bound history descriptor for the turn's Activity rows (enums and opaque ids only). */
+    turnActivity?: { activityType?: string; content?: unknown } | null;
   } | null;
 };
 
@@ -61,6 +68,8 @@ export type AgentChatToolEvent = {
   message: string;
   reason?: string | null;
   status?: string;
+  /** App-authored step tag such as "Read" or "Needs review". */
+  tag?: string;
   requiresConfirmation: boolean;
   trustedActivationRequired: boolean;
   raw: Record<string, unknown>;
@@ -80,6 +89,16 @@ export type AgentSource = {
 };
 
 export type AgentChatStreamHandlers = {
+  /** Ephemeral native review: never append its references or receipt to history/debug events. */
+  onMcpReview?: (review: {
+    reference: McpCallReviewReference;
+    conversationId: string;
+    /** Derived chat key header value; the review reads this owner's sealed conversation. */
+    chatKey: string;
+    isCurrent: () => boolean;
+    loadConfiguration?: () => Promise<CustomConnectorConfiguration | undefined>;
+    resume: (approval: McpCallApproval | null, signal?: AbortSignal) => Promise<void>;
+  }) => void;
   onStart?: (payload: { conversationId: string; model?: string }) => void;
   onToolStart?: (payload: AgentChatToolEvent) => void;
   onToolWaiting?: (payload: AgentChatToolEvent) => void;
@@ -87,6 +106,8 @@ export type AgentChatStreamHandlers = {
   /** Request ids a server tool reported as waiting on the owner; the workspace renders each as a pending-consent card. */
   onPendingConsentRequests?: (requestIds: string[]) => void;
   onToken?: (token: string) => void;
+  /** Provider-authored thought summary only; never raw thoughts or continuation signatures. */
+  onThinkingSummary?: (chunk: string) => void;
   onComplete?: (payload: { conversationId: string; model?: string }) => void;
   onInterrupt?: (payload: { conversationId: string }) => void;
   onError?: (message: string) => void;
@@ -332,9 +353,33 @@ const SERVER_TOOL_PRESENTATION: Record<
     label: "Google Drive",
     message: "Checking selected file status.",
   },
+  inspect_private_connectors: {
+    label: "Connectors",
+    message: "Checking your saved connectors.",
+  },
+  discover_workspace_tools: {
+    label: "Connector access",
+    message: "Checking which connected capabilities are available.",
+  },
+  read_workspace_tool: {
+    label: "Connected app read",
+    message: "Reading the selected connected capability.",
+  },
+  ask_email_agent: {
+    label: "Gmail",
+    message: "Checking your mail request.",
+  },
   ask_documents_agent: {
     label: "Google Drive",
     message: "Searching your Drive for this answer.",
+  },
+  ask_connected_systems_agent: {
+    label: "Connected systems",
+    message: "Checking the connected-systems request.",
+  },
+  ask_consent_agent: {
+    label: "Consent",
+    message: "Checking the consent request.",
   },
   list_pending_connection_requests: {
     label: "Connection requests",
@@ -342,7 +387,91 @@ const SERVER_TOOL_PRESENTATION: Record<
   },
 };
 
+export const TURN_ACTIVITY_TYPE = "one.turn_activity.v1" as const;
+
+/** A restored Activity row: the same app-authored fields the live panel renders. */
+export type RestoredActivityStep = {
+  id: string;
+  label: string;
+  message: string;
+  status: "done" | "waiting" | "blocked";
+  tag?: "Read" | "Needs review" | "Public";
+  provider?: "gmail" | "drive" | "calendar";
+  toolName: string;
+  /** Opaque owner connector id; the workspace resolves its name from the owner's vault. */
+  connectorId?: string;
+};
+
+/**
+ * Rebuild a turn's Activity rows from the server's bound history descriptor.
+ * Labels and sentences come from the same app-owned table as the live stream;
+ * the descriptor only chooses among them. Unknown tools, statuses, or fields
+ * drop the row rather than render provider text.
+ */
+export function parseRestoredTurnActivity(descriptor: unknown): RestoredActivityStep[] {
+  const record = asRecord(descriptor);
+  if (!record || record.activityType !== TURN_ACTIVITY_TYPE) return [];
+  const steps = asRecord(record.content)?.steps;
+  if (!Array.isArray(steps)) return [];
+  return steps.slice(-10).flatMap((value): RestoredActivityStep[] => {
+    const step = asRecord(value);
+    const id = typeof step?.id === "string" ? step.id.trim().slice(0, 128) : "";
+    const toolName = typeof step?.tool === "string" ? step.tool : "";
+    const rawStatus = step?.status;
+    if (!step || !id || !toolName) return [];
+    const mcp = /^mcp_[0-9a-f]{40}$/.test(toolName);
+    const presentation = SERVER_TOOL_PRESENTATION[toolName];
+    if (!mcp && !presentation) return [];
+    if (!["done", "waiting", "blocked", "interrupted"].includes(String(rawStatus))) return [];
+    const status = rawStatus === "interrupted" ? "blocked" : rawStatus as "done" | "waiting" | "blocked";
+    const provider = ["gmail", "drive", "calendar"].includes(String(step.provider))
+      ? step.provider as "gmail" | "drive" | "calendar" : undefined;
+    if (mcp) {
+      const connectorId = typeof step.connectorId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(step.connectorId)
+        ? step.connectorId : undefined;
+      const tag = status === "waiting" && step.review === "required" ? "Needs review"
+        : status === "done" && step.review === "read_only" ? "Read"
+          : status === "done" && step.review === "no_credential" ? "Public" : undefined;
+      return [{
+        id, toolName, label: "Connected tool", status,
+        message: rawStatus === "interrupted" ? "This step did not finish."
+          : status === "done" ? "Connector call finished."
+            : status === "waiting" ? "Waiting for your review." : "Connector call needs attention.",
+        ...(tag ? { tag } : {}),
+        ...(connectorId ? { connectorId } : {}),
+      }];
+    }
+    if (!presentation) return [];
+    let message = presentation.message;
+    if (rawStatus === "interrupted") message = "This step did not finish.";
+    else if (toolName === "discover_workspace_tools" || toolName === "read_workspace_tool") message = "Connector access checked.";
+    else if (toolName === "inspect_private_connectors") message = "One checked your connectors.";
+    else if (toolName === "ask_email_agent" || toolName === "ask_documents_agent" || toolName === "inspect_selected_drive_files") {
+      const source = toolName === "ask_email_agent" ? "Mail" : "Drive";
+      message = step.readStatus === "status_checked" ? "Drive status checked."
+        : step.readStatus === "ok" ? `${source} read finished.`
+          : step.readStatus === "input_required" ? `${source} needs more detail.`
+            : `${source} could not complete that read.`;
+    }
+    return [{ id, toolName, label: presentation.label, message, status, ...(provider ? { provider } : {}) }];
+  });
+}
+
+const CHAT_KEY_REFUSAL_MESSAGES: Record<string, string> = {
+  CHAT_KEY_REQUIRED: "Unlock your vault, then try again. If this keeps happening, update or refresh the app.",
+  CHAT_KEY_INVALID: "Unlock your vault, then try again. If this keeps happening, update or refresh the app.",
+  CHAT_KEY_MISMATCH: "Your chat history did not open with this vault. Unlock your vault again, then try again.",
+  CHAT_CONVERSATION_RETIRED: "This conversation is no longer available. Start a new chat.",
+};
+
 export function formatAgentChatErrorMessage(message: string, code?: string): string {
+  // Chat history is sealed with a key derived from the vault. These refusals are
+  // recoverable, so say how; the raw server text is never shown.
+  const chatKeyCode = code && code in CHAT_KEY_REFUSAL_MESSAGES
+    ? code
+    : Object.keys(CHAT_KEY_REFUSAL_MESSAGES).find((candidate) => message.includes(candidate));
+  const chatKeyRefusal = chatKeyCode ? CHAT_KEY_REFUSAL_MESSAGES[chatKeyCode] : undefined;
+  if (chatKeyRefusal) return chatKeyRefusal;
   if (code === "AGENT_RUNTIME_CREDENTIAL_MISSING") {
     return "One needs your Gemini key. Add it in Connections settings, or switch to Hussh managed Gemini.";
   }
@@ -410,6 +539,9 @@ export async function streamAgentChat(input: {
   message: string;
   conversationId?: string | null;
   vaultOwnerToken: string;
+  /** Unlocked vault key. Only the chat key derived from it is sent. */
+  vaultKey: string;
+  loadConnectorConfigurations?: () => Promise<CustomConnectorConfiguration[]>;
   pkmContext?: string;
   personSelectionHandle?: string;
   /** Opaque owner-selected KYC workflow; Gmail content stays server-side. */
@@ -426,6 +558,26 @@ export async function streamAgentChat(input: {
   const timezone = resolveBrowserTimeZone();
   const threadId = input.conversationId || crypto.randomUUID();
   const handlers = input.handlers ?? {};
+  const mcpOwner = snapshotValidatedAuthSessionOwner();
+  const mcpVaultEpoch = snapshotVaultSessionEpoch();
+  const mcpSessionCurrent = () => Boolean(
+    mcpOwner && mcpOwner.userId === input.userId &&
+    isValidatedAuthSessionOwnerCurrent(mcpOwner) &&
+    isVaultSessionEpochCurrent(mcpVaultEpoch) && !input.signal?.aborted,
+  );
+  // Owner-authored names from the owner's own vault, keyed by opaque id. The
+  // provider-authored tool name never labels a step: a server can write anything.
+  const connectorNames = new Map<string, string>();
+  const connectorProjection = async () => {
+    if (!input.loadConnectorConfigurations) return {};
+    if (!mcpSessionCurrent()) throw new Error("Your vault session changed. Unlock and try again.");
+    const configurations = await input.loadConnectorConfigurations();
+    if (!mcpSessionCurrent()) throw new Error("Your vault session changed. Unlock and try again.");
+    const mcpConfigurations = projectCustomConnectorTurnConfigurations(configurations);
+    connectorNames.clear();
+    for (const item of mcpConfigurations) connectorNames.set(item.connectorId, item.displayName);
+    return { mcpConfigurations };
+  };
   const availableActionIds = (() => {
     const screen = input.screenContext || {};
     const nested = asRecord(screen.one_voice_context);
@@ -456,10 +608,14 @@ export async function streamAgentChat(input: {
       metadata: { actionId },
     }];
   });
+  // Chat history is sealed with a key derived from the vault key; the server
+  // refuses the turn without it and holds it for this request only.
+  const chatKeyHeaders = await oneChatKeyHeaders(input.vaultKey);
+  const chatKey = Object.values(chatKeyHeaders)[0] ?? "";
   const agent = new HttpAgent({
     url: "/api/one/agent-chat",
     threadId,
-    headers: { Authorization: `Bearer ${input.vaultOwnerToken}` },
+    headers: { Authorization: `Bearer ${input.vaultOwnerToken}`, ...chatKeyHeaders },
     initialMessages: [{ id: crypto.randomUUID(), role: "user", content: input.message }],
     fetch: (_url, init) => nativeStreamFetch("/api/one/agent-chat", init),
   });
@@ -489,13 +645,23 @@ export async function streamAgentChat(input: {
   const toolNames = new Map<string, string>();
   const toolArgs = new Map<string, Record<string, unknown>>();
   const interruptsByToolCall = new Map<string, string>();
+  const mcpReviews = new Map<string, McpCallReviewReference>();
+  // The server streams each native confirmation's projected arguments. A
+  // MESSAGES_SNAPSHOT can already hold the same call, and the AG-UI client then
+  // appends the streamed delta onto the snapshot's copy, which no longer parses.
+  // Parse the confirmation from its own streamed deltas instead.
+  const confirmationArgs = new Map<string, string>();
+  const publishedMcpReviews = new Set<string>();
   const emittedStateDirectivePaths = new Set<string>();
   const toolPayload = (callId: string, name: string, args: Record<string, unknown> = {}): AgentChatToolEvent => {
     const actionId = tools.find((tool) => tool.name === name)?.metadata?.actionId;
     const action = getKaiActionById(typeof actionId === "string" ? actionId : null);
     const serverPresentation = SERVER_TOOL_PRESENTATION[name];
     const resolvedActionId = typeof actionId === "string" ? actionId : null;
-    const label = action?.label || serverPresentation?.label || "One task";
+    // Native MCP identities are opaque digests. Never render their raw name or
+    // provider-authored descriptions as app-owned activity labels.
+    const label = action?.label || serverPresentation?.label ||
+      (/^mcp_[0-9a-f]{40}$/.test(name) ? "Connected tool" : "Agent step");
     const requiresConfirmation = action?.execution_policy === "confirm_required";
     const trustedActivationRequired =
       action?.activation_policy === "trusted_activation_required";
@@ -517,7 +683,8 @@ export async function streamAgentChat(input: {
         ? describeDirectiveForOwner(resolvedActionId, label, args, {
             requiresConfirmation: requiresConfirmation || trustedActivationRequired,
           })
-        : serverPresentation?.message || "One is working on your request.",
+        : serverPresentation?.message ||
+          (/^mcp_[0-9a-f]{40}$/.test(name) ? "Using a connected tool." : "Completing a step for your request."),
       requiresConfirmation,
       trustedActivationRequired,
       raw: {
@@ -531,6 +698,7 @@ export async function streamAgentChat(input: {
             tools,
             context: [],
             forwardedProps: {
+              ...await connectorProjection(),
               timezone,
               pkmContext: input.pkmContext,
               personSelectionHandle: input.personSelectionHandle,
@@ -545,6 +713,19 @@ export async function streamAgentChat(input: {
   };
   const subscriber: AgentSubscriber = {
     ...publicOutputSubscriber,
+    onEvent: ({ event }) => {
+      if (event.type === "REASONING_MESSAGE_CONTENT") {
+        const delta = (event as { delta?: unknown }).delta;
+        const metadata = (event as { metadata?: unknown }).metadata;
+        if (asRecord(metadata)?.husshThoughtSummary === true &&
+            typeof delta === "string" && delta.length > 0) {
+          handlers.onThinkingSummary?.(delta.slice(0, 2048));
+        }
+      }
+      return String(event.type).startsWith("REASONING_")
+        ? { stopPropagation: true }
+        : undefined;
+    },
     onRunStartedEvent: () => handlers.onStart?.({ conversationId: threadId }),
     onMessagesSnapshotEvent: (snapshot) => {
       const { event } = snapshot;
@@ -558,11 +739,50 @@ export async function streamAgentChat(input: {
     },
     onToolCallStartEvent: ({ event }) => {
       toolNames.set(event.toolCallId, event.toolCallName);
+      if (event.toolCallName === "adk_request_confirmation") confirmationArgs.set(event.toolCallId, "");
       handlers.onToolStart?.(toolPayload(event.toolCallId, event.toolCallName));
     },
+    onToolCallArgsEvent: ({ event }) => {
+      const buffered = confirmationArgs.get(event.toolCallId);
+      if (buffered === undefined) return;
+      // Bounded like the server projection; an oversized review fails closed.
+      const next = buffered + (event.delta ?? "");
+      if (next.length > 64_000) confirmationArgs.delete(event.toolCallId);
+      else confirmationArgs.set(event.toolCallId, next);
+    },
     onToolCallEndEvent: ({ event, toolCallName, toolCallArgs }) => {
-      const safeArgs = toolCallName === "ask_email_agent" || toolCallName === "ask_documents_agent" || toolCallName === "inspect_selected_drive_files"
-        ? {} : toolCallArgs;
+      if (toolCallName === "adk_request_confirmation") {
+        const streamed = confirmationArgs.get(event.toolCallId);
+        confirmationArgs.delete(event.toolCallId);
+        let nativeArgs: Record<string, unknown> = toolCallArgs;
+        if (streamed) {
+          try { nativeArgs = asRecord(JSON.parse(streamed)) ?? toolCallArgs; } catch { /* keep client args */ }
+        }
+        const review = parseMcpCallReview(nativeArgs);
+        if (review) {
+          mcpReviews.set(event.toolCallId, review);
+          // Publish only after RUN_FINISHED supplies the native interrupt id.
+          // Neither pending handles nor private review details enter generic diagnostics.
+          return;
+        }
+        const original = asRecord(nativeArgs.originalFunctionCall);
+        const confirmation = asRecord(nativeArgs.toolConfirmation);
+        if ((typeof original?.name === "string" && original.name.startsWith("mcp_")) ||
+            asRecord(confirmation?.payload)?.kind === "mcp_call_review") {
+          handlers.onError?.("The connector review could not be verified. Please ask again.");
+          return;
+        }
+      }
+      const workspaceConnectorTool =
+        toolCallName === "discover_workspace_tools" ||
+        toolCallName === "read_workspace_tool";
+      const safeArgs = workspaceConnectorTool
+        ? { provider: toolCallArgs.provider }
+        : toolCallName === "inspect_private_connectors"
+          ? {}
+        : toolCallName === "ask_email_agent" || toolCallName === "ask_documents_agent" || toolCallName === "inspect_selected_drive_files"
+          ? {}
+          : toolCallArgs;
       toolArgs.set(event.toolCallId, safeArgs);
       handlers.onToolWaiting?.(
         toolPayload(event.toolCallId, toolCallName, safeArgs),
@@ -570,6 +790,41 @@ export async function streamAgentChat(input: {
     },
     onToolCallResultEvent: ({ event }) => {
       const toolName = toolNames.get(event.toolCallId) || "";
+      if (/^mcp_[0-9a-f]{40}$/.test(toolName)) {
+        // Connector content belongs to owner presentation/history, never the
+        // generic debug payload or model-authored app-action parser. Approval
+        // references use the separate native interrupt/review contract.
+        const payload = toolPayload(event.toolCallId, toolName);
+        const result = parseRecord(event.content);
+        const outcome = result?.status;
+        const connectorId = result?.connectorId;
+        const connectorName = typeof connectorId === "string" ? connectorNames.get(connectorId) : undefined;
+        if (connectorName) payload.label = connectorName;
+        // A blocked or failed connector call must not render as a completed step.
+        payload.execution = outcome === "ok" || outcome === "review_required" ? "server" : "blocked";
+        if (outcome === "review_required") {
+          payload.status = "waiting";
+          payload.tag = "Needs review";
+        } else if (outcome === "ok" && result?.review === "read_only") {
+          payload.tag = "Read";
+        } else if (outcome === "ok" && result?.review === "no_credential") {
+          // Ran unreviewed because no credential was used, not because it only
+          // read: an unannotated tool on a public server may still change things.
+          payload.tag = "Public";
+        }
+        payload.message = outcome === "ok"
+          ? "Connector call finished."
+          : outcome === "review_required"
+            ? "Waiting for your review."
+            : "Connector call needs attention.";
+        payload.raw = { protocol: "ag-ui", toolName };
+        handlers.onToolResult?.(payload);
+        return;
+      }
+      const workspaceConnectorTool =
+        toolName === "discover_workspace_tools" ||
+        toolName === "read_workspace_tool" ||
+        toolName === "inspect_private_connectors";
       // External-read receipts are display-only, even if an invalid result attempts to
       // smuggle a parked navigation/send directive alongside it.
       if (toolName === "ask_email_agent" || toolName === "ask_documents_agent" || toolName === "inspect_selected_drive_files") {
@@ -591,6 +846,29 @@ export async function streamAgentChat(input: {
               ? `${source} needs more detail.`
               : `${source} could not complete that read.`;
         payload.raw = { protocol: "ag-ui", toolName };
+        handlers.onToolResult?.(payload);
+        if (experience) {
+          handlers.onStructuredExperience?.(experience, event.toolCallId);
+        }
+        return;
+      }
+      if (workspaceConnectorTool) {
+        const safeArgs = toolArgs.get(event.toolCallId) || {};
+        const experience = parseAgentToolResultExperience(
+          toolName,
+          event.content,
+          safeArgs,
+        );
+        const payload = toolPayload(event.toolCallId, toolName, safeArgs);
+        payload.execution = "server";
+        payload.message = toolName === "inspect_private_connectors"
+          ? "One checked your connectors."
+          : "Connector access checked.";
+        payload.raw = {
+          protocol: "ag-ui",
+          toolName,
+          ...(toolName === "inspect_private_connectors" ? {} : { provider: safeArgs.provider }),
+        };
         handlers.onToolResult?.(payload);
         if (experience) {
           handlers.onStructuredExperience?.(experience, event.toolCallId);
@@ -655,7 +933,11 @@ export async function streamAgentChat(input: {
           stopAfterConfirmation();
         }
       }
-      const experience = parseAgentToolResultExperience(toolName, event.content);
+      const experience = parseAgentToolResultExperience(
+        toolName,
+        event.content,
+        toolArgs.get(event.toolCallId),
+      );
       if (experience) {
         // Redelivery can assign a new transport message while retaining the
         // same invocation. One invocation owns one evolving card.
@@ -758,6 +1040,66 @@ export async function streamAgentChat(input: {
         for (const interrupt of params.interrupts) {
           if (interrupt.toolCallId) interruptsByToolCall.set(interrupt.toolCallId, interrupt.id);
         }
+        for (const [callId, reference] of mcpReviews) {
+          const interruptId = interruptsByToolCall.get(callId);
+          if (!interruptId || publishedMcpReviews.has(callId)) continue;
+          publishedMcpReviews.add(callId);
+          let attempted = false;
+          handlers.onMcpReview?.({
+            reference,
+            conversationId: threadId,
+            chatKey,
+            isCurrent: mcpSessionCurrent,
+            loadConfiguration: input.loadConnectorConfigurations ? async () => {
+              const projection = await connectorProjection();
+              const configuration = projection.mcpConfigurations?.find(item => item.connectorId === reference.connectorId);
+              if (reference.connectorId.startsWith("custom_") && !configuration) {
+                throw new Error("This connector was removed. Prepare a new request.");
+              }
+              return configuration;
+            } : undefined,
+            resume: async (approval, signal) => {
+              if (attempted || signal?.aborted || !mcpSessionCurrent() || Date.parse(reference.expiresAt) <= Date.now()) {
+                throw new Error("This connector review expired or was already used.");
+              }
+              if (approval && (
+                approval.directiveId !== reference.directiveId ||
+                approval.connectorId !== reference.connectorId ||
+                approval.toolName !== reference.toolName ||
+                approval.pendingHandle !== reference.pendingHandle ||
+                !/^[A-Za-z0-9_-]{32,128}$/.test(approval.receipt)
+              )) throw new Error("This confirmation does not match the connector review.");
+              // A lost acknowledgement must not cause an automatic second mutation.
+              attempted = true;
+              const abortResume = () => agent.abortRun();
+              input.signal?.addEventListener("abort", abortResume, { once: true });
+              signal?.addEventListener("abort", abortResume, { once: true });
+              try {
+                await agent.runAgent({
+                  tools, context: [],
+                  forwardedProps: {
+                    ...await connectorProjection(),
+                    timezone, pkmContext: input.pkmContext,
+                    personSelectionHandle: input.personSelectionHandle,
+                    gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
+                    screenContext: input.screenContext,
+                    ...(approval ? { mcpApproval: {
+                      directiveId: approval.directiveId, connectorId: approval.connectorId,
+                      toolName: approval.toolName, pendingHandle: approval.pendingHandle,
+                      receipt: approval.receipt,
+                    } } : {}),
+                  },
+                  resume: [{ interruptId, status: "resolved", payload: { confirmed: approval !== null } }],
+                }, subscriber);
+                if (signal?.aborted || !mcpSessionCurrent()) throw new Error("The connector session changed.");
+                if (failure) throw failure;
+              } finally {
+                input.signal?.removeEventListener("abort", abortResume);
+                signal?.removeEventListener("abort", abortResume);
+              }
+            },
+          });
+        }
         interrupted = true;
         handlers.onInterrupt?.({ conversationId: threadId });
         // The visible confirmation card owns the next step. The resumable
@@ -775,7 +1117,7 @@ export async function streamAgentChat(input: {
         finishTerminalRun();
         return;
       }
-      failure = new Error(formatAgentChatErrorMessage(event.message || ""));
+      failure = new Error(formatAgentChatErrorMessage(event.message || "", event.code || undefined));
       handlers.onError?.(failure.message);
       finishTerminalRun();
     },
@@ -799,6 +1141,7 @@ export async function streamAgentChat(input: {
       tools,
       context: [],
       forwardedProps: {
+        ...await connectorProjection(),
         timezone,
         pkmContext: input.pkmContext,
         personSelectionHandle: input.personSelectionHandle,
@@ -852,7 +1195,7 @@ export async function streamAgentIntro(input: {
     },
     onRunFinishedEvent: () => handlers.onComplete?.({ conversationId: threadId }),
     onRunErrorEvent: ({ event }) => {
-      failure = new Error(formatAgentChatErrorMessage(event.message || ""));
+      failure = new Error(formatAgentChatErrorMessage(event.message || "", event.code || undefined));
       handlers.onError?.(failure.message);
     },
     onRunFailed: ({ error }) => {
@@ -878,6 +1221,7 @@ export async function streamAgentIntro(input: {
 export async function listAgentChatConversations(input: {
   userId: string;
   vaultOwnerToken: string;
+  vaultKey: string;
   limit?: number;
 }): Promise<AgentChatConversation[]> {
   const response = await ApiService.listAgentChatConversations(input);
@@ -891,6 +1235,7 @@ export async function listAgentChatConversations(input: {
 export async function getAgentChatHistory(input: {
   conversationId: string;
   vaultOwnerToken: string;
+  vaultKey: string;
   limit?: number;
 }): Promise<AgentChatMessage[]> {
   const response = await ApiService.getAgentChatHistory(input);
@@ -909,6 +1254,7 @@ export async function getAgentChatHistory(input: {
         structuredExperienceId?: string | null;
         structuredExperiences?: Array<{ id: string; activityType: string; content: unknown }>;
         specialist_read?: unknown;
+        turnActivity?: { activityType?: string; content?: unknown } | null;
       } | null;
     }>;
   };
@@ -931,6 +1277,8 @@ export async function getAgentChatHistory(input: {
             structuredExperience: message.metadata.structuredExperience,
             structuredExperienceId: message.metadata.structuredExperienceId,
             structuredExperiences: message.metadata.structuredExperiences,
+            ...(message.role === "assistant" && message.metadata.turnActivity
+              ? { turnActivity: message.metadata.turnActivity } : {}),
             connectorRead:
               message.role === "assistant"
                 ? parseConnectorReadReceipt(message.metadata.specialist_read)
@@ -938,6 +1286,42 @@ export async function getAgentChatHistory(input: {
           }
         : message.metadata,
     }));
+}
+
+/** Record only a request locator; the Chat owner derives the history card from its ledger. */
+export async function recordAgentChatInformationRequest(input: {
+  conversationId: string;
+  sourceActivityId: string;
+  bundleId: string;
+  idempotencyKey: string;
+  vaultOwnerToken: string;
+  vaultKey: string;
+}): Promise<AgentStructuredExperience> {
+  const response = await ApiService.apiFetch(
+    `/api/one/agent-chat/history/${encodeURIComponent(input.conversationId)}/information-requests`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.vaultOwnerToken}`,
+        ...(await oneChatKeyHeaders(input.vaultKey)),
+      },
+      body: JSON.stringify({
+        source_activity_id: input.sourceActivityId,
+        bundle_id: input.bundleId,
+        idempotency_key: input.idempotencyKey,
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const payload = (await response.json()) as { descriptor?: { activityType?: string; content?: unknown } };
+  const descriptor = payload.descriptor;
+  const experience = descriptor?.activityType === "one.information_request_review.v1"
+    ? parseAgentActivityExperience(descriptor.activityType, descriptor.content) : null;
+  if (!experience || experience.type !== "one.information_request_review.v1"
+    || experience.phase !== "submitted" || experience.bundleId !== input.bundleId) {
+    throw new Error("The submitted request history could not be verified.");
+  }
+  return experience;
 }
 
 /**
@@ -996,6 +1380,7 @@ export async function renameAgentChatConversation(input: {
   conversationId: string;
   title: string;
   vaultOwnerToken: string;
+  vaultKey: string;
 }): Promise<AgentChatConversation> {
   const response = await ApiService.renameAgentChatConversation(input);
   if (!response.ok) {

@@ -927,28 +927,6 @@ class AccountService:
                 conn.execute(self._delete_by_user_queries[table_name], params)
             results[table_name] = True
 
-    def _delete_private_mcp_connectors(
-        self,
-        conn,
-        *,
-        params: dict[str, Any],
-        results: dict[str, bool],
-    ) -> None:
-        """Delete MCP server definitions the account registered privately.
-
-        Operator-curated catalog rows have ``user_id IS NULL`` and are never
-        touched. Runs after connector erasure, which already removed the owner's
-        connections and OAuth attempts: the only rows that reference a definition.
-        """
-        if self._table_exists(conn, "external_mcp_connectors") and self._column_exists(
-            conn, "external_mcp_connectors", "user_id"
-        ):
-            conn.execute(
-                text("DELETE FROM external_mcp_connectors WHERE user_id = :user_id"),
-                params,
-            )
-        results["external_mcp_private_connectors"] = True
-
     @staticmethod
     def _lock_fabric_receipt_users(conn, *, user_ids: Iterable[str]) -> None:
         """Serialize account cleanup before Fabric grant/read/receipt writers."""
@@ -1775,7 +1753,6 @@ class AccountService:
             "personal_agent_external_resources_absent": False,
             "vault_key_wrappers": False,
             "vault_keys": False,
-            "external_mcp_private_connectors": False,
             "account_deletion_tombstone": False,
         }
 
@@ -1813,7 +1790,6 @@ class AccountService:
                     table_exists=lambda table_name: self._table_exists(conn, table_name),
                 )
                 self._clear_external_connector_data(conn, user_id, results, permanent=True)
-                self._delete_private_mcp_connectors(conn, params=params, results=results)
                 self._delete_optional_user_tables(
                     conn,
                     table_names=[

@@ -3636,7 +3636,7 @@
           "model": {
             "credential_ref": null,
             "mode": "hushh_managed_vertex",
-            "name": "gemini-3.8-flash",
+            "name": "gemini-3.7-flash",
             "provider": "gemini",
             "thinking_level": null
           },
@@ -3682,7 +3682,7 @@
           "model": {
             "credential_ref": null,
             "mode": "hushh_managed_vertex",
-            "name": "gemini-3.8-flash",
+            "name": "gemini-3.7-flash",
             "provider": "gemini",
             "thinking_level": null
           },
@@ -3723,19 +3723,25 @@
         "voice": true,
         "web": true
       },
-      "system_instruction_sha256": "fefbac17f56b49e0cd8ce1bbb14459a667a745bdcdf004dd10d3a9880d396ed2",
+      "system_instruction_sha256": "ea7b8676e4f564bdf03457c83e8a8c24eb908dc2b9ed7a76a4fd2394397ab030",
       "telemetry_namespace": "agent.one",
       "tools": [
         {
-          "description": "Discover the current official Google Drive MCP read capabilities and exact input schemas in authenticated Chat.",
-          "name": "discover_google_drive_tools",
-          "py_func": "hushh_mcp.one_adk.drive_tools.discover_google_drive_tools",
+          "description": "Check whether the authenticated owner can open private connector setup in Chat. Returns safe saved names and setup state, not credentials or callable authority.",
+          "name": "inspect_private_connectors",
+          "py_func": "hushh_mcp.one_adk.registered_mcp_toolset.inspect_private_connectors",
           "required_scope": "vault.owner"
         },
         {
-          "description": "Read one item from the owner's connected Google Drive through a reviewed MCP operation; no file mutation or sending.",
-          "name": "read_google_drive",
-          "py_func": "hushh_mcp.one_adk.drive_tools.read_google_drive",
+          "description": "Check connected Drive, Gmail or Calendar read availability; return exact admitted hosted tools only when callable, otherwise report the applicable connection or API state.",
+          "name": "discover_workspace_tools",
+          "py_func": "hushh_mcp.one_adk.workspace_mcp_tools.discover_workspace_tools",
+          "required_scope": "vault.owner"
+        },
+        {
+          "description": "Perform one bounded Workspace MCP read using its discovered schema; provider writes require their existing reviewed app action.",
+          "name": "read_workspace_tool",
+          "py_func": "hushh_mcp.one_adk.workspace_mcp_tools.read_workspace_tool",
           "required_scope": "vault.owner"
         }
       ],
