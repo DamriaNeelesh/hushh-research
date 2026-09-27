@@ -30,7 +30,6 @@ _PLACES_NEARBY_URL = f"{_PLACES_BASE}/v1/places:searchNearby"
 _PLACES_TEXT_URL = f"{_PLACES_BASE}/v1/places:searchText"
 _ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 _GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
-_WEATHER_CURRENT_URL = "https://weather.googleapis.com/v1/currentConditions:lookup"
 _NEARBY_CHECK_IN_RADIUS_METERS = 500.0
 # Search Nearby (New) hard-caps a single response at 20. That cap is per
 # request, not per area, which is why "All" alone can never be complete in a
@@ -1465,68 +1464,6 @@ class GoogleMapsService:
             "name": name,
             "formattedAddress": formatted,
             "countryCode": country_code,
-        }
-
-    async def current_weather(self, *, lat: float, lng: float, imperial: bool) -> dict[str, Any]:
-        """Current conditions from the Weather API, reduced to a few fields.
-
-        Coordinates go only to Google in the request; they are never logged or
-        cached. A disabled or restricted API (403) surfaces as a 503 so callers
-        can fall back to another source.
-        """
-        key = _require_key()
-        if not _valid_coordinates(lat=lat, lng=lng):
-            raise GoogleMapsError("Invalid coordinates.", status_code=400)
-        params: dict[str, Any] = {
-            "key": key,
-            "location.latitude": lat,
-            "location.longitude": lng,
-        }
-        if imperial:
-            params["unitsSystem"] = "IMPERIAL"
-        async with _async_client() as client:
-            try:
-                response = await client.get(_WEATHER_CURRENT_URL, params=params)
-            except httpx.HTTPError as exc:
-                raise GoogleMapsError("Weather lookup failed.", status_code=502) from exc
-        if response.status_code >= 400:
-            logger.warning("maps.weather upstream %s", response.status_code)
-            raise GoogleMapsError(
-                "Weather lookup failed.",
-                status_code=503 if response.status_code in {401, 403, 404} else 502,
-            )
-        data = _provider_object(response, "Weather lookup")
-
-        def measure(value: Any, amount: str, unit: str) -> dict[str, Any] | None:
-            if not isinstance(value, dict) or not isinstance(value.get(amount), int | float):
-                return None
-            return {"value": value[amount], "unit": str(value.get(unit) or "")}
-
-        condition = data.get("weatherCondition")
-        description = condition.get("description") if isinstance(condition, dict) else None
-        precipitation = data.get("precipitation")
-        probability = precipitation.get("probability") if isinstance(precipitation, dict) else None
-        wind = data.get("wind")
-        history = data.get("currentConditionsHistory")
-        history = history if isinstance(history, dict) else {}
-        time_zone = data.get("timeZone")
-        humidity = data.get("relativeHumidity")
-        chance = probability.get("percent") if isinstance(probability, dict) else None
-        return {
-            "condition": str(description.get("text") or "")[:80]
-            if isinstance(description, dict)
-            else "",
-            "temperature": measure(data.get("temperature"), "degrees", "unit"),
-            "feels_like": measure(data.get("feelsLikeTemperature"), "degrees", "unit"),
-            "high": measure(history.get("maxTemperature"), "degrees", "unit"),
-            "low": measure(history.get("minTemperature"), "degrees", "unit"),
-            "humidity_percent": humidity if isinstance(humidity, int | float) else None,
-            "precipitation_chance_percent": chance if isinstance(chance, int | float) else None,
-            "wind": measure(wind.get("speed") if isinstance(wind, dict) else None, "value", "unit"),
-            "is_daytime": data.get("isDaytime")
-            if isinstance(data.get("isDaytime"), bool)
-            else None,
-            "time_zone": str(time_zone.get("id") or "")[:64] if isinstance(time_zone, dict) else "",
         }
 
     async def route_eta(

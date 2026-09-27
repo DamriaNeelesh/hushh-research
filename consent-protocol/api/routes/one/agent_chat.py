@@ -988,7 +988,6 @@ _ACTIVITY_TOOLS = frozenset(
         "resolve_onboarding_goal",
         "get_current_time",
         "get_my_location",
-        "get_weather",
     }
 )
 _MCP_ACTIVITY_TOOL = re.compile(r"^mcp_[0-9a-f]{40}$")

@@ -121,60 +121,9 @@ async def get_my_location(tool_context: ToolContext) -> dict[str, Any]:
     }
 
 
-async def get_weather(
-    tool_context: ToolContext,
-    latitude: float | None = None,
-    longitude: float | None = None,
-    units: str = "metric",
-) -> dict[str, Any]:
-    """Get current weather conditions for a place.
-
-    Omit latitude and longitude to use the person's approximate current
-    location for this turn. Pass units="imperial" for Fahrenheit and mph when
-    that is what the person uses. If status is unavailable, answer with
-    google_search for the current weather near that location instead.
-
-    Args:
-        latitude: Optional latitude of the place, in degrees.
-        longitude: Optional longitude of the place, in degrees.
-        units: "metric" (default) or "imperial".
-    """
-    from hushh_mcp.services.google_maps_service import GoogleMapsError, GoogleMapsService
-
-    if latitude is None and longitude is None:
-        record = _turn_location(tool_context)
-        if record.get("status") != "available":
-            return _needs_permission(str(record.get("status") or "not_provided"))
-        lat, lng = record["latitude"], record["longitude"]
-    else:
-        lat = _coordinate(latitude, 90.0)
-        lng = _coordinate(longitude, 180.0)
-        if lat is None or lng is None:
-            return {"status": "invalid_location", "message": "Those coordinates are not valid."}
-    try:
-        conditions = await GoogleMapsService().current_weather(
-            lat=lat, lng=lng, imperial=units == "imperial"
-        )
-    except GoogleMapsError as exc:
-        # The status code is the only provider detail kept; never the location.
-        logger.info("one.weather_unavailable status=%s", exc.status_code)
-        return {
-            "status": "unavailable",
-            "message": (
-                "The weather service isn't available right now. These are the person's "
-                "approximate coordinates; call google_search for the current weather near "
-                "them. Do not call get_my_location again."
-            ),
-            "latitude": lat,
-            "longitude": lng,
-        }
-    return {"status": "ok", **conditions}
-
-
 __all__ = [
     "COARSE_DECIMALS",
     "STATE_TURN_LOCATION",
     "admit_turn_location",
     "get_my_location",
-    "get_weather",
 ]
